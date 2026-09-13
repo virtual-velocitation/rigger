@@ -32,8 +32,8 @@ use rigger::eventstore::{
     Direction, Event, EventStore, ExpectedRevision, Filter,
 };
 use rigger::gate::{
-    resolve_build_layer, resolve_mutation_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate,
-    GateResult, Runner, STORE_FENCE_ENV,
+    resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateResult, Runner,
+    MUTATION_GATE_ID, STORE_FENCE_ENV,
 };
 use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
@@ -5688,6 +5688,7 @@ impl Runner for ReplayRunner {
         g: &Gate,
         _dir: &str,
         _target_dir: &str,
+        _mutants_dir: &str,
         _build_cache_dir: &str,
         _build_cache_guard: &str,
         _store_fence: &str,
@@ -9177,17 +9178,18 @@ fn cmd_validate(args: &[String]) -> Res {
             Ok(w) => w,
             Err(e) => return Err(e.to_string().into()),
         };
-    // Mutation-efficacy step SURFACE (spec 73): a `build.mutation: on` with no `cargo-mutants`
-    // resolvable already failed above (`config::load`'s `Config::validate` rejects it at run
-    // start, before `cfg` could exist), so by this point resolution can only succeed - reads
-    // through the SAME `resolve_mutation_layer` authority `Config::validate` uses, never a
-    // second, independently re-derived check.
-    let mutation_enabled = match resolve_mutation_layer(&cfg.workflow.build.mutation) {
-        Ok(m) => m,
-        Err(e) => return Err(e.to_string().into()),
-    };
-    for line in build_environment_report(wrapper.as_deref(), &cfg.workflow.build, mutation_enabled)
-    {
+    // Mutation gate SURFACE (spec 91, moved from the retired `build.mutation` switch): a
+    // declared `mutation` gate with no `cargo-mutants` resolvable already failed above
+    // (`config::load`'s `Config::validate` rejects it at run start, before `cfg` could
+    // exist), so by this point declaring the gate at all means it is resolvable - the
+    // report reads the SAME gates-map signal `Config::validate` keys its refusal on, never
+    // a second, independently re-derived check.
+    let mutation_gate_declared = cfg.workflow.gates.contains_key(MUTATION_GATE_ID);
+    for line in build_environment_report(
+        wrapper.as_deref(),
+        &cfg.workflow.build,
+        mutation_gate_declared,
+    ) {
         println!("{line}");
     }
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
@@ -9310,19 +9312,21 @@ fn cmd_validate(args: &[String]) -> Res {
 ///   configured, so an operator sees it even with the wrapper off. `0` is the documented
 ///   unlimited convention (mirrors `defaults.budget`), reported in words rather than a
 ///   bare, easily-misread `0`.
-/// - the mutation-efficacy step setting, ALWAYS (spec 73): `on` or `off`, given the ALREADY-
-///   RESOLVED `mutation_enabled` (through the SAME `resolve_mutation_layer` authority
-///   `Config::validate`'s run-start check uses - a `build.mutation: on` with no
-///   `cargo-mutants` on PATH already failed before this could be reached, so by the time
-///   this prints, `on` in config and `mutation_enabled: true` always agree).
+/// - the checkin-stage mutation gate, ALWAYS (spec 91, moved from the retired
+///   `build.mutation` switch): `declared` or `not configured`, given whether the workflow's
+///   `gates:` map names [`MUTATION_GATE_ID`] - the SAME gates-map signal `Config::validate`'s
+///   run-start check keys its cargo-mutants-on-PATH refusal on, so a declared gate with the
+///   binary absent already failed before this could be reached; by the time this prints,
+///   `declared` and "cargo-mutants resolvable" always agree.
 ///
 /// Pure formatting over already-resolved values, so it is unit-tested without touching
-/// PATH or the filesystem; the effectful wrapper/mutation resolution stays at the
-/// `cmd_validate` edge that calls this.
+/// PATH or the filesystem; the effectful wrapper resolution stays at the `cmd_validate`
+/// edge that calls this (the mutation gate's presence is a plain, already-in-hand `bool`,
+/// nothing to resolve).
 fn build_environment_report(
     wrapper: Option<&str>,
     build: &config::BuildConfig,
-    mutation_enabled: bool,
+    mutation_gate_declared: bool,
 ) -> Vec<String> {
     let mut lines = Vec::new();
     match wrapper {
@@ -9344,8 +9348,12 @@ fn build_environment_report(
         }
     ));
     lines.push(format!(
-        "build mutation: {}",
-        if mutation_enabled { "on" } else { "off" }
+        "mutation gate ({MUTATION_GATE_ID:?}): {}",
+        if mutation_gate_declared {
+            "declared"
+        } else {
+            "not configured"
+        }
     ));
     lines
 }
@@ -12669,7 +12677,13 @@ wrapper: auto\n\
 gates:                    # a reusable library of commands, referenced by name\n  \
 build: { run: \"echo build ok; true\", kind: core }\n  \
 test:  { run: \"echo test ok; true\",  kind: core }\n  \
-lint:  { run: \"echo lint ok; true\",  kind: elevated }\n\
+lint:  { run: \"echo lint ok; true\",  kind: elevated }\n  \
+# The check-in-stage mutation sweep (spec 91): runs ONCE, after every implement\n  \
+# unit has integrated - never per implementer round. Replace with a real\n  \
+# `cargo mutants --in-diff` invocation for a Rust project (see this crate's own\n  \
+# .rigger/workflow.yml for the worked example); declaring a gate under this\n  \
+# exact id requires `cargo-mutants` on PATH (rigger validate checks at run start).\n  \
+mutation: { run: \"echo mutation ok; true\", kind: core }\n\
 \n\
 stages:\n  \
 # The conductor creates one baseline implement unit per acceptance criterion (the\n  \
@@ -12702,7 +12716,21 @@ strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    
 partition: by-blast-radius\n    \
 gates: [build, test, lint]  # red -> green enforced around the change\n    \
 on_pass: merge          # land + reindex + record, per unit, once reviewed\n    \
-coverage: \"each unit is implemented, reviews itself, and integrates green\"\n";
+coverage: \"each unit is implemented, reviews itself, and integrates green\"\n\
+\n  \
+# 3. Check in ONCE, after every implement unit has integrated (spec 91): a\n  \
+# `needs` entry naming the fan-out `implement` TEMPLATE is satisfied exactly when\n  \
+# every unit it expanded into has integrated - never per implementer round, and\n  \
+# never before every unit has landed. Re-verifies the whole gate suite against\n  \
+# the merged tree, then sweeps mutants; one remediation round (max_retries: 1),\n  \
+# then integrate or escalate with the accounting already on record.\n  \
+checkin:\n    \
+needs: [implement]\n    \
+agent: rust-engineer\n    \
+max_retries: 1          # one remediation round for the whole spec diff's mutants\n    \
+gates: [build, test, lint, mutation]\n    \
+on_pass: merge\n    \
+coverage: \"mutation efficacy of the whole spec diff\"\n";
 
 /// The agents the scaffolded workflow references - a fresh-repo SEED template, not a
 /// frozen canonical fleet. Every entry is referenced by [`SCAFFOLD_WORKFLOW`] and every
@@ -17975,11 +18003,13 @@ mod tests {
         // folded into the unit lifecycle (no integrator). None of the four generic
         // placeholder personas is seeded.
         assert_eq!(cfg.agents.len(), 6, "scaffold agent count");
-        // Three stages: plan -> plan-critique -> implement. The plan-critique gate
-        // (spec 10, Unit 1) reviews the proposed DAG before the fan-out releases.
-        assert_eq!(cfg.workflow.stages.len(), 3, "scaffold stage count");
-        // Three gates in the reusable library.
-        assert_eq!(cfg.workflow.gates.len(), 3, "scaffold gate count");
+        // Four stages: plan -> plan-critique -> implement -> checkin. The plan-critique
+        // gate (spec 10, Unit 1) reviews the proposed DAG before the fan-out releases; the
+        // checkin stage (spec 91) runs the mutation sweep once, after every implement unit
+        // has integrated.
+        assert_eq!(cfg.workflow.stages.len(), 4, "scaffold stage count");
+        // Four gates in the reusable library, including the checkin stage's `mutation` gate.
+        assert_eq!(cfg.workflow.gates.len(), 4, "scaffold gate count");
 
         // The scaffold exercises the per-unit shape: a producer, the plan-critique gate
         // between plan and implement, a fan-out implement stage that integrates on_pass:
@@ -18001,6 +18031,26 @@ mod tests {
             "the fan-out releases only after the plan-critique gate approves"
         );
         assert_eq!(implement.on_pass, "merge");
+        // The checkin stage (spec 91): needs the fan-out implement TEMPLATE (satisfied once
+        // every unit it expanded into has integrated - u91c1's generic conductor rule), runs
+        // the mutation gate exactly once, remediates once, and integrates on pass.
+        let checkin = &cfg.workflow.stages["checkin"];
+        assert_eq!(checkin.needs, ["implement"]);
+        assert_eq!(
+            checkin.max_retries, 1,
+            "one remediation round, never per-round"
+        );
+        assert_eq!(
+            checkin.gates,
+            ["build", "test", "lint", "mutation"],
+            "checkin re-verifies the whole gate suite, THEN sweeps mutants"
+        );
+        assert_eq!(checkin.on_pass, "merge");
+        // A placeholder command, like the scaffold's other gates ("Replace the gate
+        // commands with your own") - the SHAPE (a `mutation`-id gate the checkin stage
+        // lists) is what this test proves, not a live cargo-mutants invocation.
+        let mutation_gate = &cfg.workflow.gates["mutation"];
+        assert_eq!(mutation_gate.kind, "core");
         let review = &cfg.workflow.defaults.review;
         assert_eq!(
             review.lenses,
@@ -22453,7 +22503,7 @@ mod tests {
                 "build wrapper: sccache".to_string(),
                 "build cache dir: /tmp/example-cache".to_string(),
                 "build budget: 4".to_string(),
-                "build mutation: off".to_string(),
+                "mutation gate (\"mutation\"): not configured".to_string(),
             ]
         );
     }
@@ -22477,7 +22527,7 @@ mod tests {
             vec![
                 "build wrapper: none".to_string(),
                 "build budget: 8".to_string(),
-                "build mutation: off".to_string(),
+                "mutation gate (\"mutation\"): not configured".to_string(),
             ]
         );
     }
@@ -22498,28 +22548,33 @@ mod tests {
         );
     }
 
-    /// Spec 73: `rigger validate` reports `build mutation: on` when the step is enabled -
-    /// given the ALREADY-RESOLVED bool, mirroring the wrapper report's own already-resolved
-    /// convention.
+    /// Spec 91: `rigger validate` reports the mutation gate as `declared` when the workflow's
+    /// `gates:` map names it - given the ALREADY-IN-HAND bool, mirroring the wrapper report's
+    /// own already-resolved convention.
     #[test]
-    fn build_environment_report_reports_mutation_on() {
+    fn build_environment_report_reports_mutation_gate_declared() {
         let build = config::BuildConfig::default();
         let lines = build_environment_report(None, &build, true);
         assert!(
-            lines.iter().any(|l| l == "build mutation: on"),
-            "a resolved-enabled mutation step must report on, got: {lines:?}"
+            lines
+                .iter()
+                .any(|l| l == "mutation gate (\"mutation\"): declared"),
+            "a declared mutation gate must report declared, got: {lines:?}"
         );
     }
 
-    /// The `off` counterpart of `build_environment_report_reports_mutation_on` - the default,
-    /// back-compat case for every workflow committed before this key existed.
+    /// The `not configured` counterpart of
+    /// `build_environment_report_reports_mutation_gate_declared` - the default case for every
+    /// workflow that never declares a `mutation` gate.
     #[test]
-    fn build_environment_report_reports_mutation_off() {
+    fn build_environment_report_reports_mutation_gate_not_configured() {
         let build = config::BuildConfig::default();
         let lines = build_environment_report(None, &build, false);
         assert!(
-            lines.iter().any(|l| l == "build mutation: off"),
-            "a resolved-disabled mutation step must report off, got: {lines:?}"
+            lines
+                .iter()
+                .any(|l| l == "mutation gate (\"mutation\"): not configured"),
+            "an undeclared mutation gate must report not configured, got: {lines:?}"
         );
     }
 

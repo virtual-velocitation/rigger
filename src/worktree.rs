@@ -1376,6 +1376,34 @@ pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
     Some(format!("{parent}/{UNIT_CACHE_PREFIX}{slug}"))
 }
 
+/// Filesystem prefix of a unit's per-unit mutants-root dir (`cargo-mutants-<slug>`), a
+/// SIBLING of its worktree under the scratch root (spec 91, THE GATE ENVIRONMENT) - the
+/// exact same sibling shape as [`UNIT_CACHE_PREFIX`]'s `cargo-target-<slug>`. The `checkin`
+/// stage's `mutation` gate command creates/wipes/repopulates this dir itself each run (`rm
+/// -rf "$MUTANTS" && mkdir -p "$MUTANTS"`, per the workflow's own gate command), so this
+/// crate never creates it; [`unit_mutants_sibling`] is the single authority deriving its
+/// path (mirroring [`unit_cache_sibling`]), and [`reclaim_cache_sibling`] reclaims it
+/// alongside the build-cache sibling at unit terminus.
+pub const UNIT_MUTANTS_PREFIX: &str = "cargo-mutants-";
+
+/// The per-unit mutants-root dir that is a SIBLING of the unit worktree at `worktree_dir`
+/// (spec 91): `<root>/rigger-wt-<slug>` -> `<root>/cargo-mutants-<slug>`, exported to the
+/// `checkin` stage's `mutation` gate command as `$MUTANTS` (mirroring how
+/// [`unit_cache_sibling`] is exported as `CARGO_TARGET_DIR`). Returns `None` for any dir
+/// that is not a unit worktree (a `rigger-review-*` review worktree, or the empty
+/// worktree-less path), which owns no such root - the identical shape and identical `None`
+/// cases as [`unit_cache_sibling`], just a different sibling name, so a unit worktree and
+/// its mutants root can never derive from two disagreeing rules.
+pub fn unit_mutants_sibling(worktree_dir: &str) -> Option<String> {
+    let path = std::path::Path::new(worktree_dir);
+    let slug = path
+        .file_name()?
+        .to_str()?
+        .strip_prefix(UNIT_WORKTREE_PREFIX)?;
+    let parent = path.parent()?.to_str()?;
+    Some(format!("{parent}/{UNIT_MUTANTS_PREFIX}{slug}"))
+}
+
 /// The gate store fence's scratch sibling for a STANDALONE REVIEW worktree at
 /// `worktree_dir` (spec 70 criterion 3, widened - u4 round 2 fix for
 /// `adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced`): a review
@@ -1448,6 +1476,18 @@ fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
     if let Some(fence) = review_fence_sibling(worktree_dir) {
         reap_dir_before_removal(&fence, authorized_root);
         let _ = std::fs::remove_dir_all(&fence);
+    }
+    // The unit-keyed mutants root (spec 91, THE GATE ENVIRONMENT): a THIRD sibling of the
+    // unit worktree, on the identical coordinate the cache sibling above already reclaims -
+    // widened here, in the ONE reclaim authority, so every current call site (`Worktree::
+    // remove`'s dominant graceful path, `sweep_terminal`'s crash recovery, and
+    // `reclaim_worktree_on_branch`'s resume-path branch GC) inherits the fix uniformly
+    // rather than each needing its own copy. A no-op for anything that owns no such root
+    // (mirrors `unit_cache_sibling`'s own `None` cases exactly, since both derive from the
+    // same worktree-dir shape).
+    if let Some(mutants) = unit_mutants_sibling(worktree_dir) {
+        reap_dir_before_removal(&mutants, authorized_root);
+        let _ = std::fs::remove_dir_all(&mutants);
     }
 }
 
@@ -4358,6 +4398,51 @@ mod tests {
     }
 
     #[test]
+    fn worktree_remove_also_reclaims_the_sibling_mutants_root() {
+        // Spec 91, THE GATE ENVIRONMENT: the `checkin` stage's `mutation` gate populates a
+        // THIRD per-unit scratch sibling - `cargo-mutants-<slug>` - alongside the build
+        // cache. It must be reclaimed on the SAME dominant graceful path `Worktree::remove`
+        // already reclaims the cache sibling on, or every gracefully-terminated unit leaks
+        // its cargo-mutants build debris exactly as an un-reclaimed cache would.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+
+        let unit_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}mutated");
+        let unit = Worktree::create(&repo_path, &unit_dir, "rigger/u/mutated", "").unwrap();
+        let mutants_root = format!("{root}/{UNIT_MUTANTS_PREFIX}mutated");
+        std::fs::create_dir_all(&mutants_root).unwrap();
+        std::fs::write(
+            std::path::Path::new(&mutants_root).join("outcomes.json"),
+            "x",
+        )
+        .unwrap();
+
+        // A review worktree owns no `cargo-mutants-*` sibling either; removing it must not
+        // touch an unrelated mutants-root dir that happens to sit under the same root.
+        let review_dir = format!("{root}/rigger-review-panel-1");
+        let review = Worktree::create(&repo_path, &review_dir, "rigger/rev/panel-1", "").unwrap();
+        let bystander = format!("{root}/{UNIT_MUTANTS_PREFIX}unrelated");
+        std::fs::create_dir_all(&bystander).unwrap();
+
+        unit.remove().unwrap();
+        assert!(
+            !std::path::Path::new(&unit_dir).exists(),
+            "the unit worktree is gone after remove()"
+        );
+        assert!(
+            !std::path::Path::new(&mutants_root).exists(),
+            "removing the unit worktree must reclaim its sibling mutants root, leaked at {mutants_root}"
+        );
+
+        review.remove().unwrap();
+        assert!(
+            std::path::Path::new(&bystander).exists(),
+            "removing a review worktree (which owns no mutants root) must not touch an unrelated mutants dir"
+        );
+    }
+
+    #[test]
     fn worktree_remove_also_reclaims_the_store_fence_sibling() {
         // Ground (b) of the u3 reject (adv-u3-fence-dir-leaks-forever-uncleaned): the gate
         // store fence (spec 70 criterion 3) creates a SECOND per-unit scratch sibling next
@@ -4737,6 +4822,21 @@ mod tests {
         assert_eq!(unit_cache_sibling("/scratch/rigger-review-panel-0"), None);
         assert_eq!(unit_cache_sibling("/scratch/cargo-target"), None);
         assert_eq!(unit_cache_sibling(""), None);
+    }
+
+    #[test]
+    fn unit_mutants_sibling_maps_a_unit_worktree_to_its_mutants_root_and_ignores_the_rest() {
+        // Spec 91, THE GATE ENVIRONMENT: the identical derivation shape as
+        // `unit_cache_sibling` above, just a different sibling name - a `rigger-wt-<slug>`
+        // unit worktree maps to its `cargo-mutants-<slug>` sibling under the SAME parent;
+        // anything that is not a unit worktree owns no such root and maps to None.
+        assert_eq!(
+            unit_mutants_sibling("/scratch/rigger-wt-unit-7"),
+            Some("/scratch/cargo-mutants-unit-7".to_string())
+        );
+        assert_eq!(unit_mutants_sibling("/scratch/rigger-review-panel-0"), None);
+        assert_eq!(unit_mutants_sibling("/scratch/cargo-mutants"), None);
+        assert_eq!(unit_mutants_sibling(""), None);
     }
 
     #[test]

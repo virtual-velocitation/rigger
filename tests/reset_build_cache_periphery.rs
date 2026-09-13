@@ -563,6 +563,7 @@ fn a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shar
             &gate,
             "",
             "",
+            "",
             &cache_str,
             &bad_guard_str,
             "",

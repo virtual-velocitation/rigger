@@ -108,7 +108,9 @@ defaults:
   #     class: product
 
 build:
-  mutation: "off"           # spec 91 retires this switch: no per-round sweep; mutation runs once at the checkin stage (spec 73's step is off for spec 91's own run)
+  # spec 91 retires the per-round `mutation` switch entirely (an explicit value of any
+  # kind is now a validation error naming this spec): no per-round sweep; mutation runs
+  # ONCE at the `checkin` stage below via the `mutation` gate, remediated once.
   max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
 
 # Registered regenerable artifacts (spec 88, criterion 1): an integration merge conflict
@@ -152,6 +154,26 @@ gates:                      # the project's verification library, referenced by 
   # panel approved each site because nothing mechanical forbade it. Now something does.
   no-os-kill:
     run: 'base=$(git rev-parse --verify -q rigger-run || git rev-parse --verify -q origin/main || git rev-parse --verify -q HEAD); bad="Command::new\(.(kill|pkill|killall|xkill)|[^a-zA-Z_]kill(all)? -[0-9A-Za-z]|[^a-zA-Z_]pkill[^a-zA-Z_]|killpg|libc::kill\(|signal::kill\(|kill_process\(|\.arg\(.--.\)|format!\(.-\{"; if git diff "$base"...HEAD -- src tests ":(exclude)src/reap.rs" ":(exclude)tests/common/mod.rs" | grep "^+" | grep -v "^+++ " | grep -qE "$bad"; then echo "no-os-kill gate FAILED: an OS-level kill, a process-group target, or a direct signal call was introduced outside the sanctioned lifecycle helpers (src/reap.rs, tests/common/mod.rs). Lifecycle is handle-bound: Child::kill()/wait(), or the shared helper. See specs/78-no-os-level-kills.md"; exit 1; fi; if git diff "$base"...HEAD -- src/reap.rs tests/common/mod.rs | grep "^+" | grep -v "^+++ " | grep -qE "Command::new\(.(kill|pkill|killall|xkill)|\.arg\(.--.\)|format!\(.-\{"; then echo "no-os-kill gate FAILED: a sanctioned lifecycle file shelled out to kill or formatted a process-group target; use the internal guarded signal call only"; exit 1; fi'
+    kind: core
+  # The check-in-stage mutation gate (spec 91): runs the diff-scoped `cargo mutants`
+  # sweep ONCE, at the `checkin` stage below - after every implement unit has
+  # integrated - rather than once per implementer round (spec 73's original per-round
+  # placement, retired). `$MUTANTS` is the unit-keyed mutants root the conductor
+  # exports to every gate command exactly like `CARGO_TARGET_DIR` already is
+  # (`worktree::unit_mutants_sibling`), and reaps at unit terminus alongside it
+  # (`worktree::reclaim_cache_sibling`) - this command owns creating/wiping it each
+  # run, never this crate. The checkin stage's own task text (below, and the
+  # `rust-engineer` persona's checkin-stage prose) carries the kill-or-justify
+  # protocol: read `mutants.out/outcomes.json`, kill each missed mutant with a
+  # strengthened test or justify it via an `exclude_re` entry in `.cargo/mutants.toml`
+  # with a one-line reason, commit, and record the deterministic per-mutant
+  # accounting as a DecisionMade. Declaring a gate under this exact id requires
+  # `cargo-mutants` on PATH (`rigger validate` checks at run start).
+  mutation:
+    run: >-
+      git diff "$(git merge-base rigger-run HEAD)" -- '*.rs' > unit.diff &&
+      rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
+      TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2
     kind: core
 
 stages:
@@ -204,3 +226,20 @@ stages:
     gates: [fmt, clippy, build, test, style, no-os-kill]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
+
+  # 3. Check in ONCE, after every implement unit has integrated (spec 91). A `needs`
+  #    entry naming the fan-out `implement` TEMPLATE is satisfied exactly when every
+  #    unit it expanded into has integrated (an escalated or still-open unit leaves it
+  #    unsatisfied, so the run's escalated fixpoint stays loud) - never before every
+  #    unit has landed, and never per implementer round the way spec 73's original
+  #    placement ran it. Re-verifies the whole gate suite against the now-merged tree,
+  #    THEN sweeps mutants; `max_retries: 1` overrides `defaults.max_retries` for this
+  #    stage alone - one remediation round for the WHOLE spec diff's mutants, then
+  #    integrate or escalate with the accounting already on record.
+  checkin:
+    needs: [implement]
+    agent: rust-engineer
+    max_retries: 1
+    gates: [fmt, clippy, build, test, style, no-os-kill, mutation]
+    on_pass: merge
+    coverage: "mutation efficacy of the whole spec diff"

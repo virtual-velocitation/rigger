@@ -170,6 +170,17 @@ pub enum Action {
 /// spawns its own courier (`tests/common::rigger_courier` is the one shared authority every
 /// periphery suite already spawns the product through, so this is handled once there
 /// rather than by each test file remembering it).
+///
+/// `mutants_dir` (spec 91, THE GATE ENVIRONMENT) mirrors `target_dir` exactly, registered
+/// alongside it: a non-empty value points the `checkin` stage's `mutation` gate at `$MUTANTS`
+/// (`ExecRunner::run` sets the env var of that name), the unit-keyed root the gate command
+/// itself creates/wipes/repopulates each run (`rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`) and
+/// [`crate::worktree::reclaim_cache_sibling`] reaps at unit terminus, on the SAME coordinate
+/// as `target_dir`'s own `cargo-target-<slug>` sibling. The CALLER (`conductor::run_gates`)
+/// computes it via `worktree::unit_mutants_sibling(dir)` and threads it in, exactly like
+/// `target_dir` itself, so this module still never depends on `worktree`. Empty for anything
+/// that owns no unit-keyed `target_dir` either (mirrors its `None` cases); harmless for a
+/// gate whose command never reads `$MUTANTS`.
 pub trait Runner: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     fn run(
@@ -177,6 +188,7 @@ pub trait Runner: Send + Sync {
         g: &Gate,
         dir: &str,
         target_dir: &str,
+        mutants_dir: &str,
         build_cache_dir: &str,
         build_cache_guard: &str,
         store_fence: &str,
@@ -560,42 +572,46 @@ pub fn resolve_build_layer(
     )
 }
 
-/// The fixed binary [`resolve_mutation_layer_from`] probes PATH for when `build.mutation` is
-/// `on` (spec 73). Unlike `build.wrapper`, this name is not configurable - the mutation
-/// efficacy step always shells out to `cargo mutants`, so there is exactly one binary to
-/// resolve, never a list or an operator-named override.
+/// The fixed binary [`mutation_gate_binary_available`] probes PATH for whenever a workflow
+/// declares the [`MUTATION_GATE_ID`] gate (spec 91). Unlike `build.wrapper`, this name is not
+/// configurable - the `checkin` stage's mutation sweep always shells out to `cargo mutants`,
+/// so there is exactly one binary to resolve, never a list or an operator-named override.
 const MUTATION_BINARY: &str = "cargo-mutants";
 
-/// A `build.mutation: on` whose required [`MUTATION_BINARY`] is not resolvable on PATH
-/// (spec 73, ENABLED-BUT-ABSENT FAILS AT RUN START): mirrors [`WrapperUnavailable`]'s
-/// configured-explicit-failure shape (spec 65 unit 2) - the operator turned the mutation
-/// efficacy step on explicitly, so proceeding would silently skip a check they asked for.
+/// The reserved `gates:` key a workflow spells to opt into the check-in-stage mutation sweep
+/// (spec 91, THE SCHEMA RETIREMENT): declaring a gate under this exact id is what
+/// [`crate::config::Config::validate`] now reads to decide whether [`MUTATION_BINARY`] must be
+/// on PATH - the sole trigger, replacing the retired `build.mutation: on` switch spec 73
+/// authored. Not a fixed enum entry the schema special-cases otherwise: any gate command may
+/// still be authored under this id, exactly like every other named gate in the library.
+pub const MUTATION_GATE_ID: &str = "mutation";
+
+/// A workflow that DECLARES the [`MUTATION_GATE_ID`] gate whose required [`MUTATION_BINARY`]
+/// is not resolvable on PATH (spec 91, ENABLED-BUT-ABSENT FAILS AT RUN START - moved here from
+/// the retired `build.mutation: on` switch spec 73 authored, which
+/// [`crate::config::Config::validate`] no longer accepts in any form): mirrors
+/// [`WrapperUnavailable`]'s configured-explicit-failure shape (spec 65 unit 2) - the operator
+/// wired the gate explicitly, so proceeding would silently skip a check they asked for.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("build.mutation is on but {binary:?} is not on PATH (config key: build.mutation)")]
+#[error(
+    "the workflow declares a {MUTATION_GATE_ID:?} gate but {binary:?} is not on PATH (spec 91: \
+     the checkin stage's mutation gate requires it; config key: gates.mutation)"
+)]
 pub struct MutationBinaryUnavailable {
     pub binary: String,
 }
 
-/// Resolve `build.mutation` (spec 73) against `path_var` (pure core, PATH as a value -
-/// mirrors [`resolve_wrapper_name_from`]'s own testability shape): a strict two-value gate,
-/// unlike `build.wrapper`'s three-way (`off`/named/`auto`) - there is no discovery state
-/// here, so this never silently degrades.
-/// - empty / (case- and whitespace-insensitive) `off` / anything other than `on`: resolves
-///   `Ok(false)` WITHOUT ever consulting `path_var` - the disabled step costs nothing and
-///   probes nothing.
-/// - `on` (case- and whitespace-insensitive): probes for [`MUTATION_BINARY`] on `path_var`;
-///   present resolves `Ok(true)`, absent is a CONFIGURED-EXPLICIT failure -
-///   `Err(MutationBinaryUnavailable)` naming the binary - the operator asked for the step by
-///   turning it on, so silence here would fake a check that never actually runs.
-pub fn resolve_mutation_layer_from(
-    mutation: &str,
+/// Whether [`MUTATION_BINARY`] is resolvable on `path_var` (pure core, PATH as a value -
+/// mirrors [`resolve_wrapper_name_from`]'s own testability shape). Unlike the retired
+/// `build.mutation` switch this replaces, there is no on/off string to parse here - the
+/// CALLER ([`mutation_gate_binary_on_path`], and [`crate::config::Config::validate`] through
+/// it) decides WHETHER to probe at all, keyed on whether the workflow declares
+/// [`MUTATION_GATE_ID`]; this is only the probe itself.
+pub fn mutation_gate_binary_available(
     path_var: &std::ffi::OsStr,
-) -> Result<bool, MutationBinaryUnavailable> {
-    if !mutation.trim().eq_ignore_ascii_case("on") {
-        return Ok(false);
-    }
+) -> Result<(), MutationBinaryUnavailable> {
     if path_has_executable(path_var, MUTATION_BINARY) {
-        Ok(true)
+        Ok(())
     } else {
         Err(MutationBinaryUnavailable {
             binary: MUTATION_BINARY.to_string(),
@@ -603,12 +619,12 @@ pub fn resolve_mutation_layer_from(
     }
 }
 
-/// The ambient-PATH-reading edge [`resolve_mutation_layer_from`]'s production callers use -
+/// The ambient-PATH-reading edge [`mutation_gate_binary_available`]'s production callers use -
 /// mirrors [`resolve_build_layer`]'s own ambient-PATH read. [`crate::config::Config::validate`]
-/// (the run-start loud-failure check) and `rigger validate`'s reporting surface both call
-/// this - never re-deriving the on/off, binary-probe distinction independently.
-pub fn resolve_mutation_layer(mutation: &str) -> Result<bool, MutationBinaryUnavailable> {
-    resolve_mutation_layer_from(mutation, &std::env::var_os("PATH").unwrap_or_default())
+/// (the run-start loud-failure check, gated on the workflow declaring [`MUTATION_GATE_ID`]) is
+/// the one caller - never re-deriving the PATH probe independently.
+pub fn mutation_gate_binary_on_path() -> Result<(), MutationBinaryUnavailable> {
+    mutation_gate_binary_available(&std::env::var_os("PATH").unwrap_or_default())
 }
 
 /// The env var [`ExecRunner::run`] pins to fence a gate's store resolution (spec 70
@@ -650,6 +666,7 @@ impl Runner for ExecRunner {
         g: &Gate,
         dir: &str,
         target_dir: &str,
+        mutants_dir: &str,
         build_cache_dir: &str,
         build_cache_guard: &str,
         store_fence: &str,
@@ -795,6 +812,17 @@ impl Runner for ExecRunner {
             if !store_fence.is_empty() {
                 cmd.env(STORE_FENCE_ENV, store_fence);
             }
+        }
+        // The unit-keyed mutants root (spec 91, THE GATE ENVIRONMENT): registered alongside
+        // `target_dir`'s own `CARGO_TARGET_DIR` above, but as its own independent check
+        // rather than nested inside that branch - a caller that ever passes a non-empty
+        // `mutants_dir` with an empty `target_dir` (not today's shape, but nothing here
+        // should assume otherwise) still gets `$MUTANTS` set. The `checkin` stage's
+        // `mutation` gate command owns creating/wiping/repopulating this dir itself each
+        // run; an empty value (every OTHER gate, and anything with no unit-keyed target
+        // either) injects nothing, exactly like an unconfigured `BuildEnv`.
+        if !mutants_dir.is_empty() {
+            cmd.env("MUTANTS", mutants_dir);
         }
         // The ONE build-environment authority's first injection site (spec 65): the
         // resolved wrapper/cache-dir/incremental-off vars (empty when no wrapper is
@@ -1024,6 +1052,7 @@ mod tests {
                     "",
                     "",
                     "",
+                    "",
                     &BuildEnv::default(),
                     &BuildBudget::default()
                 )
@@ -1033,6 +1062,7 @@ mod tests {
             !ExecRunner
                 .run(
                     &gate_cmd("false"),
+                    "",
                     "",
                     "",
                     "",
@@ -1104,6 +1134,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "",
             "",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -1133,6 +1164,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "",
             "",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -1143,6 +1175,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
         let without = ExecRunner.run(
             &gate_cmd("test \"$CARGO_TARGET_DIR\" != /tmp/rigger-gap19-probe"),
+            "",
             "",
             "",
             "",
@@ -1174,6 +1207,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             &gate_cmd("test \"$CARGO_TARGET_DIR\" = /tmp/rigger-shared-cache-probe"),
             "",
             "",
+            "",
             "/tmp/rigger-shared-cache-probe",
             "",
             "",
@@ -1203,6 +1237,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             &gate_cmd("test \"$CARGO_TARGET_DIR\" = /tmp/rigger-flock-env-probe"),
             "",
             "",
+            "",
             "/tmp/rigger-flock-env-probe",
             guard_path.to_str().unwrap(),
             "",
@@ -1228,6 +1263,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             &gate_cmd("test \"$CARGO_TARGET_DIR\" = /tmp/rigger-gap19-probe"),
             "",
             "/tmp/rigger-gap19-probe",
+            "",
             "/tmp/rigger-shared-cache-probe",
             "",
             "",
@@ -1272,6 +1308,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let handle = std::thread::spawn(move || {
             ExecRunner.run(
                 &gate_cmd(&format!("touch {started_str}; sleep 1")),
+                "",
                 "",
                 "",
                 "",
@@ -1330,6 +1367,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "",
             "",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -1351,6 +1389,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let guard_path = dir.path().join("missing-parent").join("cargo-target.lock");
         let res = ExecRunner.run(
             &gate_cmd("true"),
+            "",
             "",
             "",
             "",
@@ -1403,6 +1442,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "",
             "",
+            "",
             &BuildEnv::default(),
             &BuildBudget::default(),
         );
@@ -1413,6 +1453,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
         let without = ExecRunner.run(
             &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
+            "",
             "",
             "",
             "",
@@ -1465,6 +1506,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "",
             "",
+            "",
             &injected_fence,
             &BuildEnv::default(),
             &BuildBudget::default(),
@@ -1481,6 +1523,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "",
             "",
+            "",
             &injected_fence,
             &BuildEnv::default(),
             &BuildBudget::default(),
@@ -1493,6 +1536,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
         let unfenced = ExecRunner.run(
             &gate_cmd(&format!("test -z \"${STORE_FENCE_ENV}\"")),
+            "",
             "",
             "",
             "",
@@ -1597,6 +1641,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "",
             "",
             "",
+            "",
             &env,
             &BuildBudget::default(),
         );
@@ -1607,6 +1652,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
         let without = ExecRunner.run(
             &gate_cmd("test -z \"$RUSTC_WRAPPER\" && test -z \"$SCCACHE_DIR\""),
+            "",
             "",
             "",
             "",
@@ -1682,6 +1728,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let env = BuildEnv::resolve("", "", 3);
         let res = ExecRunner.run(
             &gate_cmd("test \"$CARGO_BUILD_JOBS\" = 3"),
+            "",
             "",
             "",
             "",
@@ -1796,54 +1843,28 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert!(resolve_wrapper_name_from("sccache", &path).is_err());
     }
 
-    // --- resolve_mutation_layer (spec 73, ENABLED-BUT-ABSENT FAILS LOUD) ----------------
+    // --- mutation_gate_binary_available (spec 91, ENABLED-BUT-ABSENT FAILS LOUD, moved from
+    // the retired `build.mutation` switch spec 73 authored) --------------------------------
     //
     // Same injectable-PATH shape as `resolve_wrapper_name_from`'s own tests above: the pure
     // core takes PATH as a value so these never touch (or race on) the process-global PATH.
-    // Unlike `build.wrapper`, `build.mutation` is a strict two-value gate (`on`/`off`), not a
-    // three-way with an `auto` discovery state - so there is no discovered-implicit degrade
-    // direction here, only the configured-explicit one.
+    // Unlike the retired switch, there is no on/off string to parse here at all - the CALLER
+    // (`Config::validate`) decides whether to probe, keyed on whether the workflow declares
+    // `MUTATION_GATE_ID`; this probe is unconditional once called.
 
     #[test]
-    fn resolve_mutation_layer_off_and_empty_resolve_to_false_without_touching_path() {
-        // An empty PATH proves these branches never even reach the probe: they must
-        // resolve `Ok(false)` regardless of what (or how little) PATH contains.
-        let empty_path = path_var(&[]);
-        assert_eq!(resolve_mutation_layer_from("", &empty_path), Ok(false));
-        assert_eq!(resolve_mutation_layer_from("off", &empty_path), Ok(false));
-        // Matched case- and whitespace-insensitively, like the wrapper's own off/auto.
-        assert_eq!(
-            resolve_mutation_layer_from("  OFF  ", &empty_path),
-            Ok(false)
-        );
-    }
-
-    #[test]
-    fn resolve_mutation_layer_off_ignores_a_path_that_actually_has_the_binary() {
-        // `off` must never activate even when cargo-mutants IS reachable - the config key
-        // is the sole authority, not PATH content.
+    fn mutation_gate_binary_available_finds_the_binary_on_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_executable(dir.path(), "cargo-mutants");
         let path = path_var(&[dir.path()]);
-        assert_eq!(resolve_mutation_layer_from("off", &path), Ok(false));
-        assert_eq!(resolve_mutation_layer_from("", &path), Ok(false));
+        assert!(mutation_gate_binary_available(&path).is_ok());
     }
 
     #[test]
-    fn resolve_mutation_layer_on_with_the_binary_present_resolves_true() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_executable(dir.path(), "cargo-mutants");
-        let path = path_var(&[dir.path()]);
-        assert_eq!(resolve_mutation_layer_from("on", &path), Ok(true));
-        // Matched case- and whitespace-insensitively, like the wrapper's own off/auto.
-        assert_eq!(resolve_mutation_layer_from("  ON  ", &path), Ok(true));
-    }
-
-    #[test]
-    fn resolve_mutation_layer_on_with_the_binary_absent_errors_naming_the_binary_and_key() {
+    fn mutation_gate_binary_available_errors_naming_the_binary_and_gate_id_when_absent() {
         let empty_path = path_var(&[]);
-        let err = resolve_mutation_layer_from("on", &empty_path).expect_err(
-            "a configured-explicit build.mutation: on with no cargo-mutants on PATH must \
+        let err = mutation_gate_binary_available(&empty_path).expect_err(
+            "a workflow that declares the mutation gate with no cargo-mutants on PATH must \
              error, not degrade",
         );
         let msg = err.to_string();
@@ -1852,19 +1873,31 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "the error must name the missing binary: {msg:?}"
         );
         assert!(
-            msg.contains("build.mutation"),
-            "the error must name the config key: {msg:?}"
+            msg.contains("mutation"),
+            "the error must name the gate id: {msg:?}"
         );
     }
 
     #[test]
-    fn resolve_mutation_layer_ignores_a_same_named_non_executable_file_on_path() {
+    fn mutation_gate_binary_available_ignores_a_same_named_non_executable_file_on_path() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(dir.path().join("cargo-mutants"), "not a binary").expect("write plain file");
         let path = path_var(&[dir.path()]);
         // Present as a FILE but not executable: must not count as "found" - a stray
         // non-executable file of the same name must never masquerade as the real tool.
-        assert!(resolve_mutation_layer_from("on", &path).is_err());
+        assert!(mutation_gate_binary_available(&path).is_err());
+    }
+
+    #[test]
+    fn mutation_gate_binary_on_path_reads_the_real_ambient_path() {
+        // The ambient-reading edge just forwards to the pure core against the REAL PATH -
+        // proven here by requiring it to actually AGREE with a direct probe of that same
+        // PATH, never asserting a specific outcome this test's own environment does not
+        // control.
+        assert_eq!(
+            mutation_gate_binary_on_path().is_ok(),
+            mutation_gate_binary_available(&std::env::var_os("PATH").unwrap_or_default()).is_ok()
+        );
     }
 
     // --- resolve_build_layer (spec 65 unit 2, NO SILENT DEGRADE, cache-dir axis) --------

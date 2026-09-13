@@ -3457,7 +3457,7 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/dash.rs", 4665) => 3,
         ("src/distiller.rs", 231) => 15,
         ("src/eventstore/sqlite.rs", 192) => 32,
-        ("src/gate.rs", 434) => 3,
+        ("src/gate.rs", 446) => 3,
         ("src/grounder/symbols/events.rs", 29) => 17,
         ("src/grounder/symbols/model.rs", 201) => 7,
         ("src/grounder/symbols/model.rs", 211) => 10,
@@ -4265,24 +4265,27 @@ fn render_section_6() -> String {
     );
     out.push_str(
         "- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
-        `src/main.rs::pgid_of` (`src/main.rs:23064-23077`) each independently re-derive \
+        `src/main.rs::pgid_of` (`src/main.rs:23346-23359`) each independently re-derive \
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0143`, 14 sites: `src/dash.rs`, `src/main.rs`, \
-        `src/reap.rs`, `tests/cli.rs`), plus 59 raw `/proc`-path string literals scattered \
-        across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and three test files with no \
+        capstone previously caught (`dup-0143`, 15 sites: `src/dash.rs`, `src/main.rs`, \
+        `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \
+        91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \
+        reason `dash.rs::process_state` does, growing this already-known cluster by one site \
+        rather than opening a new one), plus 60 raw `/proc`-path string literals scattered \
+        across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no \
         shared composer (`dup-0142`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
         re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
         production server, so it is the actual active-correctness risk this tier-1 placement \
-        is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12650`) \
+        is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) \
         and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
         rides in this same item only because it shares `dup-0142`/`dup-0143`'s one root cause \
         and one proposed fix with `process_state`, not because retiring it retires any live \
         risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
-        `tests/cli.rs:23419-23432`, re-points at the same call).\n\
+        `tests/cli.rs:23650-23663`, re-points at the same call).\n\
         - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \
         parsing bodies in favor of calling `reap.rs`'s existing parser.\n\
         - Risk: low for both halves, for two different reasons. Section 3's own disposition \
@@ -5682,15 +5685,15 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              a follow-up spec should either wire it into open_sqlite_store or explicitly retire \
              it, rather than let it sit silently unwired indefinitely.",
         ),
-        ("src/gate.rs", 434) => (
+        ("src/gate.rs", 446) => (
             Delete,
             "resolve_wrapper_name has no production caller - independently confirmed (u87c2's own \
              decision u87c2-three-precision-fixes-from-real-tree-spot-check already found this by \
              hand: 'resolve_build_layer duplicates its ambient-PATH read inline rather than \
-             calling it'). resolve_build_layer (gate.rs:552), its own doc comment's named sole \
+             calling it'). resolve_build_layer (gate.rs:564), its own doc comment's named sole \
              intended caller ('kept pub as the wrapper-only building block ... \
              resolve_build_layer composes'), instead reads std::env::var_os(\"PATH\") itself \
-             (gate.rs:558-559) rather than calling resolve_wrapper_name(wrapper) - a small, \
+             (gate.rs:571) rather than calling resolve_wrapper_name(wrapper) - a small, \
              confirmed duplicate-glue defect (worth folding into section 2's duplication catalog \
              on a follow-up pass), not a sign the function is unneeded. resolve_wrapper_name's 4 \
              references are its own tests.",
