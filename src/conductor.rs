@@ -12645,23 +12645,38 @@ fn wave_ready(
 /// expands into per-criterion baseline units (§ the baseline-decomposition block), so it
 /// can never again satisfy a literal `integrated.contains(need)` - the entry is
 /// satisfied once EVERY criterion id `fanout_criteria` records as covered by that
-/// template's expansion has its CURRENT `stages` owner integrated (spec 91, criterion 1,
-/// rule 1; round 2 fix for adj-u91c1-verdict-reject). Each criterion id is resolved LIVE
-/// against `stages` - never a frozen unit-id snapshot - because `harvest_proposed`'s
-/// supersede fold can replace which unit id owns a criterion (a planner refinement
-/// superseding a fan-out baseline member) without ever touching this table; walking
-/// `stages` fresh on every call means whichever unit id currently carries that
-/// `criterion_id` is exactly the one this checks, so a supersede can never orphan the
-/// edge. A criterion id naming no live `stages` entry at all (unreachable in the
-/// designed paths - a criterion always has exactly one live owner, baseline or
-/// superseding) counts as unsatisfied rather than panicking, keeping the escalated
-/// fixpoint loud instead of crashing. A member that is merely open (never in
-/// `integrated`), or reached a terminal-but-not-integrated state (escalated, or
-/// failed-terminal), leaves the whole entry unsatisfied - the run's escalated fixpoint
-/// stays loud, never silently satisfied by a partial fan-out. A `need` naming neither a
-/// live stage nor a tracked template resolves to the historical `integrated.contains(need)`
-/// (false for a typo'd or already-consumed name), so a workflow with no fan-out template
-/// is byte-for-byte unaffected.
+/// template's expansion has ALL of its CURRENT `stages` owners integrated (spec 91,
+/// criterion 1, rule 1; round 3 fix for adj-u91c1-r2-verdict-reject). Each criterion id
+/// is resolved LIVE against `stages` - never a frozen unit-id snapshot - because
+/// `harvest_proposed`'s supersede fold can replace which unit id owns a criterion (a
+/// planner refinement superseding a fan-out baseline member) without ever touching this
+/// table; walking `stages` fresh on every call means whichever unit id(s) currently
+/// carry that `criterion_id` are exactly the ones this checks, so a supersede can never
+/// orphan the edge. A criterion id can name MORE THAN ONE live `stages` entry at once -
+/// a same-episode planner SPLIT (spec 31/72's real-split guarantee: `harvest_proposed`
+/// never reaps a genuinely-new same-episode sibling, only a strictly-earlier-episode
+/// owner) leaves every split sibling live under the identical criterion_id
+/// simultaneously (round 2's own `.find()`-first-match resolution wrongly assumed
+/// exactly one live owner always exists, checked only the BTreeMap-key-first sibling,
+/// and so could satisfy - or permanently fail to satisfy - the whole entry on that one
+/// sibling's status alone while silently ignoring every other live sibling; round 2 was
+/// rejected for this: arch-u91c1-r2-need-satisfied-ignores-real-split-siblings). This
+/// resolves every criterion id against ALL of its current live owners via
+/// `stages.iter().filter(..).all(..)`, not a single `.find()`, so the entry is
+/// satisfied only once every live sibling under that criterion id has integrated. An
+/// empty filtered set (no live `stages` entry names that criterion id at all) is
+/// vacuously `true` by `Iterator::all`'s definition, but is unreachable in the designed
+/// paths today: `harvest_proposed` never removes a criterion's last live owner without a
+/// same-pass insertion replacing it (a bare `stages.remove` for a criterion-owning stage
+/// must always be paired with a same-pass insert, never left standing alone), so a
+/// tracked criterion id always resolves to at least one live entry in practice
+/// (adv-u91c1-r2-cleared-fix-direction-vacuous-empty-owner-candidate). A member that is
+/// merely open (never in `integrated`), or reached a terminal-but-not-integrated state
+/// (escalated, or failed-terminal), leaves the whole entry unsatisfied - the run's
+/// escalated fixpoint stays loud, never silently satisfied by a partial fan-out. A
+/// `need` naming neither a live stage nor a tracked template resolves to the historical
+/// `integrated.contains(need)` (false for a typo'd or already-consumed name), so a
+/// workflow with no fan-out template is byte-for-byte unaffected.
 fn need_satisfied(
     need: &str,
     stages: &BTreeMap<String, Stage>,
@@ -12672,8 +12687,8 @@ fn need_satisfied(
         Some(criteria) => criteria.iter().all(|criterion_id| {
             stages
                 .iter()
-                .find(|(_, st)| st.criterion_id == *criterion_id)
-                .is_some_and(|(name, _)| integrated.contains(name))
+                .filter(|(_, st)| st.criterion_id == *criterion_id)
+                .all(|(name, _)| integrated.contains(name))
         }),
         None => integrated.contains(need),
     }
@@ -40130,6 +40145,113 @@ mod tests {
             "the id fanout_criteria was originally built against (u1-old) never \
              appears anywhere in stages or integrated - c1's CURRENT live owner \
              (u1-new) integrating must still satisfy the needs edge"
+        );
+    }
+
+    #[test]
+    fn a_real_split_pair_must_both_integrate_not_just_the_btreemap_key_first_sibling() {
+        // Spec 91 criterion 1 rule 1, round 3 fix for adj-u91c1-r2-verdict-reject
+        // (arch-u91c1-r2-need-satisfied-ignores-real-split-siblings, corroborated live
+        // by sdet-u91c1-r2-confirms-split-sibling-orphan and
+        // adv-u91c1-r2-confirms-split-sibling-reverse-direction): a REAL SPLIT (spec
+        // 31/72's guarantee - `harvest_proposed`'s same-episode-sibling fold never reaps
+        // a genuinely-new sibling, so TWO live `stages` entries can share one
+        // criterion_id at once, proven live above by
+        // `a_same_id_refine_survives_its_own_episodes_sibling_add_walked_first`,
+        // asserting `serving.len() == 2` for one criterion_id) is a designed, reachable
+        // shape the round-2 fix's own doc comment wrongly assumed away ("a criterion
+        // always has exactly one live owner"). Round 2's `.find()`-first-match
+        // resolution locked onto whichever live entry sharing a criterion_id sorts
+        // first by BTreeMap key ("split-a-1" here) and never even inspected the other
+        // ("split-a-2") - so the needs edge silently satisfied the instant the
+        // key-first sibling alone integrated, regardless of whether its split partner
+        // was still open or had permanently escalated. `need_satisfied` must require
+        // EVERY live entry sharing a criterion_id to be integrated.
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        stages.insert(
+            "checkin".into(),
+            Stage {
+                name: "checkin".into(),
+                needs: vec!["implement".into()],
+                ..Default::default()
+            },
+        );
+        // The real split: two live stages entries, both citing criterion "c1" -
+        // exactly the shape a same-episode planner split leaves behind.
+        stages.insert(
+            "split-a-1".into(),
+            Stage {
+                name: "split-a-1".into(),
+                criterion_id: "c1".into(),
+                ..Default::default()
+            },
+        );
+        stages.insert(
+            "split-a-2".into(),
+            Stage {
+                name: "split-a-2".into(),
+                criterion_id: "c1".into(),
+                ..Default::default()
+            },
+        );
+        // An unrelated, un-split criterion "c2" with its own single owner, proving the
+        // fix leaves the ordinary single-owner case byte-for-byte unaffected.
+        stages.insert(
+            "u2".into(),
+            Stage {
+                name: "u2".into(),
+                criterion_id: "c2".into(),
+                ..Default::default()
+            },
+        );
+        let mut fanout_criteria = HashMap::new();
+        fanout_criteria.insert(
+            "implement".to_string(),
+            HashSet::from(["c1".to_string(), "c2".to_string()]),
+        );
+        let empty: HashSet<String> = HashSet::new();
+
+        // Direction 1 (sdet's repro): the BTreeMap-key-first sibling (split-a-1)
+        // integrates while its split partner (split-a-2) is still merely open. A
+        // `.find()`-first-match resolution locks onto split-a-1 alone and reports the
+        // criterion satisfied - checkin must NOT become ready this early.
+        let mut integrated = HashSet::new();
+        integrated.insert("split-a-1".to_string());
+        integrated.insert("u2".to_string());
+        assert!(
+            !ready_stages(&stages, &integrated, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "split-a-2 (a real split sibling under the same criterion_id as the \
+             BTreeMap-key-first split-a-1) has not integrated yet: the needs edge \
+             must stay unsatisfied even though split-a-1 has"
+        );
+
+        // Direction 2 (adv's reverse repro): the BTreeMap-key-first sibling
+        // (split-a-1) integrates while its split partner (split-a-2) has permanently
+        // ESCALATED (terminal, never integrated). A `.find()`-first-match resolution
+        // still locks onto split-a-1 alone and reports the criterion satisfied,
+        // silently ignoring the escalated sibling entirely - no error, no lesson, the
+        // exact silent-failure shape round 1 was rejected for. checkin must stay
+        // unready.
+        let mut terminal = HashSet::new();
+        terminal.insert("split-a-2".to_string());
+        assert!(
+            !ready_stages(&stages, &integrated, &terminal, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "split-a-2 escalated without ever integrating: the needs edge must stay \
+             unsatisfied even though the BTreeMap-key-first sibling split-a-1 \
+             integrated"
+        );
+
+        // Once BOTH real-split siblings have integrated (split-a-2 recovers here
+        // instead of the hypothetical escalation above), the needs edge is satisfied -
+        // same as the ordinary single-owner case.
+        integrated.insert("split-a-2".to_string());
+        assert!(
+            ready_stages(&stages, &integrated, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "once EVERY real-split sibling sharing criterion_id c1 (and c2's single \
+             owner) has integrated, the needs edge is satisfied"
         );
     }
 

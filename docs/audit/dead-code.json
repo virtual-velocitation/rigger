@@ -209,7 +209,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 18675
+        "line": 18690
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -820,15 +820,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 37445
+        "line": 37460
       },
       {
         "file": "src/conductor.rs",
-        "line": 37512
+        "line": 37527
       },
       {
         "file": "src/conductor.rs",
-        "line": 38286
+        "line": 38301
       },
       {
         "file": "src/ledger.rs",
@@ -897,35 +897,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 20990
+        "line": 21005
       },
       {
         "file": "src/conductor.rs",
-        "line": 21067
+        "line": 21082
       },
       {
         "file": "src/conductor.rs",
-        "line": 21161
+        "line": 21176
       },
       {
         "file": "src/conductor.rs",
-        "line": 21248
+        "line": 21263
       },
       {
         "file": "src/conductor.rs",
-        "line": 21343
+        "line": 21358
       },
       {
         "file": "src/conductor.rs",
-        "line": 28471
+        "line": 28486
       },
       {
         "file": "src/conductor.rs",
-        "line": 28476
+        "line": 28491
       },
       {
         "file": "src/conductor.rs",
-        "line": 28539
+        "line": 28554
       },
       {
         "file": "src/dash.rs",
@@ -1557,15 +1557,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 28469
+        "line": 28484
       },
       {
         "file": "src/conductor.rs",
-        "line": 28474
+        "line": 28489
       },
       {
         "file": "src/conductor.rs",
-        "line": 28537
+        "line": 28552
       },
       {
         "file": "src/driver/replay.rs",
