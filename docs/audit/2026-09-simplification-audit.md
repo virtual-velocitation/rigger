@@ -1911,8 +1911,8 @@ mandatory sweep: Command::new call sites - 340 site(s), collected mechanically r
 - `tests/dedup_seeding_periphery.rs:657-657` `Command::new`
 - `tests/escalation_resume_periphery.rs:81-81` `Command::new`
 - `tests/escalation_resume_periphery.rs:100-100` `Command::new`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:65-65` `Command::new`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:110-110` `Command::new`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:89-89` `Command::new`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:134-134` `Command::new`
 - `tests/files_lens_directory_hulls_viz.rs:50-50` `Command::new`
 - `tests/files_lens_directory_hulls_viz.rs:175-175` `Command::new`
 - `tests/files_lens_directory_hulls_viz.rs:309-309` `Command::new`
@@ -3481,16 +3481,16 @@ __END__
 - `tests/escalation_resume_periphery.rs:110-110` `".rigger"`
 - `tests/escalation_resume_periphery.rs:127-127` `".rigger"`
 - `tests/escalation_resume_periphery.rs:145-145` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:91-91` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:120-120` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:155-155` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:168-168` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:196-196` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:249-249` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:278-278` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:323-323` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:416-416` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:474-474` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:115-115` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:144-144` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:179-179` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:192-192` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:220-220` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:273-273` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:302-302` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:347-347` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:656-656` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:714-714` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:208-208` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:209-209` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:214-214` `".rigger"`
@@ -7418,7 +7418,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_model_drift_periphery.rs:50-65` `run_rigger`
 - `tests/cause_wire_periphery.rs:120-132` `run_rigger`
 - `tests/escalation_resume_periphery.rs:159-171` `run_rigger`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:137-149` `run_rigger`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:161-173` `run_rigger`
 - `tests/migration_is_deliberate_periphery.rs:491-503` `run_rigger`
 - `tests/reset_build_cache_periphery.rs:74-86` `run_rigger`
 - `tests/reset_derived_compaction_periphery.rs:642-654` `run_rigger`
@@ -7473,7 +7473,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:49-71` `run_stream_identity`
 - `tests/dedup_seeding_periphery.rs:580-605` `run_stream_identity`
 - `tests/escalation_resume_periphery.rs:99-121` `run_stream_identity`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:109-131` `run_stream_identity`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:133-155` `run_stream_identity`
 - `tests/migration_is_deliberate_periphery.rs:463-485` `project_identity_of`
 - `tests/projections_stay_local.rs:134-156` `store_identity`
 - `tests/reset_derived_compaction.rs:51-73` `run_stream_identity`
@@ -7498,7 +7498,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/cli.rs:49-71` `run_stream_identity`
 - `tests/dedup_seeding_periphery.rs:580-605` `run_stream_identity`
 - `tests/escalation_resume_periphery.rs:99-121` `run_stream_identity`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:109-131` `run_stream_identity`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:133-155` `run_stream_identity`
 - `tests/graph_show_periphery.rs:61-77` `run_stream_identity`
 - `tests/graph_show_staleness.rs:49-65` `run_stream_identity`
 - `tests/graph_show_surface.rs:48-64` `run_stream_identity`
@@ -7537,7 +7537,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/cause_wire_periphery.rs:103-116` `seed_run_events`
 - `tests/cli.rs:82-100` `seed_run_events`
 - `tests/escalation_resume_periphery.rs:126-139` `seed_run_events`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:86-104` `seed_run_events`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:110-128` `seed_run_events`
 - `tests/heartbeat_write_read_agree_periphery.rs:151-164` `seed_run_events`
 - `tests/reset_derived_live_writer_guard_periphery.rs:91-103` `seed_run_events`
 - `tests/reset_menu.rs:107-119` `seed_run_events`
@@ -7618,7 +7618,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/cli.rs, tests/fan
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:82-100` `seed_run_events`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:86-104` `seed_run_events`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:110-128` `seed_run_events`
 - `tests/step_attention_periphery.rs:178-196` `seed_run_events`
 
 #### `dup-0407` (semantic, 5 sites)
@@ -7628,7 +7628,7 @@ Proposed home: `one shared `temp_git_project_with_commit` helper (e.g. relocated
 mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `tests/cli.rs:105-122` `temp_git_project_with_commit`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:57-74` `temp_git_project_with_commit`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:81-98` `temp_git_project_with_commit`
 - `tests/step_attention_periphery.rs:464-484` `temp_git_project_with_commit`
 - `tests/workflow_driver_resolved_model_periphery.rs:57-78` `temp_git_project_with_commit`
 - `tests/worktree_liveness_fence_periphery.rs:94-115` `temp_git_project_with_commit`
@@ -7965,7 +7965,7 @@ Proposed home: `a new shared module (sites span 3 files: tests/cli.rs, tests/fan
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:10998-11000` `temp_repoless_project`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:78-80` `temp_repoless_project`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:102-104` `temp_repoless_project`
 - `tests/step_attention_periphery.rs:143-145` `temp_repoless_project`
 
 #### `dup-0441` (semantic, 3 sites)
@@ -7975,7 +7975,7 @@ Proposed home: `one shared `temp_repoless_project` helper (e.g. relocated into `
 mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `tests/cli.rs:10998-11000` `temp_repoless_project`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:78-80` `temp_repoless_project`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:102-104` `temp_repoless_project`
 - `tests/step_attention_periphery.rs:143-145` `temp_repoless_project`
 
 #### `dup-0442` (exact, 4 sites)
@@ -9206,8 +9206,8 @@ Proposed home: `fanout_template_needs_and_stage_retries_periphery::support (cons
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:154-162` `write_git_worker_agent`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:167-175` `write_repoless_worker_agent`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:178-186` `write_git_worker_agent`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:191-199` `write_repoless_worker_agent`
 
 #### `dup-0562` (near, 2 sites)
 
@@ -9215,8 +9215,8 @@ Proposed home: `fanout_template_needs_and_stage_retries_periphery::support (cons
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:411-460` `a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:469-552` `a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_default`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:651-700` `a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:709-792` `a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_default`
 
 #### `dup-0563` (semantic, 2 sites)
 
@@ -10941,38 +10941,38 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6426 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6428 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
-- `src/blocker.rs:120-122` `full_line` - no duplicate found by reading
-- `src/conductor.rs:8866-8872` `regenerate_rule_for` - no duplicate found by reading
-- `src/conductor.rs:21106-21205` `gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_spawns_decision` - caught: `dup-0072`
-- `src/conductor.rs:29233-29290` `the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster` - caught: `dup-0087`
-- `src/conductor.rs:32326-32349` `run` - no duplicate found by reading
-- `src/conductor.rs:34312-34314` `apply` - no duplicate found by reading
-- `src/contextgraph/sqlite.rs:6115-6188` `an_upheld_finding_expires_when_its_unit_integrates_but_stays_live_until_then` - no duplicate found by reading
-- `src/dash.rs:9515-9563` `dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies` - no duplicate found by reading
-- `src/docs.rs:1679-1704` `registry_names_all_five_per_operation_skills_exactly_once_each` - no duplicate found by reading
-- `src/eventstore/contract.rs:763-776` `collect_replay` - no duplicate found by reading
-- `src/main.rs:18119-18148` `usage_text_gives_the_jobs_flag_its_own_description_line` - no duplicate found by reading
-- `src/main.rs:19438-19447` `outcome_for` - no duplicate found by reading
-- `src/worktree.rs:1617-1627` `sweep_terminal` - no duplicate found by reading
-- `tests/adoption_keys_on_criterion_periphery.rs:1017-1088` `integrate_then_build_a_real_second_life_branch` - no duplicate found by reading
-- `tests/build_watch_paths.rs:59-74` `git_output` - caught: `dup-0255`
-- `tests/community_detection_cli.rs:375-411` `a_malformed_resolution_or_unknown_argument_fails_loudly` - caught: `dup-0513`
-- `tests/grep_fallback_metric_periphery.rs:201-269` `build_state_counts_fallbacks_off_the_progress_slice_only_run_metrics_unchanged` - no duplicate found by reading
-- `tests/grounder_name_contract.rs:40-171` `public_name_contract_predicate_error_and_resolver_agree` - caught: `dup-0078`
-- `tests/mutation_scratch_persona_encoding_contract_periphery.rs:60-73` `persona_tmpdir_template_is_the_two_placeholder_shape_this_test_relies_on` - no duplicate found by reading
-- `tests/no_os_kill_audit.rs:439-446` `standalone_pkill_token_is_caught` - caught: `dup-0621`
-- `tests/no_os_kill_test_helper_periphery.rs:198-200` `terminate_pid_refuses_its_callers_own_pid` - caught: `dup-0625`
-- `tests/published_content_key_split_periphery.rs:208-237` `a_key_that_is_not_the_minted_form_names_no_generation` - no duplicate found by reading
-- `tests/registry_refresh_driver_courier_convergence_periphery.rs:38-82` `driver_project` - caught: `dup-0527`
-- `tests/replan_episode_identity.rs:234-296` `two_episode_cfg` - caught: `dup-0053`
-- `tests/reset_menu_previews_periphery.rs:361-422` `count_derived_duplicates_matches_its_namespace_prefix_literally_not_as_a_wildcard_pattern` - no duplicate found by reading
-- `tests/review_tier_roster_periphery.rs:211-224` `a_roster_on_a_role_with_no_roster_verb_entry_is_never_rendered` - caught: `dup-0656`
-- `tests/simplification_audit.rs:2334-2347` `all_fn_refs` - no duplicate found by reading
-- `tests/simplification_audit.rs:7318-7333` `the_two_exploration_graph_fixture_builders_the_adversarial_sample_found_land_in_one_real_cluster` - caught: `dup-0675`
-- `tests/simplification_audit.rs:8389-8403` `a_fn_referenced_from_a_production_caller_does_not_appear` - caught: `dup-0685`
-- `tests/simplification_audit.rs:8661-8687` `a_bare_unqualified_call_from_a_third_unrelated_file_credits_neither_sharer` - caught: `dup-0687`
+- `src/conductor.rs:5738-5817` `emit_speculation_winner_status` - no duplicate found by reading
+- `src/conductor.rs:21036-21103` `gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_straggler_spawn` - caught: `dup-0071`
+- `src/conductor.rs:27132-27179` `a_stages_own_max_retries_overrides_the_run_default_for_its_units` - no duplicate found by reading
+- `src/conductor.rs:38059-38192` `an_escalated_dep_still_runs_the_whole_tree_deferred_gate` - no duplicate found by reading
+- `src/dash.rs:5916-5961` `the_dashboard_fits_one_screen_with_internal_scroll` - no duplicate found by reading
+- `src/dash.rs:8297-8317` `chain_graph_local` - caught: `dup-0152`
+- `src/dash.rs:9337-9354` `format_held_port_names_the_pid_and_state_for_a_running_holder` - no duplicate found by reading
+- `src/eventstore/contract.rs:172-192` `append_assigns_revisions` - caught: `dup-0178`
+- `src/eventstore/sqlite.rs:2596-2620` `a_policy_spelled_with_quotes_and_backslashes_still_guards` - no duplicate found by reading
+- `src/failure.rs:105-116` `delay` - no duplicate found by reading
+- `src/grounder/design/extract.rs:52-67` `extract_concepts` - no duplicate found by reading
+- `src/metrics.rs:362-368` `cost_per_upheld` - caught: `dup-0193`
+- `src/metrics.rs:1287-1289` `is_snapshot_drift` - no duplicate found by reading
+- `src/sidecar.rs:196-206` `lessons_for` - caught: `dup-0305`
+- `src/spawn.rs:1311-1336` `resolved_model_reads_the_meta_key_the_worker_reports` - no duplicate found by reading
+- `src/spec.rs:964-974` `extract_criteria_stops_a_wrap_at_a_following_heading` - caught: `dup-0325`
+- `src/worktree.rs:3807-3833` `spawn_fence_is_terminal_at_the_results_position_once_a_real_result_lands` - no duplicate found by reading
+- `tests/canary_model_drift_periphery.rs:213-293` `canary_and_validate_drift_reads_only_metadata_prose_can_neither_mask_nor_forge_it` - caught: `dup-0393`
+- `tests/cli.rs:2417-2428` `write_grounder_workflow` - caught: `dup-0420`
+- `tests/cli.rs:3036-3057` `ground_rejects_an_unknown_grounder_naming_only_the_accepted_set` - no duplicate found by reading
+- `tests/cli.rs:17676-17738` `docs_ships_graph_hygiene_guidance_to_consumers` - caught: `dup-0458`
+- `tests/cli.rs:17753-17796` `docs_ships_three_verb_lookup_guidance_to_consumers` - caught: `dup-0458`
+- `tests/code_ingest_events.rs:30-34` `apply_json` - caught: `dup-0485`
+- `tests/graph_click_to_seed_repoint.rs:63-70` `node_ids` - no duplicate found by reading
+- `tests/kurrentdb_always_available.rs:57-65` `table_declares_key` - caught: `dup-0603`
+- `tests/no_os_kill_audit.rs:506-514` `negative_pid_format_is_caught_outside_the_sanctioned_files` - caught: `dup-0622`
+- `tests/scratch_workdir_config.rs:93-110` `an_unreadable_workflow_is_a_loud_error_never_the_silent_absent_default` - no duplicate found by reading
+- `tests/simplification_audit.rs:7155-7167` `error_shaping_sweep_requires_both_the_name_shape_and_a_format_call` - no duplicate found by reading
+- `tests/simplification_audit.rs:7287-7311` `same_named_helper_sweep_groups_across_files_but_not_within_one_file_or_below_the_length_floor` - no duplicate found by reading
+- `tests/symbol_ref_caller_attribution.rs:32-77` `a_caller_less_reference_serializes_byte_identically_to_the_pre37_form` - caught: `dup-0480`
 
 Two real recall gaps surfaced this way and were closed by widening the mechanical sweep with a new generalizable detector each - not a one-off citation - so the fix catches every present and future instance of its class, each pinned by a real-tree regression test: `find_proc_stat_or_status_readers` (decision `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or `/proc/<pid>/status` literal, closing the spec's own named worked example - `src/dash.rs:499-507` `process_state` next to `src/reap.rs:190-197` `pid_starttime`, the same job on the same file with a different field/shape, upheld at spec 62's capstone; `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) groups 2+ non-test functions per `(file, Self type)` that build a `Self { .. }` / `TypeName { .. }` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` reading MISSING from its own `ok`/`failed` cluster even though all three are parallel constructors for one struct. A third worked example, `exploration_graph` (independently defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass with no sweep needed - confirming the mechanical pass itself has real recall, not only the two widened sweeps. Two further real defects, found on review rather than in this draw, were closed the same way: a RECALL gap the architecture lens routed to this criterion by name across two prior review rounds - this file's own bespoke source-text lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the adversary found by reading every `same-named helper` cluster against `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/`subscribe_stream` across the `EventStore` trait's three backend adapters plus a test double, `blast_radius` across the `Grounder` trait's own default method, its override, and a test double) - closed by excluding members whose extracted Self type differs across the group when at least one comes from an actual `" for "` trait impl (decision `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) excluded this criterion's own citation-guard periphery file from the draw's population (see this subsection's opening paragraph) and redrew the sample; every one of the 19 functions above marked "no duplicate found by reading" was re-read by hand against its host file's surrounding context, exactly as this THOROUGHNESS check requires whenever the draw changes. 18 of the 19 are genuinely not duplicates; `apply` at `src/conductor.rs:29832-29834` is one shape worth naming so it is not mistaken for a miss - a `Projection` test double's own required trait-impl body, the same port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) already excludes from clustering by design, confirmed to still hold for this draw's own instance of it. The 19th is a genuine small duplicate this catalog's `fn`-only scanner (module doc, THE SCANNER) structurally cannot represent as a cluster: `gate_verdict_event` (`src/conductor.rs:29191-29200`) and the `verdict` closure inside `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` (`src/conductor.rs:30596-30605`) do the identical job - find the recorded `GateVerdict` for a `"<unit>/gate:g#<attempt>"` replay key, panicking with the same message when none exists - differing only in whether the unit segment is the literal `"s"` or a parameter. A `let`-bound closure is not a `fn` item, so no change to this scanner short of teaching it to see closures could catalog this pair as a cluster; named here, prominently, rather than silently, so a later refactor - or a scanner that learns to see closures - does not miss it.
 
