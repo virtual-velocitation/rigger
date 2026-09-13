@@ -24409,17 +24409,24 @@ mod tests {
         );
     }
 
-    /// Spec 73, criterion 1. The implementer persona (`.rigger/agents/rust-engineer.md`) is
-    /// OPERATOR CONFIGURATION seeded by the operator, not authored by any unit (spec 73
-    /// Design: "the grounder cannot ground non-code files, so no unit can own a Markdown
-    /// blast radius"). So this is a DRIFT GUARD, not a feature test: it pins the seeded
-    /// mutation-STEP contract - WHEN the instrument runs and HOW a missed mutant is resolved -
-    /// against the committed file, so an edit that drops or weakens that contract fails the
-    /// suite instead of silently drifting. The ACCOUNTING shape (the `DecisionMade` entry
-    /// format, the diff base, the total, the empty-diff case) is criterion 2's drift guard,
-    /// NOT this one's, and is deliberately not asserted here.
+    /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). Supersedes
+    /// `implementer_persona_pins_the_seeded_mutation_step_contract` (spec 73's persona pin) and
+    /// `implementer_persona_pins_the_seeded_mutation_scratch_root_registration_contract` (spec
+    /// 77's TMPDIR-registration pin) - both retired here: spec 91 Design decides "the
+    /// implementer persona's mutation block is removed together with its unit.diff/TMPDIR
+    /// choreography", so there is no more seeded per-round step, gating clause, or TMPDIR
+    /// template to pin. The kill-or-justify accounting contract those tests protected now
+    /// lives in the `checkin` stage's own task text (per `tests/cli.rs`'s
+    /// `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`,
+    /// spec 91 criterion 2's own drift guard, naming this as criterion 3's pin) - this
+    /// persona's prose for when it is spawned as the `checkin` stage, after every `implement`
+    /// unit has already integrated and the `mutation` gate (spec 91 criterion 2) has already
+    /// swept the whole spec diff once. This is a DRIFT GUARD, not a feature test: the
+    /// implementer persona (`.rigger/agents/rust-engineer.md`) is OPERATOR CONFIGURATION
+    /// seeded by the operator, not authored by any unit (spec 73 Design: "the grounder cannot
+    /// ground non-code files, so no unit can own a Markdown blast radius").
     #[test]
-    fn implementer_persona_pins_the_seeded_mutation_step_contract() {
+    fn implementer_persona_pins_the_checkin_stage_kill_or_justify_contract() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(RIGGER_DIR)
             .join("agents")
@@ -24427,50 +24434,26 @@ mod tests {
         let persona = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
         // Whitespace-normalize before matching (collapse newlines/indentation to single
-        // spaces), matching criterion 2's established drift-guard pattern (d-u73c2-accounting-
-        // drift-guard-approach): the committed persona wraps this paragraph across markdown
-        // list-continuation lines, so a raw substring match is fragile to a pure reflow
-        // (identical words, different line wrap) and would false-fail or false-pass around a
-        // line break.
+        // spaces), matching the retired tests' established drift-guard pattern: the
+        // committed persona wraps this paragraph across markdown list-continuation lines, so
+        // a raw substring match is fragile to a pure reflow (identical words, different line
+        // wrap) and would false-fail or false-pass around a line break.
         let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
 
         // One contiguous-phrase check, not two independently-satisfiable fragments: a
-        // decomposed persona that keeps "Mutation efficacy" and "build.mutation" as bare
-        // substrings in unrelated sentences (destroying the gating relation - the step
-        // runs only WHEN the config key is on) must fail this test, not pass it.
+        // decomposed persona that keeps "checkin" and "stage" as bare substrings in unrelated
+        // sentences (destroying the "this runs only when you are the checkin stage" gating
+        // relation) must fail this test, not pass it.
         assert!(
-            normalized.contains("Mutation efficacy (when `build.mutation` is on)"),
-            "the step must be gated on the build.mutation config key, as one contiguous \
-             gating clause, not two independently-satisfiable fragments; got:\n{normalized}"
-        );
-        // One contiguous-phrase check, not two independently-satisfiable fragments: a
-        // decomposed persona that keeps both bare substrings in unrelated sentences
-        // (destroying the after-tests-green-before-pre-gate-commit placement relation
-        // criterion 1's own Done-when bullet names) must fail this test, not pass it.
-        assert!(
-            normalized.contains("After your unit tests are green and BEFORE the pre-gate commit"),
-            "the step must run after unit-green and before the pre-gate commit, as one \
-             contiguous relational clause, not two independently-satisfiable fragments; \
+            normalized.contains("When you are spawned for the `checkin` stage"),
+            "the kill-or-justify step must be gated on being spawned for the checkin stage, \
+             as one contiguous clause, not two independently-satisfiable fragments; \
              got:\n{normalized}"
         );
         assert!(
-            normalized.contains("diff against the unit's merge-base with the run branch"),
-            "the mutants run must be scoped to a diff against the unit's merge-base with the \
-             run branch; got:\n{normalized}"
-        );
-        // One contiguous-phrase check, not two independently-satisfiable fragments: a
-        // decomposed persona that keeps "cargo mutants --in-diff" and "DEFAULT feature
-        // lane" as bare substrings while running the invocation on some OTHER lane (or
-        // every lane) would still satisfy two independent `contains` calls, so the
-        // invocation and the lane it runs on must be pinned as one relation.
-        assert!(
-            normalized.contains(
-                "cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2` on the \
-                 DEFAULT feature lane"
-            ),
-            "the step must name the diff-scoped cargo-mutants invocation tied to running on \
-             the default feature lane, as one contiguous clause, not two independently- \
-             satisfiable fragments; got:\n{normalized}"
+            normalized.contains("read `mutants.out/outcomes.json`"),
+            "the checkin stage must read the mutation gate's own outcomes file, never \
+             stdout; got:\n{normalized}"
         );
         // One contiguous-phrase check naming the either-or relation itself, not two bare
         // keywords: a decomposed persona that keeps "KILLED" and "JUSTIFIED" as unrelated
@@ -24485,68 +24468,97 @@ mod tests {
              one contiguous either-or clause, not two independent bare keywords; \
              got:\n{normalized}"
         );
+        assert!(
+            normalized.contains("an `exclude_re` entry in `.cargo/mutants.toml`"),
+            "a justification must name the exclude_re mechanism a missed mutant is recorded \
+             equivalent through; got:\n{normalized}"
+        );
         // The consequence itself, not just the "unjustified miss" keyword: an inversion that
         // keeps the words "unjustified miss" but reverses the outcome (e.g. "is merely noted
-        // in the log, and the unit may still be marked done") must fail this test.
+        // in the log, and the checkin stage may still be marked done") must fail this test.
         assert!(
-            normalized.contains("an unjustified miss means the unit is not done"),
-            "an unjustified missed mutant must leave the unit not done - the consequence \
-             clause itself, not merely the presence of the words \"unjustified miss\"; \
-             got:\n{normalized}"
+            normalized.contains("an unjustified miss means the checkin stage is not done"),
+            "an unjustified missed mutant must leave the checkin stage not done - the \
+             consequence clause itself, not merely the presence of the words \"unjustified \
+             miss\"; got:\n{normalized}"
+        );
+        // The ACCOUNTING shape (spec 73's deterministic per-mutant DecisionMade format): one
+        // contiguous clause each for the id convention, the no-new-event-type + deterministic
+        // ordering, the exhaustive status vocabulary (in order), and the empty-diff case - a
+        // decomposed persona that keeps these as scattered bare words could satisfy
+        // independent substring checks while dropping the actual shape a downstream consumer
+        // parses against.
+        assert!(
+            normalized.contains("record the accounting as one `<unit>-mutation-accounting`"),
+            "the accounting must be recorded under the deterministic <unit>-mutation- \
+             accounting id (spec 73's shape); got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("DecisionMade (no new event type), deterministically ordered"),
+            "the accounting must be one DecisionMade, no new event type, deterministically \
+             ordered; got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains(
+                "caught | missed-killed (naming the killing test) | missed-justified (with \
+                 reason) | unviable | timeout"
+            ),
+            "the accounting's per-mutant status vocabulary must be exhaustive and in this \
+             order; got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("A diff touching no Rust file records a provably-empty accounting"),
+            "an empty-diff checkin must still record a provably-empty accounting, never skip \
+             the step; got:\n{normalized}"
+        );
+        // The scope boundary itself (spec 91 Design: "Nothing mutation-specific enters the
+        // conductor... no cargo-mutants path"): the agent must be told the `mutation` gate
+        // owns running cargo-mutants, so it never re-invokes the sweep by hand.
+        assert!(
+            normalized.contains("the `mutation` gate itself owns running cargo-mutants"),
+            "the persona must name the mutation gate as the sole cargo-mutants invoker, so \
+             the agent never re-runs it by hand; got:\n{normalized}"
         );
     }
 
-    /// Spec 77, criterion 2 (MUTATION SCRATCH IS REAPED). A sibling drift guard to
-    /// `implementer_persona_pins_the_seeded_mutation_step_contract` above, over the SAME
-    /// committed persona file, pinning the piece this criterion (not spec 73's) owns: the
-    /// mutation-efficacy step's `TMPDIR` names the SPAWN-SCOPED registered scratch root
-    /// (`driver::replay::mutation_scratch_path`'s `.../rigger-mutants/<spawn>`, not the old
-    /// shared `.../rigger-mutants` root every unit collided on, and not a bare `<unit>` root
-    /// every LANE of a speculating unit would collide on - round-7/8 review reject, spec 77
-    /// Design "mutation scratch is spawn-scoped, never unit-scoped") and PRE-DELETES it before
-    /// running (spec 77 Design: "The seeded persona invocation moves to its own spawn-scoped
-    /// subdir and pre-deletes it before running"). Both pinned as one contiguous phrase each,
-    /// not independently-satisfiable fragments, matching the sibling test's established
-    /// pattern: a decomposed persona that keeps the escaped template as a bare substring
-    /// elsewhere while TMPDIR still names the shared or bare-unit root, or that keeps
-    /// "pre-delete" and "mkdir -p" as unrelated words in either order, must fail this test.
+    /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). The structural counterpart of
+    /// `implementer_persona_pins_the_checkin_stage_kill_or_justify_contract` above: no persona
+    /// under `.rigger/agents/` - implementer, reviewer, or the SDET author - may INVOKE
+    /// `cargo mutants` itself any more. Only the `checkin` stage's `mutation` GATE (spec 91
+    /// criterion 2, `.rigger/workflow.yml`) runs that command now; a persona merely reading or
+    /// discussing its output (`mutants.out/outcomes.json`, or the noun "cargo-mutants") is
+    /// fine, so this checks for the two-word INVOCATION phrase specifically, never the bare
+    /// words "cargo" and "mutants" appearing anywhere in unrelated sentences.
     #[test]
-    fn implementer_persona_pins_the_seeded_mutation_scratch_root_registration_contract() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    fn no_persona_under_rigger_agents_invokes_cargo_mutants() {
+        let agents_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(RIGGER_DIR)
-            .join("agents")
-            .join("rust-engineer.md");
-        let persona = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
-        let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
-
+            .join("agents");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&agents_dir)
+            .unwrap_or_else(|e| panic!("read committed {}: {e}", agents_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+            let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                !normalized.contains("cargo mutants"),
+                "{} must never invoke `cargo mutants` itself - only the checkin stage's \
+                 `mutation` gate does now (spec 91); got:\n{normalized}",
+                path.display()
+            );
+            checked += 1;
+        }
         assert!(
-            normalized.contains(
-                "TMPDIR=\"${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/\
-                 <unit>_2fimplementer_23<attempt>\""
-            ),
-            "TMPDIR must point at the SPAWN-SCOPED mutation-scratch subdir (the injectively \
-             hex-escaped <unit>/implementer#<attempt>), not the old shared root every unit \
-             collided on and not a bare-unit root every speculation lane would collide on; \
-             got:\n{normalized}"
-        );
-        assert!(
-            normalized.contains("pre-delete that TMPDIR then mkdir -p it before running"),
-            "the invocation must PRE-DELETE its spawn-scoped TMPDIR before running, as one \
-             contiguous relational clause (not just an mkdir -p of a possibly-stale tree); \
-             got:\n{normalized}"
-        );
-        // Round-7/8 review reject regression: the persona must tell the agent WHICH attempt
-        // ordinal to substitute (its own spawn id's trailing `#<n>`), not merely widen the
-        // TMPDIR template - a persona that pins the escaped template but never says where
-        // `<attempt>` comes from would leave every agent substituting the same value (e.g.
-        // always 0) and silently reopening the exact same-unit collision this criterion exists
-        // to close.
-        assert!(
-            normalized.contains("`<attempt>` is the number after `#` in your OWN spawn id"),
-            "the persona must tell the agent to derive <attempt> from its OWN spawn id's \
-             trailing #<n>, or every speculation lane would substitute the same placeholder \
-             and collide again; got:\n{normalized}"
+            checked >= 7,
+            "expected to check every seeded persona file under {} (adjudicator, adversary, \
+             architecture-reviewer, planner, rust-engineer, sdet, sdet-author, plus any \
+             others); checked {checked}",
+            agents_dir.display()
         );
     }
 }
