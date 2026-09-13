@@ -2019,11 +2019,22 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // UnitProposed. With no fan-out template the run synthesizes no baseline units and
     // falls back to the historical shape. The no-spec (empty criteria) path is
     // untouched: no template expansion, the workflow's own stages run as authored.
+    // fanout_members (spec 91, criterion 1, rule 1): snapshot, at the exact moment the
+    // template is consumed, which unit ids `baseline_units` synthesized from it - the
+    // live resolution table `ready_stages` consults so a LATER stage's `needs: [<template
+    // name>]` can be satisfied even though the template itself never appears in
+    // `integrated` (it is a template, not a unit; see the removal just below).
+    let mut fanout_members: HashMap<String, HashSet<String>> = HashMap::new();
     if !deps.criteria.is_empty() {
         if let Some(template_name) = fan_out_template_name(&stages) {
             let template = stages.remove(&template_name).expect("template just found");
             let producer = producer_name(&stages);
-            for (name, unit) in baseline_units(&template, &deps.criteria, producer.as_deref()) {
+            let units = baseline_units(&template, &deps.criteria, producer.as_deref());
+            fanout_members.insert(
+                template_name,
+                units.iter().map(|(name, _)| name.clone()).collect(),
+            );
+            for (name, unit) in units {
                 stages.entry(name).or_insert(unit);
             }
         }
@@ -2098,7 +2109,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // already integrated, `ready_stages` would otherwise surface the gate (it needs
         // plan) and `run_wave` would run it through the wrong path (`run_single_stage`).
         let gate = critique_gate_name(&stages);
-        let ready = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
+        let ready = wave_ready(
+            &stages,
+            &integrated,
+            &terminal,
+            gate.as_deref(),
+            &fanout_members,
+        );
         if !ready.is_empty() {
             ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
             ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
@@ -2187,7 +2204,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // with nothing pending) the queue is empty and this is a no-op.
         ctx.drain_compensations(&mut integrated, &mut terminal)?;
         loop {
-            let ready = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
+            let ready = wave_ready(
+                &stages,
+                &integrated,
+                &terminal,
+                gate.as_deref(),
+                &fanout_members,
+            );
             if ready.is_empty() {
                 break;
             }
@@ -3504,15 +3527,22 @@ impl RunCtx<'_> {
     }
 
     /// The remediation bound `safety::remediate` uses for exactly THIS unit (spec 88,
-    /// criterion 3: ESCALATION RESUMES) - the plain [`max_retries`](RunCtx::max_retries)
-    /// bound, widened to a unit's [`prior_resume_bound`](RunCtx::prior_resume_bound)
-    /// ceiling when an operator's `rigger resume-unit` grant raised it higher. The
-    /// max of the two (never the resume ceiling alone) so a pathologically small
-    /// `--attempts` grant on a unit that escalated early can never LOWER the bound
-    /// every other unit already gets; a unit absent from the map (never resumed)
-    /// reads the plain bound, byte-for-byte the historical behavior.
-    fn max_retries_for(&self, unit: &str) -> u32 {
-        let plain = self.max_retries();
+    /// criterion 3: ESCALATION RESUMES; spec 91, criterion 1, rule 2: STAGE OVERRIDE) -
+    /// `st`'s own `max_retries` when it sets one (unset, `0`, falls back to the plain
+    /// [`max_retries`](RunCtx::max_retries) run default - the same unset-means-inherit
+    /// convention `st.speculation_width` already uses), widened to a unit's
+    /// [`prior_resume_bound`](RunCtx::prior_resume_bound) ceiling when an operator's
+    /// `rigger resume-unit` grant raised it higher. The max of the two (never the resume
+    /// ceiling alone) so a pathologically small `--attempts` grant on a unit that
+    /// escalated early can never LOWER the bound every other unit already gets; a unit
+    /// absent from the map (never resumed) reads the plain (stage-or-default) bound,
+    /// byte-for-byte the historical behavior for a stage that sets no override.
+    fn max_retries_for(&self, unit: &str, st: &Stage) -> u32 {
+        let plain = if st.max_retries == 0 {
+            self.max_retries()
+        } else {
+            st.max_retries
+        };
         self.prior_resume_bound
             .get(unit)
             .copied()
@@ -5191,7 +5221,7 @@ impl RunCtx<'_> {
                 } // end `else` (non-producer lifecycle), spec 88 criterion 4
             }
 
-            let rem = safety::remediate(attempts, self.max_retries_for(&st.name));
+            let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
             attempts = rem.attempts;
             // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
             // adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion, UPHELD): the
@@ -6064,7 +6094,7 @@ impl RunCtx<'_> {
             // duplicate UnitFailed - the bound accumulates from the log, it is never
             // re-counted (finding rf-fanout-replay-dup-unitfailed).
             let failed_attempt = attempts;
-            let rem = safety::remediate(attempts, self.max_retries_for(&st.name));
+            let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
             attempts = rem.attempts;
             // spec 69, criterion 3 (the cause wire): `approved` means the gates ran and
             // failed (`gate_result` is `Some`); otherwise the adjudicator itself rejected.
@@ -7064,7 +7094,7 @@ impl RunCtx<'_> {
             // Reject: charge a remediation attempt (replay-keyed on the failing attempt so a
             // replay re-reaching it appends no duplicate) and either escalate or re-plan.
             let failed_attempt = attempts;
-            let rem = safety::remediate(attempts, self.max_retries_for(&gate_name));
+            let rem = safety::remediate(attempts, self.max_retries_for(&gate_name, gate_st));
             attempts = rem.attempts;
             self.emit_keyed(
                 &format!("{gate_name}/failed#{failed_attempt}"),
@@ -12579,27 +12609,65 @@ fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option
 /// step satisfies `ready_stages` (needs the producer, not terminal), and driving it
 /// through `run_single_stage`'s standalone-review path spawns lenses with no worktree -
 /// the empty-cwd isolation refusal that killed the first adopted spec-10 run.
+///
+/// `fanout_members` is threaded straight through to [`ready_stages`] - see its own doc
+/// comment for what it resolves (spec 91, criterion 1, rule 1).
 fn wave_ready(
     stages: &BTreeMap<String, Stage>,
     integrated: &HashSet<String>,
     terminal: &HashSet<String>,
     critique_gate: Option<&str>,
+    fanout_members: &HashMap<String, HashSet<String>>,
 ) -> Vec<String> {
-    ready_stages(stages, integrated, terminal)
+    ready_stages(stages, integrated, terminal, fanout_members)
         .into_iter()
         .filter(|n| critique_gate != Some(n.as_str()))
         .collect()
 }
 
+/// A stage's `needs` entry `need` is satisfied against `stages`/`integrated` directly
+/// when it names a LIVE stage (the historical rule, unchanged). When it instead names a
+/// fan-out implement TEMPLATE - a stage `run` REMOVES from `stages` the moment it
+/// expands into per-criterion baseline units (§ the baseline-decomposition block), so it
+/// can never again satisfy a literal `integrated.contains(need)` - the entry is
+/// satisfied once EVERY unit `fanout_members` records as having come from that
+/// template's expansion has integrated (spec 91, criterion 1, rule 1). A member that is
+/// merely open (never in `integrated`), or reached a terminal-but-not-integrated state
+/// (escalated, or failed-terminal), leaves the whole entry unsatisfied - the run's
+/// escalated fixpoint stays loud, never silently satisfied by a partial fan-out. A
+/// `need` naming neither a live stage nor a tracked template resolves to the historical
+/// `integrated.contains(need)` (false for a typo'd or already-consumed name), so a
+/// workflow with no fan-out template is byte-for-byte unaffected.
+fn need_satisfied(
+    need: &str,
+    integrated: &HashSet<String>,
+    fanout_members: &HashMap<String, HashSet<String>>,
+) -> bool {
+    match fanout_members.get(need) {
+        Some(members) => members.iter().all(|m| integrated.contains(m)),
+        None => integrated.contains(need),
+    }
+}
+
+/// `fanout_members` maps a fan-out implement TEMPLATE's name to the unit ids `run`
+/// synthesized from it (§ the baseline-decomposition block) - the live resolution table
+/// [`need_satisfied`] consults for a `needs` entry that names a template rather than a
+/// still-live stage (spec 91, criterion 1, rule 1). Empty for a workflow with no
+/// fan-out template, so `ready_stages` degrades to its historical literal-needs check.
 fn ready_stages(
     stages: &BTreeMap<String, Stage>,
     integrated: &HashSet<String>,
     terminal: &HashSet<String>,
+    fanout_members: &HashMap<String, HashSet<String>>,
 ) -> Vec<String> {
     let mut ready: Vec<String> = stages
         .iter()
         .filter(|(name, st)| {
-            !terminal.contains(*name) && st.needs.iter().all(|n| integrated.contains(n))
+            !terminal.contains(*name)
+                && st
+                    .needs
+                    .iter()
+                    .all(|n| need_satisfied(n, integrated, fanout_members))
         })
         .map(|(name, _)| name.clone())
         .collect();
@@ -14084,6 +14152,80 @@ mod tests {
                 .unwrap_or_else(|| panic!("a unit must cover criterion {c:?}"));
             assert_eq!(unit.status, ledger::Status::Integrated);
         }
+    }
+
+    #[test]
+    fn a_stage_needing_the_fan_out_template_becomes_ready_once_every_criterion_unit_integrates() {
+        // Spec 91, criterion 1, rule 1: the fan-out implement TEMPLATE is a template,
+        // not a unit - `run` REMOVES it from `stages` the moment it expands into
+        // per-criterion baseline units (see `conductor_creates_one_baseline_unit_per_
+        // criterion` just above), so a downstream stage's literal `needs: ["implement"]`
+        // could never be satisfied: "implement" never again appears in `integrated`.
+        // A `needs` entry naming the TEMPLATE must instead be satisfied once EVERY unit
+        // the template expanded into has integrated - proven end to end here through the
+        // real `run()` wiring (baseline-decomposition -> fanout_members -> ready_stages),
+        // not just the pure-function level.
+        let criteria = ["the first slice lands", "the second slice lands"];
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "checkin".into(),
+            Stage {
+                name: "checkin".into(),
+                agent: "worker".into(),
+                needs: vec!["implement".into()],
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: criteria.iter().map(|c| c.to_string()).collect(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            !rs.units.contains_key("implement"),
+            "the fan-out template is a template, not a unit"
+        );
+        for c in criteria {
+            let unit = rs
+                .units
+                .values()
+                .find(|u| u.spec_criterion == c)
+                .unwrap_or_else(|| panic!("a unit must cover criterion {c:?}"));
+            assert_eq!(
+                unit.status,
+                ledger::Status::Integrated,
+                "every criterion unit must integrate before checkin can be ready"
+            );
+        }
+        assert_eq!(
+            rs.units["checkin"].status,
+            ledger::Status::Integrated,
+            "a stage needing the fan-out template must become ready and integrate once \
+             every unit expanded from it has integrated"
+        );
     }
 
     #[test]
@@ -26838,14 +26980,15 @@ mod tests {
             criteria: Vec::new(),
         };
         let mut ctx = RunCtx::for_test(&cfg, &deps);
+        let no_override = Stage::default();
         ctx.prior_resume_bound.insert("resumed-unit".into(), 4);
         assert_eq!(
-            ctx.max_retries_for("resumed-unit"),
+            ctx.max_retries_for("resumed-unit", &no_override),
             4,
             "a granted bound above the configured max_retries widens this unit's bound"
         );
         assert_eq!(
-            ctx.max_retries_for("sibling-unit"),
+            ctx.max_retries_for("sibling-unit", &no_override),
             2,
             "a unit with no resume grant reads the plain configured max_retries, \
              unaffected by another unit's grant"
@@ -26855,10 +26998,60 @@ mod tests {
         // what every other unit already gets.
         ctx.prior_resume_bound.insert("small-grant-unit".into(), 1);
         assert_eq!(
-            ctx.max_retries_for("small-grant-unit"),
+            ctx.max_retries_for("small-grant-unit", &no_override),
             2,
             "a resume bound must never lower the effective bound below the plain \
              configured max_retries"
+        );
+    }
+
+    #[test]
+    fn a_stages_own_max_retries_overrides_the_run_default_for_its_units() {
+        // Spec 91, criterion 1, rule 2: a stage may set its own `max_retries`, and it
+        // overrides `defaults.max_retries` for the units that stage governs. Unset (`0`,
+        // the `Stage` default) still inherits `defaults.max_retries` exactly as before -
+        // a stage that says nothing about it must not change any existing behavior.
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 2;
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let overriding = Stage {
+            max_retries: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            ctx.max_retries_for("checkin-unit", &overriding),
+            5,
+            "a stage's own max_retries overrides the run-wide defaults.max_retries"
+        );
+
+        let unset = Stage::default();
+        assert_eq!(
+            ctx.max_retries_for("plain-unit", &unset),
+            2,
+            "a stage that leaves max_retries at 0 (unset) still inherits \
+             defaults.max_retries, unaffected by another stage's override"
+        );
+
+        // The resume-grant ceiling still wins over EITHER bound when it is higher (spec
+        // 88, criterion 3), so a stage override never shrinks an operator's grant.
+        let mut ctx = ctx;
+        ctx.prior_resume_bound.insert("resumed-unit".into(), 9);
+        assert_eq!(
+            ctx.max_retries_for("resumed-unit", &overriding),
+            9,
+            "an operator's resume grant still widens the bound above a stage override"
         );
     }
 
@@ -39675,16 +39868,82 @@ mod tests {
         integrated.insert("plan".to_string());
         let terminal: HashSet<String> = integrated.clone();
 
-        let raw = ready_stages(&stages, &integrated, &terminal);
+        let no_fanout = HashMap::new();
+        let raw = ready_stages(&stages, &integrated, &terminal, &no_fanout);
         assert!(
             raw.iter().any(|n| n == "plan-critique"),
             "precondition: the raw ready set must surface the gate for this pin to bite; got {raw:?}"
         );
         let gate = critique_gate_name(&stages);
-        let wave = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
+        let wave = wave_ready(&stages, &integrated, &terminal, gate.as_deref(), &no_fanout);
         assert!(
             !wave.iter().any(|n| n == "plan-critique"),
             "the critique gate must never be wave-scheduled; got {wave:?}"
+        );
+    }
+
+    #[test]
+    fn a_downstream_stage_needing_the_fan_out_template_stays_unready_until_every_member_integrates()
+    {
+        // Spec 91, criterion 1, rule 1, at the pure `ready_stages`/`wave_ready` level: a
+        // `needs` entry naming a fan-out TEMPLATE resolves against `fanout_members`, not
+        // a literal (now-removed) stage entry - "implement" is deliberately ABSENT from
+        // `stages` here, exactly as `run` leaves it once expanded. The edge stays
+        // unsatisfied while any member is merely open, or has reached a
+        // terminal-but-not-integrated state (escalated / failed-terminal) - the run's
+        // escalated fixpoint must stay loud, never silently satisfied by a partial
+        // fan-out.
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        stages.insert(
+            "checkin".into(),
+            Stage {
+                name: "checkin".into(),
+                needs: vec!["implement".into()],
+                ..Default::default()
+            },
+        );
+        let mut fanout_members = HashMap::new();
+        fanout_members.insert(
+            "implement".to_string(),
+            HashSet::from(["u1".to_string(), "u2".to_string()]),
+        );
+        let empty: HashSet<String> = HashSet::new();
+
+        assert!(
+            !ready_stages(&stages, &empty, &empty, &fanout_members)
+                .contains(&"checkin".to_string()),
+            "no member has integrated yet: the needs edge must stay unsatisfied"
+        );
+
+        let mut integrated = HashSet::new();
+        integrated.insert("u1".to_string());
+        assert!(
+            !ready_stages(&stages, &integrated, &empty, &fanout_members)
+                .contains(&"checkin".to_string()),
+            "a partially-integrated template must not satisfy the needs edge"
+        );
+
+        // u2 ESCALATED: terminal, but never integrated. Still unready.
+        let mut terminal = HashSet::new();
+        terminal.insert("u2".to_string());
+        assert!(
+            !ready_stages(&stages, &integrated, &terminal, &fanout_members)
+                .contains(&"checkin".to_string()),
+            "an escalated (terminal, non-integrated) member must never satisfy the \
+             needs edge"
+        );
+
+        // Both members integrated: ready, and wave_ready (no critique gate here) agrees.
+        integrated.insert("u2".to_string());
+        assert!(
+            ready_stages(&stages, &integrated, &empty, &fanout_members)
+                .contains(&"checkin".to_string()),
+            "once every expanded member has integrated the needs edge is satisfied"
+        );
+        assert!(
+            wave_ready(&stages, &integrated, &empty, None, &fanout_members)
+                .contains(&"checkin".to_string()),
+            "wave_ready must agree with ready_stages when no critique gate is wired"
         );
     }
 

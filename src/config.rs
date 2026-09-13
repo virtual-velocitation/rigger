@@ -501,6 +501,13 @@ pub struct Stage {
     /// single-implementer path unchanged (speculation defaults OFF).
     #[serde(default)]
     pub speculation_width: u32,
+    /// This stage's own remediation depth (spec 91, criterion 1, rule 2): overrides
+    /// `defaults.max_retries` for every unit this stage governs. Unset (`0`, the
+    /// default) inherits `defaults.max_retries` exactly as before, so a stage that
+    /// says nothing escalates on the historical run-wide bound - the same
+    /// unset-means-inherit convention `speculation_width` above already uses.
+    #[serde(default)]
+    pub max_retries: u32,
     /// Set by the conductor (never authored, hence `serde(skip)`) on the deterministic
     /// per-criterion BASELINE units it synthesizes from the fan-out implement template.
     /// It marks a stage as the conductor's fallback decomposition for one criterion, so
