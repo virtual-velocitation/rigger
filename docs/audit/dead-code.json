@@ -21,29 +21,29 @@
   {
     "name": "sdet_author_enabled",
     "file": "src/config.rs",
-    "line": 436,
+    "line": 452,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/config.rs",
-        "line": 2287
+        "line": 2310
       },
       {
         "file": "src/config.rs",
-        "line": 2292
+        "line": 2315
       },
       {
         "file": "src/config.rs",
-        "line": 2297
+        "line": 2320
       },
       {
         "file": "src/config.rs",
-        "line": 2302
+        "line": 2325
       },
       {
         "file": "src/config.rs",
-        "line": 2308
+        "line": 2331
       }
     ],
     "disposition": "keep-pending",
@@ -209,7 +209,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 16709
+        "line": 18379
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -675,7 +675,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 8239
+        "line": 8251
       }
     ],
     "disposition": "delete",
@@ -820,15 +820,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 33745
+        "line": 37098
       },
       {
         "file": "src/conductor.rs",
-        "line": 33812
+        "line": 37165
       },
       {
         "file": "src/conductor.rs",
-        "line": 34586
+        "line": 37939
       },
       {
         "file": "src/ledger.rs",
@@ -897,35 +897,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 19024
+        "line": 20694
       },
       {
         "file": "src/conductor.rs",
-        "line": 19101
+        "line": 20771
       },
       {
         "file": "src/conductor.rs",
-        "line": 19195
+        "line": 20865
       },
       {
         "file": "src/conductor.rs",
-        "line": 19282
+        "line": 20952
       },
       {
         "file": "src/conductor.rs",
-        "line": 19377
+        "line": 21047
       },
       {
         "file": "src/conductor.rs",
-        "line": 25632
+        "line": 28124
       },
       {
         "file": "src/conductor.rs",
-        "line": 25637
+        "line": 28129
       },
       {
         "file": "src/conductor.rs",
-        "line": 25700
+        "line": 28192
       },
       {
         "file": "src/dash.rs",
@@ -1185,43 +1185,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 2022
+        "line": 3786
       },
       {
         "file": "src/worktree.rs",
-        "line": 2045
+        "line": 3809
       },
       {
         "file": "src/worktree.rs",
-        "line": 2081
+        "line": 3845
       },
       {
         "file": "src/worktree.rs",
-        "line": 2113
+        "line": 3877
       },
       {
         "file": "src/worktree.rs",
-        "line": 2148
+        "line": 3912
       },
       {
         "file": "src/worktree.rs",
-        "line": 2164
+        "line": 3928
       },
       {
         "file": "src/worktree.rs",
-        "line": 2191
+        "line": 3955
       },
       {
         "file": "src/worktree.rs",
-        "line": 2221
+        "line": 3985
       },
       {
         "file": "src/worktree.rs",
-        "line": 2228
+        "line": 3992
       },
       {
         "file": "src/worktree.rs",
-        "line": 2236
+        "line": 4000
       },
       {
         "file": "tests/cli.rs",
@@ -1557,15 +1557,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 25630
+        "line": 28122
       },
       {
         "file": "src/conductor.rs",
-        "line": 25635
+        "line": 28127
       },
       {
         "file": "src/conductor.rs",
-        "line": 25698
+        "line": 28190
       },
       {
         "file": "src/driver/replay.rs",
@@ -1680,61 +1680,26 @@
     "reason": "park (the zero-run-id convenience wrapper around park_in_run) - part of the SpawnRequest-construction dead set; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation. park_in_run itself (spawn.rs:410, the real park authority) is correctly NOT a candidate: its own body is the one real production reference driver/replay.rs:338 needs - this scanner counts direct references, not reachability, so park_in_run reads alive even though its only OTHER caller (park) is itself dead."
   },
   {
-    "name": "expect_merged",
-    "file": "src/worktree.rs",
-    "line": 82,
-    "visibility": "pub",
-    "ambiguous": false,
-    "test_only_references": [
-      {
-        "file": "src/worktree.rs",
-        "line": 1486
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 1513
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 1566
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 1620
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 1673
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 1793
-      }
-    ],
-    "disposition": "delete",
-    "reason": "expect_merged has no production caller - one of spec 87's own two Goal-cited worked examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current tree: its 6 references are all test-only assertion helpers."
-  },
-  {
     "name": "is_dirty",
     "file": "src/worktree.rs",
-    "line": 525,
+    "line": 544,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 1715
+        "line": 3479
       },
       {
         "file": "src/worktree.rs",
-        "line": 1725
+        "line": 3489
       },
       {
         "file": "src/worktree.rs",
-        "line": 1791
+        "line": 3555
       }
     ],
     "disposition": "delete",
-    "reason": "is_dirty has no production caller - the second of spec 87's own two Goal-cited worked examples, reconfirmed on the current tree: its 3 references are all test-only. (Line shifted 496->520 by spec 88 criterion 2's new create_branch_at, then 520->525 by criterion 2 round 4's expanded create_branch_at doc comment (branch_tip / pinned-sha note); is_dirty itself remains untouched both times.)"
+    "reason": "is_dirty has no production caller - one of spec 87's own two Goal-cited worked examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current tree: its 3 references (worktree.rs:3479/3489/3555) are all test-only. Line shifted again as this merge lands three units' worktree.rs insertions together: spec 88 criterion 1's `MergeOutcome` (offset by the pre-round-4 `IntegrateOutcome` enum/`expect_merged` impl's removal into `#[cfg(test)] mod tests`, both now test-scoped) and criterion 4's `CherryPickOutcome` (both already landed on the run branch as 508->515, per u88c1-audit-pin-repair/u88c4) plus this unit's (criterion 2) own `create_branch_at` and its round-4 expanded doc comment (branch_tip / pinned-sha note; previously tracked here as a separate 496->520->525 shift) - the union of both prior shifts lands the function at 544 on the merged tree, re-pinned at this integration per op-u88c2-conflict-resolution-retry-regenerate-audit-union-code (see specs/90 criterion 2, not yet landed, for the line-free fix this pin dance works around). expect_merged itself (formerly src/worktree.rs:86) is no longer a candidate at all: round 4 moved it, together with `IntegrateOutcome` and the pre-round-4 `integrate` method, into this file's own `#[cfg(test)] mod tests` (a test-only recomposition of the newly-split `merge_into_worktree`/`land`, since production - `integrate_and_emit` - now calls those two split methods directly for its own row-level durable recording and has no caller left for the combined form) - a test-scoped item is not a production dead-code candidate by this scanner's own definition, closing the finding at its root rather than re-dispositioning it in place."
   }
 ]

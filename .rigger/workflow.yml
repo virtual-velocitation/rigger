@@ -111,6 +111,17 @@ build:
   mutation: "on"            # implementer's diff-scoped mutation-efficacy step (spec 73)
   max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
 
+# Registered regenerable artifacts (spec 88, criterion 1): an integration merge conflict
+# CONFINED entirely to paths one of these rules matches is resolved by the conductor
+# itself - running `run` in the unit's worktree and committing - with no implementer
+# spawn at all. `docs/audit/*` is the simplification-audit catalog/report spec 85/87's
+# units regenerate today by hand with RIGGER_AUDIT_WRITE=1; registering it here lets a
+# conflict confined to those files (a common parallel-unit collision, since every unit
+# that touches audited code also updates them) resolve itself.
+regenerate:
+  - paths: ["docs/audit/*"]
+    run: "RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit"
+
 gates:                      # the project's verification library, referenced by name
   fmt:    { run: "cargo fmt --check",                        kind: core }
   clippy: { run: "cargo clippy --all-targets -- -D warnings", kind: core }
