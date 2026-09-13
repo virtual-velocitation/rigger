@@ -2069,3 +2069,296 @@ fn an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_s
          not the metadata side: {run2_started}"
     );
 }
+
+/// Test 13 (round 7, closing
+/// `adv-u88c2-r6-quarantine-orphans-the-criterions-own-future-adoption` per operator ruling
+/// `op-u88c2-round-7-definition-of-done-after-resume` item 1): round 6's quarantine
+/// (`branch_is_foreign` -> `create_branch_at` the orphaned ref -> `delete_branch` the
+/// canonical name) correctly stopped cross-spec CONTENT CONTAMINATION (test 12) but left the
+/// move entirely UNRECORDED - `prior_criterion_unit` still (correctly) names the same bare
+/// unit id for a LATER, genuine retry of the exact criterion/spec that content was itself
+/// started under, but `unit_branch(prior)` now names the DELETED canonical ref, and the old
+/// `let Ok(tip) = branch_tip(prior_branch) else { return Ok(None) }` swallowed that Not
+/// Found as "nothing to adopt", silently discarding real reviewed history the harness
+/// itself had just moved aside - defeating spec 88's own Operator rule ("a unit's reviewed
+/// history is never discarded by the harness") for the exact criterion the quarantine had
+/// just fired against.
+///
+/// THREE real `conductor::run` calls sharing one store and one real git repo:
+/// - RUN 1 (spec A, criterion X): escalates with real committed work, never integrated,
+///   never GC'd - mirrors test 12's own setup exactly.
+/// - RUN 2 (spec B, an unrelated criterion Y): reuses RUN 1's exact literal slug, triggering
+///   the round-6 quarantine with ZERO contamination (test 12's own guarantee, reproven here
+///   as a precondition before the real assertion below).
+/// - RUN 3 (spec A again, criterion X again, a NEW planner slug): the realistic retry spec
+///   88 exists for - `prior_criterion_unit` names RUN 1's unit id as the candidate again,
+///   its canonical branch is gone, so this round's fix must resolve the durable quarantine
+///   record instead of silently starting fresh. Must ADOPT: RUN 1's real file lands on the
+///   base, and `adopted_from` names RUN 1's real unit and tip.
+#[test]
+fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+
+    let criterion_x = "the boiler reports its own internal temperature continuously";
+    let spec_a = "specs/88-a-unit-lineage-is-durable.md";
+
+    // RUN 1 (spec A, criterion X): escalates with real committed work, never integrated,
+    // never GC'd - mirrors test 12's own setup exactly.
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let shared_slug = "quarantine-retry-original-slug";
+    let shared_branch = format!("rigger/u/{shared_slug}");
+    let driver1 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "criterion-x-work.txt".into(),
+            "criterion X's real, reviewed, still-abandoned work\n".into(),
+        )),
+        gates: vec!["gate".to_string()],
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let mut cfg1 = fresh_run_cfg("false");
+    cfg1.workflow.defaults.max_retries = 1;
+    let rs1 = run(&cfg1, &deps1).unwrap();
+    assert_eq!(
+        rs1.units[shared_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+    let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
+        .expect("the escalated unit's durable branch must exist with a resolvable tip");
+
+    // RUN 2 (spec B, an UNRELATED criterion Y): reuses the exact same literal slug, with
+    // no adoption ever legitimately decided for it - triggers the round-6 quarantine.
+    let criterion_y = "the injector independently reports its own duty cycle on every poll";
+    let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
+    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    let driver2 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_y.to_string(),
+        worker_write: Some((
+            "run2-own-work.txt".into(),
+            "spec B's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_y.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    assert_eq!(
+        rs2.units[shared_slug].status,
+        ledger::Status::Integrated,
+        "spec B's own unit must run its ordinary lifecycle through to integration"
+    );
+    assert!(
+        !worktree::branch_exists(repo.path().to_str().unwrap(), &shared_branch),
+        "the round-6 quarantine must have deleted the canonical name once its foreign \
+         content was moved aside"
+    );
+    assert!(
+        !repo.path().join("criterion-x-work.txt").exists(),
+        "spec B's unit must never inherit spec A's escalated, unrelated content - test 12's \
+         own contamination guarantee, reproven here as a precondition of this test's real \
+         assertion below"
+    );
+
+    // RUN 3 (spec A AGAIN, criterion X AGAIN, a NEW planner slug): the realistic retry -
+    // `prior_criterion_unit` still names `shared_slug` for this exact (criterion, spec),
+    // but its canonical branch is gone (quarantined above). This round's fix must resolve
+    // the durable quarantine record instead of reading the deleted name as "never existed".
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let retry_slug = "quarantine-retry-new-slug";
+    let driver3 = ProposesSlugDriver {
+        proposed_id: retry_slug.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "run3-own-work.txt".into(),
+            "the retry's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps3 = Deps {
+        store: &store,
+        driver: &driver3,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    assert_eq!(
+        rs3.units[retry_slug].status,
+        ledger::Status::Integrated,
+        "the genuine retry must run its ordinary lifecycle through to integration; units: {:?}",
+        rs3.units.keys().collect::<Vec<_>>()
+    );
+
+    assert!(
+        repo.path().join("criterion-x-work.txt").exists(),
+        "the genuine retry of criterion X's own (criterion, spec) must recover its real, \
+         reviewed work from the quarantine ref rather than silently starting fresh - spec \
+         88's own Operator rule (\"a unit's reviewed history is never discarded by the \
+         harness\") applied to the harness's OWN quarantine move, not just an external \
+         operator's manual pruning"
+    );
+    assert!(repo.path().join("run3-own-work.txt").exists());
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    let retry_started = find_unit_started(&events, retry_slug);
+    let adopted_from = &retry_started["adopted_from"];
+    assert_eq!(
+        adopted_from["unit"].as_str(),
+        Some(shared_slug),
+        "the retry must record its adoption as coming from RUN 1's real unit id: {retry_started}"
+    );
+    assert_eq!(
+        adopted_from["tip"].as_str(),
+        Some(prior_tip.as_str()),
+        "the retry must adopt at RUN 1's own real tip - resolved off the quarantine ref, \
+         never a different or stale sha: {retry_started}"
+    );
+}
+
+/// Test 14 (round 7, closing `sdet-u88c2-r6-quarantine-crash-window-permanent-wedge` per
+/// operator ruling `op-u88c2-round-7-definition-of-done-after-resume` item 2): the round-6
+/// quarantine sequence (`create_branch_at(quarantine, tip)` then `delete_branch(branch)`)
+/// had no `branch_exists(quarantine)` guard before the first call - unlike the sibling
+/// adoption call site's own `!branch_exists` guard a few lines above it in the SAME
+/// function - so a real crash between the two git calls left a resumed retry recomputing
+/// the IDENTICAL deterministic `(unit_id, tip)` pair and hard-erroring on git's own "branch
+/// already exists" refusal: a PERMANENT wedge, since every subsequent retry recomputes the
+/// same inputs and fails identically, until a human resolved the git state by hand.
+///
+/// Reproduces the exact crash state directly (no public API can interrupt
+/// `adopt_prior_criterion_branch` mid-call - mirrors tests 7/8's own technique): the
+/// quarantine ref is pre-created via the SAME production `Worktree::create_branch_at` the
+/// fix itself uses, at the SAME deterministic name (`quarantine_branch_name`'s own
+/// `rigger/orphaned/<id>-<12-char-tip>` grammar), while the foreign canonical branch is
+/// left in place (the delete never ran) - then a real second `run()` drives the identical
+/// collision that would have triggered the original (pre-crash) quarantine attempt. Pre-fix
+/// this hard-errors the whole run; post-fix the guard lets the resumed retry complete the
+/// deferred rename instead of wedging.
+#[test]
+fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a_resumed_retry() {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let store = Store::open(":memory:").unwrap();
+
+    let criterion_x = "the condenser reports its own coolant flow rate continuously";
+    let spec_a = "specs/88-a-unit-lineage-is-durable.md";
+
+    start_fresh(&store, &[criterion_x.to_string()], "", "", spec_a).unwrap();
+    let shared_slug = "crash-window-shared-slug";
+    let shared_branch = format!("rigger/u/{shared_slug}");
+    let driver1 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_x.to_string(),
+        worker_write: Some((
+            "criterion-x-work.txt".into(),
+            "criterion X's real, reviewed, still-abandoned work\n".into(),
+        )),
+        gates: vec!["gate".to_string()],
+    };
+    let deps1 = Deps {
+        store: &store,
+        driver: &driver1,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_x.to_string()],
+    };
+    let mut cfg1 = fresh_run_cfg("false");
+    cfg1.workflow.defaults.max_retries = 1;
+    let rs1 = run(&cfg1, &deps1).unwrap();
+    assert_eq!(
+        rs1.units[shared_slug].status,
+        ledger::Status::Escalated,
+        "an always-failing gate must exhaust remediation and escalate, never integrate"
+    );
+    let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
+        .expect("the escalated unit's durable branch must exist with a resolvable tip");
+
+    // Reproduce the CRASH STATE directly: the quarantine ref already exists at the
+    // foreign branch's own tip (the first git call succeeded), but the canonical branch
+    // is still there too (the second git call - the delete - never ran).
+    let quarantine_branch = format!("rigger/orphaned/{shared_slug}-{}", &prior_tip[..12]);
+    Worktree::create_branch_at(
+        repo.path().to_str().unwrap(),
+        &quarantine_branch,
+        &prior_tip,
+    )
+    .unwrap();
+    assert!(
+        worktree::branch_exists(repo.path().to_str().unwrap(), &shared_branch),
+        "the simulated crash must leave the canonical branch NOT YET deleted"
+    );
+
+    // RESUME: a real second `run()` call reuses the identical literal slug for an
+    // unrelated criterion/spec - the SAME collision that would have driven the original
+    // (pre-crash) quarantine attempt - exactly what a fresh `rigger step` process
+    // recomputes after the crash.
+    let criterion_y = "the fan independently reports its own duty cycle on every poll";
+    let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
+    start_fresh(&store, &[criterion_y.to_string()], "", "", spec_b).unwrap();
+    let driver2 = ProposesSlugDriver {
+        proposed_id: shared_slug.to_string(),
+        criterion: criterion_y.to_string(),
+        worker_write: Some((
+            "run2-own-work.txt".into(),
+            "spec B's own genuinely new work\n".into(),
+        )),
+        gates: Vec::new(),
+    };
+    let deps2 = Deps {
+        store: &store,
+        driver: &driver2,
+        gates: &ExecRunner,
+        repo: repo.path().to_str().unwrap().to_string(),
+        grounder: None,
+        graph: None,
+        criteria: vec![criterion_y.to_string()],
+    };
+    let rs2 = run(&fresh_run_cfg("true"), &deps2).expect(
+        "a resumed retry recomputing the identical (unit_id, tip) quarantine ref must \
+         complete the deferred rename, never hard-error on git's own \"branch already \
+         exists\" refusal - the permanent wedge \
+         sdet-u88c2-r6-quarantine-crash-window-permanent-wedge reproduced",
+    );
+    assert_eq!(
+        rs2.units[shared_slug].status,
+        ledger::Status::Integrated,
+        "the resumed unit must still run its ordinary lifecycle through to integration"
+    );
+    assert!(
+        !worktree::branch_exists(repo.path().to_str().unwrap(), &shared_branch),
+        "the resumed retry must complete the deferred delete of the canonical name"
+    );
+    assert!(
+        worktree::branch_exists(repo.path().to_str().unwrap(), &quarantine_branch),
+        "the pre-existing quarantine ref must survive untouched, never re-created or lost"
+    );
+    assert!(repo.path().join("run2-own-work.txt").exists());
+    assert!(
+        !repo.path().join("criterion-x-work.txt").exists(),
+        "the foreign content must never ride into spec B's unit's own tree"
+    );
+}

@@ -245,6 +245,23 @@ const STATUS_COMPENSATION_QUEUED: &str = "compensation-queued";
 /// `Status::parse` returns `None` and both the ledger and metrics folds ignore it.
 const STATUS_ADOPTION_RECORDED: &str = "adoption-recorded";
 
+/// The `UnitStatus.status` token recording a QUARANTINE durably (spec 88 round 7, closing
+/// `adv-u88c2-r6-quarantine-orphans-the-criterions-own-future-adoption`):
+/// [`RunCtx::adopt_prior_criterion_branch`]'s quarantine path (spec 88 round 6) moves a
+/// FOREIGN occupant of a unit's canonical branch aside rather than destroying it (Operator
+/// rule, spec 88 Goal: "a unit's reviewed history is never discarded by the harness"), but
+/// round 6 left that move entirely unrecorded - the deleted canonical name then reads as
+/// "never existed" to a LATER, genuine retry of the exact `(unit, criterion_id, spec)`
+/// identity the quarantined content was itself started under, even though
+/// [`prior_criterion_unit`] still (correctly) names the same bare unit id for it. This mark
+/// is stamped the MOMENT the quarantine's git side effect runs, keyed on the QUARANTINED
+/// content's own identity (never the unit that TRIGGERED the collision), so
+/// [`quarantined_branch`] can resolve a later retry to the real ref instead of the deleted
+/// name. Rides the existing `UnitStatus` vocabulary (no new event type), exactly like
+/// [`STATUS_ADOPTION_RECORDED`]: deliberately NOT a [`ledger::Status`] variant, so
+/// `Status::parse` returns `None` and both the ledger and metrics folds ignore it.
+const STATUS_BRANCH_QUARANTINED: &str = "branch-quarantined";
+
 /// The metadata key naming a first-green-wins speculation GROUP (spec 13, unit 3) on the
 /// events its candidates emit: the winner's `UnitIntegrated`, every cancelled candidate's
 /// `UnitStatus`, and each candidate's green/verified status carry it. It is audit metadata
@@ -358,6 +375,19 @@ fn compensation_queued_key(triggerer: &str, target: &str, attempt: u32) -> Strin
 /// never mis-parses it as a gate key.
 fn adoption_provenance_key(unit: &str, criterion_id: &str, spec: &str) -> String {
     format!("{unit}/{criterion_id}/{spec}/adopted-from")
+}
+
+/// The replay key for a durable [`STATUS_BRANCH_QUARANTINED`] mark (spec 88 round 7),
+/// keyed on the QUARANTINED content's own `(unit, criterion_id, spec)` identity - the
+/// `(criterion_id, spec)` [`branch_owner`] proved the foreign occupant actually belongs
+/// to, never the colliding unit's own `st.criterion_id`/spec (those are unrelated by
+/// construction - that is exactly what "foreign" means). Mirrors
+/// [`adoption_provenance_key`]'s identical scoping rationale: a planner slug carries no
+/// cross-run uniqueness guarantee, so the quarantine record must resolve by the content's
+/// real identity, never the bare id alone. The `quarantined:` infix carries no `/gate:`
+/// substring, so [`unit_of_gate_key`] never mis-parses it as a gate key.
+fn quarantine_record_key(unit: &str, criterion_id: &str, spec: &str) -> String {
+    format!("{unit}/{criterion_id}/{spec}/quarantined")
 }
 
 /// Whether a gate RUNS during the blast-radius-narrowed inner loop (spec 12, unit 3): a
@@ -8242,6 +8272,38 @@ impl RunCtx<'_> {
     /// "a unit's reviewed history is never discarded by the harness") so the caller's own
     /// `Worktree::create` recomputes `branch_exists` as false and starts this unit
     /// genuinely fresh, off HEAD.
+    ///
+    /// QUARANTINE IS A RECORD, NOT JUST A RENAME (round 7, operator ruling
+    /// `op-u88c2-round-7-definition-of-done-after-resume` item 1, closing
+    /// `adv-u88c2-r6-quarantine-orphans-the-criterions-own-future-adoption`): round 6's
+    /// quarantine correctly stopped the cross-spec content contamination but left the
+    /// move entirely unrecorded, so a LATER, genuine retry of the EXACT criterion/spec the
+    /// quarantined content was itself started under - `prior_criterion_unit` still
+    /// (correctly) names the same bare unit id for it - resolved `unit_branch(prior)` to
+    /// the now-DELETED canonical name and silently gave up (`Ok(None)`), discarding real
+    /// reviewed history the harness's own quarantine had just moved aside. Fixed two ways:
+    /// the quarantine path now stamps [`STATUS_BRANCH_QUARANTINED`] (via
+    /// [`quarantine_record_key`]) keyed on the FOREIGN content's own `(unit, criterion_id,
+    /// spec)` identity - never the colliding unit's `st.criterion_id`/spec - naming the
+    /// quarantine ref it moved to; and the prior-candidate fallback below, when the
+    /// canonical branch is absent, consults [`quarantined_branch`] for that identity
+    /// before giving up, so a `branch_tip` failure on a ref this call POSITIVELY KNOWS
+    /// should exist (either the canonical name it just checked, or a recorded quarantine
+    /// ref) surfaces as a real `Error` - with a lesson recorded by the ordinary per-stage
+    /// error path - never another silent `Ok(None)`. Only the genuinely-never-existed case
+    /// (no canonical branch AND no quarantine record for this identity) still returns
+    /// `Ok(None)`, unchanged from before this fix.
+    ///
+    /// CRASH-WINDOW GUARD (round 7, operator ruling item 2, closing
+    /// `sdet-u88c2-r6-quarantine-crash-window-permanent-wedge`): the quarantine's two git
+    /// calls (`create_branch_at` the orphaned ref, then `delete_branch` the canonical
+    /// name) are both keyed on the SAME deterministic `(unit_id, tip)` pair, so a process
+    /// that crashes between them left a resumed retry recomputing the identical inputs and
+    /// hard-erroring on git's own "branch already exists" refusal - a permanent wedge,
+    /// since every subsequent retry fails identically. A `branch_exists` guard before
+    /// `create_branch_at`, mirroring the sibling adoption call site's own `!branch_exists`
+    /// guard a few lines above it in this same function, makes a resumed retry skip the
+    /// already-done rename and complete only the still-pending delete.
     fn adopt_prior_criterion_branch(
         &self,
         st: &Stage,
@@ -8267,11 +8329,40 @@ impl RunCtx<'_> {
             // literal slug collision with an unrelated (criterion, spec) must never let
             // that unrelated content ride into THIS unit's tree (the primary blocker
             // fix above).
-            if branch_is_foreign(&branch_owner(&events, &st.name), &st.criterion_id, &spec) {
+            let owner = branch_owner(&events, &st.name);
+            if branch_is_foreign(&owner, &st.criterion_id, &spec) {
+                // `branch_is_foreign` returns `false` for `None` (see its own doc
+                // comment), so a foreign verdict proves `owner` is `Some` - this is the
+                // (criterion_id, spec) the QUARANTINED content actually belongs to,
+                // never this call's own st.criterion_id/spec.
+                let (owner_criterion, owner_spec) = owner.unwrap_or_default();
                 let tip = worktree::branch_tip(&self.deps.repo, &branch)?;
                 let quarantine = quarantine_branch_name(&st.name, &tip);
-                Worktree::create_branch_at(&self.deps.repo, &quarantine, &tip)?;
+                // CRASH-WINDOW GUARD (round 7): a resumed retry recomputes the identical
+                // (unit_id, tip) pair, so a prior incarnation that crashed after this
+                // create but before the delete below must never hard-error on "branch
+                // already exists" - it completes the deferred rename instead.
+                // `delete_branch` is already idempotent (it no-ops when its target is
+                // already gone), so only this call needs the guard.
+                if !worktree::branch_exists(&self.deps.repo, &quarantine) {
+                    Worktree::create_branch_at(&self.deps.repo, &quarantine, &tip)?;
+                }
                 Worktree::delete_branch(&self.deps.repo, &branch)?;
+                // QUARANTINE IS A RECORD, NOT JUST A RENAME (round 7): keyed on the
+                // quarantined content's OWN identity so a later genuine retry of that
+                // exact criterion/spec can find it again via `quarantined_branch` below.
+                self.emit_keyed_meta(
+                    &quarantine_record_key(&st.name, &owner_criterion, &owner_spec),
+                    ledger::TYPE_UNIT_STATUS,
+                    json!({
+                        "id": st.name,
+                        "status": STATUS_BRANCH_QUARANTINED,
+                        "criterion_id": owner_criterion,
+                        "spec": owner_spec,
+                        "quarantined_to": {"branch": quarantine, "tip": tip},
+                    }),
+                    &[],
+                )?;
             }
             return Ok(None);
         }
@@ -8279,10 +8370,24 @@ impl RunCtx<'_> {
             return Ok(None);
         };
         let prior_branch = unit_branch(&prior);
-        let Ok(tip) = worktree::branch_tip(&self.deps.repo, &prior_branch) else {
-            // The prior unit's durable branch is gone (manually pruned, or the prior
-            // process never actually committed one despite starting) - nothing to
-            // adopt; the unit starts fresh exactly as before this feature existed.
+        let tip = if worktree::branch_exists(&self.deps.repo, &prior_branch) {
+            worktree::branch_tip(&self.deps.repo, &prior_branch)?
+        } else if let Some(quarantine) =
+            quarantined_branch(&events, &prior, &st.criterion_id, &spec)
+        {
+            // The candidate's canonical branch was moved aside by a LATER, unrelated
+            // slug collision (the quarantine path above) - the durable record proves
+            // this criterion's real reviewed work still exists, so failing to find it
+            // here is a genuine defect (a lesson is recorded by the ordinary per-stage
+            // error path), never another silent "nothing to adopt" - spec 88's own
+            // Operator rule: "a unit's reviewed history is never discarded by the
+            // harness."
+            worktree::branch_tip(&self.deps.repo, &quarantine)?
+        } else {
+            // The prior unit's durable branch is gone with no quarantine trail either
+            // (manually pruned, or the prior process never actually committed one
+            // despite starting) - nothing to adopt; the unit starts fresh exactly as
+            // before this feature existed.
             return Ok(None);
         };
         self.emit_keyed_meta(
@@ -10225,6 +10330,48 @@ fn recorded_adoption(
                 .unwrap_or_default()
                 .to_string(),
         ))
+    })
+}
+
+/// The quarantine ref a unit's canonical `rigger/u/<id>` branch was moved to when
+/// [`branch_owner`] proved a LATER, unrelated (criterion, spec) reusing the same literal
+/// id was about to inherit its real content (spec 88 round 7, closing
+/// `adv-u88c2-r6-quarantine-orphans-the-criterions-own-future-adoption`): the durable
+/// [`STATUS_BRANCH_QUARANTINED`] mark [`RunCtx::adopt_prior_criterion_branch`]'s quarantine
+/// path writes for the EXACT `(unit, criterion_id, spec)` identity the quarantined content
+/// was itself started under - so a genuine LATER retry of that same criterion/spec, which
+/// [`prior_criterion_unit`] still (correctly) names this bare unit id for, resolves its
+/// real reviewed work here instead of reading the deleted canonical name as "never
+/// existed". Mirrors [`recorded_adoption`]'s own read shape and matching rules exactly
+/// (whole-stream fold, `(id, status, criterion_id, spec)` all required to agree). `None`
+/// when this exact triple was never quarantined.
+fn quarantined_branch(
+    events: &[Event],
+    unit: &str,
+    criterion_id: &str,
+    spec: &str,
+) -> Option<String> {
+    events.iter().find_map(|e| {
+        if e.type_ != ledger::TYPE_UNIT_STATUS {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(&e.data).ok()?;
+        let own_criterion_id = v
+            .get("criterion_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let own_spec = v.get("spec").and_then(Value::as_str).unwrap_or_default();
+        if v.get("id").and_then(Value::as_str) != Some(unit)
+            || v.get("status").and_then(Value::as_str) != Some(STATUS_BRANCH_QUARANTINED)
+            || own_criterion_id != criterion_id
+            || own_spec != spec
+        {
+            return None;
+        }
+        v.get("quarantined_to")?
+            .get("branch")?
+            .as_str()
+            .map(str::to_string)
     })
 }
 
