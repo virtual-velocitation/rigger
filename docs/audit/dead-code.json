@@ -66,23 +66,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 12991
+        "line": 13098
       },
       {
         "file": "src/main.rs",
-        "line": 13012
+        "line": 13119
       },
       {
         "file": "src/main.rs",
-        "line": 13527
+        "line": 13634
       },
       {
         "file": "tests/cli.rs",
-        "line": 22254
+        "line": 22528
       },
       {
         "file": "tests/cli.rs",
-        "line": 22269
+        "line": 22543
       }
     ],
     "disposition": "delete",
@@ -1009,47 +1009,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 16059
+        "line": 16166
       },
       {
         "file": "src/main.rs",
-        "line": 16092
+        "line": 16199
       },
       {
         "file": "src/main.rs",
-        "line": 16111
+        "line": 16218
       },
       {
         "file": "src/main.rs",
-        "line": 16114
+        "line": 16221
       },
       {
         "file": "src/main.rs",
-        "line": 16117
+        "line": 16224
       },
       {
         "file": "src/main.rs",
-        "line": 17749
+        "line": 17856
       },
       {
         "file": "src/main.rs",
-        "line": 17762
+        "line": 17869
       },
       {
         "file": "src/main.rs",
-        "line": 17777
+        "line": 17884
       },
       {
         "file": "src/main.rs",
-        "line": 23186
+        "line": 23293
       },
       {
         "file": "src/main.rs",
-        "line": 23187
+        "line": 23294
       },
       {
         "file": "src/main.rs",
-        "line": 23188
+        "line": 23295
       },
       {
         "file": "src/mcpserver.rs",
@@ -1225,35 +1225,35 @@
       },
       {
         "file": "tests/cli.rs",
-        "line": 9893
+        "line": 10167
       },
       {
         "file": "tests/cli.rs",
-        "line": 9894
+        "line": 10168
       },
       {
         "file": "tests/cli.rs",
-        "line": 9895
+        "line": 10169
       },
       {
         "file": "tests/cli.rs",
-        "line": 9896
+        "line": 10170
       },
       {
         "file": "tests/cli.rs",
-        "line": 9981
+        "line": 10255
       },
       {
         "file": "tests/cli.rs",
-        "line": 10041
+        "line": 10315
       },
       {
         "file": "tests/cli.rs",
-        "line": 10042
+        "line": 10316
       },
       {
         "file": "tests/cli.rs",
-        "line": 10043
+        "line": 10317
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
