@@ -66,23 +66,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 12991
+        "line": 13036
       },
       {
         "file": "src/main.rs",
-        "line": 13012
+        "line": 13057
       },
       {
         "file": "src/main.rs",
-        "line": 13527
+        "line": 13572
       },
       {
         "file": "tests/cli.rs",
-        "line": 22254
+        "line": 22252
       },
       {
         "file": "tests/cli.rs",
-        "line": 22269
+        "line": 22267
       }
     ],
     "disposition": "delete",
@@ -1009,47 +1009,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 16059
+        "line": 16104
       },
       {
         "file": "src/main.rs",
-        "line": 16092
+        "line": 16137
       },
       {
         "file": "src/main.rs",
-        "line": 16111
+        "line": 16156
       },
       {
         "file": "src/main.rs",
-        "line": 16114
+        "line": 16159
       },
       {
         "file": "src/main.rs",
-        "line": 16117
+        "line": 16162
       },
       {
         "file": "src/main.rs",
-        "line": 17749
+        "line": 17907
       },
       {
         "file": "src/main.rs",
-        "line": 17762
+        "line": 17920
       },
       {
         "file": "src/main.rs",
-        "line": 17777
+        "line": 17935
       },
       {
         "file": "src/main.rs",
-        "line": 23186
+        "line": 23344
       },
       {
         "file": "src/main.rs",
-        "line": 23187
+        "line": 23345
       },
       {
         "file": "src/main.rs",
-        "line": 23188
+        "line": 23346
       },
       {
         "file": "src/mcpserver.rs",
@@ -1185,43 +1185,51 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 3826
+        "line": 3993
       },
       {
         "file": "src/worktree.rs",
-        "line": 3849
+        "line": 4016
       },
       {
         "file": "src/worktree.rs",
-        "line": 3885
+        "line": 4052
       },
       {
         "file": "src/worktree.rs",
-        "line": 3917
+        "line": 4084
       },
       {
         "file": "src/worktree.rs",
-        "line": 3952
+        "line": 4119
       },
       {
         "file": "src/worktree.rs",
-        "line": 3968
+        "line": 4135
       },
       {
         "file": "src/worktree.rs",
-        "line": 3995
+        "line": 4162
       },
       {
         "file": "src/worktree.rs",
-        "line": 4025
+        "line": 4192
       },
       {
         "file": "src/worktree.rs",
-        "line": 4032
+        "line": 4199
       },
       {
         "file": "src/worktree.rs",
-        "line": 4040
+        "line": 4207
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 9891
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 9892
       },
       {
         "file": "tests/cli.rs",
@@ -1233,27 +1241,19 @@
       },
       {
         "file": "tests/cli.rs",
-        "line": 9895
+        "line": 9979
       },
       {
         "file": "tests/cli.rs",
-        "line": 9896
+        "line": 10039
       },
       {
         "file": "tests/cli.rs",
-        "line": 9981
+        "line": 10040
       },
       {
         "file": "tests/cli.rs",
         "line": 10041
-      },
-      {
-        "file": "tests/cli.rs",
-        "line": 10042
-      },
-      {
-        "file": "tests/cli.rs",
-        "line": 10043
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -1381,19 +1381,19 @@
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 367
+        "line": 368
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 378
+        "line": 379
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 619
+        "line": 620
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 723
+        "line": 724
       }
     ],
     "disposition": "delete",
@@ -1688,15 +1688,15 @@
     "test_only_references": [
       {
         "file": "src/worktree.rs",
-        "line": 3519
+        "line": 3575
       },
       {
         "file": "src/worktree.rs",
-        "line": 3529
+        "line": 3585
       },
       {
         "file": "src/worktree.rs",
-        "line": 3595
+        "line": 3651
       }
     ],
     "disposition": "delete",
