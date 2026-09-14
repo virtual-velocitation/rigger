@@ -626,9 +626,14 @@ impl Worktree {
     }
 
     /// Whether the worktree has uncommitted changes (a dirty tree). Used to assert
-    /// the gate runs against a CLEAN, committed tree.
+    /// the gate runs against a CLEAN, committed tree. Delegates to [`path_is_dirty`],
+    /// the one git-status-dirty primitive this method, `sweep_terminal_logged` (this
+    /// module), and `main.rs`'s `reclaim_orphan_scratch` all share (spec 89 round 3,
+    /// `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`) - one dirty
+    /// check, not three independently-written `git status --porcelain -z` calls that
+    /// can silently diverge on how each fails.
     pub fn is_dirty(&self) -> Result<bool, Error> {
-        Ok(!git(&self.dir, &["status", "--porcelain", "-z"])?.is_empty())
+        path_is_dirty(&self.dir)
     }
 
     /// Every path this unit changed relative to the base the worktree branched
@@ -1825,10 +1830,14 @@ fn sweep_terminal_logged(
                 // dirty-looking and must still be reclaimed exactly as before this criterion; a
                 // branch this run's OWN definition still claims as one of its units is the one
                 // worth deferring for.
-                let dirty = declared_units.contains(branch)
-                    && !run_git(&d, &["status", "--porcelain", "-z"])
-                        .map(|out| out.trim().is_empty())
-                        .unwrap_or(false);
+                //
+                // The status read itself goes through [`path_is_dirty`] (round 3 fix,
+                // `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`) - the same
+                // shared primitive `reclaim_orphan_scratch` (main.rs) now calls too, rather than
+                // each growing its own inline `git status` call that can silently pick a
+                // different failure direction. `unwrap_or(true)`: an unreadable status fails
+                // CLOSED (dirty), never open - see that function's own doc comment for why.
+                let dirty = declared_units.contains(branch) && path_is_dirty(&d).unwrap_or(true);
                 if dirty {
                     log(&format!(
                         "rigger step: worktree sweep: kept {d:?} (branch {branch:?}) - \
@@ -2112,6 +2121,29 @@ pub fn tree_sha_of(dir: &str) -> String {
 
 fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
     run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
+}
+
+/// Whether the git worktree rooted at `dir` has uncommitted changes (a dirty tree) - the
+/// single `git status --porcelain -z` primitive [`Worktree::is_dirty`], [`sweep_terminal_logged`],
+/// and `main.rs`'s `reclaim_orphan_scratch` all share (spec 89 round 3,
+/// `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`). Round 2 had grown TWO
+/// separate inline `git status` calls at those last two sites instead of reusing the one
+/// abstraction already sitting right here, private to this module - and the pair silently
+/// diverged on which way to fail when the status read itself fails: `sweep_terminal_logged`'s
+/// treated an unreadable status as dirty (spare the tree), `reclaim_orphan_scratch`'s treated
+/// the IDENTICAL failure as clean (discard it), despite a doc comment on the latter claiming to
+/// mirror the former. `pub`, not `pub(crate)`, because `main.rs` is a separate binary crate
+/// that can only reach this module through `rigger::worktree::*` (see [`branch_tip`],
+/// [`ref_resolves`], [`path_in_ref`] for the same cross-crate shape).
+///
+/// Returns `Err` exactly like the `git`/`run_git` primitives this is built on, so a caller
+/// picks its own fail direction explicitly rather than this function silently picking one for
+/// everybody. Both call sites this round fixes now pick the SAME direction on purpose -
+/// `unwrap_or(true)`, fail CLOSED, an unreadable status counts as dirty - because "A HALT NEVER
+/// DISCARDS A TREE" (spec 89, criterion 1) means an unreadable tree must default to "protect
+/// it", never "safe to remove".
+pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
+    Ok(!git(dir, &["status", "--porcelain", "-z"])?.is_empty())
 }
 
 fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {

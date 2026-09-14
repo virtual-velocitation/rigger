@@ -3474,7 +3474,18 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/spawn.rs", 368) => 7,
         ("src/spawn.rs", 374) => 5,
         ("src/spawn.rs", 399) => 14,
-        ("src/worktree.rs", 627) => 5,
+        // Round 3 (spec 89 criterion 1, `arch-u89c1r2-dirty-check-duplicated-and-diverges-
+        // fail-direction`) shifts `is_dirty` to line 635 AND changes its body (a one-line
+        // delegation to the new `path_is_dirty` free fn, replacing the direct `git(...)` call).
+        // `rigger graph --show` only reflects `.`'s own checked-out ref (the main repo's base
+        // branch), which cannot see an unmerged unit branch's edits - reconfirmed live: it still
+        // reports the PRE-spec-89 body at line 544. Degree re-derived by the same two-part count
+        // the live tool's own output visibly used at that base snapshot (test_only_references
+        // count + call-out count, 4 + 1 = 5): `is_dirty`'s callers are its same 4 test-only call
+        // sites, untouched by this round (see this file's `disposition_for`), and its body still
+        // makes exactly ONE outgoing call - `path_is_dirty` in place of `git` - so the edge count
+        // is unchanged at 5.
+        ("src/worktree.rs", 635) => 5,
         (other_file, other_line) => panic!(
             "dead-code candidate {other_file}:{other_line} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
@@ -5819,26 +5830,28 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              references, not reachability, so park_in_run reads alive even though its only OTHER \
              caller (park) is itself dead.",
         ),
-        ("src/worktree.rs", 627) => (
+        ("src/worktree.rs", 635) => (
             Delete,
             "is_dirty has no production caller - one of spec 87's own two Goal-cited worked \
              examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current \
              tree: its 3 references (src/conductor.rs and worktree.rs's own `mod tests`) are all \
-             test-only. Line shifted again, this time by spec 89 criterion 1's round 2 fix \
-             (A HALT NEVER DISCARDS A TREE, `adv-u89c1-conflict-marker-scan-is-repo-wide-content-\
-             not-diff-scoped-false-positive`): `Worktree::commit` now gathers its own \
-             touched-or-unmerged `scope` (a `changed_files`/`conflicting_paths` union, read \
-             before `git add -A`) and hands it to `conflict_markers_present`, which the scope \
-             parameter and its widened doc comment push down another 24 lines, 603->627 above \
-             `is_dirty`. expect_merged itself (formerly src/worktree.rs:86) is no longer a \
-             candidate at all: round 4 moved it, together with `IntegrateOutcome` and the \
-             pre-round-4 `integrate` method, into this file's own `#[cfg(test)] mod tests` (a \
-             test-only recomposition of the newly-split `merge_into_worktree`/`land`, since \
-             production - `integrate_and_emit` - now calls those two split methods directly for \
-             its own row-level durable recording and has no caller left for the combined form) - \
-             a test-scoped item is not a production dead-code candidate by this scanner's own \
-             definition, closing the finding at its root rather than re-dispositioning it in \
-             place.",
+             test-only; its own body now delegates to `path_is_dirty` (spec 89 round 3), but that \
+             internal call is not a caller of `is_dirty` itself. Line shifted again, this time by \
+             spec 89 criterion 1's round 3 fix \
+             (`arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`): `is_dirty`'s \
+             body was replaced with a one-line delegation to the new shared `path_is_dirty` free \
+             fn (built on the pre-existing `git`/`run_git` primitives, and now also called \
+             directly by `sweep_terminal_logged` and `main.rs`'s `reclaim_orphan_scratch` so the \
+             two no longer risk diverging on how a git-status failure is read), and the doc \
+             comment naming that delegation pushes the line down 8 more, 627->635. expect_merged \
+             itself (formerly src/worktree.rs:86) is no longer a candidate at all: round 4 moved \
+             it, together with `IntegrateOutcome` and the pre-round-4 `integrate` method, into \
+             this file's own `#[cfg(test)] mod tests` (a test-only recomposition of the \
+             newly-split `merge_into_worktree`/`land`, since production - `integrate_and_emit` - \
+             now calls those two split methods directly for its own row-level durable recording \
+             and has no caller left for the combined form) - a test-scoped item is not a \
+             production dead-code candidate by this scanner's own definition, closing the \
+             finding at its root rather than re-dispositioning it in place.",
         ),
         (other_file, other_line) => panic!(
             "dead-code candidate {other_file}:{other_line} has no assigned disposition - this is \
