@@ -7536,6 +7536,18 @@
         "name": "\".rigger\""
       },
       {
+        "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
+        "start_line": 418,
+        "end_line": 418,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
+        "start_line": 490,
+        "end_line": 490,
+        "name": "\".rigger\""
+      },
+      {
         "file": "tests/step_attention_periphery.rs",
         "start_line": 161,
         "end_line": 161,
@@ -7945,7 +7957,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 685 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 687 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0060",
@@ -25994,9 +26006,15 @@
         "start_line": 225,
         "end_line": 273,
         "name": "rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_dir"
+      },
+      {
+        "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
+        "start_line": 406,
+        "end_line": 470,
+        "name": "rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_already_removed_before_the_call"
       }
     ],
-    "proposed_home": "spawn_scratch_reap_authorized_root_periphery::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "spawn_scratch_reap_authorized_root_periphery::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
