@@ -2481,6 +2481,23 @@ fn cmd_step(args: &[String]) -> Res {
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
     }
 
+    // The currently loaded workflow's own declared unit branches (spec 89, criterion 1, round
+    // 2 fix): config, never the event log, so it stays populated even at this project's very
+    // first step, before a single event has ever been recorded. Both step-start worktree
+    // sweeps below narrow their own "spare a dirty candidate" exception to a unit THIS run's
+    // definition actually declares - see `sweep_terminal`'s and `reclaim_orphan_scratch`'s own
+    // doc comments - so a genuinely dead, unrelated branch that happens to also be dirty is
+    // still reclaimed exactly as before this criterion. (`scratch_root` itself is NOT
+    // recomputed here - u89c4 round 2 already hoisted that single binding above, before
+    // `refuse_unless_one_root`; see its doc comment there. Both step-start sweeps below use
+    // that one binding.)
+    let declared_units: std::collections::HashSet<String> = cfg
+        .workflow
+        .stages
+        .keys()
+        .map(|slug| conductor::unit_branch(slug))
+        .collect();
+
     // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every step
     // starts by sweeping the scratch root's terminal worktrees (integrated units, review
     // scaffolding), so leaks from crashed or superseded step processes are reclaimed by the
@@ -2526,6 +2543,7 @@ fn cmd_step(args: &[String]) -> Res {
                 root,
                 RUN_BRANCH,
                 &live_branches,
+                &declared_units,
                 &fence_events,
             ) {
                 Ok(0) => {}
@@ -2663,7 +2681,7 @@ fn cmd_step(args: &[String]) -> Res {
         match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
             Ok(events) => {
                 let run_units = current_run_units(&events);
-                let removed = reclaim_orphan_scratch(&repo, root, &run_units);
+                let removed = reclaim_orphan_scratch(&repo, root, &run_units, &declared_units);
                 if removed > 0 {
                     eprintln!(
                         "rigger step: reclaimed {removed} orphaned scratch entr{} under {root}",
@@ -10327,9 +10345,21 @@ fn live_slugs(
 /// `CARGO_TARGET_DIR`). Those are run-level scratch reclaimed by the run's fixpoint/teardown
 /// once no spawn is live, never by this per-step backstop, so it can never delete a target a
 /// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
+///
+/// `declared_units` (spec 89, criterion 1, round 2 fix) is the CURRENTLY loaded workflow's own
+/// `rigger/u/<slug>` stages - config, never the event log, the SAME set `cmd_step` also hands
+/// `sweep_terminal` - narrowing this backstop's own dirty-spare exception (see the worktree arm
+/// below) to a unit this run's definition actually declares.
+///
 /// Returns how many entries were reclaimed.
-fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize {
+fn reclaim_orphan_scratch(
+    repo: &str,
+    root: &str,
+    run_units: &RunUnits,
+    declared_units: &std::collections::HashSet<String>,
+) -> usize {
     let live = live_slugs(&run_units.live_branches);
+    let declared_slugs = live_slugs(declared_units);
     let root_path = std::path::Path::new(root);
     let mut removed = 0;
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -10346,7 +10376,42 @@ fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize
             // A leftover unit worktree no live unit owns. Reap any process still rooted in it
             // (a leaked build) BEFORE removing it, and deregister it from git if a killed step
             // left it registered.
-            if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) {
+            //
+            // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), round 2 fix
+            // (sdet-u89c1-sweep-terminal-discards-halted-tree, generalized): this backstop is a
+            // SECOND worktree-disposition authority alongside `sweep_terminal` - both run from
+            // `cmd_step`, strictly before `conductor::run` ever gets a chance to capture a
+            // halted spawn's abandoned edit as its own `wip` commit - and `reap_then_remove_
+            // worktree`'s own `git worktree remove --force` "also tolerates a dirty tree" (its
+            // doc comment), i.e. force-discards one. "Not live-owned" alone is exactly the
+            // shape a store/worktree desync (a restored snapshot, or this project's very first
+            // step) leaves a genuine, not-yet-recorded unit in, so a STILL-DIRTY candidate whose
+            // slug this workflow DECLARES is spared here too, regardless of liveness - mirroring
+            // `sweep_terminal_logged`'s identical guard. Gated on `declared_slugs`: dirtiness
+            // alone is not evidence of a halted spawn - a genuinely dead, undeclared branch that
+            // happens to also carry untracked content is still reclaimed exactly as before this
+            // criterion. The status read is scoped to a REAL linked worktree only
+            // (`path.join(".git")` present) - a bare directory git never tracked has no `.git`
+            // of its own, and running `git status` from inside one climbs to whatever repo
+            // happens to enclose `root` (the "act on the enclosing repository" hazard spec 89's
+            // own STEP-RESOLVES-ONE-ROOT criterion names), reading unrelated content as "dirty" -
+            // falling back, for that shape, to the ORIGINAL unconditional reclaim, unchanged.
+            //
+            // The status read itself now goes through [`rigger::worktree::path_is_dirty`]
+            // (round 3 fix, `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`)
+            // instead of a second, independently-hardcoded `Command::new("git")` call: round 2's
+            // own inline version collapsed ANY spawn failure or non-zero git exit to `dirty =
+            // false` (fail OPEN, reclaim/discard), the exact opposite of `sweep_terminal_logged`'s
+            // `unwrap_or(false)` (which, negated into this same `dirty` polarity, fails CLOSED -
+            // spare) on the identical unreadable-status error, despite this comment already
+            // claiming the two mirror each other. Sharing the one primitive - and picking the
+            // same `unwrap_or(true)` fail-closed direction the sibling call site now also picks
+            // explicitly - makes that divergence structurally impossible to reintroduce.
+            let slug = name.trim_start_matches(rigger::worktree::UNIT_WORKTREE_PREFIX);
+            let dirty = declared_slugs.contains(slug)
+                && path.join(".git").exists()
+                && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
+            if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
                 reap_then_remove_worktree(repo, &path, root_path);
                 removed += 1;
             }
@@ -17284,7 +17349,12 @@ mod tests {
         };
         // Empty repo -> the git-aware worktree deregister is skipped and a plain removal runs,
         // which is all the synthetic (non-registered) worktree dirs here need.
-        let removed = reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units);
+        let removed = reclaim_orphan_scratch(
+            "",
+            scratch.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(
             removed, 4,
             "exactly the four non-live-owned entries are reclaimed"
@@ -17332,9 +17402,124 @@ mod tests {
 
         // Idempotent: a re-run over the now-clean root reclaims nothing and errors on nothing.
         assert_eq!(
-            reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units),
+            reclaim_orphan_scratch(
+                "",
+                scratch.to_str().unwrap(),
+                &run_units,
+                &std::collections::HashSet::new(),
+            ),
             0,
             "the sweep is idempotent - a clean root reclaims nothing"
+        );
+    }
+
+    #[test]
+    fn reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty() {
+        // Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE), round 2 fix: this backstop is a
+        // SECOND, independent worktree-disposition authority alongside `sweep_terminal` (both
+        // run from `cmd_step`, before `conductor::run` ever gets a chance to capture a halted
+        // spawn's abandoned edit as its own `wip` commit) - so the SAME "never force-remove a
+        // dirty candidate" guard `sweep_terminal_logged` now carries must apply here too, or a
+        // unit's tree can still be discarded through this door alone. `reap_then_remove_worktree`
+        // itself runs `git worktree remove --force`, which "also tolerates a dirty tree" (its
+        // own doc comment) - i.e. force-discards it. Not-yet-live is exactly the "no spawn
+        // recorded yet" shape (a store/worktree desync, or this project's very first step): the
+        // worktree here is real, dirty, and NOT in `live_branches` at all.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+
+        let wt_dir = root.join("rigger-wt-halted-unit");
+        Worktree::create(repo, wt_dir.to_str().unwrap(), "rigger/u/halted-unit", "").unwrap();
+        write_file(&wt_dir.join("halted-work.txt"), b"abandoned mid-edit\n");
+
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs([]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        // Declared (round 3 fix): this workflow's own current definition still names
+        // "halted-unit" as one of its units - the signal that distinguishes it from
+        // `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree` below's genuinely
+        // dead, undeclared one.
+        let declared_units = slugs(["rigger/u/halted-unit"]);
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 0,
+            "a dirty, non-live-owned, but DECLARED worktree is spared, never force-removed"
+        );
+        assert!(
+            wt_dir.join("halted-work.txt").exists(),
+            "the abandoned edit must survive the sweep untouched"
+        );
+
+        // The paired negative-space case: once the SAME worktree is clean (its work
+        // committed - exactly what the halt-recovery wip commit, or an ordinary landed unit,
+        // leaves behind) it is reclaimed exactly as before this fix - dirtiness, not mere
+        // non-liveness, is what changed.
+        Command::new("git")
+            .arg("-C")
+            .arg(&wt_dir)
+            .args(["add", "-A"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(&wt_dir)
+            .args(["commit", "-q", "-m", "resolved"])
+            .status()
+            .unwrap();
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 1,
+            "a CLEAN non-live-owned worktree is still reclaimed as before"
+        );
+        assert!(!wt_dir.exists(), "the clean worktree is gone");
+    }
+
+    #[test]
+    fn reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree() {
+        // Spec 89, criterion 1, round 3 fix: the negative-space twin of the test above.
+        // Dirtiness ALONE is not proof of a halted spawn - a genuinely dead, UNDECLARED branch
+        // (a prior run's leftover, a hand-made fixture) that happens to also carry untracked
+        // content is still reclaimed exactly as it was before this criterion, matching
+        // `sweep_terminal`'s own identical `declared_units` gate.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+
+        let wt_dir = root.join("rigger-wt-undeclared-orphan");
+        Worktree::create(
+            repo,
+            wt_dir.to_str().unwrap(),
+            "rigger/u/undeclared-orphan",
+            "",
+        )
+        .unwrap();
+        write_file(&wt_dir.join("stray.txt"), b"unrelated debris\n");
+
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs([]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        // Declares an UNRELATED unit only - never "undeclared-orphan".
+        let declared_units = slugs(["rigger/u/halted-unit"]);
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 1,
+            "a dirty, non-live-owned, and UNDECLARED worktree is still reclaimed"
+        );
+        assert!(
+            !wt_dir.exists(),
+            "the undeclared, unrelated worktree is gone"
         );
     }
 
@@ -17357,7 +17542,12 @@ mod tests {
         write_file(&scratch.join("cargo-target").join("live.rlib"), &[0u8; 8]);
 
         let run_units = RunUnits::default();
-        let removed = reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units);
+        let removed = reclaim_orphan_scratch(
+            "",
+            scratch.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(removed, 1, "exactly the one stray tombstone is reclaimed");
         assert!(!tombstone.exists(), "the stray tombstone must be reaped");
         assert!(
@@ -24709,6 +24899,56 @@ mod tests {
             normalized.contains("the `mutation` gate itself owns running cargo-mutants"),
             "the persona must name the mutation gate as the sole cargo-mutants invoker, so \
              the agent never re-runs it by hand; got:\n{normalized}"
+        );
+    }
+
+    /// Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): CHECKPOINT BEFORE LONG WORK.
+    /// The persona must carry the checkpoint rule literally, using the design's own
+    /// commit-message vocabulary ("mutation sweep", never the banned two-word invocation
+    /// phrase "cargo mutants" - see `no_persona_under_rigger_agents_invokes_cargo_mutants`
+    /// below, which spec 91 landed first and which this persona edit must not regress).
+    #[test]
+    fn implementer_persona_pins_the_checkpoint_before_long_work_contract() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(RIGGER_DIR)
+            .join("agents")
+            .join("rust-engineer.md");
+        let persona = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+        let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        // The trigger and the action as ONE contiguous clause - a decomposed persona
+        // that keeps "mutation sweep" and "commit" as unrelated bare words (dropping
+        // the "before long work, commit first" relation) must fail this test.
+        assert!(
+            normalized.contains(
+                "Before a mutation sweep or any full lane suite, commit your current \
+                 tree"
+            ),
+            "the checkpoint rule must fire on EITHER a mutation sweep or a full lane \
+             suite, as one contiguous clause; got:\n{normalized}"
+        );
+        // The exact commit-message template spec 89 Design specifies, verbatim.
+        assert!(
+            normalized.contains("`wip(<unit>): checkpoint before <mutation sweep | lane suite>`"),
+            "the checkpoint commit message template must be pinned verbatim; \
+             got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains(
+                "squash that checkpoint into your round's own commit \
+                 when you report"
+            ),
+            "the checkpoint must be squashed into the round commit on report, never \
+             left standing as a separate commit; got:\n{normalized}"
+        );
+        // Never the banned invocation phrase (spec 91): this persona edit must not
+        // regress the already-landed no-cargo-mutants-invocation drift guard.
+        assert!(
+            !normalized.contains("cargo mutants"),
+            "the checkpoint rule must use the design's own vocabulary (\"mutation \
+             sweep\"), never the literal invocation phrase \"cargo mutants\"; \
+             got:\n{normalized}"
         );
     }
 
