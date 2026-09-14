@@ -1401,14 +1401,20 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 74,
-        "end_line": 74,
+        "start_line": 90,
+        "end_line": 90,
         "name": "Command::new"
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 408,
-        "end_line": 408,
+        "start_line": 436,
+        "end_line": 436,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
+        "start_line": 720,
+        "end_line": 720,
         "name": "Command::new"
       },
       {
@@ -2283,7 +2289,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 353 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 354 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -3059,8 +3065,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 173,
-        "end_line": 175,
+        "start_line": 201,
+        "end_line": 203,
         "name": "unit_branch"
       },
       {
@@ -3387,8 +3393,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 167,
-        "end_line": 171,
+        "start_line": 195,
+        "end_line": 199,
         "name": "unit_worktree_dir"
       }
     ],
@@ -6993,32 +6999,32 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 119,
-        "end_line": 119,
+        "start_line": 135,
+        "end_line": 135,
         "name": "\".rigger\""
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 168,
-        "end_line": 168,
+        "start_line": 196,
+        "end_line": 196,
         "name": "\".rigger\""
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 418,
-        "end_line": 418,
+        "start_line": 446,
+        "end_line": 446,
         "name": "\".rigger\""
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 441,
-        "end_line": 441,
+        "start_line": 469,
+        "end_line": 469,
         "name": "\".rigger\""
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 475,
-        "end_line": 475,
+        "start_line": 503,
+        "end_line": 503,
         "name": "\".rigger\""
       },
       {
@@ -17606,12 +17612,6 @@
         "name": "run_rigger"
       },
       {
-        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 146,
-        "end_line": 158,
-        "name": "run_rigger"
-      },
-      {
         "file": "tests/migration_is_deliberate_periphery.rs",
         "start_line": 491,
         "end_line": 503,
@@ -17678,7 +17678,7 @@
         "name": "run_rigger"
       }
     ],
-    "proposed_home": "a new shared module (sites span 16 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/escalation_resume_periphery.rs, tests/fanout_template_needs_and_stage_retries_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/migration_is_deliberate_periphery.rs, tests/reset_build_cache_periphery.rs, tests/reset_derived_compaction_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spec_lint.rs, tests/step_attention_periphery.rs, tests/validate_advisories.rs, tests/validate_behind_the_tree_periphery.rs, tests/watchdog_cli_periphery.rs, tests/worktree_liveness_fence_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 15 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/escalation_resume_periphery.rs, tests/fanout_template_needs_and_stage_retries_periphery.rs, tests/migration_is_deliberate_periphery.rs, tests/reset_build_cache_periphery.rs, tests/reset_derived_compaction_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spec_lint.rs, tests/step_attention_periphery.rs, tests/validate_advisories.rs, tests/validate_behind_the_tree_periphery.rs, tests/watchdog_cli_periphery.rs, tests/worktree_liveness_fence_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -17807,8 +17807,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 407,
-        "end_line": 429,
+        "start_line": 435,
+        "end_line": 457,
         "name": "run_stream_identity"
       },
       {
@@ -17947,8 +17947,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 407,
-        "end_line": 429,
+        "start_line": 435,
+        "end_line": 457,
         "name": "run_stream_identity"
       },
       {
@@ -18101,8 +18101,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 436,
-        "end_line": 454,
+        "start_line": 464,
+        "end_line": 482,
         "name": "seed_run_events"
       },
       {
@@ -18349,8 +18349,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 73,
-        "end_line": 80,
+        "start_line": 89,
+        "end_line": 96,
         "name": "run_git"
       }
     ],
@@ -18369,8 +18369,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 82,
-        "end_line": 89,
+        "start_line": 98,
+        "end_line": 105,
         "name": "git_ok"
       }
     ],
@@ -18389,8 +18389,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 91,
-        "end_line": 99,
+        "start_line": 107,
+        "end_line": 115,
         "name": "git_out"
       }
     ],
@@ -18461,8 +18461,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 103,
-        "end_line": 111,
+        "start_line": 119,
+        "end_line": 127,
         "name": "temp_git_project_with_commit"
       },
       {
@@ -18498,13 +18498,19 @@
         "name": "run_rigger"
       },
       {
+        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
+        "start_line": 184,
+        "end_line": 186,
+        "name": "run_rigger"
+      },
+      {
         "file": "tests/reset_derived_compaction.rs",
         "start_line": 82,
         "end_line": 84,
         "name": "run_rigger"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/cli.rs, tests/reset_derived_compaction.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: tests/cli.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/reset_derived_compaction.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -18515,6 +18521,12 @@
         "file": "tests/cli.rs",
         "start_line": 146,
         "end_line": 172,
+        "name": "run_rigger_envs"
+      },
+      {
+        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
+        "start_line": 165,
+        "end_line": 180,
         "name": "run_rigger_envs"
       },
       {
@@ -18536,7 +18548,7 @@
         "name": "run_rigger_envs"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: tests/cli.rs, tests/reset_derived_compaction.rs, tests/reset_derived_live_writer_guard_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: tests/cli.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/reset_derived_compaction.rs, tests/reset_derived_live_writer_guard_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -18547,6 +18559,12 @@
         "file": "tests/cli.rs",
         "start_line": 146,
         "end_line": 172,
+        "name": "run_rigger_envs"
+      },
+      {
+        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
+        "start_line": 165,
+        "end_line": 180,
         "name": "run_rigger_envs"
       },
       {
@@ -18563,7 +18581,7 @@
       }
     ],
     "proposed_home": "one shared `run_rigger_envs` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0419",
@@ -18975,8 +18993,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 118,
-        "end_line": 142,
+        "start_line": 134,
+        "end_line": 158,
         "name": "write_solo_unit_workflow"
       },
       {
