@@ -60,10 +60,11 @@
 //!     parent differ refuses before any sweep"; only `cmd_step` performs a terminal sweep).
 //!     Matches the implementation: `refuse_unless_one_root` has exactly one call site,
 //!     inside `cmd_step`.
-//!   - `rigger step`'s "exactly one root" refusal firing ONLY before the terminal sweep,
-//!     while the run-branch ANCHOR (`Worktree::ensure_run_branch`, which checks out a
-//!     branch - a real mutation - in whatever repository `repo` resolved to) runs BEFORE
-//!     that refusal - TESTED HERE, as a currently-FAILING test
+//!   - `rigger step`'s "exactly one root" refusal, at round 1, firing ONLY before the
+//!     terminal sweep while the run-branch ANCHOR (`Worktree::ensure_run_branch`, which checks
+//!     out a branch - a real mutation - in whatever repository `repo` resolved to) ran BEFORE
+//!     that refusal - TESTED HERE, RED at round 1 and GREEN as of round 2's fix (which moved
+//!     the refusal to before the anchor block)
 //!     (`step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_
 //!     enclosing_repos_checked_out_branch`, below). See that test's own doc comment.
 //!   - `resolve_main_worktree_or_refuse`'s canonicalize-based comparison NOT producing a
@@ -208,41 +209,47 @@ fn branch_exists(root: &Path, branch: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Spec 89, criterion 4 (EXACTLY ONE ROOT) - a currently FAILING regression proving the
-/// refusal fires too late to keep its own promise. Reproduces the same shape as `tests/
-/// cli.rs`'s `step_refuses_before_sweeping_when_the_stores_root_and_gits_toplevel_disagree`
-/// (a git-less fixture with its own `.rigger` config, nested under a real repository's
-/// scratch root) and adds the assertion that test never makes: that the ENCLOSING (real)
-/// repository's own checked-out branch is untouched by a step that ultimately refuses.
+/// Spec 89, criterion 4 (EXACTLY ONE ROOT) - a regression, RED at round 1, GREEN as of round
+/// 2's fix, proving the refusal used to fire too late to keep its own promise. Reproduces the
+/// same shape as `tests/cli.rs`'s
+/// `step_refuses_before_sweeping_when_the_stores_root_and_gits_toplevel_disagree` (a git-less
+/// fixture with its own `.rigger` config, nested under a real repository's scratch root) and
+/// adds the assertion that test never makes: that the ENCLOSING (real) repository's own
+/// checked-out branch is untouched by a step that ultimately refuses.
 ///
-/// It is not. Confirmed by hand against the compiled binary before this test was written:
-/// starting from a fresh repo on branch "trunk" with no `rigger-run` branch, running `rigger
-/// step` from the nested git-less fixture prints the SAME "refusing - ... disagree on their
-/// root" error the existing test already asserts on - but by the time that error prints, the
-/// OUTER repository has ALREADY been left checked out on a newly-created "rigger-run"
-/// branch. `git branch -a` in the outer repo goes from `* trunk` to `* rigger-run / trunk`.
+/// At round 1 it was not. Confirmed by hand against the round-1 compiled binary before this
+/// test was written: starting from a fresh repo on branch "trunk" with no `rigger-run` branch,
+/// running `rigger step` from the nested git-less fixture printed the SAME "refusing - ...
+/// disagree on their root" error the existing test already asserts on - but by the time that
+/// error printed, the OUTER repository had ALREADY been left checked out on a newly-created
+/// "rigger-run" branch. `git branch -a` in the outer repo went from `* trunk` to `* rigger-run
+/// / trunk`.
 ///
-/// Root cause (read from `src/main.rs`'s `cmd_step`, not guessed): `refuse_unless_one_root`
-/// is called only after `scratch_root` is computed, which is AFTER the run-branch anchor
-/// block (`refuse_when_base_unreachable`, `refuse_when_base_lacks_spec_paths`,
-/// `Worktree::ensure_run_branch`, `warn_on_run_branch_divergence`) has already run against
-/// `repo` - which, in exactly this nested-fixture shape, is the ENCLOSING repository, not
-/// the fixture's own (nonexistent) one. `ensure_run_branch` never resets an EXISTING
-/// `rigger-run` branch (`src/worktree.rs`'s own `ensure_run_branch_reuses_and_never_resets_
-/// an_existing_run_branch` proves that much), but it does create-and-check-out one when
-/// absent - exactly the operator-visible mutation this test observes. The u87c3 incident
-/// this criterion closes was about `sweep_terminal` deleting an enclosing repository's real
-/// worktrees; this is the SAME "act on the enclosing repository using this directory's own
-/// unrelated events" failure mode, just landing on the branch anchor instead of the sweep -
-/// a smaller blast radius (no worktree is deleted) but the same category of unintended
-/// mutation of a repository the operator never pointed this invocation at, and it is NOT
-/// guarded by the step lock either: `_step_lock` is acquired against the FIXTURE's own
-/// (cwd-relative) `.rigger`, not the enclosing repository's, so a rogue nested step like
-/// this one does not even serialize against a real, concurrent `rigger step` already
+/// Root cause at round 1 (read from `src/main.rs`'s `cmd_step`, not guessed):
+/// `refuse_unless_one_root` was called only after `scratch_root` was computed, which sat
+/// AFTER the run-branch anchor block (`refuse_when_base_unreachable`,
+/// `refuse_when_base_lacks_spec_paths`, `Worktree::ensure_run_branch`,
+/// `warn_on_run_branch_divergence`) had already run against `repo` - which, in exactly this
+/// nested-fixture shape, is the ENCLOSING repository, not the fixture's own (nonexistent) one.
+/// `ensure_run_branch` never resets an EXISTING `rigger-run` branch (`src/worktree.rs`'s own
+/// `ensure_run_branch_reuses_and_never_resets_an_existing_run_branch` proves that much), but it
+/// does create-and-check-out one when absent - exactly the operator-visible mutation this test
+/// observed. The u87c3 incident this criterion closes was about `sweep_terminal` deleting an
+/// enclosing repository's real worktrees; this was the SAME "act on the enclosing repository
+/// using this directory's own unrelated events" failure mode, just landing on the branch
+/// anchor instead of the sweep - a smaller blast radius (no worktree is deleted) but the same
+/// category of unintended mutation of a repository the operator never pointed this invocation
+/// at, and it was NOT guarded by the step lock either: `_step_lock` is acquired against the
+/// FIXTURE's own (cwd-relative) `.rigger`, not the enclosing repository's, so a rogue nested
+/// step like this one did not even serialize against a real, concurrent `rigger step` already
 /// running in the enclosing repository.
 ///
-/// This is a boundary bug for the implementer to fix (move the one-root check before the
-/// anchor block, not merely before the sweep), never a reason to weaken this assertion.
+/// Round 2's fix: `refuse_unless_one_root` (with `scratch_root`'s computation hoisted
+/// alongside it, since it is pure and needs only `repo` and `cfg`, both already resolved) now
+/// runs immediately after `cmd_step`'s own `resolve_main_worktree_or_refuse` call, before
+/// `acquire_step_lock` and the entire run-branch anchor block - so a step that is going to
+/// refuse on this check never mutates any repository first. This assertion is never a reason
+/// to weaken - it is what proves the round-2 placement actually holds.
 #[test]
 fn step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_enclosing_repos_checked_out_branch(
 ) {
