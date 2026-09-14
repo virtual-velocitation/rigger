@@ -22639,13 +22639,19 @@ fn step_losing_a_race_against_a_pid_header_less_winner_records_a_sentinel_marker
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     write_two_stage_workflow(root);
-    let dash_port = free_loopback_port();
 
     // The WINNER stand-in: answers the dash header (so the race resolves cleanly) but never the
     // pid header (so the serving pid can never be attributed) - simulating a pre-round-2 or
     // foreign dash already holding the fixed address before this step ever spawns its own.
-    let listener = std::net::TcpListener::bind(("127.0.0.1", dash_port))
-        .expect("failed to bind the stand-in winner's port");
+    // It HOLDS the reserved listener itself: looking a free port up, dropping it and binding
+    // it again leaves a gap in which any sibling fixture (dozens bind ephemeral loopback ports
+    // at once under a full-suite gate) takes it - the AddrInUse flake every concurrent run hit
+    // (spec 89's check-in, 2026-09-14, on a tree that was otherwise green).
+    let listener = reserved_loopback_listener();
+    let dash_port = listener
+        .local_addr()
+        .expect("read the stand-in winner's port")
+        .port();
     std::thread::spawn(move || {
         for mut s in listener.incoming().flatten() {
             let _ = s.write_all(
@@ -22712,12 +22718,16 @@ fn step_against_a_pid_header_less_winner_is_idempotent_across_two_consecutive_st
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     write_two_stage_workflow(root);
-    let dash_port = free_loopback_port();
 
     let connections = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&connections);
-    let listener = std::net::TcpListener::bind(("127.0.0.1", dash_port))
-        .expect("failed to bind the stand-in winner's port");
+    // The stand-in winner holds the reserved listener itself (no look-up-then-rebind gap):
+    // see step_losing_a_race_against_a_pid_header_less_winner_records_a_sentinel_marker.
+    let listener = reserved_loopback_listener();
+    let dash_port = listener
+        .local_addr()
+        .expect("read the stand-in winner's port")
+        .port();
     std::thread::spawn(move || {
         for mut s in listener.incoming().flatten() {
             counter.fetch_add(1, Ordering::SeqCst);

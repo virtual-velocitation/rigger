@@ -2491,7 +2491,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/conductor.rs:10795-10797` `normalize_ws`
 - `src/distiller.rs:60-62` `normalize`
-- `tests/cli.rs:25791-25793` `normalize_ws`
+- `tests/cli.rs:25801-25803` `normalize_ws`
 
 #### `dup-0040` (semantic, 2 sites)
 
@@ -2500,7 +2500,7 @@ Proposed home: `one shared `normalize_ws` helper (e.g. relocated into `tests/com
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/conductor.rs:10795-10797` `normalize_ws`
-- `tests/cli.rs:25791-25793` `normalize_ws`
+- `tests/cli.rs:25801-25803` `normalize_ws`
 
 #### `dup-0041` (near, 2 sites)
 
@@ -3558,59 +3558,59 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/cli.rs:22348-22348` `".rigger"`
 - `tests/cli.rs:22429-22429` `".rigger"`
 - `tests/cli.rs:22500-22500` `".rigger"`
-- `tests/cli.rs:22862-22862` `".rigger"`
-- `tests/cli.rs:22874-22874` `".rigger"`
-- `tests/cli.rs:22901-22901` `".rigger"`
-- `tests/cli.rs:22929-22929` `".rigger"`
-- `tests/cli.rs:22940-22940` `".rigger"`
-- `tests/cli.rs:22977-22977` `".rigger"`
-- `tests/cli.rs:23066-23066` `"the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}"`
-- `tests/cli.rs:23138-23138` `"{root}/.rigger/events.db"`
-- `tests/cli.rs:23155-23155` `"{root}/.rigger/events.db"`
-- `tests/cli.rs:24046-24046` `"{other_root}/.rigger/events.db"`
-- `tests/cli.rs:24425-24425` `"/stale/root/.rigger/events.db"`
-- `tests/cli.rs:24446-24446` `"/live/root/.rigger/events.db"`
-- `tests/cli.rs:24548-24548` `"the step must record a dash marker at .rigger/dash.marker"`
-- `tests/cli.rs:24748-24748` `".rigger"`
-- `tests/cli.rs:24930-24930` `".rigger"`
-- `tests/cli.rs:25033-25033` `".rigger"`
-- `tests/cli.rs:25158-25158` `".rigger"`
-- `tests/cli.rs:25800-25800` `".rigger"`
-- `tests/cli.rs:25819-25819` `".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}"`
-- `tests/cli.rs:25823-25823` `".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \
+- `tests/cli.rs:22872-22872` `".rigger"`
+- `tests/cli.rs:22884-22884` `".rigger"`
+- `tests/cli.rs:22911-22911` `".rigger"`
+- `tests/cli.rs:22939-22939` `".rigger"`
+- `tests/cli.rs:22950-22950` `".rigger"`
+- `tests/cli.rs:22987-22987` `".rigger"`
+- `tests/cli.rs:23076-23076` `"the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}"`
+- `tests/cli.rs:23148-23148` `"{root}/.rigger/events.db"`
+- `tests/cli.rs:23165-23165` `"{root}/.rigger/events.db"`
+- `tests/cli.rs:24056-24056` `"{other_root}/.rigger/events.db"`
+- `tests/cli.rs:24435-24435` `"/stale/root/.rigger/events.db"`
+- `tests/cli.rs:24456-24456` `"/live/root/.rigger/events.db"`
+- `tests/cli.rs:24558-24558` `"the step must record a dash marker at .rigger/dash.marker"`
+- `tests/cli.rs:24758-24758` `".rigger"`
+- `tests/cli.rs:24940-24940` `".rigger"`
+- `tests/cli.rs:25043-25043` `".rigger"`
+- `tests/cli.rs:25168-25168` `".rigger"`
+- `tests/cli.rs:25810-25810` `".rigger"`
+- `tests/cli.rs:25829-25829` `".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}"`
+- `tests/cli.rs:25833-25833` `".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \
          (spec 91): {text:?}"`
-- `tests/cli.rs:25828-25828` `".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \
+- `tests/cli.rs:25838-25838` `".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \
          so drift in the committed workflow fails this suite instead of silently diverging \
          from the spec it satisfies: {text:?}"`
-- `tests/cli.rs:25854-25854` `"this repository's own .rigger/workflow.yml and agents must load: {e}"`
-- `tests/cli.rs:25861-25861` `".rigger/workflow.yml must define a `checkin` stage (spec 91)"`
-- `tests/cli.rs:25896-25896` `".rigger/workflow.yml must define a `mutation` gate (spec 91)"`
-- `tests/cli.rs:25917-25917` `"this repository's own committed .rigger/workflow.yml must pass Config::validate \
+- `tests/cli.rs:25864-25864` `"this repository's own .rigger/workflow.yml and agents must load: {e}"`
+- `tests/cli.rs:25871-25871` `".rigger/workflow.yml must define a `checkin` stage (spec 91)"`
+- `tests/cli.rs:25906-25906` `".rigger/workflow.yml must define a `mutation` gate (spec 91)"`
+- `tests/cli.rs:25927-25927` `"this repository's own committed .rigger/workflow.yml must pass Config::validate \
          on a correctly-provisioned machine (cargo-mutants installed)"`
-- `tests/cli.rs:25962-25962` `".rigger/dash.attempt"`
-- `tests/cli.rs:25963-25963` `"a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \
+- `tests/cli.rs:25972-25972` `".rigger/dash.attempt"`
+- `tests/cli.rs:25973-25973` `"a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \
          (record_dash_attempt); without it this test cannot exercise the round-8 fact at all"`
-- `tests/cli.rs:26020-26020` `".rigger/dash.url"`
-- `tests/cli.rs:26028-26028` `".rigger/dash.marker"`
-- `tests/cli.rs:26092-26092` `".rigger/dash.marker"`
-- `tests/cli.rs:26121-26121` `".rigger/dash.url"`
-- `tests/cli.rs:26128-26128` `".rigger/dash.attempt"`
-- `tests/cli.rs:26189-26189` `".rigger/dash.marker"`
-- `tests/cli.rs:26192-26192` `".rigger/dash.url"`
-- `tests/cli.rs:26246-26246` `".rigger/dash.marker"`
-- `tests/cli.rs:26268-26268` `".rigger/dash.url"`
-- `tests/cli.rs:26273-26273` `".rigger/dash.attempt"`
-- `tests/cli.rs:26312-26312` `".rigger/dash.url"`
-- `tests/cli.rs:26323-26323` `".rigger/dash.marker"`
-- `tests/cli.rs:26359-26359` `".rigger/dash.url"`
-- `tests/cli.rs:26367-26367` `".rigger/dash.marker"`
-- `tests/cli.rs:26419-26419` `".rigger/dash.url"`
-- `tests/cli.rs:26424-26424` `".rigger/dash.marker"`
-- `tests/cli.rs:26486-26486` `".rigger/dash.url"`
-- `tests/cli.rs:26494-26494` `".rigger/dash.marker"`
-- `tests/cli.rs:26747-26747` `".rigger"`
-- `tests/cli.rs:27455-27455` `".rigger"`
-- `tests/cli.rs:27493-27493` `".rigger"`
+- `tests/cli.rs:26030-26030` `".rigger/dash.url"`
+- `tests/cli.rs:26038-26038` `".rigger/dash.marker"`
+- `tests/cli.rs:26102-26102` `".rigger/dash.marker"`
+- `tests/cli.rs:26131-26131` `".rigger/dash.url"`
+- `tests/cli.rs:26138-26138` `".rigger/dash.attempt"`
+- `tests/cli.rs:26199-26199` `".rigger/dash.marker"`
+- `tests/cli.rs:26202-26202` `".rigger/dash.url"`
+- `tests/cli.rs:26256-26256` `".rigger/dash.marker"`
+- `tests/cli.rs:26278-26278` `".rigger/dash.url"`
+- `tests/cli.rs:26283-26283` `".rigger/dash.attempt"`
+- `tests/cli.rs:26322-26322` `".rigger/dash.url"`
+- `tests/cli.rs:26333-26333` `".rigger/dash.marker"`
+- `tests/cli.rs:26369-26369` `".rigger/dash.url"`
+- `tests/cli.rs:26377-26377` `".rigger/dash.marker"`
+- `tests/cli.rs:26429-26429` `".rigger/dash.url"`
+- `tests/cli.rs:26434-26434` `".rigger/dash.marker"`
+- `tests/cli.rs:26496-26496` `".rigger/dash.url"`
+- `tests/cli.rs:26504-26504` `".rigger/dash.marker"`
+- `tests/cli.rs:26757-26757` `".rigger"`
+- `tests/cli.rs:27465-27465` `".rigger"`
+- `tests/cli.rs:27503-27503` `".rigger"`
 - `tests/common/mod.rs:225-225` `"{}/.rigger-test-scratch"`
 - `tests/community_detection_cli.rs:64-64` `".rigger"`
 - `tests/community_detection_cli.rs:65-65` `".rigger"`
@@ -4848,27 +4848,27 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
 - `src/reap.rs:226-226` `"/proc/{pid}/status"`
 - `src/reap.rs:276-276` `"/proc/{}/cwd"`
 - `tests/cli.rs:22375-22375` `"/proc"`
-- `tests/cli.rs:24481-24481` `"/proc/{pid}/stat"`
-- `tests/cli.rs:24482-24482` `"read /proc/{pid}/stat: {e}"`
-- `tests/cli.rs:24485-24485` `"/proc stat has a parenthesised comm field"`
-- `tests/cli.rs:24490-24490` `"/proc stat has a pgrp field after comm"`
-- `tests/cli.rs:27524-27524` `"/proc"`
-- `tests/cli.rs:27609-27609` `"/proc"`
-- `tests/cli.rs:27656-27656` `"/proc/{holder_pid}/stat"`
-- `tests/cli.rs:27671-27671` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
-- `tests/cli.rs:27737-27737` `"/proc"`
-- `tests/cli.rs:27760-27760` `"/proc"`
-- `tests/cli.rs:27789-27789` `"/proc"`
-- `tests/cli.rs:27839-27839` `"/proc/{holder_pid}/stat"`
-- `tests/cli.rs:27854-27854` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
-- `tests/cli.rs:27928-27928` `"/proc"`
-- `tests/cli.rs:27954-27954` `"/proc"`
-- `tests/cli.rs:28052-28052` `"/proc"`
-- `tests/cli.rs:28090-28090` `"held_port_holder's message half and describe_held_port_if_confirmed's own return \
+- `tests/cli.rs:24491-24491` `"/proc/{pid}/stat"`
+- `tests/cli.rs:24492-24492` `"read /proc/{pid}/stat: {e}"`
+- `tests/cli.rs:24495-24495` `"/proc stat has a parenthesised comm field"`
+- `tests/cli.rs:24500-24500` `"/proc stat has a pgrp field after comm"`
+- `tests/cli.rs:27534-27534` `"/proc"`
+- `tests/cli.rs:27619-27619` `"/proc"`
+- `tests/cli.rs:27666-27666` `"/proc/{holder_pid}/stat"`
+- `tests/cli.rs:27681-27681` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
+- `tests/cli.rs:27747-27747` `"/proc"`
+- `tests/cli.rs:27770-27770` `"/proc"`
+- `tests/cli.rs:27799-27799` `"/proc"`
+- `tests/cli.rs:27849-27849` `"/proc/{holder_pid}/stat"`
+- `tests/cli.rs:27864-27864` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
+- `tests/cli.rs:27938-27938` `"/proc"`
+- `tests/cli.rs:27964-27964` `"/proc"`
+- `tests/cli.rs:28062-28062` `"/proc"`
+- `tests/cli.rs:28100-28100` `"held_port_holder's message half and describe_held_port_if_confirmed's own return \
              must agree (scheduler-state letter normalized away since each call independently \
              re-reads /proc and can observe a state flap) - they are documented as sharing one \
              discovery"`
-- `tests/cli.rs:28109-28109` `"/proc"`
+- `tests/cli.rs:28119-28119` `"/proc"`
 - `tests/duplication_catalog_contract_periphery.rs:67-67` `"/proc-path string literals"`
 - `tests/mutation_runner_pdeathsig_periphery.rs:75-75` `"/proc/{pid}/stat"`
 - `tests/simplification_audit.rs:2570-2570` `"/proc-path string literals"`
@@ -5054,9 +5054,9 @@ mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functio
 - `src/main.rs:23944-23957` `pgid_of`
 - `src/reap.rs:214-221` `pid_starttime`
 - `src/reap.rs:225-231` `read_ppid`
-- `tests/cli.rs:24480-24493` `proc_pgid_of`
-- `tests/cli.rs:27604-27704` `cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill`
-- `tests/cli.rs:27783-27898` `step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario`
+- `tests/cli.rs:24490-24503` `proc_pgid_of`
+- `tests/cli.rs:27614-27714` `cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill`
+- `tests/cli.rs:27793-27908` `step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario`
 - `tests/mutation_runner_pdeathsig_periphery.rs:74-85` `is_running`
 - `tests/simplification_audit.rs:2691-2722` `build_sweep_clusters`
 - `tests/simplification_audit.rs:2961-2982` `build_extra_semantic_clusters`
@@ -5354,7 +5354,7 @@ Proposed home: `a new shared module (sites span 2 files: src/docs.rs, tests/cli.
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/docs.rs:1987-2005` `restore_the_dash_carries_the_hung_holder_diagnosis`
-- `tests/cli.rs:25814-25832` `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`
+- `tests/cli.rs:25824-25842` `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`
 
 #### `dup-0174` (near, 2 sites)
 
@@ -6363,7 +6363,7 @@ Proposed home: `a new shared module (sites span 2 files: src/main.rs, tests/cli.
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/main.rs:23944-23957` `pgid_of`
-- `tests/cli.rs:24480-24493` `proc_pgid_of`
+- `tests/cli.rs:24490-24503` `proc_pgid_of`
 
 #### `dup-0276` (near, 2 sites)
 
@@ -7350,7 +7350,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/architecture_current_surface.rs:49-54` `architecture_text`
 - `tests/cli.rs:3349-3354` `main_rs_source`
 - `tests/cli.rs:3820-3825` `rigger_js_source`
-- `tests/cli.rs:25798-25803` `rigger_workflow_yml_text`
+- `tests/cli.rs:25808-25813` `rigger_workflow_yml_text`
 - `tests/meta_phases_declaration_periphery.rs:54-59` `rigger_js_source`
 - `tests/phase_of_role_mapping_periphery.rs:38-43` `rigger_js_source`
 - `tests/review_tier_roster_periphery.rs:44-49` `rigger_js_source`
@@ -8519,7 +8519,7 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:19682-19720` `watch_once_never_names_the_unattributed_pid_sentinel_when_no_url_is_recorded`
-- `tests/cli.rs:26352-26390` `watch_once_never_names_the_unattributed_pid_sentinel_when_the_url_is_unparseable`
+- `tests/cli.rs:26362-26400` `watch_once_never_names_the_unattributed_pid_sentinel_when_the_url_is_unparseable`
 
 #### `dup-0480` (near, 2 sites)
 
@@ -8528,7 +8528,7 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:19740-19773` `watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_no_marker_exists`
-- `tests/cli.rs:26412-26441` `watch_once_parses_the_urls_port_past_a_colon_in_the_path_with_no_marker`
+- `tests/cli.rs:26422-26451` `watch_once_parses_the_urls_port_past_a_colon_in_the_path_with_no_marker`
 
 #### `dup-0481` (near, 5 sites)
 
@@ -8589,8 +8589,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:23132-23143` `write_live_instance`
-- `tests/cli.rs:23149-23160` `write_stale_instance`
+- `tests/cli.rs:23142-23153` `write_live_instance`
+- `tests/cli.rs:23159-23170` `write_stale_instance`
 
 #### `dup-0487` (near, 7 sites)
 
@@ -8598,13 +8598,13 @@ Proposed home: `cli::support (consolidate these 7 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:23173-23261` `a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_the_registry_empties`
-- `tests/cli.rs:23377-23461` `a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered`
-- `tests/cli.rs:23488-23592` `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out`
-- `tests/cli.rs:23610-23715` `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_with_no_git_repo_at_launch`
-- `tests/cli.rs:23730-23844` `a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker`
-- `tests/cli.rs:23867-23990` `a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_registry_entry_was_already_stale_before_the_watchers_first_poll`
-- `tests/cli.rs:24006-24148` `a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projects_only_route_into_known_roots`
+- `tests/cli.rs:23183-23271` `a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_the_registry_empties`
+- `tests/cli.rs:23387-23471` `a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered`
+- `tests/cli.rs:23498-23602` `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out`
+- `tests/cli.rs:23620-23725` `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_with_no_git_repo_at_launch`
+- `tests/cli.rs:23740-23854` `a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker`
+- `tests/cli.rs:23877-24000` `a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_registry_entry_was_already_stale_before_the_watchers_first_poll`
+- `tests/cli.rs:24016-24158` `a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projects_only_route_into_known_roots`
 
 #### `dup-0488` (near, 2 sites)
 
@@ -8612,8 +8612,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:24155-24210` `a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine`
-- `tests/cli.rs:24225-24289` `a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher`
+- `tests/cli.rs:24165-24220` `a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine`
+- `tests/cli.rs:24235-24299` `a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher`
 
 #### `dup-0489` (near, 2 sites)
 
@@ -8621,8 +8621,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:26004-26046` `watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port`
-- `tests/cli.rs:26470-26519` `watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a_colon`
+- `tests/cli.rs:26014-26056` `watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port`
+- `tests/cli.rs:26480-26529` `watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a_colon`
 
 #### `dup-0490` (near, 4 sites)
 
@@ -8630,10 +8630,10 @@ Proposed home: `cli::support (consolidate these 4 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:26658-26696` `run_given_a_spec_path_names_the_spec_lint_as_a_next_step`
-- `tests/cli.rs:26821-26864` `step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base`
-- `tests/cli.rs:27138-27173` `step_reminder_prints_despite_env_naming_a_foreign_pid`
-- `tests/cli.rs:27217-27251` `run_reminder_prints_despite_env_naming_a_foreign_pid`
+- `tests/cli.rs:26668-26706` `run_given_a_spec_path_names_the_spec_lint_as_a_next_step`
+- `tests/cli.rs:26831-26874` `step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base`
+- `tests/cli.rs:27148-27183` `step_reminder_prints_despite_env_naming_a_foreign_pid`
+- `tests/cli.rs:27227-27261` `run_reminder_prints_despite_env_naming_a_foreign_pid`
 
 #### `dup-0491` (near, 3 sites)
 
@@ -8641,9 +8641,9 @@ Proposed home: `cli::support (consolidate these 3 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:26884-26944` `run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
-- `tests/cli.rs:26953-26992` `step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
-- `tests/cli.rs:27010-27077` `run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
+- `tests/cli.rs:26894-26954` `run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
+- `tests/cli.rs:26963-27002` `step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
+- `tests/cli.rs:27020-27087` `run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
 
 #### `dup-0492` (near, 2 sites)
 
@@ -8651,8 +8651,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:27097-27133` `step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid`
-- `tests/cli.rs:27177-27212` `run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid`
+- `tests/cli.rs:27107-27143` `step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid`
+- `tests/cli.rs:27187-27222` `run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid`
 
 #### `dup-0493` (near, 2 sites)
 
@@ -8660,8 +8660,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:27315-27364` `run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup`
-- `tests/cli.rs:27376-27431` `run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction`
+- `tests/cli.rs:27325-27374` `run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup`
+- `tests/cli.rs:27386-27441` `run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction`
 
 #### `dup-0494` (near, 2 sites)
 
@@ -8669,8 +8669,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:27447-27481` `run_driver_workflow_fresh_notice_never_reaches_stdout`
-- `tests/cli.rs:27488-27512` `run_driver_cli_fresh_notice_still_prints_on_stdout`
+- `tests/cli.rs:27457-27491` `run_driver_workflow_fresh_notice_never_reaches_stdout`
+- `tests/cli.rs:27498-27522` `run_driver_cli_fresh_notice_still_prints_on_stdout`
 
 #### `dup-0495` (near, 2 sites)
 
@@ -8678,8 +8678,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:27604-27704` `cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill`
-- `tests/cli.rs:27783-27898` `step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario`
+- `tests/cli.rs:27614-27714` `cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill`
+- `tests/cli.rs:27793-27908` `step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario`
 
 #### `dup-0496` (near, 5 sites)
 

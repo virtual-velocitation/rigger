@@ -78,11 +78,11 @@
       },
       {
         "file": "tests/cli.rs",
-        "line": 23073
+        "line": 23083
       },
       {
         "file": "tests/cli.rs",
-        "line": 23088
+        "line": 23098
       }
     ],
     "disposition": "delete",
