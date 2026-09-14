@@ -34,8 +34,11 @@ process group in its marker and, on abort, hands that group to rigger's handle-b
 (spec 78) so it is ended by its owner, never by an OS-level kill from a script.
 
 CHECKPOINT BEFORE LONG WORK, decided: the implementer persona commits a checkpoint
-(`wip(<unit>): checkpoint before <mutation sweep | lane suite>`) before `cargo mutants` and before
-any full lane suite, and squashes it into its round commit when the round is reported. When a
+(`wip(<unit>): checkpoint before <mutation sweep | lane suite>`) before any full lane suite and,
+for the check-in stage spec 91 introduced, before its mutation sweep - the persona text names
+the sweep by that phrase, never by the tool's command, because spec 91's persona guard forbids
+that literal in any persona file - and squashes it into its round commit when the round is
+reported. When a
 spawn is halted by the liveness sweep with UNCOMMITTED changes in its worktree, the conductor
 commits them as `wip(<unit>): tree of halted spawn <id>` before re-parking - the re-park prompt
 names that commit and says "finish and report; do not start over" - so a halt never discards a
