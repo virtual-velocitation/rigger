@@ -248,13 +248,13 @@ stages:
   #    unsatisfied, so the run's escalated fixpoint stays loud) - never before every
   #    unit has landed, and never per implementer round the way spec 73's original
   #    placement ran it. Re-verifies the whole gate suite against the now-merged tree,
-  #    THEN sweeps mutants; `max_retries: 1` overrides `defaults.max_retries` for this
+  #    THEN sweeps mutants; `max_retries: 2` overrides `defaults.max_retries` for this
   #    stage alone - one remediation round for the WHOLE spec diff's mutants, then
   #    integrate or escalate with the accounting already on record.
   checkin:
     needs: [implement]
     agent: rust-engineer
-    max_retries: 1
+    max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the sweep, one remediation round, the sweep again (1 escalated on the first miss - run c6ccaf8e)
     gates: [fmt, clippy, build, test, style, no-os-kill, mutation]
     on_pass: merge
     coverage: "mutation efficacy of the whole spec diff"

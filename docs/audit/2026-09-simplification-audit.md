@@ -3182,12 +3182,12 @@ coverage: \"each unit is implemented, reviews itself, and integrates green\"\n\
 # `needs` entry naming the fan-out `implement` TEMPLATE is satisfied exactly when\n  \
 # every unit it expanded into has integrated - never per implementer round, and\n  \
 # never before every unit has landed. Re-verifies the whole gate suite against\n  \
-# the merged tree, then sweeps mutants; one remediation round (max_retries: 1),\n  \
+# the merged tree, then sweeps mutants; one remediation round (max_retries: 2),\n  \
 # then integrate or escalate with the accounting already on record.\n  \
 checkin:\n    \
 needs: [implement]\n    \
 agent: rust-engineer\n    \
-max_retries: 1          # one remediation round for the whole spec diff's mutants\n    \
+max_retries: 2          # attempt bound: the sweep, one remediation round, the sweep again\n    \
 gates: [build, test, lint, mutation]\n    \
 on_pass: merge\n    \
 coverage: \"mutation efficacy of the whole spec diff\"\n"`
