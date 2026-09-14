@@ -13818,6 +13818,96 @@ mod tests {
         );
     }
 
+    // The four tests below drive `PriorFailure::summary()`/`block()` directly with a
+    // single field set, rather than through the whole `run()` flow. Checkin stage
+    // (spec 91 first live sweep, GateVerdict recorded at event-store position
+    // 3101592): the whole-spec mutation sweep found these 5 mutants MISSED, every
+    // one inside `PriorFailure::summary`/`block` (lines 1216-1314) - none of the
+    // flow-level tests above isolate a single field, so none of them can tell "the
+    // right text" from "some other text that happens to contain the one substring
+    // each test checks for".
+
+    #[test]
+    fn prior_failure_summary_names_only_the_halted_commit_when_it_is_the_sole_failure() {
+        // Kills two missed mutants: line 1244 (summary()'s whole body replaced with
+        // a stub literal - any exact-match assertion catches a wholesale swap) and
+        // line 1254 (the halted_commit branch's `!` deleted, so this arm is skipped
+        // precisely when halted_commit IS set, leaving summary() empty instead).
+        let prior = PriorFailure {
+            halted_commit: "deadbeef".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            prior.summary(),
+            "recovered a halted spawn's tree as commit deadbeef",
+            "summary() must report exactly the halted-commit sentence, and nothing \
+             else, when halted_commit is the only failure-specific field set"
+        );
+    }
+
+    #[test]
+    fn prior_failure_block_names_only_the_halted_commit_when_it_is_the_sole_failure() {
+        // Kills the missed mutant at line 1271 (the halted_commit branch's `!`
+        // deleted in block(), the block() counterpart of the summary() mutant
+        // above): this arm would be skipped precisely when halted_commit IS set.
+        // a_halted_spawns_uncommitted_tree_is_captured_as_a_wip_commit_and_named_in_the_next_prompt
+        // above only asserts two substrings are present in the full grounded prompt;
+        // this isolates block()'s own exact return value instead.
+        let prior = PriorFailure {
+            halted_commit: "deadbeef".into(),
+            ..Default::default()
+        };
+        let expected = format!(
+            "A prior incarnation of this spawn was halted before it could report; \
+             its uncommitted work is captured as commit {} on your branch. Finish \
+             and report; do not start over.\n\n",
+            "deadbeef"
+        );
+        assert_eq!(
+            prior.block(),
+            expected,
+            "block() must contain exactly the halted-commit sentence, with no \
+             gate/review preamble, when halted_commit is the only field set"
+        );
+    }
+
+    #[test]
+    fn prior_failure_block_adds_the_generic_preamble_for_review_reject_or_contradiction_alone() {
+        // Kills two missed mutants sharing one preamble condition (block()'s
+        // `!gate_evidence.is_empty() || !review_reason.. || !contradiction ..`):
+        // line 1283 (the first `||`, between the gate and review clauses,
+        // replaced with `&&`) and line 1284 (the second `||`, between the
+        // combined gate/review result and the contradiction clause, replaced
+        // with `&&`). One assertion per mutant, folded into a single function so
+        // the near-identical bodies don't themselves become a fresh duplicate
+        // the audit would need to catalog. Every existing test that sets
+        // review_reason or contradiction only asserts the PER-FIELD line pushed
+        // further down (unconditional, outside this compound condition), never
+        // the generic preamble the condition actually guards.
+        const PREAMBLE: &str = "Your previous attempt failed the checks below. Fix exactly \
+                                 these - do not start over:\n";
+        let review_only = PriorFailure {
+            review_reason: "REJECT_REASON_x".into(),
+            ..Default::default()
+        };
+        assert!(
+            review_only.block().starts_with(PREAMBLE),
+            "block() must open with the generic preamble when review_reason alone \
+             failed (kills the line-1283 `||`-to-`&&` mutant); got:\n{}",
+            review_only.block()
+        );
+        let contradiction_only = PriorFailure {
+            contradiction: "a later unit proved this wrong".into(),
+            ..Default::default()
+        };
+        assert!(
+            contradiction_only.block().starts_with(PREAMBLE),
+            "block() must open with the generic preamble when contradiction alone \
+             failed (kills the line-1284 `||`-to-`&&` mutant); got:\n{}",
+            contradiction_only.block()
+        );
+    }
+
     #[test]
     fn review_worktree_dir_and_branch_derive_from_stage_and_attempt() {
         // Spec 06:48: review worktrees derive from stage + attempt (not a per-process
