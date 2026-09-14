@@ -1683,14 +1683,14 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1622 func
 
 ## 2. Duplication Catalog
 
-749 clusters (3645 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+749 clusters (3642 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
 - **Command::new call sites**: 372 site(s) - `dup-0006`
 - **/proc-path string literals**: 60 site(s) - `dup-0143`
 - **sqlite Connection::open call sites**: 46 site(s) - `dup-0122`
-- **.rigger-path string literals**: 697 site(s) - `dup-0060`
+- **.rigger-path string literals**: 694 site(s) - `dup-0060`
 - **error-shaping helper functions**: 8 site(s) - `dup-0079`
 
 ### Clusters (244 exact, 425 near, 80 semantic)
@@ -1970,24 +1970,24 @@ mandatory sweep: Command::new call sites - 372 site(s), collected mechanically r
 - `tests/graph_show_surface.rs:49-49` `Command::new`
 - `tests/graph_show_surface.rs:77-77` `Command::new`
 - `tests/halted_spawn_wip_recovery_periphery.rs:90-90` `Command::new`
-- `tests/halted_spawn_wip_recovery_periphery.rs:436-436` `Command::new`
-- `tests/halted_spawn_wip_recovery_periphery.rs:720-720` `Command::new`
+- `tests/halted_spawn_wip_recovery_periphery.rs:437-437` `Command::new`
+- `tests/halted_spawn_wip_recovery_periphery.rs:721-721` `Command::new`
 - `tests/heartbeat_write_read_agree_periphery.rs:55-55` `Command::new`
 - `tests/heartbeat_write_read_agree_periphery.rs:69-69` `Command::new`
 - `tests/integrate_conflict_merge_periphery.rs:269-269` `Command::new`
 - `tests/integrate_conflict_merge_periphery.rs:280-280` `Command::new`
 - `tests/integrate_conflict_merge_periphery.rs:291-291` `Command::new`
 - `tests/integrate_conflict_merge_periphery.rs:310-310` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:556-556` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:756-756` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1016-1016` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1247-1247` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1453-1453` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1720-1720` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1830-1830` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2152-2152` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2288-2288` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2546-2546` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:557-557` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:757-757` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1017-1017` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1248-1248` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1454-1454` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1721-1721` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1831-1831` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2153-2153` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2289-2289` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2547-2547` `Command::new`
 - `tests/meta_phases_declaration_periphery.rs:119-119` `Command::new`
 - `tests/metadata_card_handoff_viz.rs:43-43` `Command::new`
 - `tests/metadata_card_handoff_viz.rs:151-151` `Command::new`
@@ -2382,7 +2382,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:143-145` `speculation_group_id`
 - `src/worktree.rs:1503-1505` `shared_build_cache_guard_path`
 - `tests/canary_model_drift_periphery.rs:140-142` `prose_claiming`
-- `tests/halted_spawn_wip_recovery_periphery.rs:201-203` `unit_branch`
+- `tests/halted_spawn_wip_recovery_periphery.rs:202-204` `unit_branch`
 - `tests/reset_derived_compaction_periphery.rs:2816-2818` `derived_key_for`
 
 #### `dup-0029` (exact, 2 sites)
@@ -2516,7 +2516,7 @@ Proposed home: `one shared `unit_worktree_dir` helper (e.g. relocated into `test
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/conductor.rs:11855-11861` `unit_worktree_dir`
-- `tests/halted_spawn_wip_recovery_periphery.rs:195-199` `unit_worktree_dir`
+- `tests/halted_spawn_wip_recovery_periphery.rs:198-200` `unit_worktree_dir`
 
 #### `dup-0043` (near, 2 sites)
 
@@ -2701,11 +2701,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:16752-16836` `a_bracketed_id_echo_with_a_paraphrase_still_supersedes_exactly_once`
 - `src/conductor.rs:16839-16911` `a_stale_non_matching_id_falls_back_to_the_verbatim_prose_match`
 
-#### `dup-0060` (semantic, 697 sites)
+#### `dup-0060` (semantic, 694 sites)
 
 Proposed home: `one .rigger-relative path-composition helper`
 
-mandatory sweep: .rigger-path string literals - 697 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: .rigger-path string literals - 694 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/conductor.rs:17118-17118` `"the repo's own .rigger config must load"`
 - `src/config.rs:814-814` `".rigger"`
@@ -3672,10 +3672,9 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/graph_show_surface.rs:68-68` `".rigger"`
 - `tests/graph_show_surface.rs:150-150` `".rigger"`
 - `tests/halted_spawn_wip_recovery_periphery.rs:135-135` `".rigger"`
-- `tests/halted_spawn_wip_recovery_periphery.rs:196-196` `".rigger"`
-- `tests/halted_spawn_wip_recovery_periphery.rs:446-446` `".rigger"`
-- `tests/halted_spawn_wip_recovery_periphery.rs:469-469` `".rigger"`
-- `tests/halted_spawn_wip_recovery_periphery.rs:503-503` `".rigger"`
+- `tests/halted_spawn_wip_recovery_periphery.rs:447-447` `".rigger"`
+- `tests/halted_spawn_wip_recovery_periphery.rs:470-470` `".rigger"`
+- `tests/halted_spawn_wip_recovery_periphery.rs:504-504` `".rigger"`
 - `tests/handbook_grounder_accuracy.rs:134-134` `".rigger"`
 - `tests/handbook_grounder_accuracy.rs:143-143` `".rigger/workflow.yml must carry a `grounder:` default (spec 57, criterion 4)"`
 - `tests/handbook_grounder_accuracy.rs:148-148` `"the repo's own .rigger/workflow.yml must default to the structural `symbols` grounder \
@@ -3699,21 +3698,21 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/heartbeat_write_read_agree_periphery.rs:621-621` `".rigger"`
 - `tests/integrate_conflict_merge_periphery.rs:390-390` `".rigger"`
 - `tests/integrate_conflict_merge_periphery.rs:391-391` `"create .rigger/agents"`
-- `tests/integrate_conflict_merge_periphery.rs:460-460` `"the project's own .rigger/workflow.yml must load through the real loader"`
-- `tests/integrate_conflict_merge_periphery.rs:613-613` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:829-829` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:1067-1067` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:1303-1303` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:1544-1544` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:1754-1754` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:1946-1946` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:2182-2182` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:2317-2317` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:2483-2483` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:2692-2692` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:2921-2921` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:3031-3031` `"{repo_path}/.rigger-test-scratch"`
-- `tests/integrate_conflict_merge_periphery.rs:3184-3184` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:461-461` `"the project's own .rigger/workflow.yml must load through the real loader"`
+- `tests/integrate_conflict_merge_periphery.rs:614-614` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:830-830` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:1068-1068` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:1304-1304` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:1545-1545` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:1755-1755` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:1947-1947` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:2183-2183` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:2318-2318` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:2484-2484` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:2693-2693` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:2922-2922` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:3032-3032` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:3185-3185` `"{repo_path}/.rigger-test-scratch"`
 - `tests/migration_is_deliberate_periphery.rs:454-454` `".rigger"`
 - `tests/migration_is_deliberate_periphery.rs:454-454` `"create .rigger"`
 - `tests/migration_is_deliberate_periphery.rs:474-474` `".rigger"`
@@ -3885,8 +3884,6 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:98-98` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:305-305` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:316-316` `".rigger"`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:427-427` `".rigger"`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:499-499` `".rigger"`
 - `tests/step_attention_periphery.rs:161-161` `".rigger"`
 - `tests/step_attention_periphery.rs:183-183` `".rigger"`
 - `tests/step_attention_periphery.rs:222-222` `".rigger"`
@@ -4156,7 +4153,7 @@ mandatory sweep: error-shaping helper functions - 8 site(s), collected mechanica
 - `tests/batched_fold_cadence.rs:184-262` `append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch`
 - `tests/canary_item_sharding_jobs_cap_periphery.rs:352-440` `run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors`
 - `tests/grounder_name_contract.rs:40-171` `public_name_contract_predicate_error_and_resolver_agree`
-- `tests/integrate_conflict_merge_periphery.rs:1735-1843` `a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact`
+- `tests/integrate_conflict_merge_periphery.rs:1736-1844` `a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact`
 
 #### `dup-0080` (near, 5 sites)
 
@@ -5001,25 +4998,25 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
         merging it, not assume tier 5's blanket test-only treatment applies here too.\n\n\
         Within a tier, entries are ordered largest-first by the site or line count each \
         retires - the same rule the tiers themselves follow, applied one level down.\n\n"`
-- `tests/simplification_audit.rs:4275-4275` `"#### 3. Retire the duplicate `/proc`-reading authority (`dup-0142` + `dup-0143`)\n\n"`
+- `tests/simplification_audit.rs:4275-4275` `"#### 3. Retire the duplicate `/proc`-reading authority (`dup-0143` + `dup-0144`)\n\n"`
 - `tests/simplification_audit.rs:4278-4278` `"- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
         `src/main.rs::pgid_of` (`src/main.rs:23346-23359`) each independently re-derive \
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0143`, 15 sites: `src/dash.rs`, `src/main.rs`, \
+        capstone previously caught (`dup-0144`, 15 sites: `src/dash.rs`, `src/main.rs`, \
         `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \
         91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \
         reason `dash.rs::process_state` does, growing this already-known cluster by one site \
         rather than opening a new one), plus 60 raw `/proc`-path string literals scattered \
         across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no \
-        shared composer (`dup-0142`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
+        shared composer (`dup-0143`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
         re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
         production server, so it is the actual active-correctness risk this tier-1 placement \
         is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) \
         and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
-        rides in this same item only because it shares `dup-0142`/`dup-0143`'s one root cause \
+        rides in this same item only because it shares `dup-0143`/`dup-0144`'s one root cause \
         and one proposed fix with `process_state`, not because retiring it retires any live \
         risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
@@ -5451,7 +5448,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/eventstore/contract.rs:844-846` `subscribe_stream`
 - `src/spawn.rs:1514-1516` `subscribe_stream`
 - `tests/adoption_keys_on_criterion_periphery.rs:2658-2660` `subscribe_stream`
-- `tests/integrate_conflict_merge_periphery.rs:2101-2103` `subscribe_stream`
+- `tests/integrate_conflict_merge_periphery.rs:2102-2104` `subscribe_stream`
 
 #### `dup-0184` (exact, 2 sites)
 
@@ -6803,7 +6800,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/spawn.rs:1510-1512` `subscribe_all`
 - `tests/adoption_keys_on_criterion_periphery.rs:2654-2656` `subscribe_all`
-- `tests/integrate_conflict_merge_periphery.rs:2098-2100` `subscribe_all`
+- `tests/integrate_conflict_merge_periphery.rs:2099-2101` `subscribe_all`
 
 #### `dup-0320` (near, 2 sites)
 
@@ -7716,7 +7713,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dedup_seeding_periphery.rs:580-605` `run_stream_identity`
 - `tests/escalation_resume_periphery.rs:99-121` `run_stream_identity`
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:165-187` `run_stream_identity`
-- `tests/halted_spawn_wip_recovery_periphery.rs:435-457` `run_stream_identity`
+- `tests/halted_spawn_wip_recovery_periphery.rs:436-458` `run_stream_identity`
 - `tests/migration_is_deliberate_periphery.rs:463-485` `project_identity_of`
 - `tests/projections_stay_local.rs:134-156` `store_identity`
 - `tests/reset_derived_compaction.rs:51-73` `run_stream_identity`
@@ -7745,7 +7742,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/graph_show_periphery.rs:61-77` `run_stream_identity`
 - `tests/graph_show_staleness.rs:49-65` `run_stream_identity`
 - `tests/graph_show_surface.rs:48-64` `run_stream_identity`
-- `tests/halted_spawn_wip_recovery_periphery.rs:435-457` `run_stream_identity`
+- `tests/halted_spawn_wip_recovery_periphery.rs:436-458` `run_stream_identity`
 - `tests/heartbeat_write_read_agree_periphery.rs:128-146` `run_stream_identity`
 - `tests/reset_derived_compaction.rs:51-73` `run_stream_identity`
 - `tests/reset_derived_live_writer_guard_periphery.rs:73-87` `run_stream_identity`
@@ -7782,7 +7779,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/cli.rs:82-100` `seed_run_events`
 - `tests/escalation_resume_periphery.rs:126-139` `seed_run_events`
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:142-160` `seed_run_events`
-- `tests/halted_spawn_wip_recovery_periphery.rs:464-482` `seed_run_events`
+- `tests/halted_spawn_wip_recovery_periphery.rs:465-483` `seed_run_events`
 - `tests/heartbeat_write_read_agree_periphery.rs:151-164` `seed_run_events`
 - `tests/reset_derived_live_writer_guard_periphery.rs:91-103` `seed_run_events`
 - `tests/reset_menu.rs:107-119` `seed_run_events`
@@ -9871,8 +9868,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:503-580` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:1420-1477` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:504-581` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1421-1478` `spawn`
 
 #### `dup-0612` (near, 2 sites)
 
@@ -9880,8 +9877,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:1002-1038` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:1223-1269` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1003-1039` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1224-1270` `spawn`
 
 #### `dup-0613` (near, 3 sites)
 
@@ -9889,9 +9886,9 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 3
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:1863-1888` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:2413-2435` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:2658-2678` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1864-1889` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2414-2436` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2659-2679` `spawn`
 
 #### `dup-0614` (near, 2 sites)
 
@@ -9899,8 +9896,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2108-2113` `has_status_marker`
-- `tests/integrate_conflict_merge_periphery.rs:2115-2123` `count_status_marker`
+- `tests/integrate_conflict_merge_periphery.rs:2109-2114` `has_status_marker`
+- `tests/integrate_conflict_merge_periphery.rs:2116-2124` `count_status_marker`
 
 #### `dup-0615` (near, 2 sites)
 
@@ -9908,8 +9905,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2140-2163` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:2278-2298` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2141-2164` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2279-2299` `spawn`
 
 #### `dup-0616` (near, 4 sites)
 
@@ -9917,10 +9914,10 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 4
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2168-2265` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
-- `tests/integrate_conflict_merge_periphery.rs:2303-2399` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
-- `tests/integrate_conflict_merge_periphery.rs:2907-3007` `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`
-- `tests/integrate_conflict_merge_periphery.rs:3017-3115` `a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record`
+- `tests/integrate_conflict_merge_periphery.rs:2169-2266` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
+- `tests/integrate_conflict_merge_periphery.rs:2304-2400` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
+- `tests/integrate_conflict_merge_periphery.rs:2908-3008` `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`
+- `tests/integrate_conflict_merge_periphery.rs:3018-3116` `a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record`
 
 #### `dup-0617` (exact, 2 sites)
 
@@ -9928,8 +9925,8 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2681-2706` `confined_cfg`
-- `tests/integrate_conflict_merge_periphery.rs:3173-3198` `mixed_cfg`
+- `tests/integrate_conflict_merge_periphery.rs:2682-2707` `confined_cfg`
+- `tests/integrate_conflict_merge_periphery.rs:3174-3199` `mixed_cfg`
 
 #### `dup-0618` (near, 3 sites)
 
@@ -9937,9 +9934,9 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 3
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2713-2873` `a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3`
-- `tests/integrate_conflict_merge_periphery.rs:3207-3309` `a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed`
-- `tests/integrate_conflict_merge_periphery.rs:3322-3442` `a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume`
+- `tests/integrate_conflict_merge_periphery.rs:2714-2874` `a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3`
+- `tests/integrate_conflict_merge_periphery.rs:3208-3310` `a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed`
+- `tests/integrate_conflict_merge_periphery.rs:3323-3443` `a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume`
 
 #### `dup-0619` (exact, 3 sites)
 
@@ -10879,7 +10876,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:167-230` `rigger_result_reaps_a_live_process_in_the_spawns_registered_agent_scratch_dir`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:233-281` `rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_dir`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:415-479` `rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_already_removed_before_the_call`
+- `tests/spawn_scratch_reap_authorized_root_periphery.rs:415-487` `rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_already_removed_before_the_call`
 
 #### `dup-0710` (near, 2 sites)
 
@@ -11583,9 +11580,9 @@ Within a tier, entries are ordered largest-first by the site or line count each 
 - Risk: medium. `ingest.rs`'s own module doc calls it "the ONE walk-and-content-key authority" - a load-bearing path; needs the existing whole-project-ingest and reindex-freshening coverage to stay green, not just the two duplicate-site tests.
 - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0204` together, rather than as two separately-tracked fixes.
 
-#### 3. Retire the duplicate `/proc`-reading authority (`dup-0142` + `dup-0143`)
+#### 3. Retire the duplicate `/proc`-reading authority (`dup-0143` + `dup-0144`)
 
-- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and `src/main.rs::pgid_of` (`src/main.rs:23346-23359`) each independently re-derive `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact "second mutation authority" example spec 85's own Goal names and spec 62's capstone previously caught (`dup-0143`, 15 sites: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec 91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same reason `dash.rs::process_state` does, growing this already-known cluster by one site rather than opening a new one), plus 60 raw `/proc`-path string literals scattered across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no shared composer (`dup-0142`). Both clusters' own `proposed_home` agree: `src/reap.rs` becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on production server, so it is the actual active-correctness risk this tier-1 placement is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it rides in this same item only because it shares `dup-0142`/`dup-0143`'s one root cause and one proposed fix with `process_state`, not because retiring it retires any live risk of its own.
+- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and `src/main.rs::pgid_of` (`src/main.rs:23346-23359`) each independently re-derive `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact "second mutation authority" example spec 85's own Goal names and spec 62's capstone previously caught (`dup-0144`, 15 sites: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec 91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same reason `dash.rs::process_state` does, growing this already-known cluster by one site rather than opening a new one), plus 60 raw `/proc`-path string literals scattered across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no shared composer (`dup-0143`). Both clusters' own `proposed_home` agree: `src/reap.rs` becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on production server, so it is the actual active-correctness risk this tier-1 placement is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it rides in this same item only because it shares `dup-0143`/`dup-0144`'s one root cause and one proposed fix with `process_state`, not because retiring it retires any live risk of its own.
 - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, `tests/cli.rs:23650-23663`, re-points at the same call).
 - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own parsing bodies in favor of calling `reap.rs`'s existing parser.
 - Risk: low for both halves, for two different reasons. Section 3's own disposition already establishes `process_state` as a duplicate READ-only reimplementation, never a bypassed mutation path - nothing this touches can signal or kill a process, so it carries none of the no-os-kill gate's own risk surface. `pgid_of`'s own risk is lower still: being test-only, retiring it is ordinary test cleanup, not a correctness-risk retirement - it is sequenced here for shared-fix convenience, not because it independently needed tier-1 urgency.
@@ -11733,7 +11730,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 19. Sweep the remaining 327 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0055`, `dup-0109`, `dup-0142`, `dup-0143`, `dup-0204`, `dup-0213`); the remaining 327 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0055`, `dup-0109`, `dup-0143`, `dup-0144`, `dup-0204`, `dup-0213`); the remaining 327 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.

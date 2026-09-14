@@ -1449,14 +1449,14 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 436,
-        "end_line": 436,
+        "start_line": 437,
+        "end_line": 437,
         "name": "Command::new"
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 720,
-        "end_line": 720,
+        "start_line": 721,
+        "end_line": 721,
         "name": "Command::new"
       },
       {
@@ -1497,62 +1497,62 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 556,
-        "end_line": 556,
+        "start_line": 557,
+        "end_line": 557,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 756,
-        "end_line": 756,
+        "start_line": 757,
+        "end_line": 757,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1016,
-        "end_line": 1016,
+        "start_line": 1017,
+        "end_line": 1017,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1247,
-        "end_line": 1247,
+        "start_line": 1248,
+        "end_line": 1248,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1453,
-        "end_line": 1453,
+        "start_line": 1454,
+        "end_line": 1454,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1720,
-        "end_line": 1720,
+        "start_line": 1721,
+        "end_line": 1721,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1830,
-        "end_line": 1830,
+        "start_line": 1831,
+        "end_line": 1831,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2152,
-        "end_line": 2152,
+        "start_line": 2153,
+        "end_line": 2153,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2288,
-        "end_line": 2288,
+        "start_line": 2289,
+        "end_line": 2289,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2546,
-        "end_line": 2546,
+        "start_line": 2547,
+        "end_line": 2547,
         "name": "Command::new"
       },
       {
@@ -3173,8 +3173,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 201,
-        "end_line": 203,
+        "start_line": 202,
+        "end_line": 204,
         "name": "unit_branch"
       },
       {
@@ -3501,8 +3501,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 195,
-        "end_line": 199,
+        "start_line": 198,
+        "end_line": 200,
         "name": "unit_worktree_dir"
       }
     ],
@@ -7047,26 +7047,20 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 196,
-        "end_line": 196,
+        "start_line": 447,
+        "end_line": 447,
         "name": "\".rigger\""
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 446,
-        "end_line": 446,
+        "start_line": 470,
+        "end_line": 470,
         "name": "\".rigger\""
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 469,
-        "end_line": 469,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 503,
-        "end_line": 503,
+        "start_line": 504,
+        "end_line": 504,
         "name": "\".rigger\""
       },
       {
@@ -7173,92 +7167,92 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 460,
-        "end_line": 460,
+        "start_line": 461,
+        "end_line": 461,
         "name": "\"the project's own .rigger/workflow.yml must load through the real loader\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 613,
-        "end_line": 613,
+        "start_line": 614,
+        "end_line": 614,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 829,
-        "end_line": 829,
+        "start_line": 830,
+        "end_line": 830,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1067,
-        "end_line": 1067,
+        "start_line": 1068,
+        "end_line": 1068,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1303,
-        "end_line": 1303,
+        "start_line": 1304,
+        "end_line": 1304,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1544,
-        "end_line": 1544,
+        "start_line": 1545,
+        "end_line": 1545,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1754,
-        "end_line": 1754,
+        "start_line": 1755,
+        "end_line": 1755,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1946,
-        "end_line": 1946,
+        "start_line": 1947,
+        "end_line": 1947,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2182,
-        "end_line": 2182,
+        "start_line": 2183,
+        "end_line": 2183,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2317,
-        "end_line": 2317,
+        "start_line": 2318,
+        "end_line": 2318,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2483,
-        "end_line": 2483,
+        "start_line": 2484,
+        "end_line": 2484,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2692,
-        "end_line": 2692,
+        "start_line": 2693,
+        "end_line": 2693,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2921,
-        "end_line": 2921,
+        "start_line": 2922,
+        "end_line": 2922,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3031,
-        "end_line": 3031,
+        "start_line": 3032,
+        "end_line": 3032,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3184,
-        "end_line": 3184,
+        "start_line": 3185,
+        "end_line": 3185,
         "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
@@ -7784,18 +7778,6 @@
         "name": "\".rigger\""
       },
       {
-        "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
-        "start_line": 427,
-        "end_line": 427,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
-        "start_line": 499,
-        "end_line": 499,
-        "name": "\".rigger\""
-      },
-      {
         "file": "tests/step_attention_periphery.rs",
         "start_line": 161,
         "end_line": 161,
@@ -8217,7 +8199,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 697 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 694 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0061",
@@ -8669,8 +8651,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1735,
-        "end_line": 1843,
+        "start_line": 1736,
+        "end_line": 1844,
         "name": "a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact"
       }
     ],
@@ -10827,13 +10809,13 @@
         "file": "tests/simplification_audit.rs",
         "start_line": 4275,
         "end_line": 4275,
-        "name": "\"#### 3. Retire the duplicate `/proc`-reading authority (`dup-0142` + `dup-0143`)\\n\\n\""
+        "name": "\"#### 3. Retire the duplicate `/proc`-reading authority (`dup-0143` + `dup-0144`)\\n\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
         "start_line": 4278,
         "end_line": 4278,
-        "name": "\"- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \\\n        `src/main.rs::pgid_of` (`src/main.rs:23346-23359`) each independently re-derive \\\n        `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \\\n        (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \\\n        \\\"second mutation authority\\\" example spec 85's own Goal names and spec 62's \\\n        capstone previously caught (`dup-0143`, 15 sites: `src/dash.rs`, `src/main.rs`, \\\n        `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \\\n        91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \\\n        reason `dash.rs::process_state` does, growing this already-known cluster by one site \\\n        rather than opening a new one), plus 60 raw `/proc`-path string literals scattered \\\n        across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no \\\n        shared composer (`dup-0142`). Both clusters' own `proposed_home` agree: `src/reap.rs` \\\n        becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \\\n        re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \\\n        production server, so it is the actual active-correctness risk this tier-1 placement \\\n        is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) \\\n        and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \\\n        rides in this same item only because it shares `dup-0142`/`dup-0143`'s one root cause \\\n        and one proposed fix with `process_state`, not because retiring it retires any live \\\n        risk of its own.\\n\\\n        - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \\\n        `tests/cli.rs:23650-23663`, re-points at the same call).\\n\\\n        - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \\\n        parsing bodies in favor of calling `reap.rs`'s existing parser.\\n\\\n        - Risk: low for both halves, for two different reasons. Section 3's own disposition \\\n        already establishes `process_state` as a duplicate READ-only reimplementation, never a \\\n        bypassed mutation path - nothing this touches can signal or kill a process, so it \\\n        carries none of the no-os-kill gate's own risk surface. `pgid_of`'s own risk is lower \\\n        still: being test-only, retiring it is ordinary test cleanup, not a \\\n        correctness-risk retirement - it is sequenced here for shared-fix convenience, not \\\n        because it independently needed tier-1 urgency.\\n\\\n        - Unblocks: retires the codebase's only currently-known live instance of the \\\n        \\\"duplicate implementation reconciled after the fact\\\" pattern the operator's \\\n        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites - and, as a \\\n        free byproduct, `main.rs`'s own test-only duplicate parser.\\n\\n\""
+        "name": "\"- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \\\n        `src/main.rs::pgid_of` (`src/main.rs:23346-23359`) each independently re-derive \\\n        `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \\\n        (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \\\n        \\\"second mutation authority\\\" example spec 85's own Goal names and spec 62's \\\n        capstone previously caught (`dup-0144`, 15 sites: `src/dash.rs`, `src/main.rs`, \\\n        `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \\\n        91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \\\n        reason `dash.rs::process_state` does, growing this already-known cluster by one site \\\n        rather than opening a new one), plus 60 raw `/proc`-path string literals scattered \\\n        across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no \\\n        shared composer (`dup-0143`). Both clusters' own `proposed_home` agree: `src/reap.rs` \\\n        becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \\\n        re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \\\n        production server, so it is the actual active-correctness risk this tier-1 placement \\\n        is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) \\\n        and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \\\n        rides in this same item only because it shares `dup-0143`/`dup-0144`'s one root cause \\\n        and one proposed fix with `process_state`, not because retiring it retires any live \\\n        risk of its own.\\n\\\n        - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \\\n        `tests/cli.rs:23650-23663`, re-points at the same call).\\n\\\n        - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \\\n        parsing bodies in favor of calling `reap.rs`'s existing parser.\\n\\\n        - Risk: low for both halves, for two different reasons. Section 3's own disposition \\\n        already establishes `process_state` as a duplicate READ-only reimplementation, never a \\\n        bypassed mutation path - nothing this touches can signal or kill a process, so it \\\n        carries none of the no-os-kill gate's own risk surface. `pgid_of`'s own risk is lower \\\n        still: being test-only, retiring it is ordinary test cleanup, not a \\\n        correctness-risk retirement - it is sequenced here for shared-fix convenience, not \\\n        because it independently needed tier-1 urgency.\\n\\\n        - Unblocks: retires the codebase's only currently-known live instance of the \\\n        \\\"duplicate implementation reconciled after the fact\\\" pattern the operator's \\\n        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites - and, as a \\\n        free byproduct, `main.rs`'s own test-only duplicate parser.\\n\\n\""
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -11961,8 +11943,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2101,
-        "end_line": 2103,
+        "start_line": 2102,
+        "end_line": 2104,
         "name": "subscribe_stream"
       }
     ],
@@ -15449,8 +15431,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2098,
-        "end_line": 2100,
+        "start_line": 2099,
+        "end_line": 2101,
         "name": "subscribe_all"
       }
     ],
@@ -18037,8 +18019,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 435,
-        "end_line": 457,
+        "start_line": 436,
+        "end_line": 458,
         "name": "run_stream_identity"
       },
       {
@@ -18177,8 +18159,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 435,
-        "end_line": 457,
+        "start_line": 436,
+        "end_line": 458,
         "name": "run_stream_identity"
       },
       {
@@ -18331,8 +18313,8 @@
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 464,
-        "end_line": 482,
+        "start_line": 465,
+        "end_line": 483,
         "name": "seed_run_events"
       },
       {
@@ -23929,14 +23911,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 503,
-        "end_line": 580,
+        "start_line": 504,
+        "end_line": 581,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1420,
-        "end_line": 1477,
+        "start_line": 1421,
+        "end_line": 1478,
         "name": "spawn"
       }
     ],
@@ -23949,14 +23931,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1002,
-        "end_line": 1038,
+        "start_line": 1003,
+        "end_line": 1039,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1223,
-        "end_line": 1269,
+        "start_line": 1224,
+        "end_line": 1270,
         "name": "spawn"
       }
     ],
@@ -23969,20 +23951,20 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1863,
-        "end_line": 1888,
+        "start_line": 1864,
+        "end_line": 1889,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2413,
-        "end_line": 2435,
+        "start_line": 2414,
+        "end_line": 2436,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2658,
-        "end_line": 2678,
+        "start_line": 2659,
+        "end_line": 2679,
         "name": "spawn"
       }
     ],
@@ -23995,14 +23977,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2108,
-        "end_line": 2113,
+        "start_line": 2109,
+        "end_line": 2114,
         "name": "has_status_marker"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2115,
-        "end_line": 2123,
+        "start_line": 2116,
+        "end_line": 2124,
         "name": "count_status_marker"
       }
     ],
@@ -24015,14 +23997,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2140,
-        "end_line": 2163,
+        "start_line": 2141,
+        "end_line": 2164,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2278,
-        "end_line": 2298,
+        "start_line": 2279,
+        "end_line": 2299,
         "name": "spawn"
       }
     ],
@@ -24035,26 +24017,26 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2168,
-        "end_line": 2265,
+        "start_line": 2169,
+        "end_line": 2266,
         "name": "a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2303,
-        "end_line": 2399,
+        "start_line": 2304,
+        "end_line": 2400,
         "name": "a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2907,
-        "end_line": 3007,
+        "start_line": 2908,
+        "end_line": 3008,
         "name": "a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3017,
-        "end_line": 3115,
+        "start_line": 3018,
+        "end_line": 3116,
         "name": "a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record"
       }
     ],
@@ -24067,14 +24049,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2681,
-        "end_line": 2706,
+        "start_line": 2682,
+        "end_line": 2707,
         "name": "confined_cfg"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3173,
-        "end_line": 3198,
+        "start_line": 3174,
+        "end_line": 3199,
         "name": "mixed_cfg"
       }
     ],
@@ -24087,20 +24069,20 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2713,
-        "end_line": 2873,
+        "start_line": 2714,
+        "end_line": 2874,
         "name": "a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3207,
-        "end_line": 3309,
+        "start_line": 3208,
+        "end_line": 3310,
         "name": "a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3322,
-        "end_line": 3442,
+        "start_line": 3323,
+        "end_line": 3443,
         "name": "a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume"
       }
     ],
@@ -26646,7 +26628,7 @@
       {
         "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
         "start_line": 415,
-        "end_line": 479,
+        "end_line": 487,
         "name": "rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_already_removed_before_the_call"
       }
     ],

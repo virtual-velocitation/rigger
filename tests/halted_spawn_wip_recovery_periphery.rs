@@ -189,13 +189,14 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 /// unit named `unit` in `root`'s default (unconfigured) scratch root - mirrors
 /// `unit_worktree_dir`/`unit_branch` in `src/conductor.rs`, which this file cannot import
 /// (they are private), so it reconstructs the same well-known convention every other
-/// `tests/cli.rs` fixture already asserts against (e.g.
-/// `step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_worktree`'s
-/// `root/.rigger/tmp/rigger-wt-solo`).
+/// fixture in this suite already asserts against via `common::default_scratch_root` (spec
+/// 89, criterion 2: SCRATCH IS OUTSIDE THE STORE TREE moved the default off the old bare
+/// `root.join(".rigger").join("tmp")` literal this helper used to hardcode - that literal
+/// stopped matching what `sweep_terminal`'s own `d.starts_with(root)` gate and the
+/// conductor's worktree adoption actually resolve, so a worktree this helper pre-seeded
+/// there silently fell outside every step-start authority's own sweep domain).
 fn unit_worktree_dir(root: &Path, unit: &str) -> std::path::PathBuf {
-    root.join(".rigger")
-        .join("tmp")
-        .join(format!("rigger-wt-{unit}"))
+    common::default_scratch_root(root).join(format!("rigger-wt-{unit}"))
 }
 
 fn unit_branch(unit: &str) -> String {
