@@ -116,7 +116,7 @@ pub fn rigger_bin() -> PathBuf {
 /// `.env_remove()` for the same key.
 ///
 /// Also pins `XDG_CACHE_HOME` to [`test_cache_home`] - ONE throwaway directory shared by
-/// every subprocess this test BINARY spawns (spec 89, criterion 2). The product's
+/// every subprocess the CURRENT TEST spawns (spec 89, criterion 2). The product's
 /// scratch-root DEFAULT now lives under `$XDG_CACHE_HOME/rigger/<encoded repo>` rather than
 /// inside each fixture's own `.rigger` (see [`rigger::worktree::scratch_root_path`]'s own
 /// doc comment); leaving `XDG_CACHE_HOME` at its real ambient value here would make every
@@ -134,16 +134,49 @@ pub fn rigger_courier() -> Command {
     cmd
 }
 
-/// One throwaway `XDG_CACHE_HOME` shared by every `rigger` subprocess this whole test
-/// BINARY spawns (spec 89, criterion 2) - mirroring `.cargo/pidns-runner.sh`'s own single
-/// shared `TMPDIR` for the identical reason (a per-suite-run isolation boundary, not a
-/// per-fixture one). Distinct fixture repos still resolve to distinct directories under it
+/// One throwaway `XDG_CACHE_HOME` shared by every `rigger` subprocess the CURRENT TEST
+/// spawns (spec 89, criterion 2) - PER TEST-OWNED THREAD, not a single directory for the
+/// whole test binary, and that distinction is load-bearing, not cosmetic.
+///
+/// This used to be `static HOME: OnceLock<TempDir>` - one directory for the entire process.
+/// That leaked every real byte a `rigger_courier()`-spawned subprocess ever wrote under it
+/// (worktrees, agent scratch, the shared build cache), on every single test run, because
+/// Rust NEVER drops a `'static`-storage-duration value - not at a normal return from `main`,
+/// and not at `std::process::exit`, which the built-in libtest harness calls at the end of
+/// every run regardless of pass/fail. No amount of `Drop` machinery hung off a `static` can
+/// ever fire; that is a property of `static` itself, not a bug in `TempDir` (round 5 reject:
+/// `adv-u89c2-test-cache-home-static-never-dropped-leaks-every-binary-run`, live-verified
+/// there against a compiled test binary run directly, bypassing cargo).
+///
+/// The fix is `thread_local!` instead of `static`, which is NOT the same leak wearing a
+/// different name: the built-in libtest harness spawns each `#[test]` fn on its OWN freshly
+/// created OS thread and joins it before returning - independently confirmed with a
+/// standalone probe binary before landing this, not assumed - so a `thread_local`'s `Drop`
+/// genuinely DOES run, deterministically, the moment the test that used it finishes,
+/// regardless of how the test binary's OWN process eventually exits. Every current call
+/// site in this suite (`rigger_courier`, `default_scratch_root`) is invoked synchronously
+/// from a test's own thread, never from a further-spawned worker thread (audited: no
+/// `std::thread::spawn` closure anywhere under `tests/` calls either), so one cache home per
+/// test-owning thread still gives every subprocess spawned WITHIN one test the same shared
+/// root - the only thing that changes is WHEN it is reclaimed (at that test's own thread
+/// exit, not "eventually, maybe, if something remembers to ask" - never, for a `static`).
+/// Distinct fixture repos still resolve to distinct directories under it
 /// ([`default_scratch_root`]/[`rigger::worktree::cache_scratch_root_from`]'s own injective
-/// repo-path encoding), so no two tests' scratch state can collide by sharing this root.
-fn test_cache_home() -> &'static Path {
-    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| tempfile::tempdir().expect("create a throwaway XDG_CACHE_HOME for tests"))
-        .path()
+/// repo-path encoding), so no two tests' scratch state can collide by sharing this root -
+/// true before this change and unaffected by it.
+fn test_cache_home() -> PathBuf {
+    thread_local! {
+        static HOME: std::cell::RefCell<Option<tempfile::TempDir>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    HOME.with(|cell| {
+        cell.borrow_mut()
+            .get_or_insert_with(|| {
+                tempfile::tempdir().expect("create a throwaway XDG_CACHE_HOME for tests")
+            })
+            .path()
+            .to_path_buf()
+    })
 }
 
 /// The scratch root a `rigger` subprocess spawned through [`rigger_courier`] against `root`
@@ -156,7 +189,7 @@ fn test_cache_home() -> &'static Path {
 pub fn default_scratch_root(root: &Path) -> PathBuf {
     rigger::worktree::cache_scratch_root_from(
         root.to_str().expect("fixture root must be valid UTF-8"),
-        Some(test_cache_home().to_owned().into_os_string()),
+        Some(test_cache_home().into_os_string()),
         None,
     )
     .expect("a non-empty fixture root always resolves a cache-home scratch root")
