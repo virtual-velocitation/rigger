@@ -64,6 +64,22 @@
 //! false-positive on lookalike text in a file nobody touched. Deliberately isolated from (a):
 //! a plain two-step implementer flow with no pre-existing worktree, so the sweep backstops
 //! never enter the picture and only the checkpoint-commit's own scope guard is exercised.
+//!
+//! ROUND 3 FIX (`both_step_start_backstops_share_path_is_dirty_and_fail_closed_on_an_
+//! unreadable_status_read`): a reject-round finding
+//! (`arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`, live-confirmed by
+//! `adv-u89c1r2-dirty-check-fail-direction-live-confirmed-via-documented-race` against a real
+//! corrupted worktree admin dir) caught a gap defect (a) above cannot see: the two step-start
+//! authorities agreeing a worktree is dirty by CONTENT says nothing about what happens when
+//! the underlying `git status` READ ITSELF fails - round 2 shipped with `sweep_terminal_logged`
+//! failing CLOSED (spare) on that error and `reclaim_orphan_scratch`'s own independently
+//! hardcoded status call failing OPEN (discard) on the IDENTICAL error, despite a doc comment
+//! claiming the two already mirrored each other. Round 3 replaced both inline calls with one
+//! shared `rigger::worktree::path_is_dirty` free fn. This drives that fix through the REAL
+//! compiled binary with a `git` shim that fails the underlying read itself (not merely
+//! reporting dirty content) for exactly the first two real invocations against the candidate,
+//! then lets every later call - including the halted-commit capture's own, once adoption
+//! proceeds - reach the genuine git unmodified.
 
 mod common;
 
@@ -141,20 +157,32 @@ stages:
     .unwrap();
 }
 
-/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Mirrors
-/// `tests/escalation_resume_periphery.rs`'s identically-named helper.
-fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
+/// Run `rigger <args...>` in `cwd`, with `envs` layered on top of the same baseline every
+/// call needs (`RIGGER_NO_DASH`, a per-invocation `XDG_STATE_HOME`) - the caller's own entries
+/// win on a name collision (e.g. round 3's `PATH` shim below). Mirrors `tests/cli.rs`'s
+/// identically-named helper. [`run_rigger`] is this with an empty `envs` slice - the common
+/// case every call site up to round 3 needs.
+fn run_rigger_envs(cwd: &Path, args: &[&str], envs: &[(&str, &str)]) -> (String, String, bool) {
     let mut cmd = common::rigger_courier();
     cmd.args(args).current_dir(cwd);
     cmd.env("RIGGER_NO_DASH", "1");
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
     cmd.env("XDG_STATE_HOME", state.path());
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
     let out = cmd.output().expect("failed to spawn the rigger binary");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
+}
+
+/// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success). Mirrors
+/// `tests/escalation_resume_periphery.rs`'s identically-named helper.
+fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
+    run_rigger_envs(cwd, args, &[])
 }
 
 /// The DETERMINISTIC dir/branch `stage_worktree`'s `Worktree::create` would derive for a
@@ -681,5 +709,168 @@ fn an_untouched_conflict_marker_lookalike_file_never_blocks_an_unrelated_checkpo
     assert!(
         untouched.contains("<<<<<<<"),
         "the untouched lookalike file's own content must be completely unaffected: {untouched:?}"
+    );
+}
+
+/// Resolve the REAL `git` binary's absolute path from THIS process's own, as-yet-unmodified
+/// `PATH` - captured before [`stage_status_failing_git_shim`] below could shadow it, so the
+/// shim script always execs the genuine binary directly rather than searching a `PATH` this
+/// file is about to prefix.
+fn real_git_path() -> String {
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg("command -v git")
+        .output()
+        .expect("locate the real git binary via the shell's own PATH search");
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(
+        !path.is_empty(),
+        "git must be resolvable on PATH to build the status-failing shim"
+    );
+    path
+}
+
+/// Stage a `git` SHIM directory (never on the real `PATH`) whose one script, driven entirely
+/// by env vars the caller sets on the spawned `rigger` process, fails the first
+/// `$SDET_FAIL_STATUS_TIMES` real invocations of `-C $SDET_FAIL_STATUS_DIR status --porcelain
+/// -z` - the EXACT argv `rigger::worktree::path_is_dirty`'s own `git`/`run_git` primitive
+/// builds (`src/worktree.rs`) - then execs the real git (`$SDET_REAL_GIT`, see
+/// [`real_git_path`]) for every OTHER invocation immediately, and for a MATCHING one too once
+/// that budget is spent. The git repository itself is never touched or corrupted by this -
+/// only this one exact command shape, against this one exact directory, is ever intercepted -
+/// so nothing here engages `Worktree::create`'s own, unrelated admin self-heal
+/// (`heal_corrupt_worktree_admin`), which a REAL corrupted-admin-dir repro (the shape
+/// `adv-u89c1r2-dirty-check-fail-direction-live-confirmed-via-documented-race` used) would.
+/// Returns the shim's own directory, to be prefixed onto `PATH`.
+fn stage_status_failing_git_shim(root: &Path) -> std::path::PathBuf {
+    let bindir = root.join("shim-bin");
+    std::fs::create_dir_all(&bindir).unwrap();
+    let shim = bindir.join("git");
+    std::fs::write(
+        &shim,
+        r#"#!/bin/sh
+if [ "$1" = "-C" ] && [ "$2" = "$SDET_FAIL_STATUS_DIR" ] && [ "$3" = "status" ] \
+    && [ "$4" = "--porcelain" ] && [ "$5" = "-z" ]; then
+    n=$(cat "$SDET_FAIL_STATUS_COUNTER" 2>/dev/null)
+    n=${n:-0}
+    if [ "$n" -lt "$SDET_FAIL_STATUS_TIMES" ]; then
+        echo $((n + 1)) > "$SDET_FAIL_STATUS_COUNTER"
+        echo "fatal: simulated unreadable git status (sdet periphery shim)" >&2
+        exit 128
+    fi
+fi
+exec "$SDET_REAL_GIT" "$@"
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    bindir
+}
+
+/// ROUND 3 FIX (`arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`, live-
+/// confirmed by `adv-u89c1r2-dirty-check-fail-direction-live-confirmed-via-documented-race`):
+/// round 2's own `a_declared_units_dirty_worktree_survives_the_step_start_sweep_backstops`
+/// above proves both step-start authorities spare a worktree that LOOKS dirty (real
+/// uncommitted content) - it cannot tell that apart from a worktree whose git status READ
+/// ITSELF fails, and round 2 shipped with exactly that gap: `sweep_terminal_logged`
+/// (worktree.rs) fell back to `unwrap_or(false)` on `run_git`'s `Err` (dirty=true, spare),
+/// while `reclaim_orphan_scratch`'s OWN independently-hardcoded `git status` call (main.rs)
+/// collapsed the IDENTICAL failure to `dirty=false` (discard) - the opposite direction on the
+/// same input, live-reproduced against a real corrupted worktree admin dir. Round 3 replaced
+/// both inline calls with the one shared `rigger::worktree::path_is_dirty` free fn,
+/// `unwrap_or(true)` at both sites.
+///
+/// This proves the fix through the REAL compiled binary without corrupting the git
+/// repository itself (see [`stage_status_failing_git_shim`]'s own doc comment for why not): a
+/// `git` shim on `PATH` fails the underlying `status --porcelain -z` READ itself (never
+/// merely reporting dirty CONTENT) for exactly the first two real invocations against this
+/// worktree - one budget slot per authority - then passes every later matching call straight
+/// through to the genuine git, so the rest of the pipeline (the halted-commit capture, which
+/// reads this SAME candidate's real, genuinely-dirty status once adoption begins) completes
+/// exactly as it does without the shim. The shim's own counter file, read back after the
+/// step, independently confirms BOTH real call sites actually reached the shared primitive
+/// and actually hit the simulated failure - a count other than 2 means one of them stopped
+/// sharing it (round 2's own duplicated-and-diverges defect returning) or the fail-closed
+/// budget leaked into a later, unrelated read; content-only dirtiness (the round-2 test above)
+/// cannot distinguish either regression from a pass.
+#[test]
+fn both_step_start_backstops_share_path_is_dirty_and_fail_closed_on_an_unreadable_status_read() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_solo_unit_workflow(root);
+
+    let wt_dir = seed_halted_worktree(root, "solo", "halted-work.txt", "abandoned mid-edit\n");
+
+    let real_git = real_git_path();
+    let shim_dir = stage_status_failing_git_shim(root);
+    let orig_path = std::env::var("PATH").unwrap_or_default();
+    let shimmed_path = format!("{}:{}", shim_dir.display(), orig_path);
+    let counter = tempfile::NamedTempFile::new().expect("create the shim's counter file");
+    let counter_path = counter.path().to_string_lossy().into_owned();
+    let fail_dir = wt_dir.to_string_lossy().into_owned();
+
+    let (out1, err1, ok1) = run_rigger_envs(
+        root,
+        &["step"],
+        &[
+            ("PATH", shimmed_path.as_str()),
+            ("SDET_REAL_GIT", real_git.as_str()),
+            ("SDET_FAIL_STATUS_DIR", fail_dir.as_str()),
+            ("SDET_FAIL_STATUS_TIMES", "2"),
+            ("SDET_FAIL_STATUS_COUNTER", counter_path.as_str()),
+        ],
+    );
+    assert!(
+        ok1,
+        "the step must still succeed even though both backstops' own status read genuinely \
+         errors for this candidate; stderr: {err1}"
+    );
+    assert!(
+        out1.contains(r#""id":"solo/implementer#0""#),
+        "the implementer must still park at attempt 0 despite both status reads erroring; \
+         got: {out1:?}"
+    );
+    assert!(
+        err1.contains("worktree sweep: kept") && err1.contains("halt-recovery commit"),
+        "sweep_terminal_logged must still log that it kept this candidate, exactly as it does \
+         for a content-dirty tree, when the status read itself is what failed; stderr: {err1}"
+    );
+
+    let hits: u32 = std::fs::read_to_string(counter.path())
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    assert_eq!(
+        hits, 2,
+        "both real call sites - sweep_terminal_logged and reclaim_orphan_scratch - must reach \
+         the shared path_is_dirty primitive and hit the simulated unreadable-status failure \
+         exactly once each; a count other than 2 means one of them stopped sharing the \
+         primitive (round 2's own duplicated-and-diverges defect) or the fail-closed budget \
+         leaked into a later, unrelated status read; got {hits} matching shim invocations"
+    );
+
+    // Neither authority force-removed the candidate: the abandoned edit is still on disk, and
+    // the halt-recovery capture - reached once adoption proceeds, its OWN status read now past
+    // the shim's budget and answered by the genuine, unmodified git - still committed it.
+    assert!(
+        wt_dir.join("halted-work.txt").exists(),
+        "the abandoned edit must survive both backstops despite the simulated read failures"
+    );
+    let expected_subject = "wip(solo): tree of halted spawn solo/implementer#0";
+    let log = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
+    assert!(
+        log.lines().any(|l| l == expected_subject),
+        "the branch must still carry the halt-recovery wip commit once the shim's budget is \
+         spent and the real status read resumes; got:\n{log}"
+    );
+    let survived = git_out(&wt_dir, &["show", "HEAD:halted-work.txt"]);
+    assert_eq!(
+        survived, "abandoned mid-edit",
+        "the halted spawn's own file must survive, byte-for-byte, inside the recovery commit"
     );
 }
