@@ -3447,8 +3447,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25791,
-        "end_line": 25793,
+        "start_line": 25801,
+        "end_line": 25803,
         "name": "normalize_ws"
       }
     ],
@@ -3467,8 +3467,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25791,
-        "end_line": 25793,
+        "start_line": 25801,
+        "end_line": 25803,
         "name": "normalize_ws"
       }
     ],
@@ -6387,290 +6387,290 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22862,
-        "end_line": 22862,
+        "start_line": 22872,
+        "end_line": 22872,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22874,
-        "end_line": 22874,
+        "start_line": 22884,
+        "end_line": 22884,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22901,
-        "end_line": 22901,
+        "start_line": 22911,
+        "end_line": 22911,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22929,
-        "end_line": 22929,
+        "start_line": 22939,
+        "end_line": 22939,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22940,
-        "end_line": 22940,
+        "start_line": 22950,
+        "end_line": 22950,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22977,
-        "end_line": 22977,
+        "start_line": 22987,
+        "end_line": 22987,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23066,
-        "end_line": 23066,
+        "start_line": 23076,
+        "end_line": 23076,
         "name": "\"the first step must record a dash marker at .rigger/dash.marker; stderr:\\n{err1}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23138,
-        "end_line": 23138,
+        "start_line": 23148,
+        "end_line": 23148,
         "name": "\"{root}/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23155,
-        "end_line": 23155,
+        "start_line": 23165,
+        "end_line": 23165,
         "name": "\"{root}/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24046,
-        "end_line": 24046,
+        "start_line": 24056,
+        "end_line": 24056,
         "name": "\"{other_root}/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24425,
-        "end_line": 24425,
+        "start_line": 24435,
+        "end_line": 24435,
         "name": "\"/stale/root/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24446,
-        "end_line": 24446,
+        "start_line": 24456,
+        "end_line": 24456,
         "name": "\"/live/root/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24548,
-        "end_line": 24548,
+        "start_line": 24558,
+        "end_line": 24558,
         "name": "\"the step must record a dash marker at .rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24748,
-        "end_line": 24748,
+        "start_line": 24758,
+        "end_line": 24758,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24930,
-        "end_line": 24930,
+        "start_line": 24940,
+        "end_line": 24940,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25033,
-        "end_line": 25033,
+        "start_line": 25043,
+        "end_line": 25043,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25158,
-        "end_line": 25158,
+        "start_line": 25168,
+        "end_line": 25168,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25800,
-        "end_line": 25800,
+        "start_line": 25810,
+        "end_line": 25810,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25819,
-        "end_line": 25819,
+        "start_line": 25829,
+        "end_line": 25829,
         "name": "\".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25823,
-        "end_line": 25823,
+        "start_line": 25833,
+        "end_line": 25833,
         "name": "\".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \\\n         (spec 91): {text:?}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25828,
-        "end_line": 25828,
+        "start_line": 25838,
+        "end_line": 25838,
         "name": "\".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \\\n         so drift in the committed workflow fails this suite instead of silently diverging \\\n         from the spec it satisfies: {text:?}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25854,
-        "end_line": 25854,
+        "start_line": 25864,
+        "end_line": 25864,
         "name": "\"this repository's own .rigger/workflow.yml and agents must load: {e}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25861,
-        "end_line": 25861,
+        "start_line": 25871,
+        "end_line": 25871,
         "name": "\".rigger/workflow.yml must define a `checkin` stage (spec 91)\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25896,
-        "end_line": 25896,
+        "start_line": 25906,
+        "end_line": 25906,
         "name": "\".rigger/workflow.yml must define a `mutation` gate (spec 91)\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25917,
-        "end_line": 25917,
+        "start_line": 25927,
+        "end_line": 25927,
         "name": "\"this repository's own committed .rigger/workflow.yml must pass Config::validate \\\n         on a correctly-provisioned machine (cargo-mutants installed)\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25962,
-        "end_line": 25962,
+        "start_line": 25972,
+        "end_line": 25972,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25963,
-        "end_line": 25963,
+        "start_line": 25973,
+        "end_line": 25973,
         "name": "\"a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \\\n         (record_dash_attempt); without it this test cannot exercise the round-8 fact at all\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26020,
-        "end_line": 26020,
+        "start_line": 26030,
+        "end_line": 26030,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26028,
-        "end_line": 26028,
+        "start_line": 26038,
+        "end_line": 26038,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26092,
-        "end_line": 26092,
+        "start_line": 26102,
+        "end_line": 26102,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26121,
-        "end_line": 26121,
+        "start_line": 26131,
+        "end_line": 26131,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26128,
-        "end_line": 26128,
+        "start_line": 26138,
+        "end_line": 26138,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26189,
-        "end_line": 26189,
+        "start_line": 26199,
+        "end_line": 26199,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26192,
-        "end_line": 26192,
+        "start_line": 26202,
+        "end_line": 26202,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26246,
-        "end_line": 26246,
+        "start_line": 26256,
+        "end_line": 26256,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26268,
-        "end_line": 26268,
+        "start_line": 26278,
+        "end_line": 26278,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26273,
-        "end_line": 26273,
+        "start_line": 26283,
+        "end_line": 26283,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26312,
-        "end_line": 26312,
+        "start_line": 26322,
+        "end_line": 26322,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26323,
-        "end_line": 26323,
+        "start_line": 26333,
+        "end_line": 26333,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26359,
-        "end_line": 26359,
+        "start_line": 26369,
+        "end_line": 26369,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26367,
-        "end_line": 26367,
+        "start_line": 26377,
+        "end_line": 26377,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26419,
-        "end_line": 26419,
+        "start_line": 26429,
+        "end_line": 26429,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26424,
-        "end_line": 26424,
+        "start_line": 26434,
+        "end_line": 26434,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26486,
-        "end_line": 26486,
+        "start_line": 26496,
+        "end_line": 26496,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26494,
-        "end_line": 26494,
+        "start_line": 26504,
+        "end_line": 26504,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26747,
-        "end_line": 26747,
+        "start_line": 26757,
+        "end_line": 26757,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27455,
-        "end_line": 27455,
+        "start_line": 27465,
+        "end_line": 27465,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27493,
-        "end_line": 27493,
+        "start_line": 27503,
+        "end_line": 27503,
         "name": "\".rigger\""
       },
       {
@@ -10639,110 +10639,110 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24481,
-        "end_line": 24481,
+        "start_line": 24491,
+        "end_line": 24491,
         "name": "\"/proc/{pid}/stat\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24482,
-        "end_line": 24482,
+        "start_line": 24492,
+        "end_line": 24492,
         "name": "\"read /proc/{pid}/stat: {e}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24485,
-        "end_line": 24485,
+        "start_line": 24495,
+        "end_line": 24495,
         "name": "\"/proc stat has a parenthesised comm field\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24490,
-        "end_line": 24490,
+        "start_line": 24500,
+        "end_line": 24500,
         "name": "\"/proc stat has a pgrp field after comm\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27524,
-        "end_line": 27524,
+        "start_line": 27534,
+        "end_line": 27534,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27609,
-        "end_line": 27609,
+        "start_line": 27619,
+        "end_line": 27619,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27656,
-        "end_line": 27656,
+        "start_line": 27666,
+        "end_line": 27666,
         "name": "\"/proc/{holder_pid}/stat\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27671,
-        "end_line": 27671,
+        "start_line": 27681,
+        "end_line": 27681,
         "name": "\"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27737,
-        "end_line": 27737,
+        "start_line": 27747,
+        "end_line": 27747,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27760,
-        "end_line": 27760,
+        "start_line": 27770,
+        "end_line": 27770,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27789,
-        "end_line": 27789,
+        "start_line": 27799,
+        "end_line": 27799,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27839,
-        "end_line": 27839,
+        "start_line": 27849,
+        "end_line": 27849,
         "name": "\"/proc/{holder_pid}/stat\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27854,
-        "end_line": 27854,
+        "start_line": 27864,
+        "end_line": 27864,
         "name": "\"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27928,
-        "end_line": 27928,
+        "start_line": 27938,
+        "end_line": 27938,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27954,
-        "end_line": 27954,
+        "start_line": 27964,
+        "end_line": 27964,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28052,
-        "end_line": 28052,
+        "start_line": 28062,
+        "end_line": 28062,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28090,
-        "end_line": 28090,
+        "start_line": 28100,
+        "end_line": 28100,
         "name": "\"held_port_holder's message half and describe_held_port_if_confirmed's own return \\\n             must agree (scheduler-state letter normalized away since each call independently \\\n             re-reads /proc and can observe a state flap) - they are documented as sharing one \\\n             discovery\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28109,
-        "end_line": 28109,
+        "start_line": 28119,
+        "end_line": 28119,
         "name": "\"/proc\""
       },
       {
@@ -10899,20 +10899,20 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24480,
-        "end_line": 24493,
+        "start_line": 24490,
+        "end_line": 24503,
         "name": "proc_pgid_of"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27604,
-        "end_line": 27704,
+        "start_line": 27614,
+        "end_line": 27714,
         "name": "cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27783,
-        "end_line": 27898,
+        "start_line": 27793,
+        "end_line": 27908,
         "name": "step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario"
       },
       {
@@ -11713,8 +11713,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25814,
-        "end_line": 25832,
+        "start_line": 25824,
+        "end_line": 25842,
         "name": "rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91"
       }
     ],
@@ -14299,8 +14299,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24480,
-        "end_line": 24493,
+        "start_line": 24490,
+        "end_line": 24503,
         "name": "proc_pgid_of"
       }
     ],
@@ -16923,8 +16923,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25798,
-        "end_line": 25803,
+        "start_line": 25808,
+        "end_line": 25813,
         "name": "rigger_workflow_yml_text"
       },
       {
@@ -20299,8 +20299,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26352,
-        "end_line": 26390,
+        "start_line": 26362,
+        "end_line": 26400,
         "name": "watch_once_never_names_the_unattributed_pid_sentinel_when_the_url_is_unparseable"
       }
     ],
@@ -20319,8 +20319,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26412,
-        "end_line": 26441,
+        "start_line": 26422,
+        "end_line": 26451,
         "name": "watch_once_parses_the_urls_port_past_a_colon_in_the_path_with_no_marker"
       }
     ],
@@ -20481,14 +20481,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 23132,
-        "end_line": 23143,
+        "start_line": 23142,
+        "end_line": 23153,
         "name": "write_live_instance"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23149,
-        "end_line": 23160,
+        "start_line": 23159,
+        "end_line": 23170,
         "name": "write_stale_instance"
       }
     ],
@@ -20501,44 +20501,44 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 23173,
-        "end_line": 23261,
+        "start_line": 23183,
+        "end_line": 23271,
         "name": "a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_the_registry_empties"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23377,
-        "end_line": 23461,
+        "start_line": 23387,
+        "end_line": 23471,
         "name": "a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23488,
-        "end_line": 23592,
+        "start_line": 23498,
+        "end_line": 23602,
         "name": "a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23610,
-        "end_line": 23715,
+        "start_line": 23620,
+        "end_line": 23725,
         "name": "a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_with_no_git_repo_at_launch"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23730,
-        "end_line": 23844,
+        "start_line": 23740,
+        "end_line": 23854,
         "name": "a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23867,
-        "end_line": 23990,
+        "start_line": 23877,
+        "end_line": 24000,
         "name": "a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_registry_entry_was_already_stale_before_the_watchers_first_poll"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24006,
-        "end_line": 24148,
+        "start_line": 24016,
+        "end_line": 24158,
         "name": "a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projects_only_route_into_known_roots"
       }
     ],
@@ -20551,14 +20551,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 24155,
-        "end_line": 24210,
+        "start_line": 24165,
+        "end_line": 24220,
         "name": "a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24225,
-        "end_line": 24289,
+        "start_line": 24235,
+        "end_line": 24299,
         "name": "a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher"
       }
     ],
@@ -20571,14 +20571,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26004,
-        "end_line": 26046,
+        "start_line": 26014,
+        "end_line": 26056,
         "name": "watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26470,
-        "end_line": 26519,
+        "start_line": 26480,
+        "end_line": 26529,
         "name": "watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a_colon"
       }
     ],
@@ -20591,26 +20591,26 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26658,
-        "end_line": 26696,
+        "start_line": 26668,
+        "end_line": 26706,
         "name": "run_given_a_spec_path_names_the_spec_lint_as_a_next_step"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26821,
-        "end_line": 26864,
+        "start_line": 26831,
+        "end_line": 26874,
         "name": "step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27138,
-        "end_line": 27173,
+        "start_line": 27148,
+        "end_line": 27183,
         "name": "step_reminder_prints_despite_env_naming_a_foreign_pid"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27217,
-        "end_line": 27251,
+        "start_line": 27227,
+        "end_line": 27261,
         "name": "run_reminder_prints_despite_env_naming_a_foreign_pid"
       }
     ],
@@ -20623,20 +20623,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26884,
-        "end_line": 26944,
+        "start_line": 26894,
+        "end_line": 26954,
         "name": "run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26953,
-        "end_line": 26992,
+        "start_line": 26963,
+        "end_line": 27002,
         "name": "step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27010,
-        "end_line": 27077,
+        "start_line": 27020,
+        "end_line": 27087,
         "name": "run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site"
       }
     ],
@@ -20649,14 +20649,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 27097,
-        "end_line": 27133,
+        "start_line": 27107,
+        "end_line": 27143,
         "name": "step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27177,
-        "end_line": 27212,
+        "start_line": 27187,
+        "end_line": 27222,
         "name": "run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid"
       }
     ],
@@ -20669,14 +20669,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 27315,
-        "end_line": 27364,
+        "start_line": 27325,
+        "end_line": 27374,
         "name": "run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27376,
-        "end_line": 27431,
+        "start_line": 27386,
+        "end_line": 27441,
         "name": "run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction"
       }
     ],
@@ -20689,14 +20689,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 27447,
-        "end_line": 27481,
+        "start_line": 27457,
+        "end_line": 27491,
         "name": "run_driver_workflow_fresh_notice_never_reaches_stdout"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27488,
-        "end_line": 27512,
+        "start_line": 27498,
+        "end_line": 27522,
         "name": "run_driver_cli_fresh_notice_still_prints_on_stdout"
       }
     ],
@@ -20709,14 +20709,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 27604,
-        "end_line": 27704,
+        "start_line": 27614,
+        "end_line": 27714,
         "name": "cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27783,
-        "end_line": 27898,
+        "start_line": 27793,
+        "end_line": 27908,
         "name": "step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario"
       }
     ],
