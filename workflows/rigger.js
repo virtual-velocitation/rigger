@@ -67,7 +67,66 @@ if (typeof A === 'string') {
   }
 }
 A = A || {}
-const REPO = A.repo || '.'
+// STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolve the repository to an
+// ABSOLUTE path exactly ONCE, here, before anything builds a courier command from it. A bare
+// relative default (`.`) is a no-op `cd .` that leaves a LATER courier's Bash tool call
+// wherever its own cwd already happens to be - which can drift into a linked unit worktree
+// left over from an earlier, unrelated Bash call in the same agent session - so `rigger step`
+// then runs in the WRONG tree and fails deep inside branch setup with git's own opaque
+// "'rigger-run' is already used by worktree ..." (2026-09-11 evidence: the driver stopped
+// after 28 waves for exactly this reason). This script has no filesystem or Node.js API of
+// its own (the Workflow harness grants none), so the resolution runs through one throwaway
+// agent() Bash round-trip - the very FIRST Bash command this workflow ever issues, before
+// anything else could have drifted its cwd - whose reported `pwd` becomes REPO for every
+// courier command the rest of this run builds.
+const REPO_ARG = A.repo || '.'
+const repoResolution = await agent(
+  `Run EXACTLY this ONE foreground Bash command and nothing else: cd ${REPO_ARG} && pwd. Return ` +
+    `its trimmed stdout (the absolute directory path) as structured output, verbatim - do not ` +
+    `guess, normalize, or invent a path.`,
+  {
+    phase: 'Drive',
+    // haiku: a single, unambiguous shell command with no judgment involved - the cheapest
+    // tier that can run a Bash call and relay its output.
+    model: 'haiku',
+    // The `path` schema constrains the relay to look like an absolute POSIX path
+    // (leading `/`) at the source: the LLM relay behind agent() is not a trusted
+    // resolver (spec 89, criterion 4 round 2 - a misbehaving relay that returns a
+    // non-empty, non-absolute value, e.g. a bare unit-worktree basename, would
+    // otherwise sail past the old `if (!REPO) throw` below and silently reintroduce
+    // the exact wrong-cwd-drift failure class this whole resolution exists to close).
+    // The pattern alone is not load-bearing on its own - see the runtime check right
+    // after REPO is bound, which is what actually refuses a relay that ignores the
+    // schema.
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['path'],
+      properties: { path: { type: 'string', pattern: '^/' } },
+    },
+    label: 'resolve-repo',
+  },
+)
+const REPO = (repoResolution && repoResolution.path ? repoResolution.path : '').trim()
+if (!REPO) {
+  throw new Error(
+    'rigger driver: could not resolve the repository to an absolute path before couriering the first step',
+  )
+}
+// A runtime check ALONGSIDE the empty-check above, not a replacement for it: the schema's
+// `pattern` constrains a well-behaved relay, but nothing enforces a JSON schema against a
+// model's structured-output relay at the wire level, so a misbehaving relay can still return
+// a non-empty, non-absolute `path` (spec 89, criterion 4 round 2). Every courier command built
+// below interpolates REPO directly into `cd ${REPO} && ...`, so a relative or otherwise
+// non-absolute value would resolve wherever THIS Bash call's own cwd already happens to be -
+// the identical drift-into-a-linked-worktree failure this whole agent() round-trip exists to
+// close - so it is refused here, loudly, before any courier command is ever built from it.
+if (!REPO.startsWith('/')) {
+  throw new Error(
+    `rigger driver: the resolved repository path is not absolute (${REPO}) - refusing to ` +
+      'build a courier command from it',
+  )
+}
 const SPEC = A.spec || 'spec.md'
 // Pass --base ONLY when the caller explicitly provided one: `rigger step` applies its
 // own default (origin/main) for a run branch it must create, and an existing run branch

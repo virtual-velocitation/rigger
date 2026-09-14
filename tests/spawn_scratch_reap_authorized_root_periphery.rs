@@ -384,3 +384,149 @@ fn rigger_result_reaps_a_live_process_from_the_owning_roots_configured_workdir_w
          directory"
     );
 }
+
+/// The literal refusal text `is_reapable_base` prints to stderr (`src/reap.rs`) when it
+/// refuses a base - the ONE string every assertion below checks is ABSENT, since spec 89
+/// criterion 3's whole point is that a gone-but-under-root target is authorized silently, not
+/// refused loudly.
+const REAP_REFUSED_TEXT: &str = "not strictly under";
+
+/// Spec 89 criterion 3 (THE RECLAIM GUARD COMPARES PATHS), extending this file's own real
+/// per-spawn `cmd_result` call chain to the exact production incident the criterion closes.
+///
+/// WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO.
+///
+/// `src/reap.rs`'s own unit tests (`is_reapable_base_authorizes_a_gone_target_...`,
+/// `reap_kills_a_process_whose_base_dir_was_already_removed_before_the_reap_call`) prove the
+/// fix entirely through a bare `FakeRepo` fixture calling the private `is_reapable_base` and
+/// the pub `reap_processes_rooted_under` directly - never through `rigger result`, so they
+/// cannot see whether the fix actually reaches the ONE real caller that ever hands a
+/// POSSIBLY-NONEXISTENT path to the reap without first checking: `main.rs::
+/// reclaim_spawn_registered_scratch` (this file's own header doc comment already names it the
+/// "HIGHEST-TRAFFIC real entry point"). `reclaim_unit_mutation_scratch` (closed by
+/// `mutation_scratch_reap_base_guard_periphery.rs`) cannot reach this case either - it only
+/// ever reaps entries its own `read_dir` enumeration found, which by construction exist at
+/// reap time. This test reproduces spec 89's own cited incident (spec 80: a mutant test
+/// binary looped for eight days after `cargo-mutants` removed its tree out from under it)
+/// through the REAL per-spawn reclaim: the registered mutation-scratch dir is deleted out
+/// from under a still-running process BEFORE `rigger result` ever runs, mirroring `cargo-
+/// mutants`' own cleanup racing the courier that reports the spawn's outcome.
+#[test]
+fn rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_already_removed_before_the_call(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_started(root, "r1");
+    // The run's own agent-scratch ROOT already exists (as it would by the time any real spawn
+    // reports - earlier steps have already populated it), so neither half of the same
+    // `reclaim_spawn_registered_scratch` call can refuse on an absent AUTHORIZED ROOT of its
+    // own (`is_reapable_base` still requires that half to exist, unchanged by this diff) -
+    // the only thing missing below is the mutation-scratch LEAF itself, spec 89 criterion 3's
+    // own scope.
+    std::fs::create_dir_all(root.join(".rigger").join("tmp")).unwrap();
+
+    let spawn_id = "u-periphery-cli-gone-mutation-scratch/implementer#0";
+    let cache_home = tempfile::tempdir().unwrap();
+    let leaf = mutation_scratch_path(cache_home.path(), spawn_id)
+        .expect("a well-formed spawn id must encode to a real path");
+    std::fs::create_dir_all(&leaf).unwrap();
+
+    let mut child = sigterm_ignorer_in(&leaf);
+    assert!(
+        wait_until(|| processes_rooted_under(&leaf)
+            .iter()
+            .any(|(pid, _)| *pid == child.id())),
+        "precondition: the fixture process must actually be rooted in the spawn's registered \
+         mutation-scratch dir before it is removed out from under it"
+    );
+
+    // `cargo-mutants`' own cleanup (or any other reason the dir might already be gone) removes
+    // the LEAF itself, but not the registered ROOT (`cache_home/rigger-mutants`) other spawns'
+    // leaves still live under - the child process keeps running, now holding a deleted cwd.
+    std::fs::remove_dir_all(&leaf).expect("remove the leaf out from under the live process");
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", spawn_id, "done"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording the result must succeed even though its own mutation-scratch dir is \
+         already gone; stdout: {out:?} stderr: {err}"
+    );
+    assert!(
+        !err.contains(REAP_REFUSED_TEXT),
+        "spec 89 criterion 3: a base that resolves strictly under the registered mutation-\
+         scratch root but no longer exists is ALREADY RECLAIMED, never a logged refusal - got \
+         a refusal on stderr: {err}"
+    );
+
+    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
+    if !died {
+        cleanup(&mut child);
+    }
+    assert!(
+        died,
+        "spec 89 criterion 3 / spec 80's 8-day-hang incident, reproduced through the real \
+         per-spawn `cmd_result` reclaim chain: a process still rooted in a registered \
+         mutation-scratch dir that was REMOVED out from under it before `rigger result` ran \
+         must still be found (via the kernel's \" (deleted)\" cwd suffix) and SIGKILLed, not \
+         silently left running forever because the now-gone base was refused as \"not \
+         strictly under\" its root."
+    );
+}
+
+/// Sibling of the test above, proving spec 89 criterion 3's OTHER named production instance:
+/// a role that never runs `cargo mutants` at all (any reviewer - lens, adversary,
+/// adjudicator, sdet-author) reports through the identical `cmd_result` reclaim chain on
+/// EVERY round, and its own mutation-scratch leaf was never created in the first place, not
+/// merely removed after the fact. Before this fix `is_reapable_base` required `base_dir.
+/// canonicalize()` to succeed, so a role that never populated its leaf refused - LOGGED - on
+/// every single `rigger result` (`adj-u91c4-reclaim-refusal-corroborates-orphan-finding`,
+/// spec 89's own Problem statement: "every reviewer re-reproduces and rules that out every
+/// round"). `tests/cli.rs::a_reviewers_result_never_reclaims_the_implementers_mutation_
+/// scratch` already proves the SIBLING implementer leaf survives untouched, but asserts
+/// nothing about the reporting reviewer's OWN (never-created) leaf or about stderr - it
+/// cannot see the noise this fix silences.
+#[test]
+fn rigger_result_logs_no_false_refusal_for_a_reviewers_own_never_created_mutation_scratch_dir() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_started(root, "r1");
+    std::fs::create_dir_all(root.join(".rigger").join("tmp")).unwrap();
+
+    // The registered mutation-scratch ROOT already exists (some other spawn's leaf populated
+    // it earlier in the run - the everyday shape), but THIS reviewer spawn's own leaf never
+    // was and never will be: reviewers never run `cargo mutants`.
+    let cache_home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(cache_home.path().join("rigger-mutants")).unwrap();
+
+    let spawn_id = "u-periphery-cli-reviewer-never-created-mutation-scratch/adversary#0";
+    let leaf = mutation_scratch_path(cache_home.path(), spawn_id)
+        .expect("a well-formed spawn id must encode to a real path");
+    assert!(
+        !leaf.exists(),
+        "fixture bug: this test requires the reviewer's own mutation-scratch leaf to never \
+         have been created"
+    );
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["result", spawn_id, "no blocking findings"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "recording a reviewer's result must succeed; stdout: {out:?} stderr: {err}"
+    );
+    assert!(
+        !err.contains(REAP_REFUSED_TEXT),
+        "spec 89 criterion 3: a reviewer role's own mutation-scratch leaf, never created \
+         because reviewers never run `cargo mutants`, resolves strictly under the registered \
+         root and must be treated as ALREADY RECLAIMED - never a logged refusal on every \
+         single `rigger result`; got: {err}"
+    );
+}
