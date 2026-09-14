@@ -35,10 +35,11 @@
 //! canonicalized cwd equals the base dir or lies strictly under it (`<base>/...`), by path
 //! COMPONENTS, never a raw string prefix - so a sibling dir whose path merely shares a
 //! string prefix (`<base>-x`) is never matched. On TOP of that, [`reap_processes_rooted_under`]
-//! additionally requires the base itself to canonicalize to somewhere STRICTLY under an
-//! `authorized_root` the CALLER supplies ([`is_reapable_base`]) - so a caller that ever
-//! computed a wrong or widened base relative to the root it meant to reap under gets a
-//! logged no-op instead of a kill. `authorized_root` is never re-derived here (no hardcoded
+//! additionally requires the base itself to RESOLVE (lexically, [`resolve_lexically`] -
+//! existence not required, see below) to somewhere STRICTLY under an `authorized_root` the
+//! CALLER supplies ([`is_reapable_base`]) - so a caller that ever computed a wrong or
+//! widened base relative to the root it meant to reap under gets a logged no-op instead of a
+//! kill. `authorized_root` is never re-derived here (no hardcoded
 //! `<repo>/.rigger/tmp` literal, no git resolution of the caller's repo): the caller passes
 //! the SAME resolved root it already used to build `base_dir` itself
 //! ([`crate::worktree::scratch_root_path_from_env`] for the run's own scratch tree, or a
@@ -53,6 +54,19 @@
 //! CURRENTLY a registered worktree checked out on `self.branch`?) and calls
 //! [`reap_authorized`] directly, bypassing this containment gate entirely - see that
 //! function's own doc comment.
+//!
+//! THE GUARD COMPARES PATHS, NOT EXISTENCE (spec 89 criterion 3): [`is_reapable_base`] and
+//! [`processes_rooted_under`] both resolve `base_dir` via [`resolve_lexically`] rather than
+//! requiring it to exist. A `base_dir` that resolves strictly under `authorized_root` but no
+//! longer exists is ALREADY RECLAIMED - authorized exactly like a live one, never a logged
+//! refusal (before this, a spawn's own never-created mutation-scratch dir failed
+//! `base_dir.canonicalize()` and logged a false "not strictly under" refusal on every single
+//! `rigger result`). And a process can hold a now-DELETED dir as its cwd - the kernel
+//! appends the literal `" (deleted)"` to its `/proc/<pid>/cwd` readlink - so [`is_inside`]
+//! strips that suffix before matching, closing the exact gap that let a spec-80 mutant test
+//! binary loop for eight days after `cargo-mutants` removed its tree out from under it: the
+//! cwd-rooted reaper never matched the deleted path, so it never even tried to signal it. A
+//! genuinely OUTSIDE `base_dir` is still refused, whether or not it exists.
 //!
 //! SIGNAL API (spec 78): every signal rigger issues to a process it does not hold a
 //! [`std::process::Child`] handle to goes through `rustix::process::kill_process` - never a
@@ -90,20 +104,30 @@ const GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 /// reap, this pure detection primitive is not scoped by [`is_reapable_base`], so a caller
 /// (like the validate advisory) may point it at `.rigger/tmp` itself for full visibility.
 ///
-/// Best-effort and Linux-first via `/proc/<pid>/cwd`. Returns EMPTY - a graceful no-op,
-/// never an error - when `base_dir` cannot be canonicalized (it does not exist) or `/proc`
-/// is absent or unreadable (a non-Linux platform), so teardown and validate work anywhere.
+/// Best-effort and Linux-first via `/proc/<pid>/cwd`. `base_dir` is resolved LEXICALLY
+/// ([`resolve_lexically`], spec 89 criterion 3) rather than required to exist - a live
+/// process can hold a now-deleted dir as its cwd, and this scan must still find it. Returns
+/// EMPTY - a graceful no-op, never an error - only when no ancestor of `base_dir` at all can
+/// be resolved (practically unreachable) or `/proc` is absent or unreadable (a non-Linux
+/// platform), so teardown and validate work anywhere.
 ///
-/// Containment is CANONICAL-PATH STRICT-INSIDE, matched on path components: a process is
-/// returned iff its canonicalized cwd equals the canonicalized `base_dir` or starts with it
-/// as a path prefix. Component matching (not string prefix) is the load-bearing safety
-/// boundary - `<base>-sibling` shares a string prefix with `<base>` but is a different
-/// component and is never matched, so a process outside the exact dir is never reaped.
-/// The scanning process itself is excluded (rigger never reaps its own pid).
+/// Containment is RESOLVED-PATH STRICT-INSIDE, matched on path components: a process is
+/// returned iff its resolved cwd (the kernel's own readlink, with any trailing `"
+/// (deleted)"` marker stripped - [`is_inside`]) equals the resolved `base_dir` or starts
+/// with it as a path prefix. Component matching (not string prefix) is the load-bearing
+/// safety boundary - `<base>-sibling` shares a string prefix with `<base>` but is a
+/// different component and is never matched, so a process outside the exact dir is never
+/// reaped. The scanning process itself is excluded (rigger never reaps its own pid).
 pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
-    // Canonicalize the base so a symlinked component matches the kernel-resolved cwd, and so
-    // an absent dir short-circuits to empty (nothing to scan). This never creates the dir.
-    let Ok(base) = base_dir.canonicalize() else {
+    // Resolve the base LEXICALLY (spec 89 criterion 3), not by requiring it to exist: a
+    // process can hold a now-DELETED dir as its cwd (spec 80's 8-day-hang incident - a
+    // mutant binary looped after `cargo-mutants` removed its tree out from under it), and
+    // such a process is exactly what this scan must still find. `resolve_lexically` follows
+    // symlinks in whatever portion of `base_dir` still exists (so the kernel-resolved cwd of
+    // a LIVE process still matches a symlinked component), then lexically resolves any
+    // missing suffix - it fails only in the practically-unreachable case where no ancestor
+    // at all can be resolved.
+    let Some(base) = resolve_lexically(base_dir) else {
         return Vec::new();
     };
     let proc = Path::new("/proc");
@@ -284,18 +308,23 @@ fn send_signal(signal: Signal, pid: u32) {
 }
 
 /// Validate that `base_dir` is a directory the reaper is authorized to touch (spec 78, THE
-/// REAPER; spec 78 round-2 amendment, decision `u78c2r2-authorized-root-caller-supplied`):
-/// it must canonicalize, exist, and lie STRICTLY under `authorized_root` (also
-/// canonicalized) - a root the CALLER resolves and supplies, via the SAME authority it
-/// already used to build `base_dir` itself, never re-derived here from `base_dir`'s own
-/// git/filesystem position (a prior round did exactly that - a hardcoded `<repo>/.rigger/tmp`
-/// literal resolved from `base_dir`'s own git context - and it silently turned every
-/// production reap of a relocated scratch root, or the registered mutation-scratch root
-/// under a cache home, into an unconditional no-op: neither can ever canonicalize under any
-/// project's own `.rigger/tmp` by construction). Refused - logged, `None` - for: an
-/// unresolvable `authorized_root`, `base_dir` equal to it, a nonexistent `base_dir` (fails
-/// to canonicalize), or a symlink that canonicalizes outside it. Never widens, never falls
-/// back - the caller must no-op on `None`.
+/// REAPER; spec 78 round-2 amendment, decision `u78c2r2-authorized-root-caller-supplied`;
+/// spec 89 criterion 3, THE RECLAIM GUARD COMPARES PATHS): `authorized_root` must
+/// canonicalize (it is the CALLER's own already-resolved, persistent root - a root the
+/// caller resolves and supplies, via the SAME authority it already used to build `base_dir`
+/// itself, never re-derived here from `base_dir`'s own git/filesystem position); `base_dir`
+/// is resolved LEXICALLY ([`resolve_lexically`]) rather than required to exist, and must lie
+/// STRICTLY under the canonicalized root. Refused - logged, `None` - for: an unresolvable
+/// `authorized_root`, `base_dir` equal to it, or a `base_dir` that resolves outside it
+/// (including via a symlink in whatever portion of it exists). A `base_dir` that resolves
+/// STRICTLY UNDER the root but no longer exists is ALREADY RECLAIMED - authorized (`Some`)
+/// exactly like a live one, never a logged refusal: a spawn's own never-created
+/// mutation-scratch dir used to fail `base_dir.canonicalize()` and log a false "not strictly
+/// under" refusal on EVERY `rigger result` (`adj-u91c4-reclaim-refusal-corroborates-orphan-
+/// finding`), and a base already removed out from under a still-running process (spec 80's
+/// 8-day hang) must stay authorized so [`processes_rooted_under`]'s deleted-cwd match can
+/// still find and reap it. Never widens the boundary itself, never falls back on a genuine
+/// escape - the caller must no-op on `None`.
 fn is_reapable_base(base_dir: &Path, authorized_root: &Path) -> Option<PathBuf> {
     let refuse = |root_display: &str| {
         eprintln!(
@@ -309,13 +338,49 @@ fn is_reapable_base(base_dir: &Path, authorized_root: &Path) -> Option<PathBuf> 
         return refuse(&authorized_root.display().to_string());
     };
     let root_display = root.display().to_string();
-    let Ok(base) = base_dir.canonicalize() else {
+    let Some(base) = resolve_lexically(base_dir) else {
         return refuse(&root_display);
     };
     if base != root && base.starts_with(&root) {
         Some(base)
     } else {
         refuse(&root_display)
+    }
+}
+
+/// Resolve `path` as far as the filesystem allows WITHOUT requiring it to exist (spec 89
+/// criterion 3, THE RECLAIM GUARD COMPARES PATHS - "normalizes the joined path lexically"):
+/// canonicalize the longest existing ancestor - so a symlink anywhere in the portion that
+/// DOES exist is still followed, preserving the escape-detection guarantee
+/// [`is_reapable_base`]'s callers rely on for whatever part of the path is actually there
+/// today - then lexically re-append whatever suffix does not exist, resolving any `..` in it
+/// by plain path-component arithmetic (never touching the filesystem for a component that
+/// is not there to canonicalize; `Path`'s own component parser already normalizes away
+/// interior `.` segments). Returns `None` only if NO ancestor at all can be canonicalized,
+/// which does not happen in practice - the filesystem root always resolves.
+fn resolve_lexically(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(mut resolved) = current.canonicalize() {
+            for component in missing.into_iter().rev() {
+                match component {
+                    std::path::Component::ParentDir => {
+                        resolved.pop();
+                    }
+                    std::path::Component::Normal(name) => resolved.push(name),
+                    // `CurDir`, `RootDir` and `Prefix` never occur in the MISSING suffix we
+                    // collect here - each pushed component came from stripping ONE trailing
+                    // component off `current` (never the root itself, which always
+                    // canonicalizes and ends the loop above before falling through here).
+                    _ => {}
+                }
+            }
+            return Some(resolved);
+        }
+        let component = current.components().next_back()?;
+        missing.push(component);
+        current = current.parent()?;
     }
 }
 
@@ -365,8 +430,11 @@ pub fn reap_processes_rooted_under(base_dir: &Path, authorized_root: &Path) {
 /// base), and only what is genuinely still rooted inside gets its OWN fresh start-time
 /// baseline and is force-killed - the TOCTOU guard holds for the SIGKILL pass too.
 ///
-/// `base` is assumed already canonical (both callers canonicalize before calling in);
-/// best-effort and platform-tolerant throughout - where `/proc` is absent the scan finds
+/// `base` is assumed already resolved (both callers resolve before calling in - one via
+/// [`is_reapable_base`]'s [`resolve_lexically`], the other via `Worktree::remove`'s own
+/// `canonicalize`); it need not currently exist (spec 89 criterion 3 - a base already
+/// removed out from under a still-running process is exactly the case this reaps).
+/// Best-effort and platform-tolerant throughout - where `/proc` is absent the scan finds
 /// nothing and this is a graceful no-op.
 pub(crate) fn reap_authorized(base: PathBuf) {
     let self_pid = std::process::id();
@@ -388,11 +456,34 @@ pub(crate) fn reap_authorized(base: PathBuf) {
 }
 
 /// Whether `cwd` is `base` itself or strictly under it, matched on path COMPONENTS. Both are
-/// absolute (the `/proc` cwd link resolves to an absolute path; `base` is canonicalized by
-/// the caller). `Path::starts_with` is component-wise, so `/a/bc` never matches `/a/b` - the
-/// safety boundary against a raw string-prefix false match.
+/// absolute (the `/proc` cwd link resolves to an absolute path; `base` is resolved by the
+/// caller, via [`resolve_lexically`]). `Path::starts_with` is component-wise, so `/a/bc`
+/// never matches `/a/b` - the safety boundary against a raw string-prefix false match.
+///
+/// `cwd` is stripped of the kernel's own `" (deleted)"` suffix first (spec 89 criterion 3).
+/// `readlink("/proc/<pid>/cwd")` appends that literal text once, to the end of the whole
+/// resolved path, when the directory a live process still holds as its cwd has been removed;
+/// left unstripped, that text becomes an unmatched extra path component and a runaway whose
+/// scratch WAS removed out from under it silently survives every future scan (spec 80: a
+/// mutant test binary looped for eight days for exactly this reason). Stripping the literal
+/// suffix text, never touching the filesystem since the path is already gone, mirrors
+/// [`resolve_lexically`]'s own "compare paths, not existence" rule for `base`.
 fn is_inside(cwd: &Path, base: &Path) -> bool {
-    cwd.starts_with(base)
+    strip_deleted_suffix(cwd).starts_with(base)
+}
+
+/// Strip the kernel's own `" (deleted)"` suffix from a `/proc/<pid>/cwd` readlink result, if
+/// present - see [`is_inside`]'s doc comment for why. A lossy UTF-8 round-trip: rigger's own
+/// scratch/worktree paths are always valid UTF-8 (git branch names and this crate's own path
+/// construction never emit otherwise), so this never mismatches a real path in practice, and
+/// the whole reap is best-effort throughout regardless.
+fn strip_deleted_suffix(cwd: &Path) -> PathBuf {
+    const DELETED_SUFFIX: &str = " (deleted)";
+    let text = cwd.to_string_lossy();
+    match text.strip_suffix(DELETED_SUFFIX) {
+        Some(stripped) => PathBuf::from(stripped),
+        None => cwd.to_path_buf(),
+    }
 }
 
 #[cfg(test)]
@@ -546,6 +637,45 @@ mod tests {
     }
 
     #[test]
+    fn processes_rooted_under_matches_a_process_whose_cwd_was_deleted_out_from_under_it() {
+        // spec 89 criterion 3, second half: the kernel appends the literal " (deleted)" to a
+        // `/proc/<pid>/cwd` readlink once the directory a live process still holds as its
+        // cwd has been removed. Reproduces the spec-80 incident verbatim (a mutant test
+        // binary looped for eight days at ~17 cores because the reaper's cwd match never
+        // saw through that suffix once `cargo-mutants` removed its tree). Both halves of
+        // this fix are exercised here: `processes_rooted_under` must still be ABLE to scan
+        // for a base dir that no longer exists (not short-circuit to empty), and `is_inside`
+        // must match the deleted-suffixed cwd text against it.
+        let root = tempfile::tempdir().unwrap();
+        let base = root.path().join("scratch");
+        std::fs::create_dir_all(&base).unwrap();
+        let base = base.canonicalize().unwrap();
+
+        let mut inside = sleeper_in(&base);
+        assert!(
+            wait_until(|| processes_rooted_under(&base)
+                .iter()
+                .any(|(pid, _)| *pid == inside.id())),
+            "precondition: detected before the dir is removed"
+        );
+
+        std::fs::remove_dir_all(&base).expect("remove the dir out from under the live cwd");
+
+        let found_after_delete = wait_until(|| {
+            processes_rooted_under(&base)
+                .iter()
+                .any(|(pid, _)| *pid == inside.id())
+        });
+        cleanup(&mut inside);
+
+        assert!(
+            found_after_delete,
+            "a process whose cwd was deleted out from under it must still be matched, via \
+             the kernel's \" (deleted)\" suffix stripped"
+        );
+    }
+
+    #[test]
     fn is_inside_matches_on_components_not_string_prefix() {
         assert!(is_inside(Path::new("/a/b"), Path::new("/a/b")));
         assert!(is_inside(Path::new("/a/b/c"), Path::new("/a/b")));
@@ -596,10 +726,60 @@ mod tests {
     }
 
     #[test]
-    fn is_reapable_base_refuses_a_nonexistent_dir() {
+    fn is_reapable_base_authorizes_a_gone_target_strictly_under_the_root_instead_of_refusing() {
+        // spec 89 criterion 3 (THE RECLAIM GUARD COMPARES PATHS): a target that no longer
+        // exists but lexically resolves strictly under the authorized root is ALREADY
+        // RECLAIMED, not refused - the guard compares PATHS, never requires the leaf to
+        // exist. Before this fix, `base_dir.canonicalize()` failed for a gone leaf and this
+        // returned `None` via the LOGGED refusal branch (`reclaim_unit_mutation_scratch`
+        // hit exactly this on every `rigger result`, per `adj-u91c4-reclaim-refusal-
+        // corroborates-orphan-finding`: a spawn's own mutation-scratch dir, never created,
+        // logged a scary "not strictly under" line every single time).
         let repo = FakeRepo::new();
         let absent = repo.tmp.join("never-created");
-        assert_eq!(is_reapable_base(&absent, &repo.tmp), None);
+        assert_eq!(
+            is_reapable_base(&absent, &repo.tmp),
+            Some(repo.tmp.canonicalize().unwrap().join("never-created")),
+            "a gone-but-under-root target must be AUTHORIZED (Some), never refused (None)"
+        );
+    }
+
+    #[test]
+    fn is_reapable_base_still_refuses_a_gone_target_that_would_resolve_outside_the_root() {
+        // The other half of the same fix: leniency for a MISSING leaf must never widen the
+        // boundary itself - a gone target that resolves OUTSIDE the root is still refused,
+        // by name, exactly as a live one would be.
+        let repo = FakeRepo::new();
+        let outside_parent = tempfile::tempdir().unwrap();
+        let gone_and_outside = outside_parent.path().join("never-created-and-outside");
+        assert_eq!(is_reapable_base(&gone_and_outside, &repo.tmp), None);
+    }
+
+    /// Build a symlink under `repo.tmp` that escapes it (a real target dir under an
+    /// unrelated tempdir it does not contain) - the shared fixture for every symlink-escape
+    /// test, so the two near-identical setups the audit's duplication scan flagged
+    /// (`dup-0295`) collapse onto ONE implementation. Returns the escaping symlink's own
+    /// path and the `TempDir` guard the caller must keep alive for its target to still
+    /// exist.
+    fn escaping_symlink(repo: &FakeRepo) -> (tempfile::TempDir, PathBuf) {
+        let outside = tempfile::tempdir().unwrap();
+        let real_outside_target = outside.path().join("real-target");
+        std::fs::create_dir_all(&real_outside_target).unwrap();
+        let link = repo.tmp.join("escape-link");
+        std::os::unix::fs::symlink(&real_outside_target, &link).unwrap();
+        (outside, link)
+    }
+
+    #[test]
+    fn is_reapable_base_refuses_a_gone_leaf_beneath_a_symlink_that_escapes_the_root() {
+        // Leniency for a missing LEAF must never defeat the EXISTING symlink-escape guard:
+        // when an ancestor component that DOES exist is a symlink escaping the root, the
+        // best-effort resolution follows it (as `canonicalize` always has) before the
+        // missing suffix is lexically reattached, so the escape is still caught.
+        let repo = FakeRepo::new();
+        let (_outside, link) = escaping_symlink(&repo);
+        let gone_leaf_beneath_link = link.join("never-created-child");
+        assert_eq!(is_reapable_base(&gone_leaf_beneath_link, &repo.tmp), None);
     }
 
     #[test]
@@ -615,11 +795,7 @@ mod tests {
     #[test]
     fn is_reapable_base_refuses_a_symlink_under_the_authorized_root_that_escapes_it() {
         let repo = FakeRepo::new();
-        let outside = tempfile::tempdir().unwrap();
-        let real_outside_target = outside.path().join("real-target");
-        std::fs::create_dir_all(&real_outside_target).unwrap();
-        let link = repo.tmp.join("escape-link");
-        std::os::unix::fs::symlink(&real_outside_target, &link).unwrap();
+        let (_outside, link) = escaping_symlink(&repo);
         assert_eq!(is_reapable_base(&link, &repo.tmp), None);
     }
 
@@ -694,6 +870,38 @@ mod tests {
             inside_died,
             "a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
              must still authorize the reap"
+        );
+    }
+
+    #[test]
+    fn reap_kills_a_process_whose_base_dir_was_already_removed_before_the_reap_call() {
+        // End-to-end proof that spec 89 criterion 3's two fixes compose: a base dir removed
+        // out from under a still-running process is (1) still AUTHORIZED by
+        // `is_reapable_base` (it resolves strictly under the root even though it is gone -
+        // never refused), and (2) the process rooted inside it is still FOUND and killed by
+        // `processes_rooted_under`'s deleted-cwd match - reproducing the spec-80 8-day-hang
+        // incident and proving this fix actually closes it, not just the false-refusal log
+        // line.
+        let repo = FakeRepo::new();
+        let base = repo.base("scratch");
+
+        let mut inside = sigterm_ignorer_in(&base);
+        assert!(wait_until(|| processes_rooted_under(&base)
+            .iter()
+            .any(|(pid, _)| *pid == inside.id())));
+
+        std::fs::remove_dir_all(&base).expect("remove the dir out from under the live cwd");
+
+        reap_processes_rooted_under(&base, &repo.tmp);
+
+        let inside_died = wait_for_exit(&mut inside);
+        if !inside_died {
+            cleanup(&mut inside);
+        }
+        assert!(
+            inside_died,
+            "a process rooted in an already-removed-but-authorized base must still be \
+             SIGKILLed, never silently left as a runaway"
         );
     }
 
