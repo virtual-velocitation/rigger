@@ -3492,6 +3492,69 @@ fn workflow_from_a_linked_worktree_refuses_naming_both_trees() {
     );
 }
 
+/// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE) round 2: `rigger serve` (and,
+/// identically, `rigger run --driver workflow`) is `run_workflow`'s OWN entry point - the one
+/// the shim actually spawns on the automated `/rigger` path - and, before this round, called
+/// bare `git_repo()` at every one of its four repo-reading sites with no
+/// `resolve_main_worktree_or_refuse` wiring anywhere in the function: `cmd_workflow` (the Node
+/// shim launcher) and `run_cli` (`rigger run`'s default CLI driver) were guarded, but their
+/// sibling `DriverKind::Workflow` path was not, so a `rigger serve` invoked from inside a linked
+/// worktree drove straight into `Worktree::ensure_run_branch`/`anchor_run_branch` and failed
+/// with git's own opaque "already used by worktree" error instead of this refusal - the exact
+/// failure class this criterion exists to close, just on the one entry point round 1 missed.
+#[test]
+fn serve_from_a_linked_worktree_refuses_naming_both_trees() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
+    let wt_path = wt_parent.path().join("rigger-wt-linked-serve");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            wt_path.to_str().expect("utf8 worktree path"),
+            "-b",
+            "linked-serve-branch",
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(&wt_path, &["serve"]);
+    assert!(
+        !ok,
+        "`rigger serve` invoked from inside a linked worktree must refuse, not proceed; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        !err.contains("already used by worktree"),
+        "the refusal must be rigger's OWN clear message, never git's raw opaque error; \
+         stderr: {err:?}"
+    );
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let wt_canon = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
+    assert!(
+        err.contains(root_canon.to_str().unwrap()) && err.contains(wt_canon.to_str().unwrap()),
+        "the refusal must name both the main tree ({}) and the linked tree ({}); stderr: {err:?}",
+        root_canon.display(),
+        wt_canon.display()
+    );
+
+    // Side-effect-free: no rigger-run history was touched from the linked worktree, and the
+    // enclosing main tree never gained a run branch as a side effect of the refused serve.
+    assert!(
+        !wt_path.join(".rigger").join("events.db").exists(),
+        "a refused serve must not have gone on to open/create the store"
+    );
+    assert!(
+        !git_out(root, &["branch", "--list", "rigger-run"])
+            .unwrap_or_default()
+            .contains("rigger-run"),
+        "the main tree must not gain a rigger-run branch as a side effect of a refused serve"
+    );
+}
+
 /// Spec 89, criterion 4 (EXACTLY ONE ROOT): `rigger step` must refuse BEFORE any sweep when the
 /// store it would open (cwd-relative `.rigger`) and the repository `git` resolves for that same
 /// cwd disagree on their root. Reproduces the exact 2026-09-11 u87c3 incident: a git-less
@@ -3631,6 +3694,72 @@ fn native_driver_couriers_the_step_against_an_absolute_repo_path() {
         repo_bind_at < cd_at,
         "REPO must be resolved to an absolute path before the step-courier command template \
          that uses it is ever built"
+    );
+}
+
+/// Spec 89, criterion 4, round 2: the resolve-repo `agent()` call's structured-output schema
+/// must constrain `path` to LOOK absolute (a leading `/`), and - because nothing enforces a
+/// JSON schema against a model relay at the wire level - a runtime check must ALSO refuse a
+/// non-absolute REPO before any courier command is ever built from it. Neither existed before
+/// this round: the schema had no `pattern` at all, and the only post-call guard was
+/// `if (!REPO) throw`, which never catches a non-empty, non-absolute value (e.g. a relay that
+/// misbehaves and relays a bare unit-worktree basename) - silently reintroducing the exact
+/// wrong-cwd-drift failure class this whole resolution exists to close, with the sole covering
+/// test (`native_driver_couriers_the_step_against_an_absolute_repo_path`, above) never
+/// executing or inspecting the resolved value, only the source shape around it.
+///
+/// The driver runs only under the workflow harness and cannot execute here, so - like every
+/// other driver-shaped proof in this file - this is a source fixture over the embedded script.
+#[test]
+fn native_driver_schema_and_runtime_both_reject_a_non_absolute_resolved_repo() {
+    let src = rigger_js_source();
+
+    // The schema constrains `path` at the source: a leading-slash pattern, not a bare
+    // `{ type: 'string' }` with no shape constraint at all.
+    let schema_at = src
+        .find("properties: { path: { type: 'string', pattern: '^/' } }")
+        .expect(
+            "the resolve-repo schema's `path` property must carry a leading-slash pattern \
+             constraint, not an unconstrained string",
+        );
+
+    // The runtime check must exist, must test for a leading '/', and must fire between REPO
+    // being bound and the first courier command template that consumes it - so a non-absolute
+    // REPO is refused before it can ever reach a `cd ${REPO} && ...`.
+    let repo_bind_at = src
+        .find("const REPO = ")
+        .expect("the driver must still bind the resolved value to REPO");
+    let runtime_check_at = src
+        .find("REPO.startsWith('/')")
+        .expect("a runtime check must test whether the resolved REPO looks absolute");
+    let cd_at = src
+        .find("cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step")
+        .expect("the step-courier command template must still exist");
+
+    assert!(
+        schema_at < repo_bind_at,
+        "the schema constraint is declared as part of the agent() call, which must precede \
+         REPO being bound to its result"
+    );
+    assert!(
+        repo_bind_at < runtime_check_at,
+        "the runtime absolute-path check must run AFTER REPO is bound (it inspects the bound \
+         value), not before"
+    );
+    assert!(
+        runtime_check_at < cd_at,
+        "the runtime absolute-path check must fire BEFORE the first courier command template \
+         is built from REPO, so a non-absolute value is refused before it can ever reach a \
+         `cd ${{REPO}} && ...` shell command"
+    );
+
+    // The runtime check must actually THROW - refuse loudly - not merely observe.
+    let runtime_block = &src[runtime_check_at..cd_at];
+    assert!(
+        runtime_block.contains("throw new Error"),
+        "the runtime absolute-path check must throw, refusing to build a courier command from \
+         a non-absolute REPO, exactly like the pre-existing `if (!REPO) throw` empty-check it \
+         sits alongside; checked region:\n{runtime_block}"
     );
 }
 

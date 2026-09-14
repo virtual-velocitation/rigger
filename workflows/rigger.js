@@ -89,11 +89,20 @@ const repoResolution = await agent(
     // haiku: a single, unambiguous shell command with no judgment involved - the cheapest
     // tier that can run a Bash call and relay its output.
     model: 'haiku',
+    // The `path` schema constrains the relay to look like an absolute POSIX path
+    // (leading `/`) at the source: the LLM relay behind agent() is not a trusted
+    // resolver (spec 89, criterion 4 round 2 - a misbehaving relay that returns a
+    // non-empty, non-absolute value, e.g. a bare unit-worktree basename, would
+    // otherwise sail past the old `if (!REPO) throw` below and silently reintroduce
+    // the exact wrong-cwd-drift failure class this whole resolution exists to close).
+    // The pattern alone is not load-bearing on its own - see the runtime check right
+    // after REPO is bound, which is what actually refuses a relay that ignores the
+    // schema.
     schema: {
       type: 'object',
       additionalProperties: false,
       required: ['path'],
-      properties: { path: { type: 'string' } },
+      properties: { path: { type: 'string', pattern: '^/' } },
     },
     label: 'resolve-repo',
   },
@@ -102,6 +111,20 @@ const REPO = (repoResolution && repoResolution.path ? repoResolution.path : '').
 if (!REPO) {
   throw new Error(
     'rigger driver: could not resolve the repository to an absolute path before couriering the first step',
+  )
+}
+// A runtime check ALONGSIDE the empty-check above, not a replacement for it: the schema's
+// `pattern` constrains a well-behaved relay, but nothing enforces a JSON schema against a
+// model's structured-output relay at the wire level, so a misbehaving relay can still return
+// a non-empty, non-absolute `path` (spec 89, criterion 4 round 2). Every courier command built
+// below interpolates REPO directly into `cd ${REPO} && ...`, so a relative or otherwise
+// non-absolute value would resolve wherever THIS Bash call's own cwd already happens to be -
+// the identical drift-into-a-linked-worktree failure this whole agent() round-trip exists to
+// close - so it is refused here, loudly, before any courier command is ever built from it.
+if (!REPO.startsWith('/')) {
+  throw new Error(
+    `rigger driver: the resolved repository path is not absolute (${REPO}) - refusing to ` +
+      'build a courier command from it',
   )
 }
 const SPEC = A.spec || 'spec.md'

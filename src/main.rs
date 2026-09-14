@@ -1741,9 +1741,11 @@ fn main_repo_root(start: &Path) -> Option<PathBuf> {
     abs.parent().map(|p| p.to_path_buf())
 }
 
-/// STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger step`, `rigger run` and
-/// `rigger workflow` each call this at their own entry so a LINKED git worktree is refused up
-/// front, naming both trees, instead of silently proceeding on the linked tree's own toplevel
+/// STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger step`, `rigger run`
+/// (both the default CLI driver and `--driver workflow`, i.e. `run_cli` and `run_workflow` -
+/// the latter also `rigger serve`'s sole implementation) and `rigger workflow` each call this
+/// at their own entry so a LINKED git worktree is refused up front, naming both trees, instead
+/// of silently proceeding on the linked tree's own toplevel
 /// and later failing deep inside branch setup with git's own opaque "'rigger-run' is already
 /// used by worktree ..." (a linked worktree cannot itself hold the run branch checked out - git
 /// already holds it there in the main tree). Evidence (2026-09-11): the driver stopped after 28
@@ -2314,6 +2316,36 @@ fn cmd_step(args: &[String]) -> Res {
     let criteria = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
 
+    // Captured here (moved up from the pre-round-2 placement just before the terminal sweep) so
+    // `refuse_unless_one_root` immediately below can name it: the value is pure (only `repo` and
+    // `cfg.workflow.defaults.workdir`, both already resolved above), so hoisting the computation
+    // changes no answer it was ever going to give, only how early that answer is available. Kept
+    // alive for the rest of the function - the fixpoint/terminal teardown and the definition-pin
+    // HALT's own reclaim both still need it (spec 34, criterion 3).
+    let scratch_root = if repo.is_empty() {
+        None
+    } else {
+        Some(rigger::worktree::scratch_root_from_env(
+            &repo,
+            &cfg.workflow.defaults.workdir,
+        ))
+    };
+
+    // EXACTLY ONE ROOT (spec 89, criterion 4, round 2): refuse BEFORE ANY worktree mutation -
+    // not merely before the terminal sweep - when the store this step is about to open and the
+    // repository `git` resolved for this cwd disagree on their root. Round 1 placed this call
+    // just before the sweep, AFTER the run-branch anchor block below (`ensure_run_branch`
+    // creates and checks out `RUN_BRANCH` in whatever `repo` resolved to - a real mutation of
+    // that repository); a nested git-less fixture whose `repo` resolves to an ENCLOSING real
+    // repository would have that repository's branch switched to `rigger-run` before this
+    // refusal ever fired (u87c3-adjacent regression, confirmed live via `tests/
+    // step_root_resolution_periphery.rs`'s
+    // `step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_enclosing_repos_
+    // checked_out_branch`). Moved here, before `acquire_step_lock` and the anchor block, so a
+    // step that is going to refuse never mutates any repository first - see
+    // `refuse_unless_one_root`'s own doc comment for the full u87c3 incident this closes.
+    refuse_unless_one_root(&cwd, &repo, scratch_root.as_deref())?;
+
     // Serialize concurrent `rigger step` invocations so the run advances ONE step at a time
     // (spec 51 relies on that invariant). A step checks out the run branch and branches unit
     // worktrees off HEAD, then integrates units and appends events (see just below); two
@@ -2399,24 +2431,6 @@ fn cmd_step(args: &[String]) -> Res {
         )?;
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
     }
-
-    // Captured before `repo` moves into Deps: the fixpoint/terminal teardown below needs it, and
-    // computed BEFORE the definition-pin check so a definition-drift HALT can reclaim run-level
-    // scratch on its way out (spec 34, criterion 3).
-    let scratch_root = if repo.is_empty() {
-        None
-    } else {
-        Some(rigger::worktree::scratch_root_from_env(
-            &repo,
-            &cfg.workflow.defaults.workdir,
-        ))
-    };
-
-    // EXACTLY ONE ROOT (spec 89, criterion 4): refuse BEFORE the terminal sweep below (or any
-    // other worktree mutation) when the store this step opened and the repository `git`
-    // resolved for this cwd disagree on their root - see `refuse_unless_one_root`'s own doc
-    // comment for the u87c3 incident this closes.
-    refuse_unless_one_root(&cwd, &repo, scratch_root.as_deref())?;
 
     // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every step
     // starts by sweeping the scratch root's terminal worktrees (integrated units, review
@@ -3649,6 +3663,23 @@ fn run_workflow(parsed: &RunArgs) -> Res {
             eprintln!("{}", spec_lint_next_step(spec));
         }
     }
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4, round 2): resolved and
+    // refused-or-not FIRST, before any config load, store touch or worktree mutation -
+    // mirroring `run_cli`'s and `cmd_step`'s own placement. `run_workflow` is `run_cli`'s
+    // sibling `DriverKind` dispatched from the same `cmd_run` (and is `rigger serve`'s sole
+    // implementation, via `cmd_serve` below) - round 1 of this criterion guarded `run_cli`
+    // and the Node-shim-launching `cmd_workflow` but missed THIS entry point, which every
+    // one of its repo-reading call sites called bare `git_repo()` with no refusal wired in
+    // at all: a `rigger serve` (the shape the shim's driver actually spawns on the
+    // automated `/rigger` path) invoked from a linked worktree drove straight into
+    // `anchor_run_branch` and failed with git's own opaque "already used by worktree"
+    // error, never this refusal. `repo` is resolved ONCE here and reused for the rest of
+    // this function (the branch anchor, instance registration, scratch root and the
+    // conductor's `Deps`) instead of a `git_repo()` re-read at each site, so there is one
+    // resolution authority for the whole call, never several that could in principle
+    // disagree with each other or with this guard.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger serve")?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -3662,29 +3693,24 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // on a real repo, so the repo-less path is untouched.
     // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
     // `anchor_run_branch` below, threaded to `fresh_run_if_requested` so a mint persists the
-    // tip the run genuinely started at. `""` on the repo-less path. Declared outside the
-    // scoped block below (whose own `repo` goes out of scope at its end) so it survives to
-    // this fn's later `fresh_run_if_requested` call.
+    // tip the run genuinely started at. `""` on the repo-less path.
     let mut base_tip = String::new();
-    {
-        let repo = git_repo();
-        if !repo.is_empty() {
-            let (base, base_explicit) = resolve_run_base(
-                parsed.base.as_deref(),
-                std::env::var("RIGGER_BASE").ok().as_deref(),
-            );
-            // Refuse an obviously-wrong base BEFORE anchoring (spec 18, criterion 7), gating on
-            // the side-effect-free planned anchor so no wrong-base run branch is ever created and
-            // the corrected `--base` retry re-anchors fresh.
-            let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
-            // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base
-            // (an unresolvable base AND no HEAD to fall back to) loudly rather than minting a run
-            // branch that branches from nowhere.
-            refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
-            refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
-            anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
-            base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
-        }
+    if !repo.is_empty() {
+        let (base, base_explicit) = resolve_run_base(
+            parsed.base.as_deref(),
+            std::env::var("RIGGER_BASE").ok().as_deref(),
+        );
+        // Refuse an obviously-wrong base BEFORE anchoring (spec 18, criterion 7), gating on
+        // the side-effect-free planned anchor so no wrong-base run branch is ever created and
+        // the corrected `--base` retry re-anchors fresh.
+        let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
+        // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base
+        // (an unresolvable base AND no HEAD to fall back to) loudly rather than minting a run
+        // branch that branches from nowhere.
+        refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
+        refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
+        anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
+        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
     // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
     let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
@@ -3694,9 +3720,10 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2). Like
     // `rigger run`, the served conductor drives the whole run in-process (on the background thread
     // in the scope below), so the held guard's heartbeat thread keeps the entry live for the whole
-    // MCP session; it is dropped when `run_workflow` returns. `repo` was resolved in a scoped block
-    // above, so read it once more here for the registration root. Best-effort - it never blocks.
-    let _registration = register_run_instance(&git_repo(), &selection);
+    // MCP session; it is dropped when `run_workflow` returns. Reuses the `repo` this function
+    // resolved once above - see that resolution's own comment for why a second `git_repo()`
+    // re-read is never taken here any more. Best-effort - it never blocks.
+    let _registration = register_run_instance(&repo, &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
@@ -3716,13 +3743,12 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // the run store, regardless of the run store's backend.
     let prog_backend = Store::open(&db_path("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &project_identity());
-    let scratch_root = {
-        let repo = git_repo();
-        if repo.is_empty() {
-            String::new()
-        } else {
-            rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
-        }
+    // Reuses the `repo` resolved once at this function's entry (see its own comment) rather
+    // than a second `git_repo()` re-read.
+    let scratch_root = if repo.is_empty() {
+        String::new()
+    } else {
+        rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
     };
 
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run for the
@@ -3740,7 +3766,9 @@ fn run_workflow(parsed: &RunArgs) -> Res {
                 store: &store,
                 driver: &driver,
                 gates: &ExecRunner,
-                repo: git_repo(),
+                // Reuses the `repo` this function resolved once at entry via
+                // `resolve_main_worktree_or_refuse`, rather than a second `git_repo()` re-read.
+                repo: repo.clone(),
                 grounder: Some(grounder.as_ref()),
                 graph: Some(&graph),
                 criteria,
