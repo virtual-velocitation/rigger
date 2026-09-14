@@ -2055,9 +2055,9 @@ mandatory sweep: Command::new call sites - 347 site(s), collected mechanically r
 - `tests/step_attention_periphery.rs:466-466` `Command::new`
 - `tests/step_attention_periphery.rs:475-475` `Command::new`
 - `tests/step_attention_periphery.rs:701-701` `Command::new`
-- `tests/step_root_resolution_periphery.rs:124-124` `Command::new`
-- `tests/step_root_resolution_periphery.rs:203-203` `Command::new`
-- `tests/step_root_resolution_periphery.rs:216-216` `Command::new`
+- `tests/step_root_resolution_periphery.rs:143-143` `Command::new`
+- `tests/step_root_resolution_periphery.rs:222-222` `Command::new`
+- `tests/step_root_resolution_periphery.rs:235-235` `Command::new`
 - `tests/store_content_identity_periphery.rs:1342-1342` `Command::new`
 - `tests/store_flag_precedence.rs:60-60` `Command::new`
 - `tests/store_flag_precedence.rs:106-106` `Command::new`
@@ -3839,7 +3839,7 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/step_attention_periphery.rs:183-183` `".rigger"`
 - `tests/step_attention_periphery.rs:222-222` `".rigger"`
 - `tests/step_attention_periphery.rs:493-493` `".rigger"`
-- `tests/step_root_resolution_periphery.rs:149-149` `".rigger"`
+- `tests/step_root_resolution_periphery.rs:168-168` `".rigger"`
 - `tests/step_sheds_the_freshen.rs:67-67` `".rigger/grounding"`
 - `tests/step_sheds_the_freshen.rs:216-216` `".rigger/symbols/index.json"`
 - `tests/step_sheds_the_freshen.rs:217-217` `"the surviving persisted index is the SYMBOL index under .rigger/symbols/; got {}"`
@@ -6988,7 +6988,7 @@ Proposed home: `one shared `branch_exists` helper (e.g. relocated into `tests/co
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/worktree.rs:1208-1219` `branch_exists`
-- `tests/step_root_resolution_periphery.rs:215-222` `branch_exists`
+- `tests/step_root_resolution_periphery.rs:234-241` `branch_exists`
 
 #### `dup-0343` (semantic, 2 sites)
 
@@ -6997,7 +6997,7 @@ Proposed home: `one shared `current_branch` helper (e.g. relocated into `tests/c
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/worktree.rs:1271-1276` `current_branch`
-- `tests/step_root_resolution_periphery.rs:202-213` `current_branch`
+- `tests/step_root_resolution_periphery.rs:221-232` `current_branch`
 
 #### `dup-0344` (exact, 2 sites)
 
@@ -7804,7 +7804,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/cli.rs:105-122` `temp_git_project_with_commit`
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:113-130` `temp_git_project_with_commit`
 - `tests/step_attention_periphery.rs:464-484` `temp_git_project_with_commit`
-- `tests/step_root_resolution_periphery.rs:121-142` `temp_git_project_with_commit`
+- `tests/step_root_resolution_periphery.rs:140-161` `temp_git_project_with_commit`
 - `tests/workflow_driver_resolved_model_periphery.rs:57-78` `temp_git_project_with_commit`
 - `tests/worktree_liveness_fence_periphery.rs:94-115` `temp_git_project_with_commit`
 
@@ -7816,7 +7816,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `tests/cli.rs:139-141` `run_rigger`
 - `tests/reset_derived_compaction.rs:82-84` `run_rigger`
-- `tests/step_root_resolution_periphery.rs:194-196` `run_rigger`
+- `tests/step_root_resolution_periphery.rs:213-215` `run_rigger`
 
 #### `dup-0414` (exact, 5 sites)
 
@@ -7828,7 +7828,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_derived_compaction.rs:86-101` `run_rigger_envs`
 - `tests/reset_derived_live_writer_guard_periphery.rs:108-123` `run_rigger`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:118-133` `run_rigger_envs`
-- `tests/step_root_resolution_periphery.rs:177-192` `run_rigger_envs`
+- `tests/step_root_resolution_periphery.rs:196-211` `run_rigger_envs`
 
 #### `dup-0415` (semantic, 4 sites)
 
@@ -7839,7 +7839,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/cli.rs:146-172` `run_rigger_envs`
 - `tests/reset_derived_compaction.rs:86-101` `run_rigger_envs`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:118-133` `run_rigger_envs`
-- `tests/step_root_resolution_periphery.rs:177-192` `run_rigger_envs`
+- `tests/step_root_resolution_periphery.rs:196-211` `run_rigger_envs`
 
 #### `dup-0416` (exact, 2 sites)
 
@@ -8001,7 +8001,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:11413-11444` `write_gated_reviewed_workflow`
 - `tests/step_attention_periphery.rs:221-246` `write_attention_progression_workflow`
 - `tests/step_attention_periphery.rs:492-518` `write_attention_ordering_workflow`
-- `tests/step_root_resolution_periphery.rs:148-172` `write_reviewless_git_unit_workflow`
+- `tests/step_root_resolution_periphery.rs:167-191` `write_reviewless_git_unit_workflow`
 - `tests/workflow_driver_resolved_model_periphery.rs:85-98` `write_one_stage_workflow`
 - `tests/worktree_liveness_fence_periphery.rs:234-258` `write_reviewless_git_unit_workflow`
 
@@ -8012,7 +8012,7 @@ Proposed home: `one shared `write_reviewless_git_unit_workflow` helper (e.g. rel
 mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `tests/cli.rs:4576-4600` `write_reviewless_git_unit_workflow`
-- `tests/step_root_resolution_periphery.rs:148-172` `write_reviewless_git_unit_workflow`
+- `tests/step_root_resolution_periphery.rs:167-191` `write_reviewless_git_unit_workflow`
 - `tests/worktree_liveness_fence_periphery.rs:234-258` `write_reviewless_git_unit_workflow`
 
 #### `dup-0432` (near, 2 sites)

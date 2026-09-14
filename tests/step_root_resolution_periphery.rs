@@ -110,6 +110,25 @@
 //! raw path containment: a strict containment/equality reading would refuse the legitimate,
 //! pre-existing `tests/cli.rs::the_liveness_marker_path_follows_a_non_default_scratch_root`
 //! shape (an arbitrary external, non-repo tempdir as the scratch root), which must stay green.
+//!
+//! ROUND 3 ACCOUNTING (`d-u89c4-r3-surface-store-parent-subsumed`): the round-3 operator
+//! ruling names THREE legs (git toplevel, store parent, scratch-root parent); this file and
+//! `refuse_unless_one_root` implement exactly TWO comparisons, and that is not a gap.
+//! `cmd_step` opens its store via the bare `RIGGER_DIR` constant, always relative to `cwd`
+//! (confirmed by reading the whole of `cmd_step`, `src/main.rs:2330-2896`: no
+//! `find_store_dir_from`/`walk_stores_from` walk-up call appears anywhere in it, unlike the
+//! courier commands' `StoreLocation`), so "the store's parent" is definitionally `cwd` itself
+//! for this command - it cannot diverge from `cwd` independently of leg one. Leg one (`cwd`
+//! vs `repo`) therefore already proves the store-parent-vs-`repo` agreement transitively; a
+//! third, separately-fixtured comparison would have nothing new to assert. `git toplevel` and
+//! `scratch-root parent` are the two INDEPENDENTLY divergible quantities, and each has its own
+//! fixture (the round-1 and round-3 tests below, respectively).
+//!
+//! HOUSEKEEPING (this spawn, sdet-author round 3): the implementer's round-3 fix commit
+//! inserted the new scratch-root-leg test directly into this file, in the middle of the
+//! symlink test's own doc comment (no blank `///` line separated them, so both merged into
+//! one rustdoc block attached to the WRONG function). Restored: each test's doc comment now
+//! sits directly above its own `#[test] fn` again; no test content or assertion changed.
 
 mod common;
 
@@ -308,22 +327,6 @@ fn step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_encl
     );
 }
 
-/// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE) - a passing regression locking in
-/// that `resolve_main_worktree_or_refuse`'s comparison is genuinely symlink-safe: reaching
-/// the SAME main tree through a symlinked path must succeed exactly as reaching it directly
-/// does, never trip the linked-worktree refusal as a false positive. Confirmed by hand
-/// against the compiled binary before this test was written (`rigger step` run from a
-/// symlink onto a real, committed repo root exits 0 and prints a normal wave).
-///
-/// This matters because the two paths the resolver compares come from two SEPARATE `git`
-/// invocations (`git -C <cwd> rev-parse --show-toplevel` inside `git_repo_at`, and `git -C
-/// <cwd> rev-parse --git-common-dir` inside `main_repo_root`) run against a `cwd` that may
-/// itself be a symlink; only `std::fs::canonicalize` on BOTH sides before the equality check
-/// makes the comparison independent of which of several equivalent paths the operator's
-/// shell happened to be in. No existing test exercises this: `tempfile::tempdir()` never
-/// returns a symlinked path on this platform (verified: `/tmp` here is a real directory, not
-/// a symlink), so every other fixture in this crate's suites has both sides of the
-/// comparison already identical without canonicalize doing any real work.
 /// Spec 89, criterion 4 (EXACTLY ONE ROOT) - round 3, closing the round-2 adjudication's
 /// blocking finding `adv-u89c4-r2-one-root-check-is-two-of-three-scratch-root-never-compared`:
 /// `refuse_unless_one_root` took a `scratch_root` parameter but never actually compared it to
@@ -407,6 +410,22 @@ fn step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_eve
     );
 }
 
+/// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE) - a passing regression locking in
+/// that `resolve_main_worktree_or_refuse`'s comparison is genuinely symlink-safe: reaching
+/// the SAME main tree through a symlinked path must succeed exactly as reaching it directly
+/// does, never trip the linked-worktree refusal as a false positive. Confirmed by hand
+/// against the compiled binary before this test was written (`rigger step` run from a
+/// symlink onto a real, committed repo root exits 0 and prints a normal wave).
+///
+/// This matters because the two paths the resolver compares come from two SEPARATE `git`
+/// invocations (`git -C <cwd> rev-parse --show-toplevel` inside `git_repo_at`, and `git -C
+/// <cwd> rev-parse --git-common-dir` inside `main_repo_root`) run against a `cwd` that may
+/// itself be a symlink; only `std::fs::canonicalize` on BOTH sides before the equality check
+/// makes the comparison independent of which of several equivalent paths the operator's
+/// shell happened to be in. No existing test exercises this: `tempfile::tempdir()` never
+/// returns a symlinked path on this platform (verified: `/tmp` here is a real directory, not
+/// a symlink), so every other fixture in this crate's suites has both sides of the
+/// comparison already identical without canonicalize doing any real work.
 #[test]
 fn step_run_and_workflow_via_a_symlinked_main_tree_are_not_refused() {
     let dir = temp_git_project_with_commit();
