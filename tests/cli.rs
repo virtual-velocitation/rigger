@@ -1411,9 +1411,7 @@ fn scratch_prints_the_spawns_own_rigger_assigned_container() {
     let (out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
     assert!(ok, "scratch must succeed for a live run; stderr: {err}");
 
-    let expected = root
-        .join(".rigger")
-        .join("tmp")
+    let expected = common::default_scratch_root(root)
         .join("agent-scratch")
         .join("r1")
         .join("u_2fimplementer_230");
@@ -1556,9 +1554,7 @@ fn scratch_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_fle
          stderr: {err}"
     );
 
-    let default_expected = root
-        .join(".rigger")
-        .join("tmp")
+    let default_expected = common::default_scratch_root(root)
         .join("agent-scratch")
         .join("r1")
         .join("u_2fimplementer_230");
@@ -1686,7 +1682,7 @@ fn result_from_a_nested_git_worktree_records_into_the_repo_stream() {
     // A REAL git-linked worktree nested under the repo, exactly like the conductor's
     // Gap-14 scratch root. `git worktree add` needs a committed HEAD, which
     // `temp_git_project_with_commit` provides.
-    let wt = root.join(".rigger").join("tmp").join("rigger-wt-x");
+    let wt = common::default_scratch_root(root).join("rigger-wt-x");
     std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
     let ok = Command::new("git")
         .args(["worktree", "add", "-q"])
@@ -1916,9 +1912,7 @@ fn a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_out
         // encoding, spec 77 Design `d77-injective-scratch-naming`: `/` -> `_2f`, `#` -> `_23`).
         // One spawn will report (its scratch must be reclaimed); the sibling never reports
         // (its scratch must be untouched).
-        let run_scratch = root
-            .join(".rigger")
-            .join("tmp")
+        let run_scratch = common::default_scratch_root(root)
             .join("agent-scratch")
             .join("r1");
         let done = run_scratch.join("u_2fimplementer_230");
@@ -2168,23 +2162,29 @@ fn a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either() 
     seed_store(root);
     seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
 
+    // A dedicated cache home, so the SAME call's mutation-scratch half (reclaim_spawn_scratch
+    // always runs both halves) never touches the operator's real ~/.cache while this test
+    // drives the `..` id through both halves of the function at once - and so the agent-scratch
+    // root built below and the CHILD process (given the SAME override further down) resolve
+    // the identical default (spec 89, criterion 2: no longer nested under `<repo>/.rigger/tmp`).
+    let cache_home = tempfile::tempdir().unwrap();
+
     // The run's agent-scratch root, laid out exactly as spec 34's own test:
-    // `<root>/.rigger/tmp/agent-scratch/<run>/<sanitized id>`. A sibling unit's LIVE scratch
-    // stands in for the "every other unit's scratch" the adversary showed a `..` id could wipe
-    // through this call, one line before the mutation-scratch call the fix's own test covers.
-    let run_scratch = root
-        .join(".rigger")
-        .join("tmp")
-        .join("agent-scratch")
-        .join("r1");
+    // `<default scratch root>/agent-scratch/<run>/<sanitized id>`. A sibling unit's LIVE
+    // scratch stands in for the "every other unit's scratch" the adversary showed a `..` id
+    // could wipe through this call, one line before the mutation-scratch call the fix's own
+    // test covers.
+    let run_scratch = rigger::worktree::cache_scratch_root_from(
+        root.to_str().unwrap(),
+        Some(cache_home.path().as_os_str().to_owned()),
+        None,
+    )
+    .expect("a non-empty repo with an explicit cache home always resolves")
+    .join("agent-scratch")
+    .join("r1");
     let sibling = run_scratch.join("v_implementer_0");
     std::fs::create_dir_all(&sibling).unwrap();
     std::fs::write(sibling.join("cargo-target-debris.rlib"), [0u8; 64]).unwrap();
-
-    // A dedicated cache home too, so the SAME call's mutation-scratch half (reclaim_spawn_scratch
-    // always runs both halves) never touches the operator's real ~/.cache while this test drives
-    // the `..` id through both halves of the function at once.
-    let cache_home = tempfile::tempdir().unwrap();
 
     let (out, err, ok) = run_rigger_envs(
         root,
@@ -3817,10 +3817,7 @@ fn step_parks_a_standalone_review_spawn_and_keeps_its_review_worktree() {
     // / `review_branch`, spec 06): `<scratch-root>/rigger-review-<stage>-<attempt>` on
     // branch `rigger/review/<stage>-<attempt>`, scratch root defaulting to
     // `<repo>/.rigger/tmp` (no `RIGGER_TMPDIR` set, no `defaults.workdir` configured).
-    let wt_dir = root
-        .join(".rigger")
-        .join("tmp")
-        .join("rigger-review-review-0");
+    let wt_dir = common::default_scratch_root(root).join("rigger-review-review-0");
     assert!(
         wt_dir.exists(),
         "a parked standalone-review stage must KEEP its throwaway review worktree on \
@@ -3949,10 +3946,7 @@ stages:
 
     // The shared review worktree survives anyway - "b" genuinely parked in this same final
     // chunk and resumes in exactly this tree from a later conductor process.
-    let wt_dir = root
-        .join(".rigger")
-        .join("tmp")
-        .join("rigger-review-review-0");
+    let wt_dir = common::default_scratch_root(root).join("rigger-review-review-0");
     assert!(
         wt_dir.exists(),
         "a PARKED sibling must keep the shared review worktree even when a co-chunked lens \
@@ -4069,7 +4063,7 @@ fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_wo
         "step 1 parks the implementer; got: {out:?}"
     );
 
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
     assert!(
         wt_dir.exists(),
         "a parked implementer must already have its unit worktree on disk (round 1's own \
@@ -4256,7 +4250,7 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
         "step 1 parks the implementer; got: {out:?}"
     );
 
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
     assert!(
         wt_dir.exists(),
         "a parked implementer must already have its unit worktree on disk (load-bearing for \
@@ -4343,7 +4337,7 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
         "step 1 parks the implementer; got: {out:?}"
     );
 
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
     assert!(
         wt_dir.exists(),
         "a parked implementer must already have its unit worktree on disk (load-bearing for \
@@ -4658,11 +4652,12 @@ fn step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn() {
     )
     .unwrap();
 
-    // A marker OUTSIDE the worktree (the scratch root itself, `.rigger/tmp`, which the
-    // deletion below never touches) self-reports whether the gate's own `rm -rf` really
+    // A marker OUTSIDE the worktree (the project root itself, which the deletion below
+    // never touches - and which, unlike the scratch root, always exists with no
+    // `rigger step` having run yet) self-reports whether the gate's own `rm -rf` really
     // removed the directory it ran in - the non-vacuity check a single opaque subprocess
     // call otherwise denies an outside observer.
-    let marker = rigger.join("tmp").join("gate-deleted-marker.txt");
+    let marker = root.join("gate-deleted-marker.txt");
     let marker_str = marker.to_str().unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
@@ -4698,7 +4693,7 @@ stages:
         "step 1 parks the implementer; got: {out:?}"
     );
 
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
     assert!(
         wt_dir.exists(),
         "premise: a parked implementer must already have its unit worktree on disk: {}",
@@ -4900,7 +4895,7 @@ fn step_integrates_after_the_exhaustive_gate_deletes_the_worktree_post_approval(
     // A marker OUTSIDE the worktree self-reports whether the door gate's own `rm -rf`
     // really ran (and when) - the non-vacuity check a single opaque subprocess call
     // otherwise denies an outside observer.
-    let marker = rigger.join("tmp").join("door-gate-deleted-marker.txt");
+    let marker = root.join("door-gate-deleted-marker.txt");
     let marker_str = marker.to_str().unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
@@ -4934,7 +4929,7 @@ stages:
         "step 1 parks the implementer; got: {out:?}"
     );
 
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
     assert!(
         wt_dir.exists(),
         "premise: a parked implementer must already have its unit worktree on disk: {}",
@@ -5118,7 +5113,7 @@ stages:
     )
     .unwrap();
 
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
 
     // Step 1: the implementer parks; its real, git-backed unit worktree is created now.
     let (out, err, ok) = run_rigger(root, &["step"]);
@@ -5378,7 +5373,7 @@ stages:
     )
     .unwrap();
 
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
 
     // Step 1: the implementer parks and does its (trivial) work.
     let (out, err, ok) = run_rigger(root, &["step"]);
@@ -5540,7 +5535,7 @@ stages:
     )
     .unwrap();
 
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
 
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "the first step must succeed; stderr: {err}");
@@ -6054,7 +6049,7 @@ esac
 
     // The candidate's worktree is restored and REGISTERED with git (not a leftover dir) after
     // the run, checked out on its own unit branch.
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
     assert!(
         wt_dir.is_dir(),
         "the candidate worktree must be restored after the run: {}",
@@ -6328,9 +6323,7 @@ fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_exhaustive_gates_own
     // A marker OUTSIDE the worktree self-reports whether the gate's own `rm -rf` really ran -
     // the non-vacuity check a single opaque subprocess call otherwise denies an outside
     // observer.
-    let marker = rigger
-        .join("tmp")
-        .join("resumed-gate-fail-deleted-marker.txt");
+    let marker = root.join("resumed-gate-fail-deleted-marker.txt");
     let marker_str = marker.to_str().unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
@@ -6364,7 +6357,7 @@ stages:
         "the bootstrap step must park the implementer, creating the unit's worktree; got: \
          {out:?}"
     );
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
     assert!(
         wt_dir.exists(),
         "premise: the bootstrap step must already have created the unit's worktree: {}",
@@ -6500,17 +6493,15 @@ fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_
     // path, exactly the "an out-of-band actor deletes the worktree" shape this arm guards
     // against (never the gate deleting its OWN cwd, since the post-merge re-gate's cwd is the
     // base repo, a different directory entirely).
-    let wt_dir = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
     let wt_dir_str = wt_dir.to_str().unwrap();
     // A flag OUTSIDE the worktree that survives its deletion: the gate's first real
     // invocation (the pre-merge exhaustive check, run in the worktree) passes and sets it;
     // its second real invocation (the post-merge re-gate, run in the base repo - a distinct
     // verdict key, never cache-answered) finds it set, deletes the worktree, and fails.
-    let flag = rigger.join("tmp").join("postmerge-resumed-flag");
+    let flag = root.join("postmerge-resumed-flag");
     let flag_str = flag.to_str().unwrap();
-    let marker = rigger
-        .join("tmp")
-        .join("postmerge-resumed-deleted-marker.txt");
+    let marker = root.join("postmerge-resumed-deleted-marker.txt");
     let marker_str = marker.to_str().unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
@@ -6709,9 +6700,9 @@ fn run_speculation_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_de
     // Candidate 0 uses the unit's CANONICAL deterministic worktree/branch (the same dir a
     // single-lane unit would use) - known up front so the gate script can target it directly,
     // the "out-of-band actor deletes the worktree" shape this arm guards against.
-    let wt_dir0 = root.join(".rigger").join("tmp").join("rigger-wt-solo");
+    let wt_dir0 = common::default_scratch_root(root).join("rigger-wt-solo");
     let wt_dir0_str = wt_dir0.to_str().unwrap();
-    let flag = rigger.join("tmp").join("spec-postmerge-flag");
+    let flag = root.join("spec-postmerge-flag");
     let flag_str = flag.to_str().unwrap();
     let marker = root.join("spec-postmerge-deleted-marker.txt");
     let marker_str = marker.to_str().unwrap();
@@ -6725,7 +6716,7 @@ fn run_speculation_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_de
     // either one, so this advance is already in place by the time candidate 0 reaches its
     // merge.
     let root_str = root.to_str().unwrap();
-    let lane0_marker = rigger.join("tmp").join("spec-lane0-implemented-marker");
+    let lane0_marker = root.join("spec-lane0-implemented-marker");
     let lane0_marker_str = lane0_marker.to_str().unwrap();
     std::fs::write(
         rigger.join("workflow.yml"),
@@ -7527,10 +7518,17 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
     );
     let marker_str =
         json_string_field(line, "marker_path").expect("the wave carries the resolved marker path");
-    // Default scratch config: the marker resolves under the repo's own `.rigger/tmp`.
+    // Default scratch config (spec 89, criterion 2): the marker resolves under the
+    // default scratch root's `agent-live`. On a homeful host (this suite's own subprocess
+    // inherits the SAME `XDG_CACHE_HOME` `run_rigger`'s `rigger_courier()` pins - never
+    // homeless in practice) that root is the cache-home one, never under any `.rigger` -
+    // the defect this criterion closes: a stray `.rigger/tmp` nesting let a
+    // `tempfile::tempdir()` under a spawn's own TMPDIR walk back up into the real repo's
+    // store.
+    assert!(marker_str.contains("/agent-live/"), "got: {marker_str:?}");
     assert!(
-        marker_str.contains("/.rigger/tmp/agent-live/"),
-        "the default marker path is under the repo scratch root's agent-live; got: {marker_str:?}"
+        !marker_str.contains("/.rigger/"),
+        "the default marker path must never live under any .rigger; got: {marker_str:?}"
     );
     let marker = std::path::Path::new(&marker_str);
 
@@ -11935,7 +11933,7 @@ fn replay_leaves_no_sqlite_artifact_in_the_scratch_root() {
 
     // The scratch root is `<repo>/.rigger/tmp`. After the replay no sqlite file (the db or its
     // WAL/SHM sidecars) and no `rigger-replay-*` scratch dir may survive.
-    let scratch = root.join(".rigger").join("tmp");
+    let scratch = common::default_scratch_root(root);
     let leaked: Vec<String> = files_under(&scratch)
         .into_iter()
         .filter(|p| {
@@ -22933,7 +22931,10 @@ fn a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_li
     // entirely distinct from `own_scratch_root` above and never touched by `RIGGER_TMPDIR`.
     let other_project = tempfile::tempdir().unwrap();
     let other_root = other_project.path().to_str().unwrap().to_string();
-    let other_scratch_root = format!("{other_root}/.rigger/tmp");
+    let other_scratch_root = common::default_scratch_root(other_project.path())
+        .to_str()
+        .unwrap()
+        .to_string();
     let other_marker_path =
         rigger::liveness::marker_path(&other_scratch_root, "run-1", "u2c1/implementer#0").unwrap();
 
@@ -23073,7 +23074,10 @@ fn a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_r
     // prune it, and never return it, on its very first poll. Never refreshed.
     let other_project = tempfile::tempdir().unwrap();
     let other_root = other_project.path().to_str().unwrap().to_string();
-    let other_scratch_root = format!("{other_root}/.rigger/tmp");
+    let other_scratch_root = common::default_scratch_root(other_project.path())
+        .to_str()
+        .unwrap()
+        .to_string();
     let other_marker_path =
         rigger::liveness::marker_path(&other_scratch_root, "run-1", "u2c1/implementer#0").unwrap();
     write_stale_instance(&regdir, "proj-b", &other_root);
@@ -23208,7 +23212,10 @@ fn a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projec
     // it.
     let other_project = tempfile::tempdir().unwrap();
     let other_root = other_project.path().to_str().unwrap().to_string();
-    let other_scratch_root = format!("{other_root}/.rigger/tmp");
+    let other_scratch_root = common::default_scratch_root(other_project.path())
+        .to_str()
+        .unwrap()
+        .to_string();
     let other_marker_path =
         rigger::liveness::marker_path(&other_scratch_root, "run-1", "u2c1/implementer#0").unwrap();
     let other_inst = rigger::registry::Instance {

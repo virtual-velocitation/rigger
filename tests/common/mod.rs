@@ -114,11 +114,52 @@ pub fn rigger_bin() -> PathBuf {
 /// `store_secrets.rs`) is unaffected: it re-sets `.env("KURRENTDB_CONN", ...)` on the
 /// returned `Command` after this call, and a later `.env()` call always wins over an earlier
 /// `.env_remove()` for the same key.
+///
+/// Also pins `XDG_CACHE_HOME` to [`test_cache_home`] - ONE throwaway directory shared by
+/// every subprocess this test BINARY spawns (spec 89, criterion 2). The product's
+/// scratch-root DEFAULT now lives under `$XDG_CACHE_HOME/rigger/<encoded repo>` rather than
+/// inside each fixture's own `.rigger` (see [`rigger::worktree::scratch_root_path`]'s own
+/// doc comment); leaving `XDG_CACHE_HOME` at its real ambient value here would make every
+/// fixture repo's default-rooted scratch/worktrees land in the OPERATOR's real
+/// `~/.cache/rigger/` - one orphaned, never-reclaimed directory per fixture tempdir this
+/// suite has ever created, mirroring exactly why `run_rigger_envs` already defaults
+/// `XDG_STATE_HOME` the same way. A call site that wants to test HOMELESS behavior
+/// specifically (no `HOME`, no `XDG_CACHE_HOME`) still can: `.env_remove("XDG_CACHE_HOME")`
+/// chained on the returned `Command` wins, exactly like a later `.env()` override does.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
     cmd.env_remove(rigger::gate::STORE_FENCE_ENV);
     cmd.env_remove("KURRENTDB_CONN");
+    cmd.env("XDG_CACHE_HOME", test_cache_home());
     cmd
+}
+
+/// One throwaway `XDG_CACHE_HOME` shared by every `rigger` subprocess this whole test
+/// BINARY spawns (spec 89, criterion 2) - mirroring `.cargo/pidns-runner.sh`'s own single
+/// shared `TMPDIR` for the identical reason (a per-suite-run isolation boundary, not a
+/// per-fixture one). Distinct fixture repos still resolve to distinct directories under it
+/// ([`default_scratch_root`]/[`rigger::worktree::cache_scratch_root_from`]'s own injective
+/// repo-path encoding), so no two tests' scratch state can collide by sharing this root.
+fn test_cache_home() -> &'static Path {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| tempfile::tempdir().expect("create a throwaway XDG_CACHE_HOME for tests"))
+        .path()
+}
+
+/// The scratch root a `rigger` subprocess spawned through [`rigger_courier`] against `root`
+/// (an otherwise-default fixture: no `defaults.workdir` configured, no `RIGGER_TMPDIR`
+/// override) resolves BY DEFAULT (spec 89, criterion 2: SCRATCH IS OUTSIDE THE STORE TREE).
+/// THE ONE derivation every suite that asserts on a default-rooted worktree/scratch path
+/// shares, so a hand-duplicated formula can never drift from the real resolver the way the
+/// old bare `root.join(".rigger").join("tmp")` literal used to (correctly, before this
+/// criterion moved the default off that path entirely).
+pub fn default_scratch_root(root: &Path) -> PathBuf {
+    rigger::worktree::cache_scratch_root_from(
+        root.to_str().expect("fixture root must be valid UTF-8"),
+        Some(test_cache_home().to_owned().into_os_string()),
+        None,
+    )
+    .expect("a non-empty fixture root always resolves a cache-home scratch root")
 }
 
 /// Shared guard for every sanctioned test-side signal helper below (`terminate_pid`,

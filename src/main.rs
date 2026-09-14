@@ -1675,28 +1675,73 @@ struct StoreWalk {
 ///
 /// The walk is BOUNDED at the main-repo root governing `start` (the parent of its git
 /// common dir): the sanctioned walk-up case is a courier inside a nested git worktree
-/// of THIS project, and an unbounded walk lets a courier in a storeless nested repo (an
-/// agent-scratch probe under `<repo>/.rigger/tmp`, say) bind to a PARENT project's
-/// store and write into a foreign run stream with exit-0 success (adversary finding
-/// adv9-walkup-cross-project, empirically proven). Outside any git context there is no
-/// sanctioned walk at all: only `start` itself counts. This unit changes only WHICH store
-/// within that unchanged scope is chosen (the outermost, not the nearest), never the
-/// boundary itself (landed unit-9 behavior).
+/// of THIS project, and an unbounded walk lets a courier in a storeless nested repo bind
+/// to a PARENT project's store and write into a foreign run stream with exit-0 success
+/// (adversary finding adv9-walkup-cross-project, empirically proven). Outside any git
+/// context there is no sanctioned walk at all: only `start` itself counts.
+///
+/// TWO shapes reach the boundary (spec 89, criterion 2 - SCRATCH IS OUTSIDE THE STORE
+/// TREE): `start` is a filesystem DESCENDANT of the boundary (the pre-relocation nested
+/// worktree, `<repo>/.rigger/tmp/rigger-wt-<slug>`, still reachable for a caller that
+/// configures scratch back under the repo) - the ORIGINAL plain `.parent()` climb,
+/// terminating the instant it reaches the boundary (inclusive), unchanged; or `start` is
+/// NOT a descendant at all (the relocated cache-home worktree a real spawn now runs its
+/// courier calls from) - climbing `start`'s own physical ancestors in that case would
+/// walk into cache-home territory with NO governing relationship to this repo (reopening
+/// the exact adv9-walkup-cross-project hazard the bound exists to close: an unrelated
+/// project's - or a leftover fixture's - store sitting at some ancestor of the cache
+/// home). The sanctioned set there is exactly `{start, boundary}` - no ancestors between
+/// them are ever consulted, mirroring the "outside git context" case's own "only `start`
+/// counts" discipline for the part of the path this repo does not govern.
 fn walk_stores_from(start: &Path) -> StoreWalk {
     let boundary = main_repo_root(start);
     let mut found: Vec<PathBuf> = Vec::new();
-    let mut cur = Some(start);
-    while let Some(dir) = cur {
-        let rigger = dir.join(RIGGER_DIR);
-        if rigger.join("events.db").is_file() {
-            found.push(rigger);
+    // The nested-vs-relocated classification needs an apples-to-apples comparison, but
+    // `main_repo_root` can return a path carrying literal `..` segments (a RELATIVE
+    // `git rev-parse --git-common-dir` output for a plain subdirectory of the SAME repo
+    // joined onto `start`, never resolved - harmless for that shape's own git-worktree
+    // admin files, which always store an ABSOLUTE common-dir, but not for this component-
+    // wise prefix check). Canonicalized ONLY for this decision, on throwaway copies -
+    // `main_repo_root`'s own return value (every other caller's `boundary`) is untouched,
+    // and the walk below still uses the original, uncanonicalized `start`/`boundary`
+    // throughout. A `start` that cannot be canonicalized (does not exist on disk) falls
+    // back to `nested = true`, the ORIGINAL unconditional ancestor climb every existing
+    // caller already relies on.
+    let nested = match (
+        start.canonicalize(),
+        boundary.as_deref().map(Path::canonicalize),
+    ) {
+        (Ok(s), Some(Ok(b))) => s.starts_with(&b),
+        _ => true,
+    };
+    if boundary.is_none() || nested {
+        let mut cur = Some(start);
+        while let Some(dir) = cur {
+            let rigger = dir.join(RIGGER_DIR);
+            if rigger.join("events.db").is_file() {
+                found.push(rigger);
+            }
+            match &boundary {
+                Some(root) if dir == root => break, // reached the sanctioned bound (inclusive)
+                None => break,                      // no git context: only `start` counts
+                _ => {}
+            }
+            cur = dir.parent();
         }
-        match &boundary {
-            Some(root) if dir == root => break, // reached the sanctioned bound (inclusive)
-            None => break,                      // no git context: only `start` counts
-            _ => {}
+    } else {
+        // `start` lives outside the boundary entirely: check it (a local shadow, e.g. a
+        // tracked-but-storeless `.rigger/`) and the boundary itself, nearest-first,
+        // touching nothing in between.
+        let start_rigger = start.join(RIGGER_DIR);
+        if start_rigger.join("events.db").is_file() {
+            found.push(start_rigger);
         }
-        cur = dir.parent();
+        if let Some(root) = &boundary {
+            let root_rigger = root.join(RIGGER_DIR);
+            if root_rigger.join("events.db").is_file() {
+                found.push(root_rigger);
+            }
+        }
     }
     // `found` is nearest-first, so the LAST entry is the outermost store in scope; the
     // earlier (nearer) ones are the bypassed shadows, kept nearest-first for the warning.
@@ -17545,6 +17590,119 @@ mod tests {
             find_store_dir_from(&worktree),
             Some(root.join(RIGGER_DIR)),
             "must walk past the storeless worktree `.rigger/` to the repo's real store"
+        );
+    }
+
+    #[test]
+    fn find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it() {
+        // Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE): a unit's real
+        // git-linked worktree no longer nests under `<repo>/.rigger/tmp` - it lives
+        // wherever the relocated (cache-home) scratch root resolves, which is now OUTSIDE
+        // the repo's own directory tree entirely. A worker's own courier calls (`rigger
+        // prompt`/`result`/`emit`/`scratch`/`progress`/`peers`) run from INSIDE that
+        // worktree (each is documented as "invoked BY THE WORKER from inside its unit
+        // worktree"), so `find_store_dir_from` must still resolve the repo's real store
+        // even though a plain filesystem `.parent()` climb from the worktree never
+        // physically passes through the repo root any more - the exact regression a
+        // naive relocation would otherwise ship silently (every courier call from a real
+        // relocated worktree would refuse "no rigger store found").
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_init_quiet(root);
+        std::fs::write(root.join("README"), "x").unwrap();
+        assert!(Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+
+        // The worktree lives in a WHOLLY UNRELATED location - a sibling tempdir, never a
+        // descendant of `root` - mirroring the relocated cache-home default exactly.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let worktree = elsewhere.path().join("rigger-wt-x");
+        assert!(
+            Command::new("git")
+                .args(["worktree", "add", "-q"])
+                .arg(&worktree)
+                .args(["-b", "rigger/u/x"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success(),
+            "git worktree add must succeed for the fixture"
+        );
+
+        assert_eq!(
+            find_store_dir_from(&worktree),
+            Some(root.join(RIGGER_DIR)),
+            "a courier inside a worktree the relocated scratch root put OUTSIDE the repo \
+             must still resolve the repo's real store"
+        );
+    }
+
+    #[test]
+    fn find_store_dir_from_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store(
+    ) {
+        // The adv9-walkup-cross-project hazard, re-proven for the relocated (non-nested)
+        // case: when the worktree lives OUTSIDE the repo, this must NOT fall back to a
+        // plain unbounded ancestor climb from the worktree - that would let a courier
+        // inside a worktree parked under, say, `<cache-home>/rigger/<project>/rigger-wt-x`
+        // bind to a store an ancestor of the CACHE HOME happens to carry (an unrelated
+        // project's, or a leftover fixture's), exactly the cross-project escape the
+        // original bound was built to close. The sanctioned set for a relocated worktree
+        // is exactly {the worktree itself, the resolved repo root} - nothing between.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_init_quiet(root);
+        std::fs::write(root.join("README"), "x").unwrap();
+        assert!(Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+
+        // A FOREIGN store sitting at an ancestor of the relocated worktree - the exact
+        // shape a plain unbounded climb would wrongly bind to.
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(elsewhere.path().join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(elsewhere.path().join(RIGGER_DIR).join("events.db")).unwrap();
+        let worktree = elsewhere.path().join("nested").join("rigger-wt-x");
+        std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["worktree", "add", "-q"])
+                .arg(&worktree)
+                .args(["-b", "rigger/u/y"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success(),
+            "git worktree add must succeed for the fixture"
+        );
+
+        assert_eq!(
+            find_store_dir_from(&worktree),
+            Some(root.join(RIGGER_DIR)),
+            "must resolve the REAL owning repo's store, never the foreign one sitting at an \
+             ancestor of the relocated worktree"
         );
     }
 
