@@ -39,7 +39,7 @@ stages:
   checkin:
     needs: [implement]
     agent: rust-engineer
-    max_retries: 1
+    max_retries: 2
     gates: [fmt, clippy, build, test, mutation]
     on_pass: merge
     coverage: "mutation efficacy of the whole spec diff"
@@ -61,7 +61,11 @@ code) is the kill-or-justify protocol spec 73 wrote for the implementer: read
 an `exclude_re` entry in `.cargo/mutants.toml` with a one-line reason, commit, and record
 `<unit>-mutation-accounting` (spec 73's deterministic per-mutant shape) as a DecisionMade.
 Its gate fails while a missed mutant is neither killed nor justified, so the loop is: sweep
-(gate) -> one remediation round (`max_retries: 1`) -> sweep again -> integrate, else escalate
+(gate) -> one remediation round -> sweep again -> integrate, else escalate. `max_retries` is an
+ATTEMPT bound with the same meaning as `defaults.max_retries` (a value of 1 escalates on the
+first failed gate, as the conductor's own tests state), so the stage declares `max_retries: 2`:
+the sweep, one remediation round, the sweep again; the first live run (spec 89) escalated on
+its first miss under a value of 1 and was resumed by the operator with one attempt
 to the operator with the accounting on record. `build.mutation` is retired from the schema
 (an explicit value is a validation error naming this spec) and the enabled-but-absent refusal
 (`resolve_mutation_layer`) moves to the `mutation` gate: a workflow that lists it refuses to
