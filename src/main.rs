@@ -18616,8 +18616,9 @@ mod tests {
         let checkin = &cfg.workflow.stages["checkin"];
         assert_eq!(checkin.needs, ["implement"]);
         assert_eq!(
-            checkin.max_retries, 1,
-            "one remediation round, never per-round"
+            checkin.max_retries, 2,
+            "an ATTEMPT bound like defaults.max_retries: the sweep, one remediation round, \
+             the sweep again - a value of 1 escalates on the first miss (spec 91)"
         );
         assert_eq!(
             checkin.gates,
