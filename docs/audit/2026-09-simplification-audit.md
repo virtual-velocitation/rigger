@@ -3615,20 +3615,20 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/gate_store_fence_periphery.rs:222-222` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:455-455` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:478-478` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:513-513` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:514-514` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:527-527` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:529-529` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:530-530` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:600-600` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:601-601` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:618-618` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:543-543` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:546-546` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:619-619` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:620-620` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:699-699` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:700-700` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:710-710` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:712-712` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:814-814` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:815-815` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:637-637` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:639-639` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:720-720` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:721-721` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:731-731` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:733-733` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:835-835` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:836-836` `".rigger"`
 - `tests/graph_show_periphery.rs:81-81` `".rigger"`
 - `tests/graph_show_periphery.rs:134-134` `".rigger"`
 - `tests/graph_show_staleness.rs:69-69` `".rigger"`
@@ -9039,7 +9039,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `tests/confidence_tier_blast_radius.rs:52-63` `spawn`
 - `tests/criteria_delivery_periphery.rs:43-54` `spawn`
-- `tests/gate_store_fence_periphery.rs:781-792` `spawn`
+- `tests/gate_store_fence_periphery.rs:802-813` `spawn`
 - `tests/run_scoping_survives_periphery.rs:64-75` `spawn`
 
 #### `dup-0532` (exact, 2 sites)
@@ -9435,8 +9435,8 @@ Proposed home: `gate_store_fence_periphery::support (consolidate these 2 sites i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/gate_store_fence_periphery.rs:510-581` `a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed`
-- `tests/gate_store_fence_periphery.rs:584-681` `a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too`
+- `tests/gate_store_fence_periphery.rs:526-597` `a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed`
+- `tests/gate_store_fence_periphery.rs:603-700` `a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too`
 
 #### `dup-0572` (semantic, 3 sites)
 

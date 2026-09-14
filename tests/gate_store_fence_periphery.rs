@@ -507,6 +507,22 @@ fn init_repo_with_head() -> tempfile::TempDir {
 }
 
 #[test]
+#[serial_test::serial(cwd)]
+// Spec 89 criterion 2 boundary bug (found running this file's own full-suite verification,
+// not by inspection): this test resolves its `root` via the REAL production default rung -
+// `rigger::worktree::scratch_root(&repo_path, "", None)` reads the ambient process `HOME`
+// deliberately, since proving that real default IS this test's whole point (see this file's
+// own module doc, item 4). Unguarded, that made it flaky against test 8
+// (`an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_ambient_home`),
+// which mutates `HOME` process-globally for its own fixture duration: this test's `root`
+// would then resolve under test 8's temporary HOME instead of the real one, so `fence_dir`
+// stops matching what the spawned courier (fenced through `cmd.env`, unaffected by the same
+// race) actually wrote to - live-reproduced via a 15-run repeat (1/15 failed) and root-caused
+// by direct code read, not guessed. Sharing the `cwd` serial key (already used by every other
+// process-global-env mutator in this file) makes this test mutually exclusive with test 8's
+// mutation instead of racing it - the same discipline this file's tests 2/3/8 already apply
+// to `STORE_FENCE_ENV`/`XDG_STATE_HOME`, extended to cover `HOME` too. Pre-existing since this
+// test was added (spec 70 c3 / u3), not introduced by this unit's round 7.
 fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed() {
     let repo = init_repo_with_head();
     let repo_path = repo.path().to_string_lossy().into_owned();
@@ -581,6 +597,9 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_remove
 }
 
 #[test]
+#[serial_test::serial(cwd)]
+// Same HOME-mutation race as the sibling test above (shares its `root = scratch_root(...)`
+// pattern against the real default rung); same fix, same `cwd` serial key.
 fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too() {
     // Spec 70 criterion 3, widened (u4 round 2 fix for
     // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced /
@@ -681,6 +700,8 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
 }
 
 #[test]
+#[serial_test::serial(cwd)]
+// Same HOME-mutation race as the two sibling tests above; same fix, same `cwd` serial key.
 fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
     // u4 round 3 fix for adv-u4c70r2-discard-path-leaks-review-fence-sibling: the SAME real,
     // end-to-end wiring as the two tests above, but exercising `Worktree::discard` - the
