@@ -33,7 +33,7 @@ gates:
       test -n "$RIGGER_RUN_BASE" &&
       git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff &&
       rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
-      TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2
+      TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 3 -j 2
     kind: core
 stages:
   checkin:
@@ -55,7 +55,13 @@ merge-base with the run branch: the check-in stage's worktree branches from the 
 AFTER every implement unit has integrated, so `git merge-base rigger-run HEAD` is HEAD there
 and the diff would be empty - the sweep would certify nothing. A run whose `RunStarted`
 predates this field has no base to diff against; the gate's `test -n` fails loud rather than
-sweeping an empty diff. The stage's task text (config, not
+sweeping an empty diff. The per-mutant test budget is 3x the baseline suite time, never 1.5x:
+the sweep runs two suites at once (`-j 2`), so a mutant the suite catches only by a bounded
+wait (a hang-class mutant: a server that returns at once, an inverted loop guard) needs the
+whole wait plus the rest of the suite at doubled load; at 1.5x the first live check-in (spec
+89) timed out four such mutants with zero misses and escalated a green unit. A timeout still
+fails the gate - it names a test that detects the mutant only by waiting, which is a test to
+tighten, never a pass. The stage's task text (config, not
 code) is the kill-or-justify protocol spec 73 wrote for the implementer: read
 `mutants.out/outcomes.json`, kill each missed mutant with a strengthened test or justify it by
 an `exclude_re` entry in `.cargo/mutants.toml` with a one-line reason, commit, and record
