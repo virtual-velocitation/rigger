@@ -195,6 +195,36 @@ pub fn default_scratch_root(root: &Path) -> PathBuf {
     .expect("a non-empty fixture root always resolves a cache-home scratch root")
 }
 
+/// The `defaults.workdir` value that nests a fixture repo's scratch/worktree DEFAULT back
+/// inside `repo`'s own unique tempdir (spec 89 criterion 2's governing operator ruling,
+/// item 2: the in-process `conductor::run()` sweep) - the in-process counterpart to
+/// [`rigger_courier`]'s `XDG_CACHE_HOME` pin for a SPAWNED subprocess.
+///
+/// WHY THIS EXISTS. [`rigger::worktree::scratch_root_path`]'s DEFAULT (third) precedence
+/// rung reads the REAL process `XDG_CACHE_HOME`/`HOME` whenever a caller's `defaults.workdir`
+/// (its SECOND rung) is empty - correct for the product, but a fixture that drives
+/// `conductor::run()` directly (never spawning the `rigger` binary, so `rigger_courier`'s own
+/// pin never applies) inherits that real ambient value too: every unit/review worktree such a
+/// test creates lands under the OPERATOR's real `~/.cache/rigger/`, one orphaned directory per
+/// fixture run, colliding with every other concurrently-running fixture and agent on the same
+/// machine - the exact class of litter `rigger_courier` was fixed (round 6) to keep a spawned
+/// courier out of. Handing this value to `cfg.workflow.defaults.workdir` wins the SECOND rung
+/// outright, so the resolver never reaches the third rung at all.
+///
+/// A plain `String` threaded through the caller's own `Config`, deliberately NOT an
+/// environment-variable pin: `cargo test` runs `#[test]` fns concurrently on separate
+/// threads, so mutating this process's own `XDG_CACHE_HOME`/`HOME` here would race every
+/// OTHER test reading it at the same moment (the exact hazard [`RestoreEnvVars`]'s own doc
+/// comment already treats as load-bearing in this same file); a value carried on this one
+/// call's own `Config` cannot race anything, since it never leaves that value.
+///
+/// Nested INSIDE `repo` on purpose, not a sibling of it: the directory disappears the moment
+/// the caller's own fixture `TempDir` drops, with no separate reclaim step required - never a
+/// second, independently-lived directory that could outlive `repo` and need its own guard.
+pub fn isolated_workdir(repo: &Path) -> String {
+    format!("{}/.rigger-test-scratch", repo.display())
+}
+
 /// Shared guard for every sanctioned test-side signal helper below (`terminate_pid`,
 /// `stop_pid`) - panics for pid <= 1 (init, or "no real pid") or a pid equal to THIS test
 /// process's own, either being a bug in the fixture handing over a pid to signal, never a

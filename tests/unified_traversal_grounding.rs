@@ -25,6 +25,8 @@
 use std::process::Command;
 use std::sync::Mutex;
 
+mod common;
+
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
@@ -599,6 +601,10 @@ fn init_seam_repo() -> TempDir {
 fn run_and_capture_sdet_author_prompts(graph: &Projector) -> Vec<String> {
     let repo = init_seam_repo();
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: this is the one worktree-isolated run in this file
+    // (every other Deps here uses `repo: String::new()`) - its real unit worktree must never
+    // reach the real ambient `XDG_CACHE_HOME`/`HOME` cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert(
         "worker".into(),
         AgentDef {

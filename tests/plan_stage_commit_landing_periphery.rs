@@ -195,6 +195,8 @@
 //!     conductor or `run()` involved - the same "public API, no conductor" boundary gaps 5, 10
 //!     and 13 above already established for this file's other `Worktree` methods.
 
+mod common;
+
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
     META_COMPENSATE_TARGET, REVIEW_ONLY_NO_ARTIFACT, STREAM,
@@ -466,6 +468,10 @@ fn multiple_specs_commits_land_in_order_and_the_next_worktree_sees_both() {
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.agents.insert("checker".into(), agent("checker"));
     cfg.workflow.stages.insert("plan".into(), plan_stage());
@@ -562,6 +568,10 @@ fn unit_integrated_shas_field_round_trips_through_a_reopened_store_and_tolerates
     let init_sha = run_git(&repo_path, &["rev-parse", "HEAD"]);
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.workflow.stages.insert("plan".into(), plan_stage());
 
@@ -681,6 +691,10 @@ fn plan_stage_commit_mixing_an_in_scope_and_out_of_scope_path_is_rejected_and_na
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.workflow.stages.insert("plan".into(), plan_stage());
 
@@ -792,6 +806,10 @@ fn plan_stage_conflicting_amendment_escalates_with_the_integrate_conflict_cause(
         .success());
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.workflow.stages.insert("plan".into(), plan_stage());
 
@@ -905,6 +923,10 @@ fn plan_stage_compensation_reverts_every_landed_commit_not_just_the_newest() {
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.agents
         .insert("checker_impl".into(), agent("checker_impl"));
@@ -1085,6 +1107,10 @@ fn plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_stage_
     run_git(&repo_path, &["commit", "-q", "-m", "seed docs/existing.md"]);
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.workflow.stages.insert("plan".into(), plan_stage());
 
@@ -1223,6 +1249,10 @@ fn plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable(
     // NOTHING new (no `.commit(...)` calls) - there is nothing left for it to do; a genuine
     // resume never re-does work a crashed attempt already finished at the git level.
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.agents
         .insert("checker_impl".into(), agent("checker_impl"));
@@ -1441,6 +1471,10 @@ fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_still_confir
     // A FRESH run() adopts the SAME producer branch, exactly like the sibling recovery
     // test - the planner's fresh spawn commits nothing new.
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.workflow.stages.insert("plan".into(), plan_stage());
 
@@ -1661,6 +1695,10 @@ fn plan_intent_record_is_log_carried_before_any_git_mutation_and_names_the_origi
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.workflow.stages.insert("plan".into(), plan_stage());
 
@@ -1882,6 +1920,10 @@ fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_an
     // identity; the planner's fresh spawn commits NOTHING new, mirroring every sibling resume
     // test - a genuine resume never re-does work a crashed attempt already finished.
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.agents.insert("reader".into(), agent("reader"));
     cfg.workflow.stages.insert("plan".into(), plan_stage());
@@ -2166,6 +2208,10 @@ fn a_plan_landing_store_failure_halts_the_run_loudly_with_no_per_unit_lesson_or_
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
+    // this fixture's own repo tempdir so this real, worktree-creating conductor::run()
+    // never reaches the real ambient XDG_CACHE_HOME/HOME cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert("planner".into(), agent("planner"));
     cfg.workflow.stages.insert("plan".into(), plan_stage());
 

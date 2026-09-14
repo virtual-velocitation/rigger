@@ -525,6 +525,10 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
     let repo = temp_git_project_with_commit();
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: this is the one test in this file that drives a real
+    // repo (every other Deps here uses `repo: String::new()`, so its fan-out unit worktree
+    // must never reach the real ambient `XDG_CACHE_HOME`/`HOME` cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     for id in ["planner", "worker"] {
         cfg.agents.insert(
             id.into(),
