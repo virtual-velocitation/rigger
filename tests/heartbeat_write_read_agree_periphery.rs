@@ -258,8 +258,26 @@ fn run_rigger(dir: &Path, args: &[&str]) -> Output {
 /// read here (rather than relying on this test PROCESS having no ambient `RIGGER_TMPDIR`,
 /// which a concurrently-running gate cannot guarantee) is what keeps this fixture
 /// deterministic regardless of what the surrounding process environment carries.
+///
+/// For the DEFAULT rung (`configured` empty), the cache-home root (spec 89, criterion 2)
+/// is resolved through [`common::default_scratch_root`] - the SAME shared derivation
+/// [`run_rigger`]'s spawned subprocess resolves through (its `Command` goes through
+/// [`common::rigger_courier`], which pins `XDG_CACHE_HOME` to
+/// [`common::test_cache_home`]) - rather than this process's own ambient `XDG_CACHE_HOME`
+/// (typically unset, or the operator's real one), which would silently diverge from what
+/// the spawned reader actually resolves and reintroduce the exact write/read disagreement
+/// this whole file exists to close. A non-empty `configured` (a real `defaults.workdir`)
+/// outranks the cache-home rung entirely in the real resolver's own precedence, so it is
+/// unaffected by which `XDG_CACHE_HOME` either side sees and keeps using the plain resolver.
 fn real_scratch_root(owning_root: &Path, configured: &str) -> String {
-    rigger::worktree::scratch_root(owning_root.to_str().unwrap(), configured, None)
+    if configured.trim().is_empty() {
+        common::default_scratch_root(owning_root)
+            .to_str()
+            .expect("fixture scratch root must be valid UTF-8")
+            .to_string()
+    } else {
+        rigger::worktree::scratch_root(owning_root.to_str().unwrap(), configured, None)
+    }
 }
 
 /// Write a liveness marker at the path the REAL writer computes for `owning_root` with no

@@ -601,6 +601,16 @@ fn a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regene
     };
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["docs/audit/*".into()],
@@ -807,6 +817,16 @@ fn a_post_merge_red_rollback_resets_the_units_own_branch_not_just_the_repo() {
     };
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     // whichever unit loses the integrate-lock race must survive its FIRST block and get a
     // real second attempt: at least 2.
     cfg.workflow.defaults.max_retries = 2;
@@ -1035,6 +1055,16 @@ fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_sh
     };
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["c.rs".into()],
@@ -1261,6 +1291,16 @@ fn regenerate_never_holds_integrate_mu_letting_an_unrelated_unit_land_meanwhile(
     };
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["c.rs".into()],
@@ -1492,6 +1532,16 @@ fn a_crash_between_the_source_commit_and_regeneration_still_regenerates_on_resum
     git_commit_all(&repo_path, "base c.rs + docs/audit/report.md");
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["docs/audit/*".into()],
@@ -1692,6 +1742,16 @@ fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact()
     };
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.agents.insert("worker".into(), agent("worker"));
     cfg.agents.insert("lens".into(), agent("lens"));
     cfg.agents.insert("judge".into(), agent("judge"));
@@ -1874,6 +1934,16 @@ fn a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate
     git_commit_all(&repo_path, "base c.rs + gen.txt");
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["gen.txt".into()],
@@ -2100,6 +2170,16 @@ fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.agents.insert("worker".into(), agent("worker"));
     cfg.agents.insert("lens".into(), agent("lens"));
     cfg.agents.insert("judge".into(), agent("judge"));
@@ -2225,6 +2305,16 @@ fn a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4() {
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.agents.insert("worker".into(), agent("worker"));
     cfg.agents.insert("lens".into(), agent("lens"));
     cfg.agents.insert("judge".into(), agent("judge"));
@@ -2381,6 +2471,16 @@ fn a_crash_right_after_placeholder_staging_resumes_and_completes_row_2() {
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["gen.txt".into()],
@@ -2578,8 +2678,18 @@ impl AgentDriver for ConfinedConflictDriver {
     }
 }
 
-fn confined_cfg() -> Config {
+fn confined_cfg(repo_path: &str) -> Config {
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["gen.txt".into()],
@@ -2605,7 +2715,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
     {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let cfg = confined_cfg();
+        let cfg = confined_cfg(&repo_path);
         let store = Store::open(":memory:").unwrap();
         let driver = ConfinedConflictDriver {
             repo: repo_path.clone(),
@@ -2688,7 +2798,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
     {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let cfg = confined_cfg();
+        let cfg = confined_cfg(&repo_path);
         let store = Store::open(":memory:").unwrap();
         let driver = ConfinedConflictDriver {
             repo: repo_path.clone(),
@@ -2799,6 +2909,16 @@ fn a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_reco
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.agents.insert("worker".into(), agent("worker"));
     cfg.agents.insert("lens".into(), agent("lens"));
     cfg.agents.insert("judge".into(), agent("judge"));
@@ -2899,6 +3019,16 @@ fn a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.agents.insert("worker".into(), agent("worker"));
     cfg.agents.insert("lens".into(), agent("lens"));
     cfg.agents.insert("judge".into(), agent("judge"));
@@ -3040,8 +3170,18 @@ impl AgentDriver for MixedConflictThenResolveDriver {
 
 /// Shared config for both round 5 fixtures: one regenerate rule on `gen.txt`, room for the
 /// one conflict-resolution retry each drives.
-fn mixed_cfg() -> Config {
+fn mixed_cfg(repo_path: &str) -> Config {
     let mut cfg = Config::default();
+    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
+    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
+    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
+    // every other concurrently-running fixture and agent on the machine - a real conductor
+    // run this file drives in-process creates real git worktrees there, and an unrelated
+    // process's residue/reap scan over that same shared root can legitimately (from its own
+    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
+    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
+    // test, cleaned up when `repo` drops) without depending on any shared machine state.
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
     cfg.workflow.defaults.max_retries = 3;
     cfg.workflow.regenerate = vec![RegenerateRule {
         paths: vec!["gen.txt".into()],
@@ -3068,7 +3208,7 @@ fn a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_wh
 ) {
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
-    let cfg = mixed_cfg();
+    let cfg = mixed_cfg(&repo_path);
     let store = Store::open(":memory:").unwrap();
     let driver = MixedConflictThenResolveDriver {
         repo: repo_path.clone(),
@@ -3182,7 +3322,7 @@ fn a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_wh
 fn a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume() {
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
-    let cfg = mixed_cfg();
+    let cfg = mixed_cfg(&repo_path);
     let store = Store::open(":memory:").unwrap();
     let driver = MixedConflictThenResolveDriver {
         repo: repo_path.clone(),

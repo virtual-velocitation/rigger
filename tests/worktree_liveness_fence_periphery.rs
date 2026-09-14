@@ -309,11 +309,12 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
         "premise: step 1 must park the workflow's own implementer; got: {out:?}"
     );
 
-    let scratch = root.join(".rigger").join("tmp");
+    let scratch = common::default_scratch_root(root);
     assert!(
         scratch.join("rigger-wt-solo").exists(),
-        "premise: the default scratch root is `.rigger/tmp` (load-bearing for the worktree \
-         paths built below)"
+        "premise: the default scratch root ({}) is load-bearing for the worktree paths built \
+         below",
+        scratch.display()
     );
 
     // Two foreign worktrees, both trivially merged into `rigger-run` (branched directly off

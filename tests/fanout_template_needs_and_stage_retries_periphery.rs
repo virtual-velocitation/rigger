@@ -301,10 +301,7 @@ stages:
 
     // Land unit A for real: write its diff into the REAL worktree the park already
     // created, post its result, then step again so the real merge lands.
-    let wt_a = root
-        .join(".rigger")
-        .join("tmp")
-        .join(format!("rigger-wt-{unit_a}"));
+    let wt_a = common::default_scratch_root(root).join(format!("rigger-wt-{unit_a}"));
     assert!(
         wt_a.exists(),
         "a parked implementer must already have its unit worktree on disk: {}",
@@ -330,10 +327,7 @@ stages:
     );
 
     // Land unit B for real, the same way.
-    let wt_b = root
-        .join(".rigger")
-        .join("tmp")
-        .join(format!("rigger-wt-{unit_b}"));
+    let wt_b = common::default_scratch_root(root).join(format!("rigger-wt-{unit_b}"));
     assert!(
         wt_b.exists(),
         "unit B's parked implementer must already have its unit worktree on disk: {}",
@@ -531,6 +525,10 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
     let repo = temp_git_project_with_commit();
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: this is the one test in this file that drives a real
+    // repo (every other Deps here uses `repo: String::new()`, so its fan-out unit worktree
+    // must never reach the real ambient `XDG_CACHE_HOME`/`HOME` cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     for id in ["planner", "worker"] {
         cfg.agents.insert(
             id.into(),
@@ -801,10 +799,7 @@ fn propose_real_split(root: &Path, gate_a1: &str, gate_a2: &str) {
 /// periphery-tests-non-blocking` flagged exactly this inline shape recurring across a
 /// round's own new tests).
 fn land_real_unit(root: &Path, unit: &str) {
-    let wt = root
-        .join(".rigger")
-        .join("tmp")
-        .join(format!("rigger-wt-{unit}"));
+    let wt = common::default_scratch_root(root).join(format!("rigger-wt-{unit}"));
     assert!(
         wt.exists(),
         "{unit} must already have its real worktree on disk: {}",
@@ -875,7 +870,7 @@ fn checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_
 
     // Land ONLY split-a-1 for real - the BTreeMap-key-first sibling (alphabetically
     // first), the exact one round 2's `.find()` locked onto.
-    let wt_a1 = root.join(".rigger").join("tmp").join("rigger-wt-split-a-1");
+    let wt_a1 = common::default_scratch_root(root).join("rigger-wt-split-a-1");
     assert!(
         wt_a1.exists(),
         "split-a-1 must already have its real worktree on disk: {}",
@@ -910,7 +905,7 @@ fn checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_
     );
 
     // Land split-a-2 too, the same way.
-    let wt_a2 = root.join(".rigger").join("tmp").join("rigger-wt-split-a-2");
+    let wt_a2 = common::default_scratch_root(root).join("rigger-wt-split-a-2");
     assert!(
         wt_a2.exists(),
         "split-a-2 must already have its real worktree on disk: {}",
@@ -973,7 +968,7 @@ fn checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_inst
         );
     }
 
-    let wt_a1 = root.join(".rigger").join("tmp").join("rigger-wt-split-a-1");
+    let wt_a1 = common::default_scratch_root(root).join("rigger-wt-split-a-1");
     std::fs::write(wt_a1.join("a1.rs"), "pub fn a1() {}\n").unwrap();
     let (_o, err, ok) = run_rigger(
         root,
@@ -1209,9 +1204,7 @@ fn checkin_integrates_after_a_same_id_refine_is_later_superseded_by_a_distinct_p
          wave; got:\n{out}"
     );
     assert!(
-        !root
-            .join(".rigger")
-            .join("tmp")
+        !common::default_scratch_root(root)
             .join("rigger-wt-auth-v1")
             .exists(),
         "auth-v1 was superseded before it was ever scheduled, so it must never have gotten \

@@ -120,8 +120,14 @@ build:
 # units regenerate today by hand with RIGGER_AUDIT_WRITE=1; registering it here lets a
 # conflict confined to those files (a common parallel-unit collision, since every unit
 # that touches audited code also updates them) resolve itself.
+# Only the FULLY generated artifacts are regenerable. The report
+# (docs/audit/2026-09-simplification-audit.md) is partly hand-written - the generator
+# rewrites only its section 2 - so a merge conflict in it is source: it goes to the
+# implementer's conflict-resolution retry like any other file (2026-09-15: a `docs/audit/*`
+# rule left 475 conflict-marker lines in the report after a "successful" regeneration and
+# the half-merge checkpoint guard rightly refused the commit; run c6ccaf8e, u89c2).
 regenerate:
-  - paths: ["docs/audit/*"]
+  - paths: ["docs/audit/*.json"]
     run: "RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit"
 
 gates:                      # the project's verification library, referenced by name

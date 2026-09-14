@@ -1369,10 +1369,10 @@ fn current_branch(repo: &str) -> Option<String> {
 /// Resolve the run's scratch root - where transient worktrees live. Precedence:
 /// `env_override` (the `RIGGER_TMPDIR` environment variable, machine-local placement) >
 /// `configured` (`defaults.workdir` from workflow.yml, versioned placement) > the
-/// default `<repo>/.rigger/tmp`. A leading `~/` expands to $HOME. NEVER the OS temp
-/// dir: worktrees carry multi-gigabyte build dirs, and on the common
-/// small-root/large-home partition layout the OS disk is the one that cannot absorb
-/// them (design-intent Gap 14). The resolved dir is created if absent.
+/// cache-home default (spec 89, criterion 2 - see [`cache_scratch_root_from`]). A leading
+/// `~/` expands to $HOME. NEVER the OS temp dir: worktrees carry multi-gigabyte build
+/// dirs, and on the common small-root/large-home partition layout the OS disk is the one
+/// that cannot absorb them (design-intent Gap 14). The resolved dir is created if absent.
 pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) -> String {
     let expanded = scratch_root_path(repo, configured, env_override);
     let _ = std::fs::create_dir_all(&expanded);
@@ -1382,18 +1382,73 @@ pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) ->
 /// Resolve the scratch root PATH by the SAME precedence as [`scratch_root`] but WITHOUT
 /// the create-if-absent side effect - the read-only half. `rigger validate`'s residue
 /// scan (spec 06) needs the path to READ leftover worktrees/caches under it and must stay
-/// read-only, so it resolves here and never conjures a `.rigger/tmp` on a project that
+/// read-only, so it resolves here and never conjures a scratch root on a project that
 /// never ran. [`scratch_root`] is this plus a `create_dir_all`, keeping ONE resolver.
+///
+/// The DEFAULT rung (spec 89, criterion 2: SCRATCH IS OUTSIDE THE STORE TREE) is
+/// [`cache_scratch_root_from`] - `<cache-home>/rigger/<encoded repo>` - NEVER the old
+/// `<repo>/.rigger/tmp`: a spawn's own scratch, worktrees, and shared build cache used to
+/// nest INSIDE the live store tree, so a `tempfile::tempdir()` created under a spawn's own
+/// `TMPDIR` (or `rigger scratch`'s own printed container) walked up into the REAL repo's
+/// `.rigger/events.db` - either binding a store it should not have, or (spec 89 Problem 4)
+/// having a running spec's live unit worktrees swept as a stray fixture's. A repo-less
+/// caller or a homeless environment (neither `XDG_CACHE_HOME` nor `HOME` set) has nothing
+/// to key a cache path on and keeps the OLD repo-nested degrade - the one case this
+/// criterion leaves alone, since a real spawn (this criterion's actual subject) always has
+/// both a real repo and a real machine `HOME`.
 pub fn scratch_root_path(repo: &str, configured: &str, env_override: Option<&str>) -> String {
     let chosen = match env_override {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ if !configured.trim().is_empty() => configured.trim().to_string(),
-        _ => format!("{}/.rigger/tmp", if repo.is_empty() { "." } else { repo }),
+        _ => cache_scratch_root_from(
+            repo,
+            std::env::var_os("XDG_CACHE_HOME"),
+            std::env::var_os("HOME"),
+        )
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| format!("{}/.rigger/tmp", if repo.is_empty() { "." } else { repo })),
     };
     match (chosen.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),
         _ => chosen,
     }
+}
+
+/// The cache-home scratch root for `repo` (spec 89, criterion 2): `<cache-home>/rigger/
+/// <encoded repo>`. `xdg`/`home` are the caller's own `XDG_CACHE_HOME`/`HOME` values,
+/// taken as plain arguments rather than read from `std::env` internally - mirroring
+/// [`crate::driver::replay::cache_home_from`]'s own shape - so this stays a PURE function a
+/// unit test drives directly with explicit values, never by mutating (and so racing
+/// concurrently-running tests over) the real process environment.
+///
+/// Reuses TWO existing single authorities rather than inventing a THIRD, narrower identity
+/// scheme: [`crate::driver::replay::cache_home_from`] (the exact XDG-then-`$HOME/.cache`
+/// resolution spec 77 already established for the mutation-scratch root) supplies the
+/// cache home, and [`crate::liveness::marker_filename`] (spec 77's own injective,
+/// filesystem-safe byte-hex encoding, already the run-id/spawn-id authority
+/// [`crate::driver::replay::spawn_scratch_path`] relies on) turns the repo's path into a
+/// directory component - so two repos, however similar their basenames, can never alias
+/// onto the same cache directory. Deliberately NOT `main.rs`'s `project_identity_at`
+/// machinery (the tracked `.rigger/project.id` file, git-remote hashing, a random
+/// fallback): that identity serves a DIFFERENT, durable concern - surviving a repo
+/// rename/clone/machine-move for the EVENT HISTORY spec 09 owns - where scratch is the
+/// opposite, an inherently machine-local, freely-reapable concern keyed on nothing more
+/// than "which checkout on THIS machine right now."
+///
+/// `None` when `repo` is empty (nothing to key the cache path on) or the environment is
+/// homeless (neither `xdg` nor `home` set) - [`scratch_root_path`] degrades to the
+/// pre-relocation repo-nested default in either case.
+pub fn cache_scratch_root_from(
+    repo: &str,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    if repo.is_empty() {
+        return None;
+    }
+    let cache_home = crate::driver::replay::cache_home_from(xdg, home)?;
+    let encoded = crate::liveness::marker_filename(repo)?;
+    Some(cache_home.join("rigger").join(encoded))
 }
 
 /// [`scratch_root`] with the `RIGGER_TMPDIR` environment variable as the override.
@@ -2168,6 +2223,7 @@ fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::liveness::marker_filename;
 
     /// Test-only recomposition of [`Worktree::merge_into_worktree`] + [`Worktree::land`] into
     /// the single combined call this file's OWN pre-round-4 tests were written against (spec
@@ -4035,14 +4091,62 @@ mod tests {
     #[test]
     fn scratch_root_resolves_env_then_config_then_repo_default() {
         // Precedence: RIGGER_TMPDIR (passed as the override param) > defaults.workdir
-        // > <repo>/.rigger/tmp. The default lives on the REPO's partition, never the
-        // OS temp dir (Gap 14).
+        // > the cache-home default (spec 89, criterion 2: SCRATCH IS OUTSIDE THE STORE
+        // TREE). The default no longer nests inside the repo's own `.rigger` - a spawn's
+        // own TMPDIR/CARGO_TARGET_DIR (via `rigger scratch`) used to resolve under
+        // `<repo>/.rigger/tmp`, so a `tempfile::tempdir()` created under it walked up into
+        // the REAL repo's `.rigger/events.db` and either bound a store it should not have,
+        // or (spec 89 Problem 4) had its live worktrees swept as a stray fixture's.
+        //
+        // This assertion reads (never mutates) the real `XDG_CACHE_HOME`/`HOME` so it never
+        // races a concurrently-running test over process-global environment state; on a
+        // genuinely homeless host (neither set - a bare CI container) [`scratch_root_path`]
+        // has nothing to key a cache path on and keeps the pre-relocation repo-nested
+        // degrade, which the `else` arm below proves instead.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         let dflt = scratch_root(&repo_path, "", None);
-        assert_eq!(dflt, format!("{repo_path}/.rigger/tmp"));
+        let homeful = std::env::var_os("XDG_CACHE_HOME")
+            .filter(|v| !v.is_empty())
+            .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()))
+            .is_some();
+        if homeful {
+            assert_ne!(
+                dflt,
+                format!("{repo_path}/.rigger/tmp"),
+                "the default must no longer nest inside the repo's own .rigger: {dflt:?}"
+            );
+            assert!(
+                !dflt.contains("/.rigger/") && !dflt.ends_with("/.rigger"),
+                "the default must never live under any .rigger: {dflt:?}"
+            );
+            assert!(
+                !std::path::Path::new(&dflt).starts_with(&repo_path),
+                "the default must live outside the repo entirely, on the cache-home mount: \
+                 {dflt:?}"
+            );
+            let expected = cache_scratch_root_from(
+                &repo_path,
+                std::env::var_os("XDG_CACHE_HOME"),
+                std::env::var_os("HOME"),
+            )
+            .expect("a non-empty repo with a real HOME/XDG_CACHE_HOME always resolves");
+            assert_eq!(
+                std::path::PathBuf::from(&dflt),
+                expected,
+                "must equal the SAME pure resolver `rigger scratch`/`validate`/the reaper share"
+            );
+        } else {
+            assert_eq!(dflt, format!("{repo_path}/.rigger/tmp"));
+        }
         assert!(std::path::Path::new(&dflt).is_dir(), "the root is created");
+        // Unlike the pre-relocation default, `dflt` may now live outside `repo`'s own
+        // TempDir (on the cache-home mount) and so is NOT auto-cleaned by `repo`'s
+        // `Drop` - mirror the tilde-case cleanup below so this test never leaks a real
+        // directory onto the operator's `~/.cache/rigger` on every run (round 3 review:
+        // sdet-u89c2r3-default-scratch-test-leaks-outside-fixture-tempdir).
+        let _ = std::fs::remove_dir_all(&dflt);
 
         let cfg_dir = repo.path().join("elsewhere");
         let configured = scratch_root(&repo_path, cfg_dir.to_str().unwrap(), None);
@@ -4062,6 +4166,75 @@ mod tests {
             assert_eq!(tilde, format!("{home}/.rigger-scratch-test"));
             let _ = std::fs::remove_dir_all(tilde);
         }
+    }
+
+    // ---- cache_scratch_root_from: PURE, so every case is driven with explicit params,
+    // never the real process environment (spec 89, criterion 2) ----
+
+    #[test]
+    fn cache_scratch_root_from_prefers_xdg_over_home_and_nests_under_rigger() {
+        let repo = "/home/dev/acme";
+        let got = cache_scratch_root_from(
+            repo,
+            Some(std::ffi::OsString::from("/xdg-cache")),
+            Some(std::ffi::OsString::from("/home/dev")),
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            std::path::PathBuf::from("/xdg-cache/rigger").join(marker_filename(repo).unwrap())
+        );
+    }
+
+    #[test]
+    fn cache_scratch_root_from_falls_back_to_home_dot_cache_absent_xdg() {
+        let repo = "/home/dev/acme";
+        let got = cache_scratch_root_from(repo, None, Some(std::ffi::OsString::from("/home/dev")))
+            .unwrap();
+        assert_eq!(
+            got,
+            std::path::PathBuf::from("/home/dev/.cache/rigger")
+                .join(marker_filename(repo).unwrap())
+        );
+    }
+
+    #[test]
+    fn cache_scratch_root_from_none_when_repo_is_empty() {
+        // Nothing to key the cache path on; the caller degrades to the pre-relocation
+        // repo-nested default instead (see `scratch_root_path`).
+        assert_eq!(
+            cache_scratch_root_from(
+                "",
+                Some(std::ffi::OsString::from("/xdg-cache")),
+                Some(std::ffi::OsString::from("/home/dev")),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn cache_scratch_root_from_none_when_homeless() {
+        assert_eq!(cache_scratch_root_from("/home/dev/acme", None, None), None);
+    }
+
+    #[test]
+    fn cache_scratch_root_from_gives_distinct_repos_distinct_directories() {
+        let a = cache_scratch_root_from(
+            "/home/dev/proj-a",
+            Some(std::ffi::OsString::from("/xdg-cache")),
+            None,
+        )
+        .unwrap();
+        let b = cache_scratch_root_from(
+            "/home/dev/proj-b",
+            Some(std::ffi::OsString::from("/xdg-cache")),
+            None,
+        )
+        .unwrap();
+        assert_ne!(
+            a, b,
+            "two different repos must never alias onto one cache directory"
+        );
     }
 
     #[test]
