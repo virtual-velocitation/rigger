@@ -4655,8 +4655,26 @@ impl RunCtx<'_> {
         // never staged as if resolved (the other half of this criterion). A no-op
         // ("nothing to commit") on the overwhelmingly common clean tree, exactly like
         // the ordinary per-attempt checkpoint's own unconditional call below.
+        //
+        // Skipped entirely while a merge is ALREADY in progress here (round 2 fix, spec 89
+        // criterion 1 - arch-u89c1-halted-commit-guard-preempts-resumed-conflict-idempotency /
+        // adv-u89c1-conflict-idempotency-preemption-empirically-confirmed): `merge_in_progress`
+        // is true ONLY when a PRIOR `integrate_and_emit` call already ran `merge_into_worktree`
+        // on this exact worktree and left it mid-merge (a genuine, still-unresolved content
+        // conflict, or the narrow crash window right before its own finalize commit) - never an
+        // ordinary implementer's abandoned edit, which never starts a git merge at all. That
+        // state belongs entirely to `merge_into_worktree`'s OWN crash-resume idempotency (spec
+        // 88, criterion 1): it reads the worktree's already-recorded conflict list back
+        // (`conflicting_paths`) rather than re-attempting the merge command, reachable ONLY
+        // through the `ResumePhase::Reviewed` branch just below (the sole phase whose ledger
+        // status means "already approved - only the merge could still be running"). Calling
+        // `commit` unconditionally here first - BEFORE that branch ever runs - trips its
+        // conflict-marker refusal on the merge's own still-unresolved marker text (correct
+        // for an abandoned edit, but a false alarm for a legitimate in-progress merge) and
+        // turns a resumable state into a hard, no-attempt-charged error instead of ever
+        // reaching the idempotent path built to handle exactly this.
         let halted_commit = match wt {
-            Some(w) => w.commit(&format!(
+            Some(w) if !w.merge_in_progress() => w.commit(&format!(
                 "wip({}): tree of halted spawn {}",
                 st.name,
                 spawn_id(
@@ -4665,7 +4683,7 @@ impl RunCtx<'_> {
                     self.effective_attempts(&st.name)
                 )
             ))?,
-            None => String::new(),
+            _ => String::new(),
         };
         // Resume-continuity, Reviewed phase: the unit's review was APPROVED in a prior
         // window and its branch carries the committed, approved code - only the merge
@@ -11816,7 +11834,13 @@ fn write_lookup_pointer(b: &mut String) {
 /// process death and worktree removal, making the branch the unit's durable
 /// checkpoint. The id is sanitized to the bytes git accepts in a ref component, so an
 /// id with spaces or other ref-illegal characters still yields a valid, stable branch.
-fn unit_branch(unit_id: &str) -> String {
+///
+/// `pub` (spec 89, criterion 1, round 2 fix): `main.rs`'s `cmd_step` calls this to derive
+/// the CURRENTLY loaded workflow's own declared unit branches (config, never the event
+/// log) - the one signal that distinguishes a genuinely halted spawn's worktree from
+/// unrelated dead residue that happens to also be dirty - rather than re-deriving the
+/// `rigger/u/<slug>` convention a second time outside this, its one authority.
+pub fn unit_branch(unit_id: &str) -> String {
     format!("rigger/u/{}", sanitize_for_path(unit_id))
 }
 
@@ -31341,6 +31365,190 @@ mod tests {
             json!("integrate-conflict"),
             "a resumed-reviewed merge break must be stamped 'integrate-conflict', not a \
              plain gate cause: {v:?}"
+        );
+    }
+
+    #[test]
+    fn a_resumed_reviewed_units_genuine_unresolved_conflict_reaches_the_idempotent_merge_path() {
+        // Spec 89, criterion 1, round 2 fix (arch-u89c1-halted-commit-guard-preempts-resumed-
+        // conflict-idempotency / adv-u89c1-conflict-idempotency-preemption-empirically-
+        // confirmed): `run_single_stage`'s halted-commit capture used to call `Worktree::commit`
+        // UNCONDITIONALLY at the very top, before this `ResumePhase::Reviewed` branch ever ran -
+        // so a resumed unit whose worktree ALREADY carries a genuine, still-unresolved merge
+        // conflict (a prior window's OWN `integrate_and_emit` call started the merge and was
+        // interrupted - a liveness sweep, a crash - before conflict resolution ever ran) tripped
+        // `commit`'s conflict-marker refusal (spec 89's OWN "never commit a half-merge" guard,
+        // aimed at an ORDINARY implementer's abandoned edit, not a legitimate in-progress merge)
+        // instead of ever reaching `merge_into_worktree`, whose OWN `merge_in_progress` check
+        // (spec 88, criterion 1's crash-resume idempotency) is the thing actually equipped to
+        // pick this up: read the worktree's already-recorded conflict state back
+        // (`conflicting_paths`) rather than blindly re-attempting the merge command. The
+        // conflict here is over a REGISTERED REGENERABLE path, so once genuinely reached, this
+        // resolves with NO spawn at all - the same "no lifecycle spawns" shape this file's own
+        // sibling resumed-reviewed tests pin, proving the merge conflict was handled by its real
+        // owner, not silently papered over some other way.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The unit's OWN deterministic worktree/branch - created directly at the SAME dir/branch
+        // `stage_worktree`'s adopt-by-path-lookup would derive, exactly like this file's own
+        // `a_halted_spawns_uncommitted_tree_is_captured_as_a_wip_commit_and_named_in_the_next_
+        // prompt` - and, critically, left ON DISK (never `.remove()`d) with a merge already
+        // started and unresolved, so `run()`'s very first `stage_worktree` call for "s" ADOPTS
+        // this exact state rather than a fresh checkout `commit_on_unit_branch`'s temp-dir/
+        // remove shape would give it.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "s");
+        let unit_wt =
+            crate::worktree::Worktree::create(&repo_path, &dir, &unit_branch("s"), &scratch)
+                .unwrap();
+        std::fs::write(Path::new(&dir).join("shared.rs"), "UNIT VERSION\n").unwrap();
+        let approved = unit_wt.commit("rigger: prior window work").unwrap();
+        assert!(
+            !approved.is_empty(),
+            "the prior window must commit the approved work"
+        );
+
+        // The checked-out repo independently gains a DIFFERENT version of the SAME path since -
+        // exactly what an already-integrated batch-mate would have landed onto the run branch
+        // by the time this unit's own merge finally runs. An add/add divergence (the common
+        // ancestor has no such file at all) conflicts unconditionally.
+        std::fs::write(Path::new(&repo_path).join("shared.rs"), "RUN VERSION\n").unwrap();
+        for args in [
+            &["add", "shared.rs"][..],
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "a batch-mate's own conflicting change",
+            ][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+
+        // Simulate the interruption directly: a PRIOR incarnation's own `integrate_and_emit`
+        // already called exactly this - `merge_into_worktree` merges the checked-out repo's
+        // current tip into the unit's worktree - and was killed before conflict resolution ever
+        // ran, leaving MERGE_HEAD and literal conflict-marker text sitting in `shared.rs`
+        // untouched, on disk, right where the next process's `stage_worktree` adopts it.
+        match unit_wt
+            .merge_into_worktree("rigger: integrate s (interrupted before this ever finished)")
+            .unwrap()
+        {
+            worktree::MergeOutcome::Conflict(paths) => {
+                assert_eq!(
+                    paths,
+                    ["shared.rs"],
+                    "setup must conflict on shared.rs alone"
+                )
+            }
+            worktree::MergeOutcome::Ready(_) => {
+                panic!("setup premise: the divergent shared.rs edits must conflict")
+            }
+        }
+        assert!(
+            unit_wt.merge_in_progress(),
+            "setup must leave a genuine merge in progress, unresolved"
+        );
+        let conflicted_before = std::fs::read_to_string(Path::new(&dir).join("shared.rs")).unwrap();
+        assert!(
+            conflicted_before.contains("<<<<<<<"),
+            "setup must leave real conflict-marker text in place: {conflicted_before:?}"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        // "shared.rs" is a REGISTERED REGENERABLE path (spec 88, criterion 1): once the merge
+        // conflict is genuinely reached, the conductor resolves it itself, deterministically,
+        // with no agent spawn - the cleanest possible proof that control reached the real
+        // conflict-handling machinery rather than erroring out earlier.
+        cfg.workflow.regenerate = vec![crate::config::RegenerateRule {
+            paths: vec!["shared.rs".into()],
+            run: "printf 'REGENERATED\\n' > shared.rs".into(),
+        }];
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // The core regression: before the fix, `run_single_stage`'s unconditional
+        // halted-commit capture calls `Worktree::commit` on this exact merge-in-progress,
+        // marker-laden worktree before the `ResumePhase::Reviewed` branch below ever runs,
+        // and `commit`'s own conflict-marker refusal (correct for an ORDINARY abandoned edit)
+        // turns this into a hard `Err` here - never reaching `merge_into_worktree` at all.
+        let rs = run(&cfg, &deps).expect(
+            "a resumed unit's own already-in-progress merge conflict must reach the idempotent \
+             merge_into_worktree/merge_in_progress path, never trip the halted-commit capture's \
+             conflict-marker refusal first",
+        );
+
+        assert!(
+            !driver.spawned("worker") && !driver.spawned("lens") && !driver.spawned("judge"),
+            "the conflict is confined to a registered regenerable path: it must resolve with NO \
+             lifecycle spawn at all, proving the real conflict-handling path (not some other \
+             fallback) ran"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the genuinely-conflicted, regenerable resume must still integrate"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("shared.rs")).unwrap(),
+            "REGENERATED\n",
+            "the run branch must carry the real regeneration, not a discarded or half-merged tree"
         );
     }
 
