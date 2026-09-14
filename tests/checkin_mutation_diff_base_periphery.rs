@@ -16,6 +16,22 @@
 //! git repository whose topology reproduces the exact defect shape, so a future edit that
 //! reintroduces the merge-base idiom - or drops the `test -n` guard - fails this test, not
 //! just a human's re-reading of the YAML.
+//!
+//! A THIRD, independent defect shape once lived in the same shipped command:
+//! `GateSelection::PostMerge` (spec 12, unit 5) re-runs the checkin stage's whole gate
+//! list - `mutation` included - against `self.deps.repo`, which owns no per-unit
+//! worktree of its own, so this command's `$MUTANTS` used to arrive empty there and
+//! crash `mkdir -p ""` outright, every single postmerge re-gate, deterministically
+//! (first observed live on the spec-89 run's checkin stage: event-store position
+//! 3101642, `mkdir: cannot create directory ''`). The real fix lives in-conductor
+//! (`RunCtx::run_gates`, conductor.rs): it derives the postmerge `$MUTANTS` root from
+//! the unit's own worktree name whenever the sibling-of-`dir` derivation every other
+//! selection uses comes back empty, so this command's own `$MUTANTS` is never left
+//! empty and needs no gate-side guard - covered by conductor.rs's own
+//! `the_post_merge_re_gate_gets_the_units_mutants_root_though_it_runs_in_the_repo` test,
+//! not this file (an earlier config-only skip-when-empty guard here traded away real
+//! postmerge coverage - the merged tree a batch-mate's own pre-merge gate can miss - for
+//! a crash workaround, and was retired once the real fix landed).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -161,6 +177,10 @@ fn mutation_gate_diffs_against_rigger_run_base_capturing_the_whole_spec_diff() {
         .arg("-c")
         .arg(&prefix)
         .current_dir(dir)
+        // A non-empty MUTANTS clears the empty-MUTANTS guard the third test below
+        // covers, so this test exercises the diff-computation clause exactly as it did
+        // before that guard existed - a real per-unit invocation always has one set.
+        .env("MUTANTS", "placeholder-nonempty-mutants-root")
         .env("RIGGER_RUN_BASE", &base_tip)
         .status()
         .expect("run the shipped diff-computation prefix");
@@ -202,6 +222,9 @@ fn mutation_gate_refuses_loud_when_rigger_run_base_is_unset_rather_than_sweeping
         .arg("-c")
         .arg(&prefix)
         .current_dir(dir)
+        // Non-empty so this test isolates the RIGGER_RUN_BASE guard alone - see the
+        // sibling test above for why.
+        .env("MUTANTS", "placeholder-nonempty-mutants-root")
         .env_remove("RIGGER_RUN_BASE")
         .status()
         .expect("run the shipped diff-computation prefix");
