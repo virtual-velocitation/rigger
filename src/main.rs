@@ -21149,10 +21149,16 @@ mod tests {
             "the driver must read the wave and loop until the step reports done"
         );
 
-        // 4. It SPAWNS the wave natively in parallel, one agent per wave item.
+        // 4. It SPAWNS the wave natively, one agent per wave item - PIPELINED per unit (spec
+        //    89, criterion 5): each new item starts its own `runWorker` call and is tracked in
+        //    the `inFlight` set rather than every item being awaited together as one
+        //    `parallel(wave.map(...))` batch (the pre-criterion-5 shape this superseded), which
+        //    is exactly what lets a fast unit's result be couriered while a slow sibling in the
+        //    SAME wave is still running.
         assert!(
-            code.contains("parallel(") && code.contains("wave.map("),
-            "the driver must spawn the wave's agents natively in parallel"
+            code.contains("runWorker(req, fatal)") && code.contains("inFlight.set(req.id,"),
+            "the driver must spawn the wave's agents natively, one per item, tracked in the \
+             in-flight set"
         );
 
         // 5. Lifecycle-phase progress groups are produced at runtime from the WAVE ITEM, and
@@ -21580,25 +21586,30 @@ mod tests {
              wire stamp already decided what happened"
         );
 
-        // "At the wave it arrived": the relay call must precede the wave-spawn CONDITIONAL
-        // itself (`if (wave.length > 0)`), not merely its inner spawn-narration text - a
+        // "At the wave it arrived": the relay call must precede the wave-spawn CALL itself
+        // (`spawnNewItems(wave)`, spec 89 criterion 5's pipelined replacement for the old
+        // `if (wave.length > 0)` conditional), not merely its inner spawn-narration text - a
         // weaker check anchored on the log() line alone stays green even if a future edit
-        // nests the call inside that block (review u69c6 round 1, cause genuine-defect:
+        // nests the call inside that function (review u69c6 round 1, cause genuine-defect:
         // moving the shipped, unconditional call to the block's first line left every
         // periphery test and this test green, because the call still textually preceded the
-        // log() line while now running only when wave.length > 0). Anchoring on the `if`
-        // line itself catches that exact nesting: a step whose wave is empty - the
+        // log() line while now running only when something is spawned). Anchoring on the
+        // spawn-call line itself catches that exact nesting: a step whose wave is empty - the
         // escalated/halted/stalled-frontier "nothing left to spawn" case an unattended
         // operator most needs the narrator line for - must still get its attention relayed.
         let call_pos = code
             .rfind("relayAttention(step)")
             .expect("relayAttention(step) must be called");
+        // `rfind`, not `find`: the FIRST occurrence of "spawnNewItems(wave)" is the function's
+        // own declaration (`function spawnNewItems(wave) {`), which sits well before the loop
+        // and would wrongly anchor this check on the wrong position; the actual CALL site
+        // (inside the loop, after relayAttention) is the last occurrence.
         let wave_conditional_pos = code
-            .find("if (wave.length > 0)")
-            .expect("the driver must gate wave-spawning on a non-empty wave");
+            .rfind("spawnNewItems(wave)")
+            .expect("the driver must still spawn newly-parked wave items");
         assert!(
             call_pos < wave_conditional_pos,
-            "attention must be relayed for the step BEFORE the wave-spawn conditional \
+            "attention must be relayed for the step BEFORE the wave-spawn call \
              (\"at the wave it arrived\"), not nested inside it - a step with an empty wave \
              (escalated/halted/stalled-frontier) must still get its attention relayed"
         );
