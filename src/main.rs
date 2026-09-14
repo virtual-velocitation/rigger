@@ -10202,17 +10202,21 @@ fn reclaim_orphan_scratch(
             // happens to enclose `root` (the "act on the enclosing repository" hazard spec 89's
             // own STEP-RESOLVES-ONE-ROOT criterion names), reading unrelated content as "dirty" -
             // falling back, for that shape, to the ORIGINAL unconditional reclaim, unchanged.
+            //
+            // The status read itself now goes through [`rigger::worktree::path_is_dirty`]
+            // (round 3 fix, `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`)
+            // instead of a second, independently-hardcoded `Command::new("git")` call: round 2's
+            // own inline version collapsed ANY spawn failure or non-zero git exit to `dirty =
+            // false` (fail OPEN, reclaim/discard), the exact opposite of `sweep_terminal_logged`'s
+            // `unwrap_or(false)` (which, negated into this same `dirty` polarity, fails CLOSED -
+            // spare) on the identical unreadable-status error, despite this comment already
+            // claiming the two mirror each other. Sharing the one primitive - and picking the
+            // same `unwrap_or(true)` fail-closed direction the sibling call site now also picks
+            // explicitly - makes that divergence structurally impossible to reintroduce.
             let slug = name.trim_start_matches(rigger::worktree::UNIT_WORKTREE_PREFIX);
             let dirty = declared_slugs.contains(slug)
                 && path.join(".git").exists()
-                && Command::new("git")
-                    .arg("-C")
-                    .arg(&path)
-                    .args(["status", "--porcelain", "-z"])
-                    .output()
-                    .ok()
-                    .filter(|o| o.status.success())
-                    .is_some_and(|o| !o.stdout.is_empty());
+                && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
                 reap_then_remove_worktree(repo, &path, root_path);
                 removed += 1;

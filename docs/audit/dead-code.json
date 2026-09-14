@@ -66,15 +66,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 12991
+        "line": 13053
       },
       {
         "file": "src/main.rs",
-        "line": 13012
+        "line": 13074
       },
       {
         "file": "src/main.rs",
-        "line": 13527
+        "line": 13589
       },
       {
         "file": "tests/cli.rs",
@@ -209,7 +209,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 18940
+        "line": 18964
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -675,7 +675,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 8250
+        "line": 8263
       }
     ],
     "disposition": "delete",
@@ -820,15 +820,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 37848
+        "line": 38056
       },
       {
         "file": "src/conductor.rs",
-        "line": 37915
+        "line": 38123
       },
       {
         "file": "src/conductor.rs",
-        "line": 38690
+        "line": 38898
       },
       {
         "file": "src/ledger.rs",
@@ -897,35 +897,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 21255
+        "line": 21279
       },
       {
         "file": "src/conductor.rs",
-        "line": 21332
+        "line": 21356
       },
       {
         "file": "src/conductor.rs",
-        "line": 21426
+        "line": 21450
       },
       {
         "file": "src/conductor.rs",
-        "line": 21513
+        "line": 21537
       },
       {
         "file": "src/conductor.rs",
-        "line": 21608
+        "line": 21632
       },
       {
         "file": "src/conductor.rs",
-        "line": 28736
+        "line": 28760
       },
       {
         "file": "src/conductor.rs",
-        "line": 28741
+        "line": 28765
       },
       {
         "file": "src/conductor.rs",
-        "line": 28804
+        "line": 28828
       },
       {
         "file": "src/dash.rs",
@@ -1009,47 +1009,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 16059
+        "line": 16121
       },
       {
         "file": "src/main.rs",
-        "line": 16092
+        "line": 16154
       },
       {
         "file": "src/main.rs",
-        "line": 16111
+        "line": 16173
       },
       {
         "file": "src/main.rs",
-        "line": 16114
+        "line": 16176
       },
       {
         "file": "src/main.rs",
-        "line": 16117
+        "line": 16179
       },
       {
         "file": "src/main.rs",
-        "line": 17749
+        "line": 17936
       },
       {
         "file": "src/main.rs",
-        "line": 17762
+        "line": 17949
       },
       {
         "file": "src/main.rs",
-        "line": 17777
+        "line": 17964
       },
       {
         "file": "src/main.rs",
-        "line": 23186
+        "line": 23373
       },
       {
         "file": "src/main.rs",
-        "line": 23187
+        "line": 23374
       },
       {
         "file": "src/main.rs",
-        "line": 23188
+        "line": 23375
       },
       {
         "file": "src/mcpserver.rs",
@@ -1185,19 +1185,11 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 4108
+        "line": 4175
       },
       {
         "file": "src/worktree.rs",
-        "line": 4131
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 4167
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 4199
+        "line": 4198
       },
       {
         "file": "src/worktree.rs",
@@ -1205,23 +1197,31 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 4250
+        "line": 4266
       },
       {
         "file": "src/worktree.rs",
-        "line": 4277
+        "line": 4301
       },
       {
         "file": "src/worktree.rs",
-        "line": 4307
+        "line": 4317
       },
       {
         "file": "src/worktree.rs",
-        "line": 4314
+        "line": 4344
       },
       {
         "file": "src/worktree.rs",
-        "line": 4322
+        "line": 4374
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4381
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4389
       },
       {
         "file": "tests/cli.rs",
@@ -1557,15 +1557,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 28734
+        "line": 28758
       },
       {
         "file": "src/conductor.rs",
-        "line": 28739
+        "line": 28763
       },
       {
         "file": "src/conductor.rs",
-        "line": 28802
+        "line": 28826
       },
       {
         "file": "src/driver/replay.rs",
@@ -1682,28 +1682,28 @@
   {
     "name": "is_dirty",
     "file": "src/worktree.rs",
-    "line": 627,
+    "line": 635,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 13681
+        "line": 13705
       },
       {
         "file": "src/worktree.rs",
-        "line": 3801
+        "line": 3859
       },
       {
         "file": "src/worktree.rs",
-        "line": 3811
+        "line": 3869
       },
       {
         "file": "src/worktree.rs",
-        "line": 3877
+        "line": 3935
       }
     ],
     "disposition": "delete",
-    "reason": "is_dirty has no production caller - one of spec 87's own two Goal-cited worked examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current tree: its 3 references (src/conductor.rs and worktree.rs's own `mod tests`) are all test-only. Line shifted again, this time by spec 89 criterion 1's round 2 fix (A HALT NEVER DISCARDS A TREE, `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`): `Worktree::commit` now gathers its own touched-or-unmerged `scope` (a `changed_files`/`conflicting_paths` union, read before `git add -A`) and hands it to `conflict_markers_present`, which the scope parameter and its widened doc comment push down another 24 lines, 603->627 above `is_dirty`. expect_merged itself (formerly src/worktree.rs:86) is no longer a candidate at all: round 4 moved it, together with `IntegrateOutcome` and the pre-round-4 `integrate` method, into this file's own `#[cfg(test)] mod tests` (a test-only recomposition of the newly-split `merge_into_worktree`/`land`, since production - `integrate_and_emit` - now calls those two split methods directly for its own row-level durable recording and has no caller left for the combined form) - a test-scoped item is not a production dead-code candidate by this scanner's own definition, closing the finding at its root rather than re-dispositioning it in place."
+    "reason": "is_dirty has no production caller - one of spec 87's own two Goal-cited worked examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current tree: its 3 references (src/conductor.rs and worktree.rs's own `mod tests`) are all test-only; its own body now delegates to `path_is_dirty` (spec 89 round 3), but that internal call is not a caller of `is_dirty` itself. Line shifted again, this time by spec 89 criterion 1's round 3 fix (`arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`): `is_dirty`'s body was replaced with a one-line delegation to the new shared `path_is_dirty` free fn (built on the pre-existing `git`/`run_git` primitives, and now also called directly by `sweep_terminal_logged` and `main.rs`'s `reclaim_orphan_scratch` so the two no longer risk diverging on how a git-status failure is read), and the doc comment naming that delegation pushes the line down 8 more, 627->635. expect_merged itself (formerly src/worktree.rs:86) is no longer a candidate at all: round 4 moved it, together with `IntegrateOutcome` and the pre-round-4 `integrate` method, into this file's own `#[cfg(test)] mod tests` (a test-only recomposition of the newly-split `merge_into_worktree`/`land`, since production - `integrate_and_emit` - now calls those two split methods directly for its own row-level durable recording and has no caller left for the combined form) - a test-scoped item is not a production dead-code candidate by this scanner's own definition, closing the finding at its root rather than re-dispositioning it in place."
   }
 ]
