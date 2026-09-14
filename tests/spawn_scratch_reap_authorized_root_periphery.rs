@@ -418,16 +418,24 @@ fn rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_
     let root = dir.path();
     seed_store(root);
     seed_run_started(root, "r1");
+
+    let spawn_id = "u-periphery-cli-gone-mutation-scratch/implementer#0";
+    let cache_home = tempfile::tempdir().unwrap();
     // The run's own agent-scratch ROOT already exists (as it would by the time any real spawn
     // reports - earlier steps have already populated it), so neither half of the same
     // `reclaim_spawn_registered_scratch` call can refuse on an absent AUTHORIZED ROOT of its
     // own (`is_reapable_base` still requires that half to exist, unchanged by this diff) -
     // the only thing missing below is the mutation-scratch LEAF itself, spec 89 criterion 3's
-    // own scope.
-    std::fs::create_dir_all(root.join(".rigger").join("tmp")).unwrap();
-
-    let spawn_id = "u-periphery-cli-gone-mutation-scratch/implementer#0";
-    let cache_home = tempfile::tempdir().unwrap();
+    // own scope. The agent-scratch root is the cache-home-relocated default (spec 89 criterion
+    // 2), never the pre-relocation `<repo>/.rigger/tmp` - mirroring this file's own
+    // `rigger_result_reaps_a_live_process_in_the_spawns_registered_agent_scratch_dir` above.
+    let agent_scratch_root = rigger::worktree::cache_scratch_root_from(
+        root.to_str().unwrap(),
+        Some(cache_home.path().as_os_str().to_owned()),
+        None,
+    )
+    .expect("a non-empty repo with an explicit cache home always resolves");
+    std::fs::create_dir_all(&agent_scratch_root).unwrap();
     let leaf = mutation_scratch_path(cache_home.path(), spawn_id)
         .expect("a well-formed spawn id must encode to a real path");
     std::fs::create_dir_all(&leaf).unwrap();
@@ -496,13 +504,22 @@ fn rigger_result_logs_no_false_refusal_for_a_reviewers_own_never_created_mutatio
     let root = dir.path();
     seed_store(root);
     seed_run_started(root, "r1");
-    std::fs::create_dir_all(root.join(".rigger").join("tmp")).unwrap();
 
     // The registered mutation-scratch ROOT already exists (some other spawn's leaf populated
     // it earlier in the run - the everyday shape), but THIS reviewer spawn's own leaf never
     // was and never will be: reviewers never run `cargo mutants`.
     let cache_home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(cache_home.path().join("rigger-mutants")).unwrap();
+    // The agent-scratch ROOT also already exists, the cache-home-relocated default (spec 89
+    // criterion 2), never the pre-relocation `<repo>/.rigger/tmp` - see the sibling test above
+    // for the identical rationale.
+    let agent_scratch_root = rigger::worktree::cache_scratch_root_from(
+        root.to_str().unwrap(),
+        Some(cache_home.path().as_os_str().to_owned()),
+        None,
+    )
+    .expect("a non-empty repo with an explicit cache home always resolves");
+    std::fs::create_dir_all(&agent_scratch_root).unwrap();
 
     let spawn_id = "u-periphery-cli-reviewer-never-created-mutation-scratch/adversary#0";
     let leaf = mutation_scratch_path(cache_home.path(), spawn_id)
