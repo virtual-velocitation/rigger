@@ -759,16 +759,41 @@ async function runWorker(req, fatal) {
   }
 }
 
-// The thin driver loop. Each iteration: courier one `rigger step`, spawn the wave it parked,
-// and stop when the conductor reports a fixpoint. Termination is guaranteed by the conductor
-// (its spawn-budget breaker and per-unit retry bound), so this loop needs no cap of its own.
-// Every non-fixpoint exit is an ANOMALY and stops the loop LOUDLY (`stop(...)` throws): a
-// stuck/failed run must never be reported as a clean completion, and a courier that itself
-// dies must be a controlled, visible stop - not an uncaught rejection that aborts the driver.
+// The thin driver loop, PIPELINED PER UNIT (spec 89, criterion 5). Before this criterion, one
+// iteration couriered a step, then awaited the WHOLE wave as one `parallel()` batch over every
+// `runWorker` call before ever couriering again - so a unit whose round finished in five minutes
+// sat idle while a slower sibling in the SAME wave spent an hour in its own mutation sweep, and
+// the fast unit's review could not even start until the slow one's agent() call finally
+// resolved. Now the driver treats each wave item as its own pipeline stage: `inFlight` tracks
+// every worker CURRENTLY running (id -> its wrapped promise), spawned but never re-awaited as
+// one monolithic batch. As soon as ANY one of them
+// settles, the driver couriers the NEXT step immediately (steps still serialize one at a time -
+// the Rust side's own step lock, unchanged by this criterion) and spawns only the wave items
+// `inFlight` does not already hold, so an item still running is never spawned a second time.
+// `step_result` (src/spawn.rs) already returns the FULL PENDING FRONTIER on every call - every
+// request with no recorded result, not merely what THIS call newly parked, per its own doc
+// comment - which is exactly why the in-flight guard is load-bearing here and was a no-op
+// before: the pre-pipelining driver never couriered again until its one wave had fully drained,
+// so the same id could never appear across two of its OWN step calls.
+// Termination is guaranteed by the conductor (its spawn-budget breaker and per-unit retry
+// bound), so this loop needs no cap of its own. Every non-fixpoint exit is an ANOMALY and stops
+// the loop LOUDLY (`stop(...)` throws): a stuck/failed run must never be reported as a clean
+// completion, and a courier that itself dies must be a controlled, visible stop - not an
+// uncaught rejection that aborts the driver.
 let waves = 0
 // `--fresh` is a ONE-SHOT: it begins a new run, so it rides the FIRST step only; every step
 // after it must ADOPT that boundary, not mint another. Flipped false the moment it is used.
 let firstStep = true
+// The workers CURRENTLY running, keyed by spawn id, each entry the promise `runWorker` returns
+// (wrapped below to delete itself the moment it settles). Lives OUTSIDE the loop - not rebuilt
+// per iteration - so a worker spawned several steps ago is still recognized as running however
+// long its own round takes.
+const inFlight = new Map()
+// A death-report courier that itself died. Also lives OUTSIDE the loop, for the identical
+// reason `inFlight` does: a worker spawned several steps ago can still push into this the moment
+// it finally settles, and a fresh per-iteration array (the pre-pipelining shape) would silently
+// lose that push the instant the loop moved past the iteration that spawned it.
+const fatal = []
 
 // stop the driver LOUDLY: throw a clear, single Error so the anomalous exit surfaces as a
 // workflow failure with an actionable message (decision `thin-driver-loud-stops`), instead of
@@ -776,6 +801,37 @@ let firstStep = true
 function stop(reason) {
   log(`stopping the driver loop: ${reason}`)
   throw new Error(`rigger driver stopped after ${waves} wave(s): ${reason}`)
+}
+
+// drainInFlight awaits every CURRENTLY in-flight worker before a loud stop (a fatal courier
+// death, or a budget/rail halt), so neither ever abandons a worker mid-session - the same
+// courtesy the pre-pipelining loop gave for free by awaiting its one wave in full before ever
+// checking either condition. `runWorker`'s own promise never rejects (every internal path
+// resolves; a dead worker's own agent() rejection is caught and turned into a `{kind:'error'}`
+// outcome before runWorker returns), so `Promise.all` here is safe.
+async function drainInFlight() {
+  if (inFlight.size > 0) {
+    await Promise.all(Array.from(inFlight.values()))
+  }
+}
+
+// spawnNewItems starts a worker for every wave item `inFlight` does not already hold. `wave` is
+// the FULL pending frontier (`step_result`'s own doc comment), so an item still running from an
+// earlier step reappears on every later step's wave verbatim until it finally has a recorded
+// result - spawning it again here would run the SAME spawn id twice in parallel. Each new
+// worker is entered into `inFlight` before this function returns (never awaited here - that is
+// the whole point of pipelining) and removes itself the instant it settles.
+function spawnNewItems(wave) {
+  const newReqs = wave.filter((req) => !inFlight.has(req.id))
+  if (newReqs.length === 0) return
+  waves += 1
+  log(`wave ${waves}: spawning ${newReqs.length} agent(s) in parallel: ${newReqs.map((r) => r.id).join(', ')}`)
+  for (const req of newReqs) {
+    const p = runWorker(req, fatal).then(() => {
+      inFlight.delete(req.id)
+    })
+    inFlight.set(req.id, p)
+  }
 }
 
 for (;;) {
@@ -836,43 +892,47 @@ for (;;) {
 
   // 1a. Relay this step's push-side ATTENTION array (spec 69, criterion 6): render each entry
   //     as one narrator log() line "at the wave it arrived" - as soon as the step that
-  //     surfaced it is in hand, before that same wave's own agents are spawned below. Purely
-  //     a render: it never stops the loop and never changes what happens next.
+  //     surfaced it is in hand, before any new items it parks are spawned below. Purely a
+  //     render: it never stops the loop and never changes what happens next.
   relayAttention(step)
 
-  // 2. Spawn the wave natively in parallel; each worker labeled with its lifecycle-phase
-  //    progress group (phaseOf). A worker that dies has its failure recorded on its behalf
-  //    inside runWorker; if that death courier ITSELF dies, runWorker records it in `fatal`
-  //    (it never re-throws, so parallel() is not aborted mid-wave) and we stop loudly below.
-  const fatal = []
+  // 2. Spawn every wave item `inFlight` does not already hold (spawnNewItems above, spec 89
+  //    criterion 5): an item still running from an earlier step is filtered out, never spawned
+  //    twice; each worker still labeled with its lifecycle-phase progress group (phaseOf). A
+  //    worker that dies has its failure recorded on its behalf inside runWorker; if that death
+  //    courier ITSELF dies, runWorker records it in the shared `fatal` sink and we stop loudly
+  //    below (after draining whatever is still in flight).
   const wave = step.wave || []
-  if (wave.length > 0) {
-    waves += 1
-    log(`wave ${waves}: spawning ${wave.length} agent(s) in parallel: ${wave.map((r) => r.id).join(', ')}`)
-    await parallel(wave.map((req) => () => runWorker(req, fatal)))
-  }
+  spawnNewItems(wave)
 
   // A death-report courier died, so a spawn may have no result and the conductor's replay could
-  // hang on resume. Stop LOUDLY rather than looping into an unrecoverable hang.
+  // hang on resume. Drain whatever is still in flight - never abandon a worker mid-session -
+  // then stop LOUDLY rather than looping into an unrecoverable hang.
   if (fatal.length > 0) {
+    await drainInFlight()
     stop(`the failure of ${fatal.length} worker(s) could not be recorded (their death-report couriers also died): ${fatal.join(' | ')}`)
   }
 
   // 3. A budget (or other rail) HALT is a LOUD stop, never a clean completion (Gap 13).
   //    `rigger step` reports it as a `halted` reason distinct from `done` convergence: the
   //    breaker stopped the run with ready work unscheduled (a resume needs a raised budget).
-  //    We drain any wave the halting step already parked (above), then surface the halt as a
-  //    workflow FAILURE carrying the reason - rather than letting the `done` fixpoint below
-  //    read a starved run as success (the exact Gap-13 defect: a breaker halt printed as a
-  //    clean completion and the driver reporting a starved run as done).
+  //    Drain whatever this (or an earlier) step already parked - never abandon a worker
+  //    mid-session - then surface the halt as a workflow FAILURE carrying the reason, rather
+  //    than letting the `done` fixpoint below read a starved run as success (the exact Gap-13
+  //    defect: a breaker halt printed as a clean completion and the driver reporting a starved
+  //    run as done).
   if (step.halted) {
+    await drainInFlight()
     stop(`the run halted: ${step.halted}`)
   }
 
-  // 4. Stop at the conductor's fixpoint (every parked spawn has a result and nothing new was
-  //    parked). A non-empty wave always implies done === false, so we drain it first (above),
-  //    then re-check on the next iteration.
-  if (step.done) {
+  // 4. Stop at the conductor's fixpoint. The fixpoint rule is UNCHANGED by pipelining (spec 89,
+  //    criterion 5's Design says so explicitly): "done with nothing in flight" - `step.done`
+  //    alone is not enough, because a worker can record its result and keep running a while
+  //    longer before its own agent() call actually resolves, so `rigger step` can report `done`
+  //    while that straggler still sits in `inFlight`. Requiring both means a fixpoint is never
+  //    declared out from under a still-running worker.
+  if (step.done && inFlight.size === 0) {
     // A fixpoint reached with an ESCALATED unit is NOT a clean completion (spec 19c, unit 1):
     // the unit exhausted remediation and went terminal WITHOUT integrating, yet the run
     // converged AROUND it, so a bare `done` would report a wedged terminus as success. Surface
@@ -890,13 +950,25 @@ for (;;) {
     log(`run complete: the conductor reached a fixpoint after ${waves} wave(s)`)
     break
   }
-  // An empty wave that is NOT done means a prior worker resolved WITHOUT self-reporting (its
-  // agent() neither errored nor recorded a result): the conductor has an unanswered spawn but
-  // there is nothing new for us to run, so stepping again would spin. This is an anomaly, not a
-  // completion - stop loudly rather than resolve as done or loop forever.
-  if (wave.length === 0) {
-    stop('`rigger step` parked no new wave yet is not done (a worker likely resolved without self-reporting)')
+
+  // An empty wave with nothing in flight and not done means a prior worker resolved WITHOUT
+  // self-reporting (its agent() neither errored nor recorded a result): the conductor has an
+  // unanswered spawn but nothing is running and nothing new was parked, so stepping again would
+  // spin. This is an anomaly, not a completion or an ordinary pipelining pause (an empty wave
+  // WITH a straggler still in flight is the ordinary pause - see the final wait below) - stop
+  // loudly rather than resolve as done or loop forever.
+  if (wave.length === 0 && inFlight.size === 0) {
+    stop(
+      '`rigger step` parked no new items and nothing is in flight, yet is not done (a worker ' +
+        'likely resolved without self-reporting)',
+    )
   }
+
+  // Otherwise something is still running - this step's own new items, a straggler from an
+  // earlier one, or both - and nothing about this step warrants stopping. Wait for ANY of them
+  // to settle (spec 89, criterion 5: that settling is the signal a courier should run again
+  // immediately), then loop back to step 1.
+  await Promise.race(Array.from(inFlight.values()))
 }
 
 return { waves }

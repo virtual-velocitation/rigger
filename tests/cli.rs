@@ -4012,6 +4012,170 @@ fn native_driver_couriers_ride_the_drive_lane_and_the_global_plan_marker_is_reti
     );
 }
 
+/// Spec 89, criterion 5 (PER-UNIT PIPELINING): the driver's own `for(;;)` loop must treat each
+/// wave item as its own pipeline stage rather than awaiting a whole wave as one monolithic batch
+/// (`await parallel(wave.map((req) => () => runWorker(req, fatal)))`) before ever couriering the
+/// next step - the shape that made a unit whose round finished in five minutes sit idle while a
+/// slower sibling in the SAME wave spent an hour in its own mutation sweep, with the fast unit's
+/// review unable to even start until the slow one's agent() call finally resolved.
+/// `step_result` (src/spawn.rs) already returns the FULL PENDING FRONTIER on every call - every
+/// request with no recorded result, not merely what THIS call newly parked, per its own doc
+/// comment - which is exactly why a driver that couriers again before an earlier wave item has
+/// resolved MUST track what is already running or it will spawn the SAME spawn id a second time
+/// in parallel; this is a no-op check under the pre-pipelining shape (which never couriered
+/// again until its one wave had fully drained) and only becomes load-bearing here.
+///
+/// The driver runs only under the workflow harness and cannot execute here (top-level await,
+/// injected `agent`/`parallel`/`log` globals), so - like every other driver-shaped proof in this
+/// file - this is a source fixture over the embedded script.
+#[test]
+fn native_driver_pipelines_wave_items_instead_of_awaiting_the_whole_wave_as_one_batch() {
+    let src = rigger_js_source();
+
+    // The old monolithic per-wave await is gone entirely.
+    assert!(
+        !src.contains("await parallel(wave.map((req) => () => runWorker(req, fatal)))"),
+        "the driver must no longer await a whole wave as one parallel() batch before couriering \
+         the next step: {src}"
+    );
+
+    // An in-flight tracking structure exists, and lives OUTSIDE (before) the `for (;;)` loop so
+    // it survives across steps rather than being rebuilt empty every iteration - a worker
+    // spawned several steps ago must still be recognized as running. `rfind`, not `find`: the
+    // file has a SECOND, unrelated `for (;;) {` inside `raceMarkerStaleness` (its own per-worker
+    // marker-staleness poll, defined well before the driver loop) - the driver's own loop is the
+    // LAST one in the file.
+    let loop_at = src
+        .rfind("for (;;) {")
+        .expect("the driver must still run its one step-courier loop");
+    let in_flight_decl_at = src
+        .find("inFlight = new Map()")
+        .expect("the driver must track in-flight workers in a Map keyed by spawn id");
+    assert!(
+        in_flight_decl_at < loop_at,
+        "the in-flight tracking Map must be declared BEFORE the for(;;) loop, so it persists \
+         across steps instead of being rebuilt empty every iteration: {src}"
+    );
+
+    // `fatal` moves out of the loop for the identical reason: a worker spawned several steps ago
+    // can still push into it long after the iteration that spawned it has moved on, and a
+    // per-iteration array (the pre-pipelining shape: `const fatal = []` inside the loop) would
+    // silently lose that push.
+    let fatal_decl_at = src
+        .find("const fatal = []")
+        .expect("the driver must still declare a shared `fatal` sink");
+    assert!(
+        fatal_decl_at < loop_at,
+        "the `fatal` sink must be declared BEFORE the for(;;) loop (persistent across steps), \
+         not re-created fresh inside it every iteration: {src}"
+    );
+
+    // Never spawn an item the in-flight set already holds.
+    assert!(
+        src.contains("inFlight.has(req.id)"),
+        "new items must be filtered against the in-flight set before being spawned, so an item \
+         `step`'s full-pending-frontier wave still lists is never spawned a second time: {src}"
+    );
+
+    // The loop waits for ANY one in-flight worker to settle - not the whole set via
+    // parallel()/Promise.all() - before couriering again, which is what lets a step run again
+    // the moment a SINGLE worker records its result rather than only once a whole wave drains.
+    let loop_body = &src[loop_at..];
+    assert!(
+        loop_body.contains("Promise.race(Array.from(inFlight.values()))")
+            || loop_body.contains("Promise.race(inFlight.values())"),
+        "the loop must wait on Promise.race over the in-flight set (any ONE settling), never \
+         Promise.all/parallel() over the whole wave, before couriering the next step: {loop_body}"
+    );
+}
+
+/// Spec 89, criterion 5: two independent wave items must not be spawned twice across steps.
+/// `spawnNewItems` (or its equivalent) must filter every wave item through the in-flight set
+/// before starting a worker for it, and register each newly-started worker in that same set
+/// before returning - both halves of the guard, not just the read.
+#[test]
+fn native_driver_never_spawns_an_in_flight_item_twice() {
+    let src = rigger_js_source();
+
+    let filter_at = src
+        .find("inFlight.has(req.id)")
+        .expect("new items must be filtered against the in-flight set");
+    let set_at = src
+        .find("inFlight.set(req.id,")
+        .expect("a newly-spawned worker must be registered in the in-flight set");
+    assert!(
+        filter_at < set_at,
+        "the in-flight FILTER must run before a new worker is REGISTERED into the set, so the \
+         filter reads the set as it stood before this batch started, not after: {src}"
+    );
+
+    // The registration deletes itself when the worker settles - an id must eventually become
+    // spawnable again if `step` legitimately reuses it later (a respawn), never left stuck
+    // "in flight" forever.
+    assert!(
+        src.contains("inFlight.delete(req.id)"),
+        "a worker must remove itself from the in-flight set once it settles, so the set reflects \
+         who is ACTUALLY running: {src}"
+    );
+}
+
+/// Spec 89, criterion 5: the conductor's own fixpoint (`step.done`) is not by itself the
+/// driver's completion signal any more - a worker can record its result and keep running a
+/// while longer before its own `agent()` call actually resolves, so `rigger step` can report
+/// `done` while that straggler still sits in the driver's in-flight set. The Design text is
+/// explicit that the fixpoint rule stays "done with nothing in flight" (unchanged BY this
+/// criterion, but now something the driver must actually check for, since pipelining is what
+/// makes `done && still running` a reachable state at all) - so the completion branch must
+/// require both, and the pre-pipelining anomaly check (an empty wave that is not done) must
+/// likewise tolerate a straggler still running as the ordinary pipelining pause it now is,
+/// rather than misclassifying it as the same anomaly.
+#[test]
+fn native_driver_fixpoint_requires_done_and_an_empty_in_flight_set() {
+    let src = rigger_js_source();
+
+    assert!(
+        src.contains("step.done && inFlight.size === 0"),
+        "the completion branch must require step.done AND an empty in-flight set together, so a \
+         straggler that already reported but has not yet resolved is never abandoned out from \
+         under a declared fixpoint: {src}"
+    );
+    // The old bare `if (step.done) {` gate must be gone - nothing else in the driver
+    // legitimately reads step.done alone as a completion signal.
+    assert!(
+        !src.contains("if (step.done) {"),
+        "the driver must no longer treat `step.done` alone as the completion signal: {src}"
+    );
+
+    // An empty wave with nothing in flight and not done stays the pre-existing anomaly; an
+    // empty wave WITH a straggler still in flight is now the ordinary pipelining pause.
+    assert!(
+        src.contains("wave.length === 0 && inFlight.size === 0"),
+        "the empty-wave anomaly check must also require an empty in-flight set - an empty wave \
+         while a straggler is still running is a normal pipelining pause, not an anomaly: {src}"
+    );
+}
+
+/// Spec 89, criterion 5: a loud stop (a courier-death fault, or a budget/rail halt) must not
+/// abandon a worker still mid-session - it drains whatever is currently in flight first, the
+/// same courtesy the pre-pipelining loop got for free by awaiting its one wave in full before
+/// ever checking either condition (decision `d-driver-loud-stop-on-halt`: "the driver loop,
+/// after draining the current wave, treats a present step.halted as a LOUD stop").
+#[test]
+fn native_driver_drains_in_flight_workers_before_a_loud_stop() {
+    let src = rigger_js_source();
+
+    assert!(
+        src.contains("if (fatal.length > 0) {\n    await drainInFlight()"),
+        "a fatal courier-death stop must drain the in-flight set (await drainInFlight()) before \
+         stopping, never abandon a still-running worker: {src}"
+    );
+    assert!(
+        src.contains("if (step.halted) {\n    await drainInFlight()"),
+        "a budget/rail halt must drain the in-flight set (await drainInFlight()) before \
+         stopping, never abandon a still-running worker: {src}"
+    );
+}
+
 /// Scaffold a project whose workflow has TWO independent stages (neither `needs` the
 /// other, so both are ready in the first wave) that do no grounder work (`nop`) and
 /// never merge (`on_pass: none`). This is the minimal shape that drives `rigger step`
