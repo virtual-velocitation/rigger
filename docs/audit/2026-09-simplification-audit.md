@@ -1838,10 +1838,10 @@ mandatory sweep: Command::new call sites - 351 site(s), collected mechanically r
 - `src/worktree.rs:2031-2031` `Command::new`
 - `src/worktree.rs:2326-2326` `Command::new`
 - `src/worktree.rs:3151-3151` `Command::new`
-- `src/worktree.rs:4471-4471` `Command::new`
-- `src/worktree.rs:4803-4803` `Command::new`
-- `src/worktree.rs:5593-5593` `Command::new`
+- `src/worktree.rs:4477-4477` `Command::new`
+- `src/worktree.rs:4809-4809` `Command::new`
 - `src/worktree.rs:5599-5599` `Command::new`
+- `src/worktree.rs:5605-5605` `Command::new`
 - `tests/adaptive_labels_periphery.rs:66-66` `Command::new`
 - `tests/adaptive_labels_periphery.rs:105-105` `Command::new`
 - `tests/adoption_keys_on_criterion_periphery.rs:185-185` `Command::new`
@@ -3256,10 +3256,10 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `src/worktree.rs:3781-3781` `"/.rigger"`
 - `src/worktree.rs:3782-3782` `"the default must never live under any .rigger: {dflt:?}"`
 - `src/worktree.rs:3801-3801` `"{repo_path}/.rigger/tmp"`
-- `src/worktree.rs:3819-3819` `"~/.rigger-scratch-test"`
-- `src/worktree.rs:3820-3820` `"{home}/.rigger-scratch-test"`
-- `src/worktree.rs:5531-5531` `"{base}..rigger-run"`
-- `src/worktree.rs:5580-5580` `".rigger"`
+- `src/worktree.rs:3825-3825` `"~/.rigger-scratch-test"`
+- `src/worktree.rs:3826-3826` `"{home}/.rigger-scratch-test"`
+- `src/worktree.rs:5537-5537` `"{base}..rigger-run"`
+- `src/worktree.rs:5586-5586` `".rigger"`
 - `tests/architecture_current_surface.rs:107-107` `".rigger/store.conn"`
 - `tests/architecture_current_surface.rs:163-163` `"docs/architecture.md must describe the system that exists today (spec 56, \
          criterion 1): it must name the store-resolution and configuration surface (the \
@@ -5928,7 +5928,7 @@ Proposed home: `a new shared module (sites span 3 files: src/liveness.rs, src/wo
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/liveness.rs:734-736` `read`
-- `src/worktree.rs:3980-3982` `read_stream`
+- `src/worktree.rs:3986-3988` `read_stream`
 - `tests/run_scoping_survives_periphery.rs:133-135` `read`
 
 #### `dup-0238` (near, 2 sites)
@@ -7034,7 +7034,7 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/worktree.rs:3666-3693` `changed_files_reports_only_the_rename_destination`
-- `src/worktree.rs:5556-5568` `changed_files_unquotes_paths_with_spaces`
+- `src/worktree.rs:5562-5574` `changed_files_unquotes_paths_with_spaces`
 
 #### `dup-0349` (near, 2 sites)
 
@@ -7042,8 +7042,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:3895-3932` `sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones`
-- `src/worktree.rs:4405-4452` `sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache`
+- `src/worktree.rs:3901-3938` `sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones`
+- `src/worktree.rs:4411-4458` `sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache`
 
 #### `dup-0350` (near, 2 sites)
 
@@ -7051,8 +7051,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4198-4202` `requested_and_answered`
-- `src/worktree.rs:4206-4210` `requested_and_hung`
+- `src/worktree.rs:4204-4208` `requested_and_answered`
+- `src/worktree.rs:4212-4216` `requested_and_hung`
 
 #### `dup-0351` (near, 4 sites)
 
@@ -7060,10 +7060,10 @@ Proposed home: `worktree::support (consolidate these 4 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4213-4245` `sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight`
-- `src/worktree.rs:4248-4273` `sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result`
-- `src/worktree.rs:4276-4299` `sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung`
-- `src/worktree.rs:4302-4324` `sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged`
+- `src/worktree.rs:4219-4251` `sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight`
+- `src/worktree.rs:4254-4279` `sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result`
+- `src/worktree.rs:4282-4305` `sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung`
+- `src/worktree.rs:4308-4330` `sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged`
 
 #### `dup-0352` (near, 2 sites)
 
@@ -7071,8 +7071,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4327-4366` `sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one`
-- `src/worktree.rs:4369-4402` `sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision`
+- `src/worktree.rs:4333-4372` `sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one`
+- `src/worktree.rs:4375-4408` `sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision`
 
 #### `dup-0353` (near, 4 sites)
 
@@ -7080,10 +7080,10 @@ Proposed home: `worktree::support (consolidate these 4 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4524-4565` `worktree_remove_reclaims_the_sibling_per_unit_cache`
-- `src/worktree.rs:4568-4610` `worktree_remove_also_reclaims_the_sibling_mutants_root`
-- `src/worktree.rs:4613-4648` `worktree_remove_also_reclaims_the_store_fence_sibling`
-- `src/worktree.rs:4668-4697` `worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling`
+- `src/worktree.rs:4530-4571` `worktree_remove_reclaims_the_sibling_per_unit_cache`
+- `src/worktree.rs:4574-4616` `worktree_remove_also_reclaims_the_sibling_mutants_root`
+- `src/worktree.rs:4619-4654` `worktree_remove_also_reclaims_the_store_fence_sibling`
+- `src/worktree.rs:4674-4703` `worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling`
 
 #### `dup-0354` (near, 3 sites)
 
@@ -7091,9 +7091,9 @@ Proposed home: `worktree::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4651-4665` `review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest`
-- `src/worktree.rs:4979-4992` `unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest`
-- `src/worktree.rs:4995-5007` `unit_mutants_sibling_maps_a_unit_worktree_to_its_mutants_root_and_ignores_the_rest`
+- `src/worktree.rs:4657-4671` `review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest`
+- `src/worktree.rs:4985-4998` `unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest`
+- `src/worktree.rs:5001-5013` `unit_mutants_sibling_maps_a_unit_worktree_to_its_mutants_root_and_ignores_the_rest`
 
 #### `dup-0355` (near, 2 sites)
 
@@ -7101,8 +7101,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4708-4769` `reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch`
-- `src/worktree.rs:4926-4976` `reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch`
+- `src/worktree.rs:4714-4775` `reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch`
+- `src/worktree.rs:4932-4982` `reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch`
 
 #### `dup-0356` (near, 3 sites)
 
@@ -7110,9 +7110,9 @@ Proposed home: `worktree::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:5657-5733` `create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones`
-- `src/worktree.rs:5736-5807` `create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested`
-- `src/worktree.rs:5810-5873` `create_heals_a_fully_missing_marker_not_just_a_truncated_one`
+- `src/worktree.rs:5663-5739` `create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones`
+- `src/worktree.rs:5742-5813` `create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested`
+- `src/worktree.rs:5816-5879` `create_heals_a_fully_missing_marker_not_just_a_truncated_one`
 
 #### `dup-0357` (exact, 19 sites)
 

@@ -699,26 +699,26 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4471,
-        "end_line": 4471,
+        "start_line": 4477,
+        "end_line": 4477,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4803,
-        "end_line": 4803,
-        "name": "Command::new"
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5593,
-        "end_line": 5593,
+        "start_line": 4809,
+        "end_line": 4809,
         "name": "Command::new"
       },
       {
         "file": "src/worktree.rs",
         "start_line": 5599,
         "end_line": 5599,
+        "name": "Command::new"
+      },
+      {
+        "file": "src/worktree.rs",
+        "start_line": 5605,
+        "end_line": 5605,
         "name": "Command::new"
       },
       {
@@ -4753,26 +4753,26 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3819,
-        "end_line": 3819,
+        "start_line": 3825,
+        "end_line": 3825,
         "name": "\"~/.rigger-scratch-test\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3820,
-        "end_line": 3820,
+        "start_line": 3826,
+        "end_line": 3826,
         "name": "\"{home}/.rigger-scratch-test\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5531,
-        "end_line": 5531,
+        "start_line": 5537,
+        "end_line": 5537,
         "name": "\"{base}..rigger-run\""
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5580,
-        "end_line": 5580,
+        "start_line": 5586,
+        "end_line": 5586,
         "name": "\".rigger\""
       },
       {
@@ -13029,8 +13029,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3980,
-        "end_line": 3982,
+        "start_line": 3986,
+        "end_line": 3988,
         "name": "read_stream"
       },
       {
@@ -15891,8 +15891,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5556,
-        "end_line": 5568,
+        "start_line": 5562,
+        "end_line": 5574,
         "name": "changed_files_unquotes_paths_with_spaces"
       }
     ],
@@ -15905,14 +15905,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 3895,
-        "end_line": 3932,
+        "start_line": 3901,
+        "end_line": 3938,
         "name": "sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4405,
-        "end_line": 4452,
+        "start_line": 4411,
+        "end_line": 4458,
         "name": "sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache"
       }
     ],
@@ -15925,14 +15925,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 4198,
-        "end_line": 4202,
+        "start_line": 4204,
+        "end_line": 4208,
         "name": "requested_and_answered"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4206,
-        "end_line": 4210,
+        "start_line": 4212,
+        "end_line": 4216,
         "name": "requested_and_hung"
       }
     ],
@@ -15945,26 +15945,26 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 4213,
-        "end_line": 4245,
+        "start_line": 4219,
+        "end_line": 4251,
         "name": "sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4248,
-        "end_line": 4273,
+        "start_line": 4254,
+        "end_line": 4279,
         "name": "sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4276,
-        "end_line": 4299,
+        "start_line": 4282,
+        "end_line": 4305,
         "name": "sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4302,
-        "end_line": 4324,
+        "start_line": 4308,
+        "end_line": 4330,
         "name": "sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged"
       }
     ],
@@ -15977,14 +15977,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 4327,
-        "end_line": 4366,
+        "start_line": 4333,
+        "end_line": 4372,
         "name": "sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4369,
-        "end_line": 4402,
+        "start_line": 4375,
+        "end_line": 4408,
         "name": "sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision"
       }
     ],
@@ -15997,26 +15997,26 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 4524,
-        "end_line": 4565,
+        "start_line": 4530,
+        "end_line": 4571,
         "name": "worktree_remove_reclaims_the_sibling_per_unit_cache"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4568,
-        "end_line": 4610,
+        "start_line": 4574,
+        "end_line": 4616,
         "name": "worktree_remove_also_reclaims_the_sibling_mutants_root"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4613,
-        "end_line": 4648,
+        "start_line": 4619,
+        "end_line": 4654,
         "name": "worktree_remove_also_reclaims_the_store_fence_sibling"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4668,
-        "end_line": 4697,
+        "start_line": 4674,
+        "end_line": 4703,
         "name": "worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling"
       }
     ],
@@ -16029,20 +16029,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 4651,
-        "end_line": 4665,
+        "start_line": 4657,
+        "end_line": 4671,
         "name": "review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4979,
-        "end_line": 4992,
+        "start_line": 4985,
+        "end_line": 4998,
         "name": "unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4995,
-        "end_line": 5007,
+        "start_line": 5001,
+        "end_line": 5013,
         "name": "unit_mutants_sibling_maps_a_unit_worktree_to_its_mutants_root_and_ignores_the_rest"
       }
     ],
@@ -16055,14 +16055,14 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 4708,
-        "end_line": 4769,
+        "start_line": 4714,
+        "end_line": 4775,
         "name": "reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4926,
-        "end_line": 4976,
+        "start_line": 4932,
+        "end_line": 4982,
         "name": "reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch"
       }
     ],
@@ -16075,20 +16075,20 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 5657,
-        "end_line": 5733,
+        "start_line": 5663,
+        "end_line": 5739,
         "name": "create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5736,
-        "end_line": 5807,
+        "start_line": 5742,
+        "end_line": 5813,
         "name": "create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested"
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5810,
-        "end_line": 5873,
+        "start_line": 5816,
+        "end_line": 5879,
         "name": "create_heals_a_fully_missing_marker_not_just_a_truncated_one"
       }
     ],

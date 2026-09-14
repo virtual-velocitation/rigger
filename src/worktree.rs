@@ -3801,6 +3801,12 @@ mod tests {
             assert_eq!(dflt, format!("{repo_path}/.rigger/tmp"));
         }
         assert!(std::path::Path::new(&dflt).is_dir(), "the root is created");
+        // Unlike the pre-relocation default, `dflt` may now live outside `repo`'s own
+        // TempDir (on the cache-home mount) and so is NOT auto-cleaned by `repo`'s
+        // `Drop` - mirror the tilde-case cleanup below so this test never leaks a real
+        // directory onto the operator's `~/.cache/rigger` on every run (round 3 review:
+        // sdet-u89c2r3-default-scratch-test-leaks-outside-fixture-tempdir).
+        let _ = std::fs::remove_dir_all(&dflt);
 
         let cfg_dir = repo.path().join("elsewhere");
         let configured = scratch_root(&repo_path, cfg_dir.to_str().unwrap(), None);
