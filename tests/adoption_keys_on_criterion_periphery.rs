@@ -154,6 +154,8 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod common;
+
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_REPLAY_KEY, STREAM,
     TYPE_UNIT_PROPOSED,
@@ -295,8 +297,14 @@ impl AgentDriver for ProposesSlugDriver {
 /// `deps.criteria` carries (`baseline_units`, src/conductor.rs:10270) - the REAL production
 /// path that stamps `criterion_id: criterion_stable_id(1, criterion)` on the synthesized
 /// `Stage`, never a hand-set field.
-fn baseline_only_cfg(gate_run: &str, max_retries: u32) -> Config {
+///
+/// `repo` (spec 89 criterion 2 ruling item 2): every caller's own fixture repo, threaded in
+/// so `cfg.workflow.defaults.workdir` never leaves the SECOND `scratch_root_path` precedence
+/// rung at its real ambient `XDG_CACHE_HOME`/`HOME` default (`common::isolated_workdir`'s own
+/// doc comment has the full why).
+fn baseline_only_cfg(gate_run: &str, max_retries: u32, repo: &Path) -> Config {
     let mut cfg = Config::default();
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
     cfg.agents.insert(
         "worker".into(),
         AgentDef {
@@ -334,8 +342,11 @@ fn baseline_only_cfg(gate_run: &str, max_retries: u32) -> Config {
 /// `deps.criteria` would otherwise have synthesized for the same criterion - so the
 /// planner-proposed unit alone survives to run, carrying the SAME `criterion_stable_id` a
 /// completely separate call site computed.
-fn fresh_run_cfg(gate_run: &str) -> Config {
+///
+/// `repo` (spec 89 criterion 2 ruling item 2): see [`baseline_only_cfg`]'s identical param.
+fn fresh_run_cfg(gate_run: &str, repo: &Path) -> Config {
     let mut cfg = Config::default();
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
     for id in ["planner", "judge", "worker"] {
         cfg.agents.insert(
             id.into(),
@@ -439,7 +450,7 @@ fn a_fresh_runs_differently_named_planner_proposal_adopts_a_prior_runs_escalated
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
     assert_eq!(
         rs1.units.len(),
         1,
@@ -493,7 +504,7 @@ fn a_fresh_runs_differently_named_planner_proposal_adopts_a_prior_runs_escalated
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
 
     assert_eq!(
         rs2.units[fresh_slug].status,
@@ -579,7 +590,7 @@ fn a_fresh_runs_differently_named_planner_proposal_never_adopts_a_criterion_whos
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs1 = run(&baseline_only_cfg("true", 3), &deps1).unwrap();
+    let rs1 = run(&baseline_only_cfg("true", 3, repo.path()), &deps1).unwrap();
     let prior_slug = rs1.units.keys().next().unwrap().clone();
     assert_eq!(rs1.units[&prior_slug].status, ledger::Status::Integrated);
     assert!(repo.path().join("prior-integrated-work.txt").exists());
@@ -617,7 +628,7 @@ fn a_fresh_runs_differently_named_planner_proposal_never_adopts_a_criterion_whos
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
 
     assert_eq!(
         rs2.units[fresh_slug].status,
@@ -720,7 +731,7 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
         graph: None,
         criteria: vec![criterion_b.to_string()],
     };
-    let rs1 = run(&fresh_run_cfg("true"), &deps1).unwrap();
+    let rs1 = run(&fresh_run_cfg("true", repo.path()), &deps1).unwrap();
     assert_eq!(
         rs1.units[shared_slug].status,
         ledger::Status::Integrated,
@@ -754,7 +765,7 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
         graph: None,
         criteria: vec![criterion_a.to_string()],
     };
-    let mut cfg2 = fresh_run_cfg("false");
+    let mut cfg2 = fresh_run_cfg("false", repo.path());
     cfg2.workflow.defaults.max_retries = 1;
     let rs2 = run(&cfg2, &deps2).unwrap();
     assert_eq!(
@@ -788,7 +799,7 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
         graph: None,
         criteria: vec![criterion_a.to_string()],
     };
-    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[fresh_slug].status,
         ledger::Status::Integrated,
@@ -905,7 +916,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
     let prior_slug = rs1.units.keys().next().unwrap().clone();
     assert_eq!(
         rs1.units[&prior_slug].status,
@@ -936,7 +947,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug_b].status,
         ledger::Status::Integrated,
@@ -987,7 +998,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[fresh_slug_a2].status,
         ledger::Status::Integrated,
@@ -1045,7 +1056,7 @@ fn integrate_then_build_a_real_second_life_branch(
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs1 = run(&baseline_only_cfg("true", 3), &deps1).unwrap();
+    let rs1 = run(&baseline_only_cfg("true", 3, repo.path()), &deps1).unwrap();
     let prior_slug = rs1.units.keys().next().unwrap().clone();
     assert_eq!(
         rs1.units[&prior_slug].status,
@@ -1152,7 +1163,7 @@ fn a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existi
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug].status,
         ledger::Status::Integrated,
@@ -1240,7 +1251,7 @@ fn a_plain_remediation_failure_after_integration_never_reopens_adoption_even_tho
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug].status,
         ledger::Status::Integrated,
@@ -1294,7 +1305,7 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
     let prior_slug = rs1.units.keys().next().unwrap().clone();
     assert_eq!(
         rs1.units[&prior_slug].status,
@@ -1381,7 +1392,7 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug].status,
         ledger::Status::Integrated,
@@ -1431,7 +1442,7 @@ fn a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_co
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
     let prior_slug = rs1.units.keys().next().unwrap().clone();
     assert_eq!(
         rs1.units[&prior_slug].status,
@@ -1505,7 +1516,7 @@ fn a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_co
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug].status,
         ledger::Status::Integrated,
@@ -1564,7 +1575,7 @@ fn a_prior_candidates_deleted_branch_starts_the_fresh_unit_genuinely_unadopted()
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
     let prior_slug = rs1.units.keys().next().unwrap().clone();
     assert_eq!(
         rs1.units[&prior_slug].status,
@@ -1613,7 +1624,7 @@ fn a_prior_candidates_deleted_branch_starts_the_fresh_unit_genuinely_unadopted()
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[fresh_slug].status,
         ledger::Status::Integrated,
@@ -1704,7 +1715,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let rs1 = run(&baseline_only_cfg("false", 1), &deps1).unwrap();
+    let rs1 = run(&baseline_only_cfg("false", 1, repo.path()), &deps1).unwrap();
     let prior_slug = rs1.units.keys().next().unwrap().clone();
     assert_eq!(
         rs1.units[&prior_slug].status,
@@ -1742,7 +1753,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[reused_id].status,
         ledger::Status::Integrated,
@@ -1789,7 +1800,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
         graph: None,
         criteria: vec![criterion_y.to_string()],
     };
-    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[reused_id].status,
         ledger::Status::Integrated,
@@ -1911,7 +1922,7 @@ fn a_legacy_adoption_mark_missing_criterion_id_and_spec_never_matches_a_reused_i
         graph: None,
         criteria: vec![criterion.to_string()],
     };
-    let rs = run(&fresh_run_cfg("true"), &deps).unwrap();
+    let rs = run(&fresh_run_cfg("true", repo.path()), &deps).unwrap();
     assert_eq!(
         rs.units[legacy_id].status,
         ledger::Status::Integrated,
@@ -1997,7 +2008,7 @@ fn an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_s
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let mut cfg1 = fresh_run_cfg("false");
+    let mut cfg1 = fresh_run_cfg("false", repo.path());
     cfg1.workflow.defaults.max_retries = 1;
     let rs1 = run(&cfg1, &deps1).unwrap();
     assert_eq!(
@@ -2048,7 +2059,7 @@ fn an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_s
         graph: None,
         criteria: vec![criterion_y.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[shared_slug].status,
         ledger::Status::Integrated,
@@ -2141,7 +2152,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let mut cfg1 = fresh_run_cfg("false");
+    let mut cfg1 = fresh_run_cfg("false", repo.path());
     cfg1.workflow.defaults.max_retries = 1;
     let rs1 = run(&cfg1, &deps1).unwrap();
     assert_eq!(
@@ -2175,7 +2186,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
         graph: None,
         criteria: vec![criterion_y.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[shared_slug].status,
         ledger::Status::Integrated,
@@ -2217,7 +2228,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[retry_slug].status,
         ledger::Status::Integrated,
@@ -2300,7 +2311,7 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let mut cfg1 = fresh_run_cfg("false");
+    let mut cfg1 = fresh_run_cfg("false", repo.path());
     cfg1.workflow.defaults.max_retries = 1;
     let rs1 = run(&cfg1, &deps1).unwrap();
     assert_eq!(
@@ -2351,7 +2362,7 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
         graph: None,
         criteria: vec![criterion_y.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).expect(
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).expect(
         "a resumed retry recomputing the identical (unit_id, tip) quarantine ref must \
          complete the deferred rename, never hard-error on git's own \"branch already \
          exists\" refusal - the permanent wedge \
@@ -2443,7 +2454,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let mut cfg1 = fresh_run_cfg("false");
+    let mut cfg1 = fresh_run_cfg("false", repo.path());
     cfg1.workflow.defaults.max_retries = 1;
     let rs1 = run(&cfg1, &deps1).unwrap();
     assert_eq!(
@@ -2478,7 +2489,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
         graph: None,
         criteria: vec![criterion_y.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).unwrap();
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).unwrap();
     assert_eq!(
         rs2.units[shared_slug].status,
         ledger::Status::Integrated,
@@ -2534,7 +2545,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
     };
     // `RunState` (the `Ok` type) does not implement `Debug`, so `expect_err` cannot be
     // used here - match explicitly instead (mirrors tests/build_env_authority_periphery.rs).
-    match run(&fresh_run_cfg("true"), &deps3) {
+    match run(&fresh_run_cfg("true", repo.path()), &deps3) {
         Err(_) => {}
         Ok(_) => panic!(
             "a durably-recorded quarantine ref that no longer resolves must hard-error, \
@@ -2740,7 +2751,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let mut cfg1 = fresh_run_cfg("false");
+    let mut cfg1 = fresh_run_cfg("false", repo.path());
     cfg1.workflow.defaults.max_retries = 1;
     let rs1 = run(&cfg1, &deps1).unwrap();
     assert_eq!(
@@ -2780,7 +2791,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
     };
     // `RunState` (the `Ok` type) does not implement `Debug`, so `expect_err` cannot be
     // used here - match explicitly, exactly like test 15 above.
-    match run(&fresh_run_cfg("true"), &deps2) {
+    match run(&fresh_run_cfg("true", repo.path()), &deps2) {
         Err(_) => {}
         Ok(_) => panic!(
             "a store failure on the quarantine record's own append must propagate as a \
@@ -2829,7 +2840,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
         graph: None,
         criteria: vec![criterion_y.to_string()],
     };
-    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[shared_slug].status,
         ledger::Status::Integrated,
@@ -2867,7 +2878,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let rs4 = run(&fresh_run_cfg("true"), &deps4).unwrap();
+    let rs4 = run(&fresh_run_cfg("true", repo.path()), &deps4).unwrap();
     assert_eq!(
         rs4.units[retry_slug].status,
         ledger::Status::Integrated,
@@ -2936,7 +2947,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let mut cfg1 = fresh_run_cfg("false");
+    let mut cfg1 = fresh_run_cfg("false", repo.path());
     cfg1.workflow.defaults.max_retries = 1;
     let rs1 = run(&cfg1, &deps1).unwrap();
     assert_eq!(
@@ -3028,7 +3039,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
         graph: None,
         criteria: vec![criterion_y.to_string()],
     };
-    let rs2 = run(&fresh_run_cfg("true"), &deps2).expect(
+    let rs2 = run(&fresh_run_cfg("true", repo.path()), &deps2).expect(
         "a resumed retry recomputing the identical (unit_id, tip) quarantine ref, with its \
          record already durably landed, must complete only the still-pending delete, \
          never hard-error and never duplicate the record",
@@ -3086,7 +3097,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
         graph: None,
         criteria: vec![criterion_x.to_string()],
     };
-    let rs3 = run(&fresh_run_cfg("true"), &deps3).unwrap();
+    let rs3 = run(&fresh_run_cfg("true", repo.path()), &deps3).unwrap();
     assert_eq!(
         rs3.units[retry_slug].status,
         ledger::Status::Integrated,

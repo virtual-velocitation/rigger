@@ -817,6 +817,10 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
     let live_before = std::fs::read(&live_events).unwrap();
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside this
+    // fixture's own repo tempdir so the real `review_only_worktree` this test drives never
+    // reaches the real ambient `XDG_CACHE_HOME`/`HOME` cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert(
         "lens".into(),
         AgentDef {

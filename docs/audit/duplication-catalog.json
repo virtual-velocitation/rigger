@@ -735,26 +735,26 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 185,
-        "end_line": 185,
+        "start_line": 187,
+        "end_line": 187,
         "name": "Command::new"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 197,
-        "end_line": 197,
+        "start_line": 199,
+        "end_line": 199,
         "name": "Command::new"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1583,
-        "end_line": 1583,
+        "start_line": 1594,
+        "end_line": 1594,
         "name": "Command::new"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2497,
-        "end_line": 2497,
+        "start_line": 2508,
+        "end_line": 2508,
         "name": "Command::new"
       },
       {
@@ -1563,206 +1563,206 @@
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 228,
-        "end_line": 228,
+        "start_line": 230,
+        "end_line": 230,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 247,
-        "end_line": 247,
+        "start_line": 249,
+        "end_line": 249,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 386,
-        "end_line": 386,
+        "start_line": 388,
+        "end_line": 388,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 399,
-        "end_line": 399,
+        "start_line": 401,
+        "end_line": 401,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 406,
-        "end_line": 406,
+        "start_line": 408,
+        "end_line": 408,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 755,
-        "end_line": 755,
+        "start_line": 769,
+        "end_line": 769,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 762,
-        "end_line": 762,
+        "start_line": 776,
+        "end_line": 776,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 779,
-        "end_line": 779,
+        "start_line": 793,
+        "end_line": 793,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 786,
-        "end_line": 786,
+        "start_line": 800,
+        "end_line": 800,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1025,
-        "end_line": 1025,
+        "start_line": 1047,
+        "end_line": 1047,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1176,
-        "end_line": 1176,
+        "start_line": 1202,
+        "end_line": 1202,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1189,
-        "end_line": 1189,
+        "start_line": 1215,
+        "end_line": 1215,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1314,
-        "end_line": 1314,
+        "start_line": 1344,
+        "end_line": 1344,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1374,
-        "end_line": 1374,
+        "start_line": 1404,
+        "end_line": 1404,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1389,
-        "end_line": 1389,
+        "start_line": 1419,
+        "end_line": 1419,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1425,
-        "end_line": 1425,
+        "start_line": 1455,
+        "end_line": 1455,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1432,
-        "end_line": 1432,
+        "start_line": 1462,
+        "end_line": 1462,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1543,
-        "end_line": 1543,
+        "start_line": 1577,
+        "end_line": 1577,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1555,
-        "end_line": 1555,
+        "start_line": 1589,
+        "end_line": 1589,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1591,
-        "end_line": 1591,
+        "start_line": 1625,
+        "end_line": 1625,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1598,
-        "end_line": 1598,
+        "start_line": 1632,
+        "end_line": 1632,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1615,
-        "end_line": 1615,
+        "start_line": 1649,
+        "end_line": 1649,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1622,
-        "end_line": 1622,
+        "start_line": 1656,
+        "end_line": 1656,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1795,
-        "end_line": 1795,
+        "start_line": 1833,
+        "end_line": 1833,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1804,
-        "end_line": 1804,
+        "start_line": 1842,
+        "end_line": 1842,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1836,
-        "end_line": 1836,
+        "start_line": 1874,
+        "end_line": 1874,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1972,
-        "end_line": 1972,
+        "start_line": 2014,
+        "end_line": 2014,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1979,
-        "end_line": 1979,
+        "start_line": 2021,
+        "end_line": 2021,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 1994,
-        "end_line": 1994,
+        "start_line": 2036,
+        "end_line": 2036,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 2013,
-        "end_line": 2013,
+        "start_line": 2055,
+        "end_line": 2055,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 2263,
-        "end_line": 2263,
+        "start_line": 2309,
+        "end_line": 2309,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 2270,
-        "end_line": 2270,
+        "start_line": 2316,
+        "end_line": 2316,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 2282,
-        "end_line": 2282,
+        "start_line": 2328,
+        "end_line": 2328,
         "name": "Command::new"
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 2298,
-        "end_line": 2298,
+        "start_line": 2344,
+        "end_line": 2344,
         "name": "Command::new"
       },
       {
@@ -2006,6 +2006,12 @@
         "name": "Command::new"
       },
       {
+        "file": "tests/scratch_workdir_isolation_leak_guard_periphery.rs",
+        "start_line": 72,
+        "end_line": 72,
+        "name": "Command::new"
+      },
+      {
         "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
         "start_line": 47,
         "end_line": 47,
@@ -2163,8 +2169,8 @@
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 582,
-        "end_line": 582,
+        "start_line": 584,
+        "end_line": 584,
         "name": "Command::new"
       },
       {
@@ -2301,7 +2307,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 356 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 357 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -2401,8 +2407,8 @@
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
-        "start_line": 265,
-        "end_line": 270,
+        "start_line": 267,
+        "end_line": 272,
         "name": "agent"
       }
     ],
@@ -3757,8 +3763,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 298,
-        "end_line": 328,
+        "start_line": 305,
+        "end_line": 336,
         "name": "baseline_only_cfg"
       },
       {
@@ -3772,9 +3778,15 @@
         "start_line": 1050,
         "end_line": 1087,
         "name": "resume_seam_cfg"
+      },
+      {
+        "file": "tests/scratch_workdir_isolation_leak_guard_periphery.rs",
+        "start_line": 86,
+        "end_line": 119,
+        "name": "one_unit_cfg"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: src/conductor.rs, src/driver/replay.rs, tests/adoption_keys_on_criterion_periphery.rs, tests/replan_episode_identity.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: src/conductor.rs, src/driver/replay.rs, tests/adoption_keys_on_criterion_periphery.rs, tests/replan_episode_identity.rs, tests/scratch_workdir_isolation_leak_guard_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -6516,6 +6528,12 @@
         "name": "\".rigger\""
       },
       {
+        "file": "tests/common/mod.rs",
+        "start_line": 225,
+        "end_line": 225,
+        "name": "\"{}/.rigger-test-scratch\""
+      },
+      {
         "file": "tests/community_detection_cli.rs",
         "start_line": 64,
         "end_line": 64,
@@ -6697,20 +6715,20 @@
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 711,
-        "end_line": 711,
+        "start_line": 715,
+        "end_line": 715,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 1251,
-        "end_line": 1251,
+        "start_line": 1255,
+        "end_line": 1255,
         "name": "\".rigger\""
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 1309,
-        "end_line": 1309,
+        "start_line": 1313,
+        "end_line": 1313,
         "name": "\".rigger\""
       },
       {
@@ -8011,7 +8029,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 684 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 685 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0060",
@@ -8439,8 +8457,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2414,
-        "end_line": 2586,
+        "start_line": 2425,
+        "end_line": 2597,
         "name": "a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh"
       },
       {
@@ -9098,6 +9116,12 @@
         "name": "init_repo"
       },
       {
+        "file": "tests/scratch_workdir_isolation_leak_guard_periphery.rs",
+        "start_line": 63,
+        "end_line": 80,
+        "name": "init_repo"
+      },
+      {
         "file": "tests/spawn_target_dir_periphery.rs",
         "start_line": 55,
         "end_line": 71,
@@ -9105,12 +9129,12 @@
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 573,
-        "end_line": 590,
+        "start_line": 575,
+        "end_line": 592,
         "name": "init_seam_repo"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: src/conductor.rs, tests/gate_store_fence_periphery.rs, tests/integrate_conflict_merge_periphery.rs, tests/spawn_target_dir_periphery.rs, tests/unified_traversal_grounding.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: src/conductor.rs, tests/gate_store_fence_periphery.rs, tests/integrate_conflict_merge_periphery.rs, tests/scratch_workdir_isolation_leak_guard_periphery.rs, tests/spawn_target_dir_periphery.rs, tests/unified_traversal_grounding.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -11717,8 +11741,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2625,
-        "end_line": 2632,
+        "start_line": 2636,
+        "end_line": 2643,
         "name": "read_stream"
       }
     ],
@@ -11743,8 +11767,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2647,
-        "end_line": 2649,
+        "start_line": 2658,
+        "end_line": 2660,
         "name": "subscribe_stream"
       },
       {
@@ -15185,8 +15209,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2634,
-        "end_line": 2641,
+        "start_line": 2645,
+        "end_line": 2652,
         "name": "read_all"
       }
     ],
@@ -15205,8 +15229,8 @@
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2643,
-        "end_line": 2645,
+        "start_line": 2654,
+        "end_line": 2656,
         "name": "subscribe_all"
       },
       {
@@ -16481,8 +16505,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 178,
-        "end_line": 193,
+        "start_line": 180,
+        "end_line": 195,
         "name": "init_repo"
       },
       {
@@ -16513,8 +16537,8 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 196,
-        "end_line": 205,
+        "start_line": 198,
+        "end_line": 207,
         "name": "git_out"
       },
       {
@@ -16539,14 +16563,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 394,
-        "end_line": 410,
+        "start_line": 405,
+        "end_line": 421,
         "name": "find_unit_started"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 843,
-        "end_line": 862,
+        "start_line": 854,
+        "end_line": 873,
         "name": "find_unit_integrated_commit"
       }
     ],
@@ -16559,14 +16583,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 871,
-        "end_line": 1016,
+        "start_line": 882,
+        "end_line": 1027,
         "name": "spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_across_two_runs_of_the_same_spec"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1683,
-        "end_line": 1823,
+        "start_line": 1694,
+        "end_line": 1834,
         "name": "a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_decision"
       }
     ],
@@ -16579,14 +16603,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1103,
-        "end_line": 1187,
+        "start_line": 1114,
+        "end_line": 1198,
         "name": "a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existing_branch"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1195,
-        "end_line": 1265,
+        "start_line": 1206,
+        "end_line": 1276,
         "name": "a_plain_remediation_failure_after_integration_never_reopens_adoption_even_though_a_same_named_branch_exists"
       }
     ],
@@ -16599,14 +16623,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1276,
-        "end_line": 1407,
+        "start_line": 1287,
+        "end_line": 1418,
         "name": "a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_recorded_adoption"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1414,
-        "end_line": 1536,
+        "start_line": 1425,
+        "end_line": 1547,
         "name": "a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_completes_the_adoption_on_resume"
       }
     ],
@@ -16619,14 +16643,14 @@
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 1967,
-        "end_line": 2085,
+        "start_line": 1978,
+        "end_line": 2096,
         "name": "an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_slug_collision"
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
-        "start_line": 2113,
-        "end_line": 2252,
+        "start_line": 2124,
+        "end_line": 2263,
         "name": "a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref"
       }
     ],
@@ -21701,8 +21725,8 @@
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 180,
-        "end_line": 185,
+        "start_line": 182,
+        "end_line": 187,
         "name": "fold"
       }
     ],
@@ -22631,14 +22655,14 @@
     "sites": [
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 827,
-        "end_line": 933,
+        "start_line": 831,
+        "end_line": 937,
         "name": "checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_yet"
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 942,
-        "end_line": 1027,
+        "start_line": 946,
+        "end_line": 1031,
         "name": "checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_instead"
       }
     ],
@@ -22651,14 +22675,14 @@
     "sites": [
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 1246,
-        "end_line": 1295,
+        "start_line": 1250,
+        "end_line": 1299,
         "name": "a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default"
       },
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 1304,
-        "end_line": 1387,
+        "start_line": 1308,
+        "end_line": 1391,
         "name": "a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_default"
       }
     ],
@@ -27169,44 +27193,44 @@
     "sites": [
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 304,
-        "end_line": 339,
+        "start_line": 306,
+        "end_line": 341,
         "name": "a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_structural_stitch"
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 357,
-        "end_line": 461,
+        "start_line": 359,
+        "end_line": 463,
         "name": "the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_pointer"
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 475,
-        "end_line": 515,
+        "start_line": 477,
+        "end_line": 517,
         "name": "the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim"
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 682,
-        "end_line": 786,
+        "start_line": 688,
+        "end_line": 792,
         "name": "the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice"
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1225,
-        "end_line": 1355,
+        "start_line": 1231,
+        "end_line": 1361,
         "name": "a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_traversal"
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1444,
-        "end_line": 1501,
+        "start_line": 1450,
+        "end_line": 1507,
         "name": "a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section"
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1578,
-        "end_line": 1611,
+        "start_line": 1584,
+        "end_line": 1617,
         "name": "a_spawn_prompt_with_no_governing_design_intent_renders_no_design_intent_header"
       }
     ],
@@ -27219,14 +27243,14 @@
     "sites": [
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1016,
-        "end_line": 1059,
+        "start_line": 1022,
+        "end_line": 1065,
         "name": "the_code_neighborhood_section_is_budget_capped_with_a_visible_elision_note"
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1078,
-        "end_line": 1119,
+        "start_line": 1084,
+        "end_line": 1125,
         "name": "the_spawn_prompt_code_neighborhood_elision_note_names_the_honest_graph_around_recovery"
       }
     ],
@@ -27239,14 +27263,14 @@
     "sites": [
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1377,
-        "end_line": 1424,
+        "start_line": 1383,
+        "end_line": 1430,
         "name": "the_design_intent_section_is_budget_capped_and_its_elision_note_names_the_honest_graph_around_recovery"
       },
       {
         "file": "tests/unified_traversal_grounding.rs",
-        "start_line": 1515,
-        "end_line": 1559,
+        "start_line": 1521,
+        "end_line": 1565,
         "name": "the_spawn_prompt_design_intent_section_renders_the_newest_binding_and_elides_the_oldest"
       }
     ],
