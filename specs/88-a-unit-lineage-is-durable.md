@@ -24,7 +24,7 @@ left in place, the unit branch untouched), re-parks the implementer with a remed
 lists ONLY the conflicting paths, and charges NO remediation attempt: a conflict is not a defect
 of the unit. The implementer resolves and commits on the SAME branch; every prior commit stays.
 A conflict confined to regenerable artifacts (paths a `regenerate:` list in workflow.yml names -
-here `docs/audit/*`) is resolved by the conductor itself by running the named regeneration
+here `docs/audit/*.json` - the report beside them is partly hand-written and its generator rewrites only one section, so a conflict in it is source, never regenerable) is resolved by the conductor itself by running the named regeneration
 command in the worktree and committing, with no spawn at all.
 
 ADOPTION KEYS ON THE CRITERION, decided: a unit adopts a prior run's `rigger/u/<id>` branch when
