@@ -1487,6 +1487,72 @@ fn scratch_falls_back_to_home_dot_cache_when_xdg_cache_home_is_unset_end_to_end(
     );
 }
 
+/// Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE): a genuinely homeless
+/// environment (neither `XDG_CACHE_HOME` nor `HOME` set) has nothing to key a cache path
+/// on, so `scratch_root_path` keeps the PRE-RELOCATION repo-nested degrade
+/// (`<repo>/.rigger/tmp`) rather than the new cache-home default.
+/// `cache_scratch_root_from_none_when_homeless` (src/worktree.rs) already proves the PURE
+/// resolver returns `None` for this input - but that cannot catch a wiring mistake at the
+/// one real call site (`scratch_root_path`'s `unwrap_or_else` fallback arm dropped, an
+/// `.unwrap()` panicking on the `None` instead of degrading, or the wrong env vars read).
+/// Driven against the REAL compiled binary with BOTH env vars removed (`.env_remove`,
+/// mirroring the established homeless-environment integration-test shape
+/// `a_terminal_units_mutation_scratch_reap_is_a_graceful_noop_in_a_homeless_environment`
+/// rather than mutating this shared test binary's own process environment), `rigger scratch`
+/// must still succeed, never panic, and print the OLD repo-nested default byte-identical to
+/// what `scratch_root_path`'s own fallback formula produces - never the cache-home rung and
+/// never a bogus or empty path.
+///
+/// Non-vacuous: hand-verified by temporarily replacing the `.unwrap_or_else(...)` fallback
+/// in `scratch_root_path` with a bare `.unwrap()`, confirming THIS test fails (the spawned
+/// binary panics on the `None` a genuinely homeless environment produces, `ok` false), then
+/// reverting the change.
+#[test]
+fn scratch_falls_back_to_the_repo_nested_default_when_genuinely_homeless_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+    let out = common::rigger_courier()
+        .args(["scratch", "u/implementer#0"])
+        .current_dir(root)
+        .env_remove("HOME")
+        .env_remove("XDG_CACHE_HOME")
+        .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
+        .output()
+        .expect("failed to spawn the rigger binary");
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success(),
+        "scratch must succeed for a live run even when genuinely homeless (no HOME, no \
+         XDG_CACHE_HOME); stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "the homeless degrade must never panic even on success exit; stderr: {stderr}"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    let expected = std::path::PathBuf::from(format!("{}/.rigger/tmp", root.to_str().unwrap()))
+        .join("agent-scratch")
+        .join("r1")
+        .join("u_2fimplementer_230");
+    assert_eq!(
+        stdout,
+        expected.display().to_string(),
+        "genuinely homeless (no HOME, no XDG_CACHE_HOME) must keep the pre-relocation \
+         repo-nested default, never the cache-home rung and never a bogus/empty path; \
+         got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("/.rigger/tmp/"),
+        "must resolve under the pre-relocation repo-nested default; got: {stdout:?}"
+    );
+}
+
 /// `rigger scratch` is a WORKER-INVOKED store-opening courier exactly like `rigger prompt`
 /// (it must read the live run's `RunStarted` to resolve `run_id`), so from a storeless cwd
 /// it must REFUSE - never fabricate a fresh empty `.rigger/events.db` and then print a
