@@ -1741,6 +1741,85 @@ fn main_repo_root(start: &Path) -> Option<PathBuf> {
     abs.parent().map(|p| p.to_path_buf())
 }
 
+/// STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger step`, `rigger run` and
+/// `rigger workflow` each call this at their own entry so a LINKED git worktree is refused up
+/// front, naming both trees, instead of silently proceeding on the linked tree's own toplevel
+/// and later failing deep inside branch setup with git's own opaque "'rigger-run' is already
+/// used by worktree ..." (a linked worktree cannot itself hold the run branch checked out - git
+/// already holds it there in the main tree). Evidence (2026-09-11): the driver stopped after 28
+/// waves for exactly this reason, when a courier's `rigger step` ran with its cwd drifted into
+/// a unit worktree.
+///
+/// Compares [`main_repo_root`] (the git-common-dir-derived main checkout, correct even from
+/// inside a linked worktree) against `cwd`'s own `git rev-parse --show-toplevel` (which returns
+/// the LINKED tree when run from inside one): equal - `cwd` already IS the main tree, return it
+/// unchanged; a real repo where they differ - refuse; no repo reachable at all -
+/// `Ok(String::new())`, preserving the existing repo-less unit-test path every caller already
+/// guards its own repo-only logic on.
+fn resolve_main_worktree_or_refuse(cwd: &Path, command: &str) -> Result<String, String> {
+    let toplevel = git_repo_at(cwd);
+    if toplevel.is_empty() {
+        return Ok(String::new());
+    }
+    let Some(main_root) = main_repo_root(cwd) else {
+        return Ok(toplevel);
+    };
+    let main_canon = std::fs::canonicalize(&main_root).unwrap_or_else(|_| main_root.clone());
+    let top_canon =
+        std::fs::canonicalize(Path::new(&toplevel)).unwrap_or_else(|_| PathBuf::from(&toplevel));
+    if main_canon == top_canon {
+        return Ok(toplevel);
+    }
+    Err(format!(
+        "{command}: refusing to run from inside a linked worktree ({linked}) - the main \
+         worktree is {main}. A linked worktree cannot itself hold the run branch checked out \
+         (git already holds it there in the main tree), so continuing here would fail deep \
+         inside branch setup with a raw git error instead of this one; re-run `{command}` from \
+         the main worktree ({main}).",
+        linked = top_canon.display(),
+        main = main_canon.display(),
+    ))
+}
+
+/// EXACTLY ONE ROOT (spec 89, criterion 4), `rigger step` only: refuses BEFORE any terminal
+/// sweep when the store this step is about to open and the repository `git` resolved for the
+/// same `cwd` disagree on their owning root. `RIGGER_DIR` is opened cwd-relative (never walked
+/// up), while `repo` can walk PAST a `.git`-less `cwd` to an ENCLOSING repository - the two
+/// diverge exactly when `cwd` has no `.git` of its own, e.g. a test fixture nested under a
+/// scratch root (u87c3, 2026-09-11): the fixture's own store held none of the real run's
+/// events, `git` resolved the REAL enclosing repository, and `sweep_terminal` went on to remove
+/// every live worktree of the run actually using that scratch root - `git`'s toplevel and the
+/// scratch root it reports both agree with `repo`, but the store cwd binds to is a different
+/// place entirely. A repo-less `cwd` (`repo` empty) has nothing to cross-check, matching every
+/// other repo-gated branch in `cmd_step`.
+fn refuse_unless_one_root(
+    cwd: &Path,
+    repo: &str,
+    scratch_root: Option<&str>,
+) -> Result<(), String> {
+    if repo.is_empty() {
+        return Ok(());
+    }
+    let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let repo_canon = std::fs::canonicalize(Path::new(repo)).unwrap_or_else(|_| PathBuf::from(repo));
+    if cwd_canon == repo_canon {
+        return Ok(());
+    }
+    Err(format!(
+        "rigger step: refusing - the store this step would open and the repository git \
+         resolved for this directory disagree on their root: git toplevel (and the scratch \
+         root it sweeps, {scratch}) is {repo}, but the store under {RIGGER_DIR} would be \
+         opened relative to the current directory {cwd} instead - a DIFFERENT root. This shape \
+         arises when the current directory has no `.git` of its own (e.g. a test fixture \
+         nested under a scratch root): `git rev-parse` then walks UP past it to an ENCLOSING \
+         repository while the store stays right here, so this step's sweep would act on that \
+         enclosing repository's real worktrees using THIS directory's own (unrelated) events. \
+         Re-run from the repository root.",
+        scratch = scratch_root.unwrap_or("(none)"),
+        cwd = cwd_canon.display(),
+    ))
+}
+
 /// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`/
 /// `reported`) must see it: the `.rigger` directory that actually holds the store (found
 /// by walking UP from the cwd, never fabricated), together with the identity that scopes
@@ -2222,6 +2301,12 @@ fn cmd_step(args: &[String]) -> Res {
             eprintln!("{}", spec_lint_next_step(spec));
         }
     }
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
+    // FIRST, before any config load, store touch or worktree mutation - a linked worktree
+    // gets a clear refusal naming both trees instead of wasting a config/criteria load only
+    // to fail deep inside branch setup with git's own opaque error.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger step")?;
     // Refuse a doomed run up front: a gating persona that never puts its verdict on the result
     // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
     // the run's config-load seam, before any unit is parked.
@@ -2243,7 +2328,6 @@ fn cmd_step(args: &[String]) -> Res {
     // off HEAD. Guarded on a real repo so the repo-less unit-test path is untouched. A
     // failure here aborts the step (with a clear, actionable error) rather than driving
     // the conductor on the wrong branch - isolation is a precondition, not best-effort.
-    let repo = git_repo();
     // The run branch's tip commit sha AT THIS STEP'S ANCHOR (spec 91): resolved right after
     // `ensure_run_branch` below, BEFORE the conductor ever branches a unit worktree off it or
     // advances it - so a mint further down (a `--fresh` boundary, or a new campaign inside
@@ -2327,6 +2411,12 @@ fn cmd_step(args: &[String]) -> Res {
             &cfg.workflow.defaults.workdir,
         ))
     };
+
+    // EXACTLY ONE ROOT (spec 89, criterion 4): refuse BEFORE the terminal sweep below (or any
+    // other worktree mutation) when the store this step opened and the repository `git`
+    // resolved for this cwd disagree on their root - see `refuse_unless_one_root`'s own doc
+    // comment for the u87c3 incident this closes.
+    refuse_unless_one_root(&cwd, &repo, scratch_root.as_deref())?;
 
     // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every step
     // starts by sweeping the scratch root's terminal worktrees (integrated units, review
@@ -3357,6 +3447,11 @@ fn run_cli(parsed: &RunArgs) -> Res {
             println!("{}", spec_lint_next_step(spec));
         }
     }
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
+    // FIRST, mirroring `cmd_step`'s own placement - see `resolve_main_worktree_or_refuse`'s
+    // doc comment.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger run")?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -3368,7 +3463,6 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // for `rigger step`; the effective base is the flag, then the `RIGGER_BASE` env override
     // (how `rigger workflow` threads its `--base` through the shim), then `origin/main`.
     // Guarded on a real repo, so the repo-less path is untouched.
-    let repo = git_repo();
     // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
     // `anchor_run_branch` below, before the conductor branches any unit worktree off it -
     // threaded to `fresh_run_if_requested` so a mint persists the tip the run genuinely
@@ -3739,7 +3833,20 @@ fn cmd_workflow(args: &[String]) -> Res {
             println!("{}", spec_lint_next_step(spec));
         }
     }
-    let shim = locate_shim(Path::new("."))?;
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
+    // BEFORE locating or launching the Node shim - a linked worktree is refused up front
+    // instead of (at best) failing to find a per-project shim only ever provisioned in the
+    // main checkout, or (at worst) driving a stray one. See
+    // `resolve_main_worktree_or_refuse`'s doc comment. Empty (repo-less) resolves to "." -
+    // the existing behavior every prior caller of `locate_shim` already relied on.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger workflow")?;
+    let shim_root = if repo.is_empty() {
+        PathBuf::from(".")
+    } else {
+        PathBuf::from(&repo)
+    };
+    let shim = locate_shim(&shim_root)?;
     // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
     // and the served conductor are always the same build (no PATH ambiguity).
     let rigger_bin = std::env::current_exe()
