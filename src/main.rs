@@ -1784,16 +1784,36 @@ fn resolve_main_worktree_or_refuse(cwd: &Path, command: &str) -> Result<String, 
 }
 
 /// EXACTLY ONE ROOT (spec 89, criterion 4), `rigger step` only: refuses BEFORE any terminal
-/// sweep when the store this step is about to open and the repository `git` resolved for the
-/// same `cwd` disagree on their owning root. `RIGGER_DIR` is opened cwd-relative (never walked
-/// up), while `repo` can walk PAST a `.git`-less `cwd` to an ENCLOSING repository - the two
-/// diverge exactly when `cwd` has no `.git` of its own, e.g. a test fixture nested under a
-/// scratch root (u87c3, 2026-09-11): the fixture's own store held none of the real run's
-/// events, `git` resolved the REAL enclosing repository, and `sweep_terminal` went on to remove
-/// every live worktree of the run actually using that scratch root - `git`'s toplevel and the
-/// scratch root it reports both agree with `repo`, but the store cwd binds to is a different
-/// place entirely. A repo-less `cwd` (`repo` empty) has nothing to cross-check, matching every
-/// other repo-gated branch in `cmd_step`.
+/// sweep when the store this step is about to open, the repository `git` resolved for the
+/// same `cwd`, and the scratch root this step is about to sweep disagree on their owning
+/// root - a three-way check, not two.
+///
+/// LEG ONE (`cwd` vs `repo`): `RIGGER_DIR` is opened cwd-relative (never walked up), while
+/// `repo` can walk PAST a `.git`-less `cwd` to an ENCLOSING repository - the two diverge
+/// exactly when `cwd` has no `.git` of its own, e.g. a test fixture nested under a scratch
+/// root (u87c3, 2026-09-11): the fixture's own store held none of the real run's events,
+/// `git` resolved the REAL enclosing repository, and `sweep_terminal` went on to remove every
+/// live worktree of the run actually using that scratch root.
+///
+/// LEG TWO (`scratch_root` vs `repo`, round 2 adjudication
+/// `adv-u89c4-r2-one-root-check-is-two-of-three-scratch-root-never-compared`): leg one alone
+/// still lets a scratch root aimed at an unrelated real repository through unrefused.
+/// `RIGGER_TMPDIR` (read unconditionally by `worktree::scratch_root_from_env`, ahead of any
+/// repo-derived default) can point `scratch_root` anywhere; run from the real repository root
+/// (so leg one passes) with `RIGGER_TMPDIR` aimed at some OTHER real project's own scratch
+/// tree, this step's sweep would act on THAT project's real worktrees using this run's
+/// events - the same hazard leg one guards against, reached from the opposite direction.
+/// Resolved with the SAME "which repository does this path belong to" primitive leg one
+/// already trusts (`git_repo_at`, not raw path containment): a scratch root with NO
+/// enclosing git repository of its own - the common case for an arbitrary external tmp
+/// directory, e.g. `tests/cli.rs`'s
+/// `the_liveness_marker_path_follows_a_non_default_scratch_root` - is vacuously safe (there
+/// is no OTHER repository's worktrees to endanger, and the default `<repo>/.rigger/tmp`
+/// naturally resolves back to `repo` itself); only a scratch root whose OWN git toplevel
+/// resolves to a DIFFERENT repository than the one leg one just verified trips the refusal.
+///
+/// A repo-less `cwd` (`repo` empty) has nothing to cross-check, matching every other
+/// repo-gated branch in `cmd_step`.
 fn refuse_unless_one_root(
     cwd: &Path,
     repo: &str,
@@ -1804,22 +1824,45 @@ fn refuse_unless_one_root(
     }
     let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
     let repo_canon = std::fs::canonicalize(Path::new(repo)).unwrap_or_else(|_| PathBuf::from(repo));
-    if cwd_canon == repo_canon {
-        return Ok(());
+    if cwd_canon != repo_canon {
+        return Err(format!(
+            "rigger step: refusing - the store this step would open and the repository git \
+             resolved for this directory disagree on their root: git toplevel (and the scratch \
+             root it sweeps, {scratch}) is {repo}, but the store under {RIGGER_DIR} would be \
+             opened relative to the current directory {cwd} instead - a DIFFERENT root. This \
+             shape arises when the current directory has no `.git` of its own (e.g. a test \
+             fixture nested under a scratch root): `git rev-parse` then walks UP past it to an \
+             ENCLOSING repository while the store stays right here, so this step's sweep would \
+             act on that enclosing repository's real worktrees using THIS directory's own \
+             (unrelated) events. Re-run from the repository root.",
+            scratch = scratch_root.unwrap_or("(none)"),
+            cwd = cwd_canon.display(),
+        ));
     }
-    Err(format!(
-        "rigger step: refusing - the store this step would open and the repository git \
-         resolved for this directory disagree on their root: git toplevel (and the scratch \
-         root it sweeps, {scratch}) is {repo}, but the store under {RIGGER_DIR} would be \
-         opened relative to the current directory {cwd} instead - a DIFFERENT root. This shape \
-         arises when the current directory has no `.git` of its own (e.g. a test fixture \
-         nested under a scratch root): `git rev-parse` then walks UP past it to an ENCLOSING \
-         repository while the store stays right here, so this step's sweep would act on that \
-         enclosing repository's real worktrees using THIS directory's own (unrelated) events. \
-         Re-run from the repository root.",
-        scratch = scratch_root.unwrap_or("(none)"),
-        cwd = cwd_canon.display(),
-    ))
+    if let Some(scratch) = scratch_root.map(str::trim).filter(|s| !s.is_empty()) {
+        let scratch_repo = git_repo_at(Path::new(scratch));
+        if !scratch_repo.is_empty() {
+            let scratch_repo_canon = std::fs::canonicalize(Path::new(&scratch_repo))
+                .unwrap_or_else(|_| PathBuf::from(&scratch_repo));
+            if scratch_repo_canon != repo_canon {
+                return Err(format!(
+                    "rigger step: refusing - the scratch root this step would sweep belongs to \
+                     a DIFFERENT repository than the one this step resolved: git toplevel (and \
+                     the store under {RIGGER_DIR}, opened relative to the current directory \
+                     {cwd}) is {repo}, but the scratch root {scratch} resolves to the \
+                     repository {scratch_repo} instead - a DIFFERENT root. This shape arises \
+                     when `RIGGER_TMPDIR` (or `defaults.workdir`) is pointed at another \
+                     project's own scratch tree: this step's sweep would then act on THAT \
+                     project's real worktrees using this run's events. Point the scratch root \
+                     back under {repo}, or re-run from the repository the scratch root belongs \
+                     to.",
+                    cwd = cwd_canon.display(),
+                    scratch_repo = scratch_repo_canon.display(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`/
@@ -2093,7 +2136,7 @@ fn cmd_run(args: &[String]) -> Res {
     // `--driver workflow` is the equivalent of `rigger serve`: the in-Claude-Code
     // MCP-server path. `cli` (the default) keeps the standalone subprocess path.
     match parsed.driver {
-        DriverKind::Workflow => run_workflow(&parsed),
+        DriverKind::Workflow => run_workflow(&parsed, "rigger run --driver workflow"),
         DriverKind::Cli => run_cli(&parsed),
     }
 }
@@ -2331,9 +2374,15 @@ fn cmd_step(args: &[String]) -> Res {
         ))
     };
 
-    // EXACTLY ONE ROOT (spec 89, criterion 4, round 2): refuse BEFORE ANY worktree mutation -
-    // not merely before the terminal sweep - when the store this step is about to open and the
-    // repository `git` resolved for this cwd disagree on their root. Round 1 placed this call
+    // EXACTLY ONE ROOT (spec 89, criterion 4, round 2): refuse BEFORE any GIT/worktree
+    // mutation - not merely before the terminal sweep - when the store this step is about to
+    // open, the repository `git` resolved for this cwd, and the scratch root this step is
+    // about to sweep disagree on their root (three-way as of round 2's own adjudication; see
+    // `refuse_unless_one_root`'s doc comment for the added leg). "Any GIT/worktree mutation",
+    // precisely: the `std::fs::create_dir_all(RIGGER_DIR)` two lines above this comment still
+    // precedes this refusal, but it only ever creates an empty local `.rigger/` under THIS
+    // process's own cwd - never the enclosing repository the hazard below is about - so it is
+    // not the mutation this ordering guards against. Round 1 placed this call
     // just before the sweep, AFTER the run-branch anchor block below (`ensure_run_branch`
     // creates and checks out `RUN_BRANCH` in whatever `repo` resolved to - a real mutation of
     // that repository); a nested git-less fixture whose `repo` resolves to an ENCLOSING real
@@ -3648,7 +3697,14 @@ fn fresh_run_if_requested(
 /// serves the MCP bridge over stdio. The store is selected by flag and wrapped in
 /// the per-project namespace decorator before it is injected into BOTH the
 /// conductor and the side-car (§5.1.1, R9).
-fn run_workflow(parsed: &RunArgs) -> Res {
+///
+/// `command` is the ACTUALLY-INVOKED command line (`"rigger serve"` from [`cmd_serve`],
+/// `"rigger run --driver workflow"` from [`cmd_run`]) - threaded through rather than a
+/// literal `"rigger serve"` here, so [`resolve_main_worktree_or_refuse`]'s refusal names
+/// the command the operator actually typed instead of always naming `rigger serve` even
+/// when reached via `rigger run --driver workflow` (spec 89 criterion 4, round 2
+/// adjudication `adv-u89c4-r2-serve-command-name-hardcoded-for-both-entry-points`).
+fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger serve <spec>` / the shim-driven
     // workflow path is a REAL pre-launch surface holding the spec path - the one the
     // /rigger workflow itself runs through, and the omission this unit was rejected for
@@ -3679,7 +3735,7 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // resolution authority for the whole call, never several that could in principle
     // disagree with each other or with this guard.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger serve")?;
+    let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -3800,7 +3856,7 @@ fn cmd_serve(args: &[String]) -> Res {
     // the same composition path - it just forces the workflow driver.
     let mut parsed = parse_run_args(args)?;
     parsed.driver = DriverKind::Workflow;
-    run_workflow(&parsed)
+    run_workflow(&parsed, "rigger serve")
 }
 
 /// Parse `rigger workflow`'s arguments: an optional positional spec path and an optional
