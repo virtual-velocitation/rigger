@@ -171,10 +171,22 @@ fn rigger_result_reaps_a_live_process_in_the_spawns_registered_agent_scratch_dir
     seed_run_started(root, "r1");
 
     let spawn_id = "u-periphery-cli-live-reap/implementer#0";
+    // A dedicated, empty cache home so the SAME call's mutation-scratch half (which
+    // `reclaim_spawn_registered_scratch` always runs alongside the agent-scratch half) never
+    // touches the operator's real ~/.cache - and so the fixture below and the CHILD process
+    // (given the SAME override further down) resolve the identical agent-scratch root too
+    // (spec 89, criterion 2: the default no longer nests under `<repo>/.rigger/tmp`).
+    let cache_home = tempfile::tempdir().unwrap();
     // No workflow.yml and no RIGGER_TMPDIR override in this fixture, so
-    // `scratch_root_path_from_env` resolves the documented default:
-    // `<repo>/.rigger/tmp` (`src/worktree.rs::scratch_root_path`).
-    let scratch_root = root.join(".rigger").join("tmp");
+    // `scratch_root_path_from_env` resolves the documented default: the cache-home root
+    // (`src/worktree.rs::scratch_root_path`/`cache_scratch_root_from`), keyed off THIS SAME
+    // `cache_home` the child process below is also handed via `XDG_CACHE_HOME`.
+    let scratch_root = rigger::worktree::cache_scratch_root_from(
+        root.to_str().unwrap(),
+        Some(cache_home.path().as_os_str().to_owned()),
+        None,
+    )
+    .expect("a non-empty repo with an explicit cache home always resolves");
     let leaf = spawn_scratch_path(scratch_root.to_str().unwrap(), "r1", spawn_id)
         .expect("a well-formed spawn id must encode to a real path");
     std::fs::create_dir_all(&leaf).unwrap();
@@ -188,10 +200,6 @@ fn rigger_result_reaps_a_live_process_in_the_spawns_registered_agent_scratch_dir
          agent-scratch dir before `rigger result` runs"
     );
 
-    // A dedicated, empty cache home so the SAME call's mutation-scratch half (which
-    // `reclaim_spawn_registered_scratch` always runs alongside the agent-scratch half) never
-    // touches the operator's real ~/.cache.
-    let cache_home = tempfile::tempdir().unwrap();
     let (out, err, ok) = run_rigger_envs(
         root,
         &["result", spawn_id, "done"],
@@ -316,13 +324,14 @@ fn rigger_result_reaps_a_live_process_from_the_owning_roots_configured_workdir_w
         relocated.path().to_str().unwrap(),
     );
     // Fixture guard: the configured scratch root genuinely differs from the crate's own
-    // documented DEFAULT (`<repo>/.rigger/tmp`) - else this test cannot discriminate the fix
-    // from a regression that silently fell back to the default because `config::load` failed
-    // on this agents-less root.
-    let default_scratch_root = root.join(".rigger").join("tmp");
+    // documented DEFAULT (spec 89, criterion 2: the cache-home root, or the pre-relocation
+    // `<repo>/.rigger/tmp` degrade on a homeless host) - else this test cannot discriminate
+    // the fix from a regression that silently fell back to the default because
+    // `config::load` failed on this agents-less root.
+    let default_scratch_root =
+        rigger::worktree::scratch_root_path(root.to_str().unwrap(), "", None);
     assert_ne!(
-        Path::new(&scratch_root),
-        default_scratch_root.as_path(),
+        scratch_root, default_scratch_root,
         "fixture bug: the configured workdir must resolve a scratch root distinct from the \
          crate's own default, else this test cannot discriminate the fix"
     );

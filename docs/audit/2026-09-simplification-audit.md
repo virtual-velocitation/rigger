@@ -4,7 +4,7 @@ The audit report spec 85 derives the follow-up refactoring specs from. Six secti
 
 ## 1. Responsibility Map
 
-Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1620 functions total), assigned to a proposed module by `tests/simplification_audit.rs`'s deterministic scanner + rule-table classifier (never by hand). Instrument: the brace-matching scanner over the three named files.
+Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1622 functions total), assigned to a proposed module by `tests/simplification_audit.rs`'s deterministic scanner + rule-table classifier (never by hand). Instrument: the brace-matching scanner over the three named files.
 
 ### Proposed module tree
 
@@ -962,139 +962,139 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1620 func
   - `src/dash.rs:5004-5028` `dropping_the_peers_sidecar_reaps_its_collector_thread` - defined inside `supervised_lifecycle`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).
 - `main::commands` (35 functions)
   - `src/main.rs:270-273` `cmd_version` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:2134-2142` `cmd_run` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:2246-2328` `cmd_resume_unit` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:2330-2893` `cmd_step` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:3123-3155` `cmd_reported` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:3173-3189` `cmd_prompt` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:3213-3244` `cmd_scratch` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:3871-3878` `cmd_serve` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:3923-3992` `cmd_workflow` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:4061-4121` `cmd_graph` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:4145-4165` `cmd_graph_show` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:4372-4455` `cmd_graph_build` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:4476-4535` `cmd_graph_communities` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:4555-4614` `cmd_graph_concepts` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:4633-4671` `cmd_stats` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:4995-5005` `cmd_stats_canary` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:5364-5487` `cmd_canary` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:5497-5533` `cmd_playbooks` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:5566-5718` `cmd_replay` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:6554-6861` `cmd_dash` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:7313-7342` `cmd_ground` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:7358-7379` `cmd_reindex` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:7396-7424` `cmd_symbols_index` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:7432-7508` `cmd_emit` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:7519-7553` `cmd_progress` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:7603-7761` `cmd_status` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:7864-7895` `cmd_watch` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:8151-8229` `cmd_reset` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:8898-8938` `cmd_peers` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:9145-9241` `cmd_result` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:9377-9548` `cmd_validate` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:11617-11636` `cmd_init` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:12258-12378` `cmd_setup` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:12652-12657` `cmd_docs` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
-  - `src/main.rs:12797-12831` `cmd_prime` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:2179-2187` `cmd_run` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:2291-2373` `cmd_resume_unit` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:2375-2938` `cmd_step` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:3168-3200` `cmd_reported` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:3218-3234` `cmd_prompt` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:3258-3289` `cmd_scratch` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:3916-3923` `cmd_serve` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:3968-4037` `cmd_workflow` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:4106-4166` `cmd_graph` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:4190-4210` `cmd_graph_show` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:4417-4500` `cmd_graph_build` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:4521-4580` `cmd_graph_communities` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:4600-4659` `cmd_graph_concepts` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:4678-4716` `cmd_stats` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:5040-5050` `cmd_stats_canary` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:5409-5532` `cmd_canary` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:5542-5578` `cmd_playbooks` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:5611-5763` `cmd_replay` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:6599-6906` `cmd_dash` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:7358-7387` `cmd_ground` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:7403-7424` `cmd_reindex` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:7441-7469` `cmd_symbols_index` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:7477-7553` `cmd_emit` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:7564-7598` `cmd_progress` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:7648-7806` `cmd_status` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:7909-7940` `cmd_watch` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:8196-8274` `cmd_reset` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:8943-8983` `cmd_peers` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:9190-9286` `cmd_result` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:9422-9593` `cmd_validate` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:11662-11681` `cmd_init` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:12303-12423` `cmd_setup` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:12697-12702` `cmd_docs` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
+  - `src/main.rs:12842-12876` `cmd_prime` - name contains "cmd_" (CLI command handler); grouped under `main::commands`.
 - `main::dash_glue` (25 functions)
   - `src/main.rs:111-115` `record_dash_attempt` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6064-6066` `dash_marker_serving` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6146-6166` `spawn_dash_child_process` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6191-6212` `wait_for_dash_bind` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6239-6272` `wait_for_dash_bind_or_diagnose` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6425-6427` `dash_ensure_suppressed` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6434-6436` `dash_ensure_port` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6442-6445` `dash_ensure_port_from` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6506-6510` `recorded_dash_url` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6520-6534` `dash_status_line` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6543-6552` `dash_status_json` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6868-6875` `dash_reap_poll` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:6884-6892` `dash_reap_idle_window` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7007-7026` `dash_read_run` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7032-7044` `dash_read_graph` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7055-7063` `dash_read_whole_graph` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7072-7089` `dash_read_calls` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7095-7107` `dash_attach_calls` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7112-7129` `dash_read_progress` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7135-7162` `dash_read_liveness` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7185-7201` `dash_resolve_attach` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7226-7236` `dash_read_sqlite_stream_readonly` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7238-7274` `dash_attach_run` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7281-7293` `dash_attach_inputs` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
-  - `src/main.rs:7299-7305` `dash_attach_graph` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6109-6111` `dash_marker_serving` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6191-6211` `spawn_dash_child_process` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6236-6257` `wait_for_dash_bind` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6284-6317` `wait_for_dash_bind_or_diagnose` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6470-6472` `dash_ensure_suppressed` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6479-6481` `dash_ensure_port` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6487-6490` `dash_ensure_port_from` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6551-6555` `recorded_dash_url` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6565-6579` `dash_status_line` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6588-6597` `dash_status_json` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6913-6920` `dash_reap_poll` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:6929-6937` `dash_reap_idle_window` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7052-7071` `dash_read_run` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7077-7089` `dash_read_graph` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7100-7108` `dash_read_whole_graph` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7117-7134` `dash_read_calls` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7140-7152` `dash_attach_calls` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7157-7174` `dash_read_progress` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7180-7207` `dash_read_liveness` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7230-7246` `dash_resolve_attach` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7271-7281` `dash_read_sqlite_stream_readonly` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7283-7319` `dash_attach_run` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7326-7338` `dash_attach_inputs` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
+  - `src/main.rs:7344-7350` `dash_attach_graph` - name contains "dash_" (dash registry/marker glue); grouped under `main::dash_glue`.
 - `main::docs_overlay` (1 function)
-  - `src/main.rs:11770-11777` `apply` - method inside `impl DocsOverlay`; grouped with its other `DocsOverlay` methods.
+  - `src/main.rs:11815-11822` `apply` - method inside `impl DocsOverlay`; grouped with its other `DocsOverlay` methods.
 - `main::liveness` (9 functions)
-  - `src/main.rs:2947-2957` `live_branches_for_sweep` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/main.rs:2988-3004` `terminal_and_no_live_worker` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/main.rs:7569-7593` `liveness_ages_for_wave` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/main.rs:8594-8632` `live_writer_reasons` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/main.rs:8638-8650` `live_writer_refusal` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/main.rs:8814-8824` `superseded_edge_boundary` - name contains "superseded" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/main.rs:8846-8876` `superseded_graph_nodes` - name contains "superseded" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/main.rs:10320-10327` `live_slugs` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
-  - `src/main.rs:10548-10566` `worktree_belongs_to_live` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/main.rs:2992-3002` `live_branches_for_sweep` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/main.rs:3033-3049` `terminal_and_no_live_worker` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/main.rs:7614-7638` `liveness_ages_for_wave` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/main.rs:8639-8677` `live_writer_reasons` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/main.rs:8683-8695` `live_writer_refusal` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/main.rs:8859-8869` `superseded_edge_boundary` - name contains "superseded" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/main.rs:8891-8921` `superseded_graph_nodes` - name contains "superseded" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/main.rs:10365-10372` `live_slugs` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
+  - `src/main.rs:10593-10611` `worktree_belongs_to_live` - name contains "live" (liveness/heartbeat reporting); grouped under `main::liveness`.
 - `main::provenance` (23 functions)
   - `src/main.rs:200-202` `workflow_path` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:3470-3512` `refuse_when_base_lacks_spec_paths` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:3725-3869` `run_workflow` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:3884-3915` `parse_workflow_args` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:9370-9375` `spec_lint_warning_lines` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:9778-9783` `installed_workflow_drifted` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:9790-9792` `workflow_provenance_path` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:9797-9805` `installed_workflow_provenance` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:9824-9835` `git_is_ancestor` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
-  - `src/main.rs:9843-9853` `git_commit_distance` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
-  - `src/main.rs:9980-10014` `workflow_drift_advisory` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:11703-11713` `install_workflow` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:11742-11744` `docs_overlay_path` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
-  - `src/main.rs:11785-11794` `read_docs_overlay` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
-  - `src/main.rs:12093-12114` `git_hooks_dir` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
-  - `src/main.rs:12578-12616` `docs_context` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
-  - `src/main.rs:12672-12691` `docs_drift` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
-  - `src/main.rs:12700-12716` `docs_drift_failure` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
-  - `src/main.rs:12738-12744` `spec_lint_next_step` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:12765-12769` `spec_lint_reminder_suppressed` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:12777-12789` `spec_lint_reminder_should_print` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
-  - `src/main.rs:12872-12875` `git_repo` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
-  - `src/main.rs:12883-12893` `git_repo_at` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
+  - `src/main.rs:3515-3557` `refuse_when_base_lacks_spec_paths` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:3770-3914` `run_workflow` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:3929-3960` `parse_workflow_args` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:9415-9420` `spec_lint_warning_lines` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:9823-9828` `installed_workflow_drifted` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:9835-9837` `workflow_provenance_path` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:9842-9850` `installed_workflow_provenance` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:9869-9880` `git_is_ancestor` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
+  - `src/main.rs:9888-9898` `git_commit_distance` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
+  - `src/main.rs:10025-10059` `workflow_drift_advisory` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:11748-11758` `install_workflow` - name contains "workflow" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:11787-11789` `docs_overlay_path` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
+  - `src/main.rs:11830-11839` `read_docs_overlay` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
+  - `src/main.rs:12138-12159` `git_hooks_dir` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
+  - `src/main.rs:12623-12661` `docs_context` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
+  - `src/main.rs:12717-12736` `docs_drift` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
+  - `src/main.rs:12745-12761` `docs_drift_failure` - name contains "docs_" (docs overlay); grouped under `main::provenance`.
+  - `src/main.rs:12783-12789` `spec_lint_next_step` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:12810-12814` `spec_lint_reminder_suppressed` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:12822-12834` `spec_lint_reminder_should_print` - name contains "spec_" (workflow/spec loading); grouped under `main::provenance`.
+  - `src/main.rs:12917-12920` `git_repo` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
+  - `src/main.rs:12928-12938` `git_repo_at` - name contains "git_" (git/version provenance); grouped under `main::provenance`.
 - `main::render` (8 functions)
-  - `src/main.rs:4171-4208` `print_entity_site` - name contains "print_" (human-readable output); grouped under `main::render`.
-  - `src/main.rs:4768-4810` `format_stats` - name contains "format_" (human-readable output); grouped under `main::render`.
-  - `src/main.rs:4856-4872` `format_progress_line` - name contains "format_" (human-readable output); grouped under `main::render`.
-  - `src/main.rs:5034-5130` `format_canary_stats` - name contains "format_" (human-readable output); grouped under `main::render`.
-  - `src/main.rs:5914-5924` `format_stats_diff` - name contains "format_" (human-readable output); grouped under `main::render`.
-  - `src/main.rs:10781-10811` `format_residue` - name contains "format_" (human-readable output); grouped under `main::render`.
-  - `src/main.rs:11463-11475` `print_orientation` - name contains "print_" (human-readable output); grouped under `main::render`.
-  - `src/main.rs:12895-12914` `print_run_state` - name contains "print_" (human-readable output); grouped under `main::render`.
+  - `src/main.rs:4216-4253` `print_entity_site` - name contains "print_" (human-readable output); grouped under `main::render`.
+  - `src/main.rs:4813-4855` `format_stats` - name contains "format_" (human-readable output); grouped under `main::render`.
+  - `src/main.rs:4901-4917` `format_progress_line` - name contains "format_" (human-readable output); grouped under `main::render`.
+  - `src/main.rs:5079-5175` `format_canary_stats` - name contains "format_" (human-readable output); grouped under `main::render`.
+  - `src/main.rs:5959-5969` `format_stats_diff` - name contains "format_" (human-readable output); grouped under `main::render`.
+  - `src/main.rs:10826-10856` `format_residue` - name contains "format_" (human-readable output); grouped under `main::render`.
+  - `src/main.rs:11508-11520` `print_orientation` - name contains "print_" (human-readable output); grouped under `main::render`.
+  - `src/main.rs:12940-12959` `print_run_state` - name contains "print_" (human-readable output); grouped under `main::render`.
 - `main::replay_runner` (1 function)
-  - `src/main.rs:5935-5955` `run` - method inside `impl Runner for ReplayRunner`; grouped with its other `ReplayRunner` methods.
+  - `src/main.rs:5980-6000` `run` - method inside `impl Runner for ReplayRunner`; grouped with its other `ReplayRunner` methods.
 - `main::residue_report` (1 function)
-  - `src/main.rs:10091-10096` `is_empty` - method inside `impl ResidueReport`; grouped with its other `ResidueReport` methods.
+  - `src/main.rs:10136-10141` `is_empty` - method inside `impl ResidueReport`; grouped with its other `ResidueReport` methods.
 - `main::run_registration` (2 functions)
   - `src/main.rs:760-765` `inert` - method inside `impl RunRegistration`; grouped with its other `RunRegistration` methods.
   - `src/main.rs:769-776` `drop` - method inside `impl Drop for RunRegistration`; grouped with its other `RunRegistration` methods.
 - `main::scaffold_report` (1 function)
-  - `src/main.rs:11319-11325` `changed` - method inside `impl ScaffoldReport`; grouped with its other `ScaffoldReport` methods.
+  - `src/main.rs:11364-11370` `changed` - method inside `impl ScaffoldReport`; grouped with its other `ScaffoldReport` methods.
 - `main::setup` (18 functions)
-  - `src/main.rs:1946-1949` `scratch_defaults` - name contains "scratch" (project setup); grouped under `main::setup`.
-  - `src/main.rs:4007-4025` `locate_shim` - name contains "shim" (project setup); grouped under `main::setup`.
-  - `src/main.rs:6911-6915` `foreign_instance_scratch_root` - name contains "scratch" (project setup); grouped under `main::setup`.
-  - `src/main.rs:10882-10902` `scratch_totals` - name contains "scratch" (project setup); grouped under `main::setup`.
-  - `src/main.rs:11064-11099` `classify_agent_scratch` - name contains "scratch" (project setup); grouped under `main::setup`.
-  - `src/main.rs:11447-11454` `print_scaffold_pointer` - name contains "scaffold" (project setup); grouped under `main::setup`.
-  - `src/main.rs:11584-11615` `scaffold_summary_lines` - name contains "scaffold" (project setup); grouped under `main::setup`.
-  - `src/main.rs:11642-11644` `shim_dir` - name contains "shim" (project setup); grouped under `main::setup`.
-  - `src/main.rs:11672-11689` `install_file_if_changed` - name contains "install" (project setup); grouped under `main::setup`.
-  - `src/main.rs:11721-11723` `skill_source_rel` - name contains "skill" (project setup); grouped under `main::setup`.
-  - `src/main.rs:11732-11737` `skill_install_path` - name contains "install" (project setup); grouped under `main::setup`.
-  - `src/main.rs:11807-11820` `install_skills` - name contains "install" (project setup); grouped under `main::setup`.
-  - `src/main.rs:12126-12154` `install_precommit_hook` - name contains "install" (project setup); grouped under `main::setup`.
-  - `src/main.rs:12171-12179` `provision_shim` - name contains "shim" (project setup); grouped under `main::setup`.
-  - `src/main.rs:12193-12202` `shim_is_current` - name contains "shim" (project setup); grouped under `main::setup`.
-  - `src/main.rs:12207-12214` `write_shim_files` - name contains "shim" (project setup); grouped under `main::setup`.
-  - `src/main.rs:12221-12249` `run_npm_install` - name contains "install" (project setup); grouped under `main::setup`.
-  - `src/main.rs:12390-12406` `parse_setup_args` - name contains "setup" (project setup); grouped under `main::setup`.
+  - `src/main.rs:1991-1994` `scratch_defaults` - name contains "scratch" (project setup); grouped under `main::setup`.
+  - `src/main.rs:4052-4070` `locate_shim` - name contains "shim" (project setup); grouped under `main::setup`.
+  - `src/main.rs:6956-6960` `foreign_instance_scratch_root` - name contains "scratch" (project setup); grouped under `main::setup`.
+  - `src/main.rs:10927-10947` `scratch_totals` - name contains "scratch" (project setup); grouped under `main::setup`.
+  - `src/main.rs:11109-11144` `classify_agent_scratch` - name contains "scratch" (project setup); grouped under `main::setup`.
+  - `src/main.rs:11492-11499` `print_scaffold_pointer` - name contains "scaffold" (project setup); grouped under `main::setup`.
+  - `src/main.rs:11629-11660` `scaffold_summary_lines` - name contains "scaffold" (project setup); grouped under `main::setup`.
+  - `src/main.rs:11687-11689` `shim_dir` - name contains "shim" (project setup); grouped under `main::setup`.
+  - `src/main.rs:11717-11734` `install_file_if_changed` - name contains "install" (project setup); grouped under `main::setup`.
+  - `src/main.rs:11766-11768` `skill_source_rel` - name contains "skill" (project setup); grouped under `main::setup`.
+  - `src/main.rs:11777-11782` `skill_install_path` - name contains "install" (project setup); grouped under `main::setup`.
+  - `src/main.rs:11852-11865` `install_skills` - name contains "install" (project setup); grouped under `main::setup`.
+  - `src/main.rs:12171-12199` `install_precommit_hook` - name contains "install" (project setup); grouped under `main::setup`.
+  - `src/main.rs:12216-12224` `provision_shim` - name contains "shim" (project setup); grouped under `main::setup`.
+  - `src/main.rs:12238-12247` `shim_is_current` - name contains "shim" (project setup); grouped under `main::setup`.
+  - `src/main.rs:12252-12259` `write_shim_files` - name contains "shim" (project setup); grouped under `main::setup`.
+  - `src/main.rs:12266-12294` `run_npm_install` - name contains "install" (project setup); grouped under `main::setup`.
+  - `src/main.rs:12435-12451` `parse_setup_args` - name contains "setup" (project setup); grouped under `main::setup`.
 - `main::store` (32 functions)
   - `src/main.rs:473-491` `store_conn_file` - name contains "store_" (store hygiene); grouped under `main::store`.
   - `src/main.rs:548-561` `store_backend_kind` - name contains "store_" (store hygiene); grouped under `main::store`.
@@ -1104,34 +1104,34 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1620 func
   - `src/main.rs:1249-1320` `migrate_project_identity` - name contains "migrate" (store hygiene); grouped under `main::store`.
   - `src/main.rs:1329-1334` `migrate_local_identity` - name contains "migrate" (store hygiene); grouped under `main::store`.
   - `src/main.rs:1346-1372` `migrate_identity_at` - name contains "migrate" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:1713-1715` `find_store_dir_from` - name contains "store_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:1960-1965` `server_store_location` - name contains "store_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:1985-2051` `require_store_dir` - name contains "store_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:2055-2057` `store_file` - name contains "store_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:3050-3056` `reclaim_run_scratch` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:8248-8274` `reset_menu` - name contains "reset_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:8339-8375` `reset_modes` - name contains "reset_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:8397-8416` `reset_build_cache` - name contains "reset_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:8421-8434` `build_cache_reclaim_report` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:8462-8470` `reset_derived` - name contains "reset_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:8681-8742` `refuse_derived_reset_if_live` - name contains "reset_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:8769-8800` `reset_runs` - name contains "reset_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:9274-9289` `reclaim_spawn_scratch` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:9316-9333` `reclaim_spawn_registered_scratch` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:9701-9711` `bloat_advisory` - name contains "bloat" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:9724-9735` `bloat_advisory_for` - name contains "bloat" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:10355-10444` `reclaim_orphan_scratch` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:10719-10760` `reclaim_shared_build_cache` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:10919-10962` `scratch_footprint` - name contains "footprint" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:10972-10995` `store_and_backup_bytes` - name contains "store_" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:11116-11193` `footprint_report` - name contains "footprint" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:11199-11204` `footprint_report_lines` - name contains "footprint" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:11213-11233` `footprint_advisories` - name contains "footprint" (store hygiene); grouped under `main::store`.
-  - `src/main.rs:11264-11291` `footprint_report_for` - name contains "footprint" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:1758-1760` `find_store_dir_from` - name contains "store_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:2005-2010` `server_store_location` - name contains "store_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:2030-2096` `require_store_dir` - name contains "store_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:2100-2102` `store_file` - name contains "store_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:3095-3101` `reclaim_run_scratch` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:8293-8319` `reset_menu` - name contains "reset_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:8384-8420` `reset_modes` - name contains "reset_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:8442-8461` `reset_build_cache` - name contains "reset_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:8466-8479` `build_cache_reclaim_report` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:8507-8515` `reset_derived` - name contains "reset_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:8726-8787` `refuse_derived_reset_if_live` - name contains "reset_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:8814-8845` `reset_runs` - name contains "reset_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:9319-9334` `reclaim_spawn_scratch` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:9361-9378` `reclaim_spawn_registered_scratch` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:9746-9756` `bloat_advisory` - name contains "bloat" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:9769-9780` `bloat_advisory_for` - name contains "bloat" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:10400-10489` `reclaim_orphan_scratch` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:10764-10805` `reclaim_shared_build_cache` - name contains "reclaim_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:10964-11007` `scratch_footprint` - name contains "footprint" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:11017-11040` `store_and_backup_bytes` - name contains "store_" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:11161-11238` `footprint_report` - name contains "footprint" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:11244-11249` `footprint_report_lines` - name contains "footprint" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:11258-11278` `footprint_advisories` - name contains "footprint" (store hygiene); grouped under `main::store`.
+  - `src/main.rs:11309-11336` `footprint_report_for` - name contains "footprint" (store hygiene); grouped under `main::store`.
 - `main::store_location` (3 functions)
-  - `src/main.rs:1889-1891` `file` - method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.
-  - `src/main.rs:1897-1904` `identity` - method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.
-  - `src/main.rs:1917-1923` `repo_root` - method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.
+  - `src/main.rs:1934-1936` `file` - method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.
+  - `src/main.rs:1942-1949` `identity` - method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.
+  - `src/main.rs:1962-1968` `repo_root` - method inside `impl StoreLocation`; grouped with its other `StoreLocation` methods.
 - `main::store_selection` (1 function)
   - `src/main.rs:434-436` `is_sqlite` - method inside `impl StoreSelection`; grouped with its other `StoreSelection` methods.
 - `main::support` (26 functions)
@@ -1142,365 +1142,367 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1620 func
   - `src/main.rs:568-591` `resolve_conn` - name contains "resolve" (path/id resolution helper); grouped under `main::support`.
   - `src/main.rs:699-709` `resolve_store` - name contains "resolve" (path/id resolution helper); grouped under `main::support`.
   - `src/main.rs:979-988` `read_project_id` - name contains "read_" (generic read helper); grouped under `main::support`.
-  - `src/main.rs:1761-1784` `resolve_main_worktree_or_refuse` - name contains "resolve" (path/id resolution helper); grouped under `main::support`.
-  - `src/main.rs:3302-3345` `parse_step_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
-  - `src/main.rs:5140-5152` `read_model_drift` - name contains "read_" (generic read helper); grouped under `main::support`.
-  - `src/main.rs:5238-5250` `read_order_signatures` - name contains "read_" (generic read helper); grouped under `main::support`.
-  - `src/main.rs:5274-5346` `parse_canary_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
-  - `src/main.rs:5795-5827` `parse_replay_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
-  - `src/main.rs:6079-6105` `ensure_run_dashboard_at` - name contains "ensure_" (invariant helper); grouped under `main::support`.
-  - `src/main.rs:6465-6500` `ensure_run_dashboard` - name contains "ensure_" (invariant helper); grouped under `main::support`.
-  - `src/main.rs:7807-7837` `parse_watch_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
-  - `src/main.rs:9009-9067` `parse_result_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
-  - `src/main.rs:9107-9121` `read_outcome_from_stdin` - name contains "read_" (generic read helper); grouped under `main::support`.
-  - `src/main.rs:10196-10224` `read_run_units` - name contains "read_" (generic read helper); grouped under `main::support`.
-  - `src/main.rs:10570-10572` `is_uuid8` - name contains "is_" (predicate helper); grouped under `main::support`.
-  - `src/main.rs:10579-10608` `find_shadow_stores` - name contains "find_" (lookup helper); grouped under `main::support`.
-  - `src/main.rs:10671-10676` `is_build_cache_tombstone` - name contains "is_" (predicate helper); grouped under `main::support`.
-  - `src/main.rs:11494-11543` `write_gitignore_entries` - name contains "write_" (generic write helper); grouped under `main::support`.
-  - `src/main.rs:11995-12000` `find_bytes` - name contains "find_" (lookup helper); grouped under `main::support`.
-  - `src/main.rs:12626-12644` `write_docs` - name contains "write_" (generic write helper); grouped under `main::support`.
-  - `src/main.rs:12924-12931` `write_if_absent` - name contains "write_" (generic write helper); grouped under `main::support`.
-- `main::tests` (339 functions)
-  - `src/main.rs:12082-12087` `compose_precommit` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13133-13140` `spec_lint_next_step_names_rigger_validate_and_the_given_spec_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13148-13150` `spec_lint_reminder_suppressed_when_env_names_the_real_direct_parent_pid` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13156-13177` `spec_lint_reminder_prints_on_absent_foreign_stale_or_malformed_env` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13194-13216` `spec_lint_warning_lines_formats_every_advisory_with_the_spec_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13221-13224` `spec_lint_warning_lines_is_empty_on_a_clean_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13234-13287` `ensure_run_dashboard_at_starts_once_then_short_circuits_on_a_live_marker` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13296-13302` `dash_marker_serving_reports_false_when_nothing_answers_the_markers_port` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13307-13339` `ensure_run_dashboard_at_restarts_when_the_recorded_dash_is_gone` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13347-13366` `ensure_run_dashboard_at_reports_failed_when_the_start_errors` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13378-13417` `wait_for_dash_bind_confirms_promptly_once_the_port_answers_as_a_dash` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13424-13451` `wait_for_dash_bind_fails_fast_when_the_child_exits_before_confirming` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13465-13507` `wait_for_dash_bind_times_out_against_a_real_held_port` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13530-13574` `wait_for_dash_bind_or_diagnose_never_self_attributes_its_own_still_starting_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13591-13619` `ensure_run_dashboard_at_writes_no_marker_when_the_real_spawn_never_confirms_a_bind` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13634-13679` `ensure_run_dashboard_at_names_the_held_ports_holder_when_the_real_spawn_fails` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13699-13723` `ensure_run_dashboard_at_never_claims_a_phantom_holder_for_an_unheld_port` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13735-13766` `ensure_run_dashboard_at_self_heals_a_marker_naming_a_dead_pid` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13776-13810` `ensure_run_dashboard_at_self_heals_a_marker_naming_a_live_pid_whose_port_is_unserved` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13823-13861` `ensure_run_dashboard_at_never_revisits_a_still_serving_unattributed_pid_marker` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13868-13889` `dash_ensure_is_suppressed_by_either_opt_out_and_proceeds_when_neither_is_set` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13899-13930` `dash_status_line_renders_each_outcome_to_its_exact_text` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13938-13966` `dash_status_json_renders_each_outcome_to_its_exact_shape` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:13975-14002` `dash_ensure_port_defaults_to_the_fixed_address_and_only_a_valid_override_relocates_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14012-14045` `compose_precommit_fresh_install_carries_the_managed_block` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14055-14082` `precommit_block_refuses_on_drift_instead_of_staging` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14096-14197` `precommit_block_resolves_a_tree_built_binary_before_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14204-14216` `compose_precommit_is_idempotent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14227-14256` `compose_precommit_chains_without_clobbering_an_existing_hook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14266-14280` `compose_precommit_prepends_before_a_terminal_exit_existing_hook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14289-14340` `install_precommit_hook_preserves_a_non_utf8_existing_hook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14347-14370` `compose_precommit_refreshes_a_stale_block_in_place` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14378-14397` `cmd_peers_prints_live_or_historical_per_decision_provenance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14415-14458` `superseded_graph_nodes_drops_dead_runs_and_preboundary_keeping_lessons_active_and_reused_ids` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14417-14419` `ev` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14420-14425` `run_started` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14467-14505` `superseded_edge_boundary_is_the_active_runs_start_or_none_without_a_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14469-14475` `run_started_at` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14476-14482` `decision` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14533-14791` `the_denoise_leaves_metrics_run_pruning_and_blast_radius_unaffected` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14539-14543` `ev` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14801-14819` `version_line_carries_the_derived_version_and_a_non_empty_build_provenance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14826-14867` `docs_context_reads_every_fact_from_code` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14874-14904` `docs_render_surfaces_known_code_facts_verbatim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14910-14929` `commands_registry_is_well_formed_and_covers_dispatch` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14937-14967` `write_docs_writes_every_registry_skill_plus_the_handbook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:14977-15014` `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15023-15062` `per_operation_skills_reference_only_real_subcommands` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15072-15100` `watching_discipline_skills_reference_only_real_subcommands` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15108-15175` `docs_drift_flags_a_changed_file_and_skips_absent_or_in_sync_ones` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15186-15212` `committed_registry_docs_are_in_sync_with_a_fresh_render` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15223-15252` `planning_field_guide_page_renders_and_is_linked_from_authoring_loops` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15263-15330` `status_and_dashboard_render_the_same_current_blocker_lines` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15343-15398` `release_ready_lines_surface_only_on_a_done_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15401-15467` `status_and_dash_read_the_runs_persisted_base_not_a_re_resolution` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15472-15493` `dirty_tracked_paths_keeps_tracked_modifications_and_drops_untracked_and_ignored` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15496-15498` `dirty_tracked_paths_on_a_clean_tree_is_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15501-15526` `installed_workflow_drifted_is_false_when_absent_or_identical_and_true_on_drift` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15531-15578` `drift_side_names_the_binary_stale_only_when_the_installed_workflow_is_provably_newer` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15581-15629` `workflow_drift_advisory_names_which_side_is_stale_and_never_says_they_differ` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15632-15676` `git_is_ancestor_decides_commit_order_in_a_real_repo` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15679-15725` `git_commit_distance_counts_commits_ahead_in_a_real_repo` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15728-15742` `missing_gitsemver_binary_advisory_fires_only_on_the_unversioned_marker` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15745-15750` `behind_the_tree_message_is_silent_when_versions_already_match` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15753-15763` `behind_the_tree_message_is_silent_when_either_side_is_unversioned` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15766-15775` `behind_the_tree_message_is_silent_on_an_undecidable_or_zero_distance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15778-15785` `behind_the_tree_message_names_both_versions_and_the_commit_distance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15792-15798` `gitsemver_available` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15802-15817` `behind_the_tree_git` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15819-15831` `behind_the_tree_git_output` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15834-15872` `behind_the_tree_advisory_names_the_real_derived_version_ahead_of_the_installed_commit` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15875-15897` `behind_the_tree_advisory_is_silent_when_the_checkout_has_not_moved` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15900-15913` `install_workflow_records_the_build_provenance_beside_the_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15916-15931` `validate_advisories_warns_on_workflow_drift_naming_the_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15937-15939` `slugs` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15941-15944` `write_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15949-15977` `init_committed_repo` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:15980-16004` `refuse_when_base_lacks_spec_paths_refuses_on_total_absence_and_names_a_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16007-16024` `refuse_when_base_lacks_spec_paths_proceeds_when_the_base_contains_them` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16027-16045` `refuse_when_base_lacks_spec_paths_partial_match_warns_and_proceeds` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16048-16088` `refuse_when_base_lacks_spec_paths_skips_without_tokens_or_off_a_fresh_from_base_anchor` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16091-16172` `refuse_when_base_unreachable_fails_loudly_only_when_no_reachable_base` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16175-16182` `human_size_formats_bytes_through_gib` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16185-16191` `is_uuid8_accepts_exactly_eight_hex_digits` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16194-16239` `worktree_belongs_to_live_matches_both_naming_shapes_without_prefix_false_match` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16242-16289` `current_run_units_scopes_to_the_current_run_and_splits_live_from_dead` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16292-16329` `current_run_units_spares_a_terminal_units_branch_whose_latest_spawn_is_still_in_flight` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16332-16358` `current_run_units_still_retires_a_terminal_unit_once_its_latest_spawn_answers` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16361-16408` `current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_current_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16420-16446` `live_branches_for_sweep_fails_closed_on_an_unreadable_stream_but_folds_a_readable_one` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16449-16489` `find_shadow_stores_finds_nested_events_db_and_prunes_build_caches` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16492-16503` `dir_size_bytes_sums_files_recursively` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16508-16524` `reclaim_shared_build_cache_deletes_a_populated_cache_and_reports_its_bytes` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16527-16545` `reclaim_shared_build_cache_is_idempotent_zero_report_when_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16548-16576` `reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16579-16602` `reclaim_shared_build_cache_releases_the_guard_promptly_after_a_successful_reclaim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16605-16678` `scan_residue_reports_dead_worktrees_caches_shadows_and_branches` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16681-16700` `scan_residue_is_empty_when_everything_is_live_and_no_shadow_stores` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16703-16720` `format_residue_renders_a_sized_warning_block` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16725-16744` `store_and_backup_bytes_splits_live_store_files_from_dot_bak_backups` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16747-16751` `store_and_backup_bytes_is_zero_on_a_missing_directory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16754-16796` `scratch_footprint_totals_every_entry_and_dead_only_the_non_live_share` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16799-16864` `footprint_report_measures_every_category_on_a_seeded_fixture_tree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16867-16884` `footprint_report_folds_a_none_mutation_root_to_a_zero_contribution` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16887-16969` `footprint_report_flags_registered_scratch_roots_dead_share_and_spares_a_live_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:16982-17036` `footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17039-17044` `looks_like_run_container_true_when_every_direct_child_is_a_directory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17047-17055` `looks_like_run_container_false_when_a_direct_child_is_a_bare_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17058-17066` `looks_like_run_container_is_true_on_an_empty_or_missing_dir` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17069-17082` `classify_agent_scratch_separates_a_bare_top_level_file_from_a_well_formed_container` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17085-17164` `footprint_report_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_never_folded_into_the_dead_run_bucket` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17167-17191` `footprint_report_lines_reports_every_categorys_total_unconditionally` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17194-17205` `footprint_advisories_flags_a_category_whose_dead_share_reaches_the_threshold` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17208-17216` `footprint_advisories_is_silent_below_the_threshold` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17219-17236` `footprint_advisories_flags_a_category_exactly_at_the_threshold_boundary` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17239-17249` `footprint_advisories_never_flags_a_category_with_no_reclaim_command` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17252-17260` `footprint_advisories_is_silent_on_an_empty_category` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17263-17286` `owning_repo_root_prefers_the_stores_own_root_over_the_git_toplevel` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17291-17414` `reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17417-17482` `reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17485-17524` `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17527-17557` `reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17562-17601` `leaked_process_advisories_name_a_process_rooted_under_the_scratch_root` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17604-17614` `leaked_process_advisories_is_empty_when_no_process_is_rooted_under_the_scratch_root` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17617-17624` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17629-17635` `parse_result_takes_an_id_and_an_optional_output_arg` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17638-17643` `parse_result_with_no_output_defers_to_stdin` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17648-17654` `find_store_dir_from_returns_the_dir_that_holds_the_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17657-17669` `find_store_dir_from_walks_up_from_a_subdirectory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17672-17678` `git_init_quiet` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17681-17718` `find_store_dir_from_never_escapes_the_repo_into_a_parent_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17721-17796` `reap_then_remove_dir_reaps_processes_rooted_inside_then_removes_the_dir` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17799-17848` `reclaim_run_scratch_removes_the_run_level_areas_and_spares_per_unit_scratch` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17851-17884` `reclaim_run_scratch_spares_the_shared_build_cache_while_a_build_holds_its_guard` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17887-17898` `find_store_dir_from_refuses_the_worktree_shape_with_no_events_db` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17901-17930` `find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17933-17960` `walk_stores_from_prefers_the_outermost_store_over_a_nearer_shadow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17963-17981` `walk_stores_from_reports_no_shadow_for_a_single_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17990-18059` `require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:17993-17996` `drop` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18063-18085` `require_store_dir_fence_is_off_by_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18069-18071` `drop` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18090-18096` `result_advisories_flags_an_orphan_id_with_no_spawn_request` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18099-18124` `result_advisories_orphan_wording_is_plain_on_record_and_conditional_under_if_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18127-18137` `result_advisories_is_silent_for_a_parked_unanswered_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18140-18151` `result_advisories_flags_a_supersede_with_the_prior_result_position` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18154-18167` `result_advisories_suppresses_the_supersede_note_when_not_superseding` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18170-18182` `result_advisories_flags_both_orphan_and_supersede` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18185-18205` `parse_result_error_flag_is_order_independent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18208-18235` `parse_result_if_absent_is_off_by_default_and_a_bare_order_independent_flag` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18238-18273` `parse_result_meta_must_be_a_json_object` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18276-18290` `parse_result_rejects_missing_id_extra_args_and_unknown_flags` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18293-18307` `build_result_shapes_success_and_failure` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18310-18315` `build_result_rejects_a_blank_error_message` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18318-18327` `build_result_attaches_meta` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18330-18368` `a_recorded_result_lets_the_replay_driver_advance_past_the_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18371-18403` `a_recorded_error_result_replays_as_a_failure_not_a_fake_success` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18409-18498` `scaffold_parses_into_a_valid_config` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18512-18529` `shipped_workflows_carry_a_non_zero_spawn_budget` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18532-18544` `parse_canary_args_defaults_corpus_and_jobs` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18547-18559` `parse_canary_args_reads_corpus_if_model_changed_and_jobs` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18562-18574` `parse_canary_args_rejects_a_non_positive_jobs_value` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18577-18587` `parse_canary_args_rejects_unknown_flags` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18590-18619` `usage_text_gives_the_jobs_flag_its_own_description_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18622-18639` `usage_text_names_the_build_cache_reset_mode` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18642-18652` `parse_run_args_defaults_to_cli_and_an_unset_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18655-18666` `parse_run_args_reads_fresh_alongside_a_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18669-18679` `parse_run_args_reads_rebase_definition` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18682-18697` `parse_run_args_reads_driver_eventstore_conn_and_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18700-18705` `parse_run_args_rejects_unknown_flags_and_values` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18712-18738` `parse_run_args_accepts_base_alongside_a_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18746-18768` `resolve_run_base_precedence_flag_then_env_then_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18774-18812` `parse_workflow_args_reads_spec_and_base` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18817-18869` `parse_step_args_reads_spec_and_base_with_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18875-18919` `definition_hash_is_stable_and_content_sensitive` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18928-18955` `kurrentdb_is_always_available_and_needs_a_conn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:18967-18998` `store_selection_preserves_a_credentialed_tls_conn_verbatim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19009-19186` `store_selection_precedence_flag_env_secret_file_config_then_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19189-19191` `project_identity_is_never_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19194-19219` `project_identity_reads_the_tracked_id_file_then_falls_back_to_the_basename` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19222-19249` `ssh_https_and_git_suffix_forms_of_one_repo_mint_identical_ids` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19252-19266` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19269-19298` `decide_migration_covers_every_case` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19301-19340` `migrate_project_identity_renames_legacy_history_and_records_a_decision` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19343-19382` `migrate_project_identity_refuses_when_both_namespaces_hold_history` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19385-19450` `migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19453-19533` `migrate_project_identity_rekeys_the_graph_before_the_irreversible_stream_rename` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19536-19631` `migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19640-19745` `dash_graph_provider_reaches_the_whole_projection_when_run_seeds_are_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19759-19798` `dash_read_whole_graph_on_an_absent_db_is_empty_and_creates_nothing` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19804-19836` `setup_provisions_the_shim_runtime_files` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19845-19904` `setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19909-19918` `outcome_for` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19922-19927` `registry_entry` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:19937-20007` `setup_installs_the_using_rigger_skill_distinct_from_the_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20025-20109` `planning_a_spec_installs_and_renders_through_the_registry_with_no_planning_specific_code` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20119-20155` `setup_skill_install_applies_the_project_overlay` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20161-20187` `docs_overlay_overrides_only_declared_fields` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20192-20202` `docs_overlay_malformed_is_a_loud_error` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20212-20240` `provision_shim_is_a_silent_noop_when_already_current` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20250-20269` `shim_is_not_current_when_node_modules_is_torn_missing_the_install_marker` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20276-20298` `init_project_is_idempotent_reporting_new_work_only_once` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20308-20366` `scaffold_summary_reports_only_the_gitignore_change_on_a_gitignore_only_repair` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20377-20456` `init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20465-20505` `init_project_gitignores_the_store_conn_secret_file_idempotently` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20514-20528` `a_group_or_other_readable_secret_file_mode_is_flagged_owner_only_is_not` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20540-20588` `init_project_still_writes_the_dash_ignore_lines_when_a_broader_rule_covers_them` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20597-20659` `scaffold_agents_and_workflow_reference_the_same_canonical_set` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20666-20709` `init_scaffolds_only_the_workflow_referenced_agents` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20716-20745` `get_referenced_agent_ids_reads_the_scaffolded_workflows_fleet` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20752-20784` `write_if_absent_wrote_kept_and_errors_naming_the_artifact` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20792-20809` `parse_setup_args_reads_the_agents_directory_flag` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20816-20861` `import_agents_copies_and_normalizes_the_identity_field` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20867-20904` `import_agents_refuses_to_overwrite_an_existing_agent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20910-20923` `import_agents_validates_and_rejects_a_malformed_agent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20932-20954` `import_agents_rejects_an_id_colliding_with_an_existing_agent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20960-20980` `import_agents_rejects_a_duplicate_id_within_one_import` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:20986-21007` `import_agents_rejects_an_agent_with_a_blank_id` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21014-21036` `import_agents_runs_full_validation_and_rejects_a_broken_project` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21042-21061` `meta_object_body` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21070-21084` `meta_description` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21091-21099` `strip_line_comments` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21113-21336` `workflow_is_a_thin_courier_driver_with_per_unit_phase_labels` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21345-21356` `the_step_schema_admits_the_attention_array` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21362-21384` `js_function_body` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21400-21455` `phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21468-21506` `meta_matches_reality_drops_integrate_and_the_unit_stage_construction` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21525-21616` `the_driver_relays_each_attention_entry_as_a_narrator_log_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21623-21636` `merge_hung_attention_does_nothing_when_not_newly_hung` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21644-21656` `merge_hung_attention_defers_to_an_existing_budget_halt` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21665-21701` `merge_hung_attention_lands_in_canonical_position_alongside_other_signals` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21719-21767` `workflow_step_courier_prompt_is_foreground_and_honest` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21777-21786` `step_courier_prompt` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21804-21871` `workflow_step_courier_waits_on_an_auto_backgrounded_step` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21886-21941` `workflow_driver_guards_a_null_step_before_dereferencing_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:21954-22011` `workflow_meta_description_is_a_user_facing_tagline_free_of_plumbing_terms` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22018-22042` `setup_runs_npm_install_or_reports_a_clear_error` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22048-22073` `workflow_locates_the_provisioned_shim_or_tells_you_to_run_setup` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22075-22081` `npm_available` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22092-22135` `format_stats_prints_all_four_metrics` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22141-22157` `format_stats_handles_zeroed_metrics_without_nan` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22163-22180` `format_canary_stats_reports_findings_raised_by_tier` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22185-22195` `format_canary_stats_reports_a_zero_findings_count_honestly` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22201-22207` `format_canary_stats_omits_the_findings_volume_section_when_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22212-22229` `progress_outcome` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22236-22248` `format_progress_line_names_id_verdict_and_none_when_nothing_caught` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22254-22271` `format_progress_line_reports_a_wrong_verdict_and_every_catching_tier` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22279-22310` `format_canary_stats_renders_na_for_a_tier_with_unattributed_correct_rejects` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22317-22336` `format_canary_stats_renders_the_real_zero_when_attribution_was_fully_measured` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22345-22364` `format_canary_stats_reports_control_items_and_false_positives` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22372-22387` `format_canary_stats_reports_zero_false_positives_honestly` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22394-22423` `format_canary_stats_reports_the_model_pinning_header_when_present` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22429-22435` `format_canary_stats_omits_the_model_pinning_header_when_the_run_never_recorded_one` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22445-22487` `format_stats_surfaces_parallelism_retention_and_warns_below_the_floor` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22494-22534` `format_stats_surfaces_spawn_timing_and_reports_unpaired_separately` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22540-22546` `format_stats_spawn_timing_reports_no_spawns_when_none_recorded` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22553-22580` `format_stats_spawn_timing_no_spawns_line_requires_both_empty_and_zero_unpaired` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22587-22602` `format_stats_spawn_timing_all_unpaired_is_not_reported_as_no_spawns` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22610-22637` `parallelism_retention_line_is_single_sourced_and_warns_below_the_floor` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22644-22689` `stats_discloses_when_no_verdict_was_recorded_on_this_driver` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22700-22773` `stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22781-22818` `stats_discloses_cause_split_remainder_when_fewer_causes_than_rejects` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22823-22829` `cmd_stats_rejects_extra_arguments` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22832-22877` `baseline_run_slice_selects_a_run_by_id_including_a_middle_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22880-22911` `format_stats_diff_flags_only_the_changed_rows` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22923-22941` `build_environment_report_with_a_wrapper_lists_wrapper_cache_dir_and_budget` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22948-22965` `build_environment_report_with_no_wrapper_omits_cache_dir_but_keeps_budget` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22971-22981` `build_environment_report_zero_max_concurrent_reports_unlimited` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:22987-22996` `build_environment_report_reports_mutation_gate_declared` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23002-23011` `build_environment_report_reports_mutation_gate_not_configured` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23029-23048` `order_signature_advisories_names_the_stream_count_range_and_repair_doc` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23052-23054` `order_signature_advisories_is_empty_when_no_signatures_are_given` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23062-23068` `drift_change` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23074-23103` `model_drift_advisory_is_a_soft_note_for_snapshot_only_drift` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23108-23119` `model_drift_advisory_stays_a_warning_when_any_change_is_a_real_model_repoint` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23123-23125` `model_drift_advisory_is_none_when_nothing_changed` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23130-23146` `index_staleness_message_names_every_kind_of_disagreement_and_the_fix` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23149-23172` `bloat_advisory_is_none_at_or_below_the_threshold_and_named_above_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23180-23195` `assert_advisory_for_never_fabricates_a_missing_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23198-23200` `bloat_advisory_for_never_fabricates_a_store_that_does_not_exist` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23205-23223` `retired_entities_advisory_is_none_at_zero_and_named_with_correct_pluralization` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23226-23231` `retired_entities_advisory_for_never_fabricates_a_graph_that_does_not_exist` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23234-23268` `retired_entities_advisory_for_reads_the_projectors_own_counting_authority` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23275-23282` `scaffold_workflow_declares_build_wrapper_auto` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23290-23304` `init_project_never_clobbers_an_existing_build_section` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23307-23324` `parse_replay_args_requires_a_run_and_a_rev_in_either_order` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23336-23357` `cmd_stats_on_a_never_run_project_says_no_runs_and_creates_no_db` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23343-23345` `drop` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23365-23412` `a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23370-23372` `drop` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23418-23421` `no_runs_message_points_at_rigger_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23427-23434` `seed_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23440-23452` `stats_lines_absent_db_returns_none_and_creates_no_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23459-23475` `stats_lines_existing_db_with_empty_run_stream_returns_none` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23483-23512` `stats_lines_does_not_read_another_projects_namespaced_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23519-23550` `stats_lines_existing_run_renders_metric_lines` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23573-23642` `stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23650-23662` `result_of_at_absent_db_reads_as_unreported_and_creates_no_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23668-23688` `result_of_at_unrecorded_spawn_reads_as_unreported` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23696-23720` `result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23726-23755` `result_of_at_is_namespace_scoped` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23762-23774` `cmd_reported_requires_exactly_one_id` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23785-23798` `pgid_of` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23809-23834` `detach_process_group_places_the_child_in_its_own_process_group` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23843-23864` `a_child_spawned_without_detachment_inherits_the_parent_process_group` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23878-23898` `spawn_run_dashboard_detached_session_detaches_the_dash` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23913-23933` `report_of` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23944-23967` `a_compaction_that_failed_after_the_deletes_is_reported_beside_the_counts` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:23978-24001` `a_prune_that_shed_nothing_is_justified_by_this_log_not_by_when_it_was_written` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24012-24023` `a_pass_that_deleted_nothing_but_reclaimed_space_reports_the_reclamation` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24028-24059` `a_prune_that_shed_rows_explains_the_duplication_a_deduplicated_log_still_accumulates` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24073-24108` `an_unmeasurable_database_is_not_reported_as_a_checkpoint_a_reader_declined` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24112-24114` `no_live_units` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24118-24136` `live_writer_reasons_is_empty_only_when_all_four_facts_are_quiet` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24142-24161` `refusal_names_a_held_step_lock_and_the_force_live_override_owning_the_risk` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24166-24174` `refusal_names_a_non_terminal_unit_between_spawn_rounds` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24178-24190` `refusal_names_every_in_flight_spawn_id_and_the_count` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24194-24201` `refusal_names_the_driver_registration_count` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24206-24218` `refusal_names_every_applicable_reason_together_not_just_the_first` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24224-24253` `refuse_derived_reset_if_live_fails_safe_on_a_malformed_spawn_event` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24259-24280` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24287-24304` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24312-24321` `watch_test_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24344-24377` `store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24391-24422` `scratch_defaults_reads_the_owning_roots_config_with_no_agents_fleet_present` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24425-24450` `watch_once_on_a_clean_store_reports_no_anomalies` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24453-24457` `parse_watch_args_defaults_to_streaming_with_the_default_interval` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24464-24486` `parse_watch_args_accepts_once_and_interval_together_in_either_order` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24489-24493` `parse_watch_args_rejects_a_non_integer_interval_a_missing_value_and_an_unknown_flag` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24501-24621` `watch_once_on_the_seeded_store_reports_one_line_per_anomaly` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24628-24647` `the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24655-24683` `watch_once_reports_dash_not_serving_when_the_marker_names_a_dead_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24690-24720` `watch_once_reports_no_anomaly_when_the_dash_marker_names_a_real_serving_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24725-24748` `runs_menu_line_names_the_measured_counts_and_the_flag` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24751-24780` `derived_menu_line_sums_the_measured_duplicate_counts_and_names_the_flag` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24787-24802` `derived_menu_line_on_a_server_backend_says_so_instead_of_a_fabricated_count` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24821-24914` `implementer_persona_pins_the_checkin_stage_kill_or_justify_contract` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24922-24964` `implementer_persona_pins_the_checkpoint_before_long_work_contract` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
-  - `src/main.rs:24975-25005` `no_persona_under_rigger_agents_invokes_cargo_mutants` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:1806-1829` `resolve_main_worktree_or_refuse` - name contains "resolve" (path/id resolution helper); grouped under `main::support`.
+  - `src/main.rs:3347-3390` `parse_step_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
+  - `src/main.rs:5185-5197` `read_model_drift` - name contains "read_" (generic read helper); grouped under `main::support`.
+  - `src/main.rs:5283-5295` `read_order_signatures` - name contains "read_" (generic read helper); grouped under `main::support`.
+  - `src/main.rs:5319-5391` `parse_canary_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
+  - `src/main.rs:5840-5872` `parse_replay_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
+  - `src/main.rs:6124-6150` `ensure_run_dashboard_at` - name contains "ensure_" (invariant helper); grouped under `main::support`.
+  - `src/main.rs:6510-6545` `ensure_run_dashboard` - name contains "ensure_" (invariant helper); grouped under `main::support`.
+  - `src/main.rs:7852-7882` `parse_watch_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
+  - `src/main.rs:9054-9112` `parse_result_args` - name contains "parse_" (argument/input parsing); grouped under `main::support`.
+  - `src/main.rs:9152-9166` `read_outcome_from_stdin` - name contains "read_" (generic read helper); grouped under `main::support`.
+  - `src/main.rs:10241-10269` `read_run_units` - name contains "read_" (generic read helper); grouped under `main::support`.
+  - `src/main.rs:10615-10617` `is_uuid8` - name contains "is_" (predicate helper); grouped under `main::support`.
+  - `src/main.rs:10624-10653` `find_shadow_stores` - name contains "find_" (lookup helper); grouped under `main::support`.
+  - `src/main.rs:10716-10721` `is_build_cache_tombstone` - name contains "is_" (predicate helper); grouped under `main::support`.
+  - `src/main.rs:11539-11588` `write_gitignore_entries` - name contains "write_" (generic write helper); grouped under `main::support`.
+  - `src/main.rs:12040-12045` `find_bytes` - name contains "find_" (lookup helper); grouped under `main::support`.
+  - `src/main.rs:12671-12689` `write_docs` - name contains "write_" (generic write helper); grouped under `main::support`.
+  - `src/main.rs:12969-12976` `write_if_absent` - name contains "write_" (generic write helper); grouped under `main::support`.
+- `main::tests` (341 functions)
+  - `src/main.rs:12127-12132` `compose_precommit` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13178-13185` `spec_lint_next_step_names_rigger_validate_and_the_given_spec_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13193-13195` `spec_lint_reminder_suppressed_when_env_names_the_real_direct_parent_pid` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13201-13222` `spec_lint_reminder_prints_on_absent_foreign_stale_or_malformed_env` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13239-13261` `spec_lint_warning_lines_formats_every_advisory_with_the_spec_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13266-13269` `spec_lint_warning_lines_is_empty_on_a_clean_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13279-13332` `ensure_run_dashboard_at_starts_once_then_short_circuits_on_a_live_marker` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13341-13347` `dash_marker_serving_reports_false_when_nothing_answers_the_markers_port` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13352-13384` `ensure_run_dashboard_at_restarts_when_the_recorded_dash_is_gone` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13392-13411` `ensure_run_dashboard_at_reports_failed_when_the_start_errors` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13423-13462` `wait_for_dash_bind_confirms_promptly_once_the_port_answers_as_a_dash` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13469-13496` `wait_for_dash_bind_fails_fast_when_the_child_exits_before_confirming` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13510-13552` `wait_for_dash_bind_times_out_against_a_real_held_port` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13575-13619` `wait_for_dash_bind_or_diagnose_never_self_attributes_its_own_still_starting_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13636-13664` `ensure_run_dashboard_at_writes_no_marker_when_the_real_spawn_never_confirms_a_bind` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13679-13724` `ensure_run_dashboard_at_names_the_held_ports_holder_when_the_real_spawn_fails` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13744-13768` `ensure_run_dashboard_at_never_claims_a_phantom_holder_for_an_unheld_port` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13780-13811` `ensure_run_dashboard_at_self_heals_a_marker_naming_a_dead_pid` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13821-13855` `ensure_run_dashboard_at_self_heals_a_marker_naming_a_live_pid_whose_port_is_unserved` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13868-13906` `ensure_run_dashboard_at_never_revisits_a_still_serving_unattributed_pid_marker` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13913-13934` `dash_ensure_is_suppressed_by_either_opt_out_and_proceeds_when_neither_is_set` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13944-13975` `dash_status_line_renders_each_outcome_to_its_exact_text` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:13983-14011` `dash_status_json_renders_each_outcome_to_its_exact_shape` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14020-14047` `dash_ensure_port_defaults_to_the_fixed_address_and_only_a_valid_override_relocates_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14057-14090` `compose_precommit_fresh_install_carries_the_managed_block` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14100-14127` `precommit_block_refuses_on_drift_instead_of_staging` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14141-14242` `precommit_block_resolves_a_tree_built_binary_before_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14249-14261` `compose_precommit_is_idempotent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14272-14301` `compose_precommit_chains_without_clobbering_an_existing_hook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14311-14325` `compose_precommit_prepends_before_a_terminal_exit_existing_hook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14334-14385` `install_precommit_hook_preserves_a_non_utf8_existing_hook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14392-14415` `compose_precommit_refreshes_a_stale_block_in_place` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14423-14442` `cmd_peers_prints_live_or_historical_per_decision_provenance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14460-14503` `superseded_graph_nodes_drops_dead_runs_and_preboundary_keeping_lessons_active_and_reused_ids` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14462-14464` `ev` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14465-14470` `run_started` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14512-14550` `superseded_edge_boundary_is_the_active_runs_start_or_none_without_a_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14514-14520` `run_started_at` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14521-14527` `decision` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14578-14836` `the_denoise_leaves_metrics_run_pruning_and_blast_radius_unaffected` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14584-14588` `ev` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14846-14864` `version_line_carries_the_derived_version_and_a_non_empty_build_provenance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14871-14912` `docs_context_reads_every_fact_from_code` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14919-14949` `docs_render_surfaces_known_code_facts_verbatim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14955-14974` `commands_registry_is_well_formed_and_covers_dispatch` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:14982-15012` `write_docs_writes_every_registry_skill_plus_the_handbook` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15022-15059` `install_and_docs_each_cover_exactly_the_registry_no_more_no_less` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15068-15107` `per_operation_skills_reference_only_real_subcommands` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15117-15145` `watching_discipline_skills_reference_only_real_subcommands` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15153-15220` `docs_drift_flags_a_changed_file_and_skips_absent_or_in_sync_ones` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15231-15257` `committed_registry_docs_are_in_sync_with_a_fresh_render` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15268-15297` `planning_field_guide_page_renders_and_is_linked_from_authoring_loops` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15308-15375` `status_and_dashboard_render_the_same_current_blocker_lines` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15388-15443` `release_ready_lines_surface_only_on_a_done_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15446-15512` `status_and_dash_read_the_runs_persisted_base_not_a_re_resolution` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15517-15538` `dirty_tracked_paths_keeps_tracked_modifications_and_drops_untracked_and_ignored` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15541-15543` `dirty_tracked_paths_on_a_clean_tree_is_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15546-15571` `installed_workflow_drifted_is_false_when_absent_or_identical_and_true_on_drift` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15576-15623` `drift_side_names_the_binary_stale_only_when_the_installed_workflow_is_provably_newer` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15626-15674` `workflow_drift_advisory_names_which_side_is_stale_and_never_says_they_differ` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15677-15721` `git_is_ancestor_decides_commit_order_in_a_real_repo` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15724-15770` `git_commit_distance_counts_commits_ahead_in_a_real_repo` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15773-15787` `missing_gitsemver_binary_advisory_fires_only_on_the_unversioned_marker` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15790-15795` `behind_the_tree_message_is_silent_when_versions_already_match` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15798-15808` `behind_the_tree_message_is_silent_when_either_side_is_unversioned` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15811-15820` `behind_the_tree_message_is_silent_on_an_undecidable_or_zero_distance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15823-15830` `behind_the_tree_message_names_both_versions_and_the_commit_distance` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15837-15843` `gitsemver_available` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15847-15862` `behind_the_tree_git` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15864-15876` `behind_the_tree_git_output` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15879-15917` `behind_the_tree_advisory_names_the_real_derived_version_ahead_of_the_installed_commit` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15920-15942` `behind_the_tree_advisory_is_silent_when_the_checkout_has_not_moved` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15945-15958` `install_workflow_records_the_build_provenance_beside_the_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15961-15976` `validate_advisories_warns_on_workflow_drift_naming_the_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15982-15984` `slugs` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15986-15989` `write_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:15994-16022` `init_committed_repo` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16025-16049` `refuse_when_base_lacks_spec_paths_refuses_on_total_absence_and_names_a_path` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16052-16069` `refuse_when_base_lacks_spec_paths_proceeds_when_the_base_contains_them` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16072-16090` `refuse_when_base_lacks_spec_paths_partial_match_warns_and_proceeds` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16093-16133` `refuse_when_base_lacks_spec_paths_skips_without_tokens_or_off_a_fresh_from_base_anchor` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16136-16217` `refuse_when_base_unreachable_fails_loudly_only_when_no_reachable_base` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16220-16227` `human_size_formats_bytes_through_gib` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16230-16236` `is_uuid8_accepts_exactly_eight_hex_digits` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16239-16284` `worktree_belongs_to_live_matches_both_naming_shapes_without_prefix_false_match` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16287-16334` `current_run_units_scopes_to_the_current_run_and_splits_live_from_dead` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16337-16374` `current_run_units_spares_a_terminal_units_branch_whose_latest_spawn_is_still_in_flight` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16377-16403` `current_run_units_still_retires_a_terminal_unit_once_its_latest_spawn_answers` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16406-16453` `current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_current_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16465-16491` `live_branches_for_sweep_fails_closed_on_an_unreadable_stream_but_folds_a_readable_one` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16494-16534` `find_shadow_stores_finds_nested_events_db_and_prunes_build_caches` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16537-16548` `dir_size_bytes_sums_files_recursively` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16553-16569` `reclaim_shared_build_cache_deletes_a_populated_cache_and_reports_its_bytes` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16572-16590` `reclaim_shared_build_cache_is_idempotent_zero_report_when_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16593-16621` `reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16624-16647` `reclaim_shared_build_cache_releases_the_guard_promptly_after_a_successful_reclaim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16650-16723` `scan_residue_reports_dead_worktrees_caches_shadows_and_branches` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16726-16745` `scan_residue_is_empty_when_everything_is_live_and_no_shadow_stores` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16748-16765` `format_residue_renders_a_sized_warning_block` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16770-16789` `store_and_backup_bytes_splits_live_store_files_from_dot_bak_backups` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16792-16796` `store_and_backup_bytes_is_zero_on_a_missing_directory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16799-16841` `scratch_footprint_totals_every_entry_and_dead_only_the_non_live_share` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16844-16909` `footprint_report_measures_every_category_on_a_seeded_fixture_tree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16912-16929` `footprint_report_folds_a_none_mutation_root_to_a_zero_contribution` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:16932-17014` `footprint_report_flags_registered_scratch_roots_dead_share_and_spares_a_live_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17027-17081` `footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17084-17089` `looks_like_run_container_true_when_every_direct_child_is_a_directory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17092-17100` `looks_like_run_container_false_when_a_direct_child_is_a_bare_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17103-17111` `looks_like_run_container_is_true_on_an_empty_or_missing_dir` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17114-17127` `classify_agent_scratch_separates_a_bare_top_level_file_from_a_well_formed_container` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17130-17209` `footprint_report_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_never_folded_into_the_dead_run_bucket` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17212-17236` `footprint_report_lines_reports_every_categorys_total_unconditionally` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17239-17250` `footprint_advisories_flags_a_category_whose_dead_share_reaches_the_threshold` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17253-17261` `footprint_advisories_is_silent_below_the_threshold` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17264-17281` `footprint_advisories_flags_a_category_exactly_at_the_threshold_boundary` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17284-17294` `footprint_advisories_never_flags_a_category_with_no_reclaim_command` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17297-17305` `footprint_advisories_is_silent_on_an_empty_category` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17308-17331` `owning_repo_root_prefers_the_stores_own_root_over_the_git_toplevel` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17336-17459` `reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17462-17527` `reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17530-17569` `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17572-17602` `reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17607-17646` `leaked_process_advisories_name_a_process_rooted_under_the_scratch_root` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17649-17659` `leaked_process_advisories_is_empty_when_no_process_is_rooted_under_the_scratch_root` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17662-17669` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17674-17680` `parse_result_takes_an_id_and_an_optional_output_arg` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17683-17688` `parse_result_with_no_output_defers_to_stdin` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17693-17699` `find_store_dir_from_returns_the_dir_that_holds_the_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17702-17714` `find_store_dir_from_walks_up_from_a_subdirectory` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17717-17723` `git_init_quiet` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17726-17763` `find_store_dir_from_never_escapes_the_repo_into_a_parent_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17766-17841` `reap_then_remove_dir_reaps_processes_rooted_inside_then_removes_the_dir` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17844-17893` `reclaim_run_scratch_removes_the_run_level_areas_and_spares_per_unit_scratch` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17896-17929` `reclaim_run_scratch_spares_the_shared_build_cache_while_a_build_holds_its_guard` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17932-17943` `find_store_dir_from_refuses_the_worktree_shape_with_no_events_db` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17946-17975` `find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:17978-18031` `find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18034-18088` `find_store_dir_from_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18091-18118` `walk_stores_from_prefers_the_outermost_store_over_a_nearer_shadow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18121-18139` `walk_stores_from_reports_no_shadow_for_a_single_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18148-18217` `require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18151-18154` `drop` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18221-18243` `require_store_dir_fence_is_off_by_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18227-18229` `drop` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18248-18254` `result_advisories_flags_an_orphan_id_with_no_spawn_request` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18257-18282` `result_advisories_orphan_wording_is_plain_on_record_and_conditional_under_if_absent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18285-18295` `result_advisories_is_silent_for_a_parked_unanswered_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18298-18309` `result_advisories_flags_a_supersede_with_the_prior_result_position` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18312-18325` `result_advisories_suppresses_the_supersede_note_when_not_superseding` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18328-18340` `result_advisories_flags_both_orphan_and_supersede` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18343-18363` `parse_result_error_flag_is_order_independent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18366-18393` `parse_result_if_absent_is_off_by_default_and_a_bare_order_independent_flag` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18396-18431` `parse_result_meta_must_be_a_json_object` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18434-18448` `parse_result_rejects_missing_id_extra_args_and_unknown_flags` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18451-18465` `build_result_shapes_success_and_failure` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18468-18473` `build_result_rejects_a_blank_error_message` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18476-18485` `build_result_attaches_meta` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18488-18526` `a_recorded_result_lets_the_replay_driver_advance_past_the_spawn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18529-18561` `a_recorded_error_result_replays_as_a_failure_not_a_fake_success` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18567-18656` `scaffold_parses_into_a_valid_config` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18670-18687` `shipped_workflows_carry_a_non_zero_spawn_budget` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18690-18702` `parse_canary_args_defaults_corpus_and_jobs` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18705-18717` `parse_canary_args_reads_corpus_if_model_changed_and_jobs` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18720-18732` `parse_canary_args_rejects_a_non_positive_jobs_value` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18735-18745` `parse_canary_args_rejects_unknown_flags` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18748-18777` `usage_text_gives_the_jobs_flag_its_own_description_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18780-18797` `usage_text_names_the_build_cache_reset_mode` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18800-18810` `parse_run_args_defaults_to_cli_and_an_unset_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18813-18824` `parse_run_args_reads_fresh_alongside_a_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18827-18837` `parse_run_args_reads_rebase_definition` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18840-18855` `parse_run_args_reads_driver_eventstore_conn_and_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18858-18863` `parse_run_args_rejects_unknown_flags_and_values` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18870-18896` `parse_run_args_accepts_base_alongside_a_spec` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18904-18926` `resolve_run_base_precedence_flag_then_env_then_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18932-18970` `parse_workflow_args_reads_spec_and_base` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:18975-19027` `parse_step_args_reads_spec_and_base_with_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19033-19077` `definition_hash_is_stable_and_content_sensitive` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19086-19113` `kurrentdb_is_always_available_and_needs_a_conn` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19125-19156` `store_selection_preserves_a_credentialed_tls_conn_verbatim` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19167-19344` `store_selection_precedence_flag_env_secret_file_config_then_default` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19347-19349` `project_identity_is_never_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19352-19377` `project_identity_reads_the_tracked_id_file_then_falls_back_to_the_basename` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19380-19407` `ssh_https_and_git_suffix_forms_of_one_repo_mint_identical_ids` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19410-19424` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19427-19456` `decide_migration_covers_every_case` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19459-19498` `migrate_project_identity_renames_legacy_history_and_records_a_decision` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19501-19540` `migrate_project_identity_refuses_when_both_namespaces_hold_history` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19543-19608` `migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19611-19691` `migrate_project_identity_rekeys_the_graph_before_the_irreversible_stream_rename` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19694-19789` `migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19798-19903` `dash_graph_provider_reaches_the_whole_projection_when_run_seeds_are_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19917-19956` `dash_read_whole_graph_on_an_absent_db_is_empty_and_creates_nothing` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:19962-19994` `setup_provisions_the_shim_runtime_files` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20003-20062` `setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20067-20076` `outcome_for` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20080-20085` `registry_entry` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20095-20165` `setup_installs_the_using_rigger_skill_distinct_from_the_workflow` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20183-20267` `planning_a_spec_installs_and_renders_through_the_registry_with_no_planning_specific_code` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20277-20313` `setup_skill_install_applies_the_project_overlay` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20319-20345` `docs_overlay_overrides_only_declared_fields` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20350-20360` `docs_overlay_malformed_is_a_loud_error` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20370-20398` `provision_shim_is_a_silent_noop_when_already_current` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20408-20427` `shim_is_not_current_when_node_modules_is_torn_missing_the_install_marker` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20434-20456` `init_project_is_idempotent_reporting_new_work_only_once` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20466-20524` `scaffold_summary_reports_only_the_gitignore_change_on_a_gitignore_only_repair` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20535-20614` `init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20623-20663` `init_project_gitignores_the_store_conn_secret_file_idempotently` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20672-20686` `a_group_or_other_readable_secret_file_mode_is_flagged_owner_only_is_not` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20698-20746` `init_project_still_writes_the_dash_ignore_lines_when_a_broader_rule_covers_them` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20755-20817` `scaffold_agents_and_workflow_reference_the_same_canonical_set` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20824-20867` `init_scaffolds_only_the_workflow_referenced_agents` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20874-20903` `get_referenced_agent_ids_reads_the_scaffolded_workflows_fleet` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20910-20942` `write_if_absent_wrote_kept_and_errors_naming_the_artifact` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20950-20967` `parse_setup_args_reads_the_agents_directory_flag` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:20974-21019` `import_agents_copies_and_normalizes_the_identity_field` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21025-21062` `import_agents_refuses_to_overwrite_an_existing_agent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21068-21081` `import_agents_validates_and_rejects_a_malformed_agent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21090-21112` `import_agents_rejects_an_id_colliding_with_an_existing_agent` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21118-21138` `import_agents_rejects_a_duplicate_id_within_one_import` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21144-21165` `import_agents_rejects_an_agent_with_a_blank_id` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21172-21194` `import_agents_runs_full_validation_and_rejects_a_broken_project` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21200-21219` `meta_object_body` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21228-21242` `meta_description` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21249-21257` `strip_line_comments` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21271-21494` `workflow_is_a_thin_courier_driver_with_per_unit_phase_labels` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21503-21514` `the_step_schema_admits_the_attention_array` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21520-21542` `js_function_body` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21558-21613` `phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21626-21664` `meta_matches_reality_drops_integrate_and_the_unit_stage_construction` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21683-21774` `the_driver_relays_each_attention_entry_as_a_narrator_log_line` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21781-21794` `merge_hung_attention_does_nothing_when_not_newly_hung` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21802-21814` `merge_hung_attention_defers_to_an_existing_budget_halt` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21823-21859` `merge_hung_attention_lands_in_canonical_position_alongside_other_signals` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21877-21925` `workflow_step_courier_prompt_is_foreground_and_honest` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21935-21944` `step_courier_prompt` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:21962-22029` `workflow_step_courier_waits_on_an_auto_backgrounded_step` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22044-22099` `workflow_driver_guards_a_null_step_before_dereferencing_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22112-22169` `workflow_meta_description_is_a_user_facing_tagline_free_of_plumbing_terms` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22176-22200` `setup_runs_npm_install_or_reports_a_clear_error` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22206-22231` `workflow_locates_the_provisioned_shim_or_tells_you_to_run_setup` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22233-22239` `npm_available` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22250-22293` `format_stats_prints_all_four_metrics` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22299-22315` `format_stats_handles_zeroed_metrics_without_nan` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22321-22338` `format_canary_stats_reports_findings_raised_by_tier` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22343-22353` `format_canary_stats_reports_a_zero_findings_count_honestly` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22359-22365` `format_canary_stats_omits_the_findings_volume_section_when_empty` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22370-22387` `progress_outcome` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22394-22406` `format_progress_line_names_id_verdict_and_none_when_nothing_caught` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22412-22429` `format_progress_line_reports_a_wrong_verdict_and_every_catching_tier` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22437-22468` `format_canary_stats_renders_na_for_a_tier_with_unattributed_correct_rejects` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22475-22494` `format_canary_stats_renders_the_real_zero_when_attribution_was_fully_measured` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22503-22522` `format_canary_stats_reports_control_items_and_false_positives` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22530-22545` `format_canary_stats_reports_zero_false_positives_honestly` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22552-22581` `format_canary_stats_reports_the_model_pinning_header_when_present` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22587-22593` `format_canary_stats_omits_the_model_pinning_header_when_the_run_never_recorded_one` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22603-22645` `format_stats_surfaces_parallelism_retention_and_warns_below_the_floor` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22652-22692` `format_stats_surfaces_spawn_timing_and_reports_unpaired_separately` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22698-22704` `format_stats_spawn_timing_reports_no_spawns_when_none_recorded` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22711-22738` `format_stats_spawn_timing_no_spawns_line_requires_both_empty_and_zero_unpaired` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22745-22760` `format_stats_spawn_timing_all_unpaired_is_not_reported_as_no_spawns` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22768-22795` `parallelism_retention_line_is_single_sourced_and_warns_below_the_floor` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22802-22847` `stats_discloses_when_no_verdict_was_recorded_on_this_driver` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22858-22931` `stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22939-22976` `stats_discloses_cause_split_remainder_when_fewer_causes_than_rejects` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22981-22987` `cmd_stats_rejects_extra_arguments` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:22990-23035` `baseline_run_slice_selects_a_run_by_id_including_a_middle_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23038-23069` `format_stats_diff_flags_only_the_changed_rows` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23081-23099` `build_environment_report_with_a_wrapper_lists_wrapper_cache_dir_and_budget` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23106-23123` `build_environment_report_with_no_wrapper_omits_cache_dir_but_keeps_budget` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23129-23139` `build_environment_report_zero_max_concurrent_reports_unlimited` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23145-23154` `build_environment_report_reports_mutation_gate_declared` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23160-23169` `build_environment_report_reports_mutation_gate_not_configured` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23187-23206` `order_signature_advisories_names_the_stream_count_range_and_repair_doc` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23210-23212` `order_signature_advisories_is_empty_when_no_signatures_are_given` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23220-23226` `drift_change` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23232-23261` `model_drift_advisory_is_a_soft_note_for_snapshot_only_drift` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23266-23277` `model_drift_advisory_stays_a_warning_when_any_change_is_a_real_model_repoint` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23281-23283` `model_drift_advisory_is_none_when_nothing_changed` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23288-23304` `index_staleness_message_names_every_kind_of_disagreement_and_the_fix` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23307-23330` `bloat_advisory_is_none_at_or_below_the_threshold_and_named_above_it` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23338-23353` `assert_advisory_for_never_fabricates_a_missing_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23356-23358` `bloat_advisory_for_never_fabricates_a_store_that_does_not_exist` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23363-23381` `retired_entities_advisory_is_none_at_zero_and_named_with_correct_pluralization` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23384-23389` `retired_entities_advisory_for_never_fabricates_a_graph_that_does_not_exist` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23392-23426` `retired_entities_advisory_for_reads_the_projectors_own_counting_authority` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23433-23440` `scaffold_workflow_declares_build_wrapper_auto` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23448-23462` `init_project_never_clobbers_an_existing_build_section` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23465-23482` `parse_replay_args_requires_a_run_and_a_rev_in_either_order` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23494-23515` `cmd_stats_on_a_never_run_project_says_no_runs_and_creates_no_db` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23501-23503` `drop` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23523-23570` `a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23528-23530` `drop` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23576-23579` `no_runs_message_points_at_rigger_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23585-23592` `seed_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23598-23610` `stats_lines_absent_db_returns_none_and_creates_no_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23617-23633` `stats_lines_existing_db_with_empty_run_stream_returns_none` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23641-23670` `stats_lines_does_not_read_another_projects_namespaced_run` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23677-23708` `stats_lines_existing_run_renders_metric_lines` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23731-23800` `stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23808-23820` `result_of_at_absent_db_reads_as_unreported_and_creates_no_file` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23826-23846` `result_of_at_unrecorded_spawn_reads_as_unreported` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23854-23878` `result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23884-23913` `result_of_at_is_namespace_scoped` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23920-23932` `cmd_reported_requires_exactly_one_id` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23943-23956` `pgid_of` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:23967-23992` `detach_process_group_places_the_child_in_its_own_process_group` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24001-24022` `a_child_spawned_without_detachment_inherits_the_parent_process_group` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24036-24056` `spawn_run_dashboard_detached_session_detaches_the_dash` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24071-24091` `report_of` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24102-24125` `a_compaction_that_failed_after_the_deletes_is_reported_beside_the_counts` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24136-24159` `a_prune_that_shed_nothing_is_justified_by_this_log_not_by_when_it_was_written` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24170-24181` `a_pass_that_deleted_nothing_but_reclaimed_space_reports_the_reclamation` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24186-24217` `a_prune_that_shed_rows_explains_the_duplication_a_deduplicated_log_still_accumulates` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24231-24266` `an_unmeasurable_database_is_not_reported_as_a_checkpoint_a_reader_declined` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24270-24272` `no_live_units` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24276-24294` `live_writer_reasons_is_empty_only_when_all_four_facts_are_quiet` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24300-24319` `refusal_names_a_held_step_lock_and_the_force_live_override_owning_the_risk` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24324-24332` `refusal_names_a_non_terminal_unit_between_spawn_rounds` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24336-24348` `refusal_names_every_in_flight_spawn_id_and_the_count` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24352-24359` `refusal_names_the_driver_registration_count` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24364-24376` `refusal_names_every_applicable_reason_together_not_just_the_first` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24382-24411` `refuse_derived_reset_if_live_fails_safe_on_a_malformed_spawn_event` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24417-24438` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24445-24462` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24470-24479` `watch_test_store` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24502-24535` `store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24549-24580` `scratch_defaults_reads_the_owning_roots_config_with_no_agents_fleet_present` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24583-24608` `watch_once_on_a_clean_store_reports_no_anomalies` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24611-24615` `parse_watch_args_defaults_to_streaming_with_the_default_interval` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24622-24644` `parse_watch_args_accepts_once_and_interval_together_in_either_order` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24647-24651` `parse_watch_args_rejects_a_non_integer_interval_a_missing_value_and_an_unknown_flag` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24659-24779` `watch_once_on_the_seeded_store_reports_one_line_per_anomaly` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24786-24805` `the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24813-24841` `watch_once_reports_dash_not_serving_when_the_marker_names_a_dead_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24848-24878` `watch_once_reports_no_anomaly_when_the_dash_marker_names_a_real_serving_holder` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24883-24906` `runs_menu_line_names_the_measured_counts_and_the_flag` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24909-24938` `derived_menu_line_sums_the_measured_duplicate_counts_and_names_the_flag` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24945-24960` `derived_menu_line_on_a_server_backend_says_so_instead_of_a_fabricated_count` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:24979-25072` `implementer_persona_pins_the_checkin_stage_kill_or_justify_contract` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:25080-25122` `implementer_persona_pins_the_checkpoint_before_long_work_contract` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
+  - `src/main.rs:25133-25163` `no_persona_under_rigger_agents_invokes_cargo_mutants` - defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).
 
 ### Unassigned (174 functions)
 
@@ -1596,102 +1598,102 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1620 func
 - `src/main.rs:1415-1473` `main` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `src/main.rs:1645-1647` `usage` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 - `src/main.rs:1649-1654` `db_path` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:1685-1708` `walk_stores_from` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:1721-1742` `main_repo_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:1817-1866` `refuse_unless_one_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:2075-2113` `result_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:2128-2132` `load_run_config` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:2207-2227` `acquire_step_lock` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:2915-2928` `merge_hung_attention` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:3069-3072` `reap_then_remove_dir` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:3083-3097` `reap_then_remove_worktree` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:3259-3272` `result_of_at` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:3361-3385` `warn_on_run_branch_divergence` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:3398-3407` `anchor_run_branch` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:3431-3445` `refuse_when_base_unreachable` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:3517-3643` `run_cli` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:3667-3711` `fresh_run_if_requested` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:4042-4059` `load_criteria` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:4245-4290` `definition_body` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:4304-4322` `derive_extent_end` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:4329-4334` `derive_extent_end` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:4691-4720` `stats_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:4741-4755` `parallelism_retention_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:4818-4839` `append_spawn_timing` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:4844-4846` `fmt_duration` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:4874-4984` `append_review_quality` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:5013-5029` `canary_stats_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:5159-5203` `model_drift_advisory` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:5212-5229` `order_signature_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:5726-5736` `started_units` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:5757-5790` `candidate_reaches_gate` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:5834-5848` `baseline_run_slice` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:5851-5855` `run_started_id` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:5862-5908` `materialize_config_at_rev` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:5991-6009` `start_run_dashboard` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:6016-6031` `spawn_run_dashboard` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:6118-6124` `detach_process_group` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:6127-6127` `detach_process_group` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:6361-6416` `spawn_run_dashboard_detached` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:6952-7002` `watch_and_self_reap_on_idle` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:7207-7209` `instance_rigger_dir` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:7769-7777` `status_blocker_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:7786-7792` `release_ready_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:7913-8126` `watch_poll` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:8278-8284` `runs_menu_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:8291-8313` `derived_menu_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:8481-8570` `derived_prune_report` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:8883-8887` `graph_node_id` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:8946-8956` `peer_decision_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:8960-8969` `json_str_array` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:8973-8982` `json_type_name` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9078-9099` `build_result` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9347-9359` `fold_recorded_result_into_graph` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9575-9608` `build_environment_report` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9616-9655` `validate_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9662-9688` `index_staleness_message` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9741-9750` `retired_entities_advisory` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9763-9769` `retired_entities_advisory_for` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9864-9875` `missing_gitsemver_binary_advisory` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9887-9907` `behind_the_tree_message` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9926-9938` `behind_the_tree_advisory` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:9958-9972` `drift_side` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:10021-10042` `uncommitted_rigger_advisory` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:10050-10065` `dirty_tracked_paths` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:10105-10142` `residue_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:10153-10170` `leaked_process_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:10270-10316` `current_run_units` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:10448-10467` `local_unit_branches` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:10475-10536` `scan_residue` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:10613-10632` `dir_size_bytes` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:10654-10664` `build_cache_tombstone_path` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:10763-10776` `human_size` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:11008-11018` `dead_spawn_leaf_bytes` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:11028-11035` `looks_like_run_container` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:11241-11253` `owning_repo_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:11331-11439` `init_project` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:11547-11575` `get_referenced_agent_ids` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:11874-11989` `precommit_block` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:12020-12072` `compose_precommit_bytes` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:12427-12518` `import_agents` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:12527-12557` `normalize_identity` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:12562-12568` `top_level_key` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:12845-12860` `select_grounder` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
-- `src/main.rs:12868-12870` `select_reindex_grounder` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:1696-1753` `walk_stores_from` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:1766-1787` `main_repo_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:1862-1911` `refuse_unless_one_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:2120-2158` `result_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:2173-2177` `load_run_config` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:2252-2272` `acquire_step_lock` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:2960-2973` `merge_hung_attention` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:3114-3117` `reap_then_remove_dir` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:3128-3142` `reap_then_remove_worktree` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:3304-3317` `result_of_at` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:3406-3430` `warn_on_run_branch_divergence` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:3443-3452` `anchor_run_branch` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:3476-3490` `refuse_when_base_unreachable` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:3562-3688` `run_cli` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:3712-3756` `fresh_run_if_requested` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:4087-4104` `load_criteria` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:4290-4335` `definition_body` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:4349-4367` `derive_extent_end` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:4374-4379` `derive_extent_end` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:4736-4765` `stats_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:4786-4800` `parallelism_retention_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:4863-4884` `append_spawn_timing` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:4889-4891` `fmt_duration` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:4919-5029` `append_review_quality` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:5058-5074` `canary_stats_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:5204-5248` `model_drift_advisory` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:5257-5274` `order_signature_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:5771-5781` `started_units` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:5802-5835` `candidate_reaches_gate` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:5879-5893` `baseline_run_slice` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:5896-5900` `run_started_id` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:5907-5953` `materialize_config_at_rev` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:6036-6054` `start_run_dashboard` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:6061-6076` `spawn_run_dashboard` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:6163-6169` `detach_process_group` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:6172-6172` `detach_process_group` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:6406-6461` `spawn_run_dashboard_detached` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:6997-7047` `watch_and_self_reap_on_idle` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:7252-7254` `instance_rigger_dir` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:7814-7822` `status_blocker_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:7831-7837` `release_ready_lines` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:7958-8171` `watch_poll` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:8323-8329` `runs_menu_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:8336-8358` `derived_menu_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:8526-8615` `derived_prune_report` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:8928-8932` `graph_node_id` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:8991-9001` `peer_decision_line` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9005-9014` `json_str_array` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9018-9027` `json_type_name` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9123-9144` `build_result` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9392-9404` `fold_recorded_result_into_graph` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9620-9653` `build_environment_report` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9661-9700` `validate_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9707-9733` `index_staleness_message` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9786-9795` `retired_entities_advisory` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9808-9814` `retired_entities_advisory_for` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9909-9920` `missing_gitsemver_binary_advisory` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9932-9952` `behind_the_tree_message` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:9971-9983` `behind_the_tree_advisory` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10003-10017` `drift_side` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10066-10087` `uncommitted_rigger_advisory` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10095-10110` `dirty_tracked_paths` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10150-10187` `residue_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10198-10215` `leaked_process_advisories` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10315-10361` `current_run_units` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10493-10512` `local_unit_branches` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10520-10581` `scan_residue` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10658-10677` `dir_size_bytes` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10699-10709` `build_cache_tombstone_path` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:10808-10821` `human_size` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:11053-11063` `dead_spawn_leaf_bytes` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:11073-11080` `looks_like_run_container` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:11286-11298` `owning_repo_root` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:11376-11484` `init_project` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:11592-11620` `get_referenced_agent_ids` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:11919-12034` `precommit_block` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:12065-12117` `compose_precommit_bytes` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:12472-12563` `import_agents` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:12572-12602` `normalize_identity` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:12607-12613` `top_level_key` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:12890-12905` `select_grounder` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
+- `src/main.rs:12913-12915` `select_reindex_grounder` - no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.
 
 ## 2. Duplication Catalog
 
-746 clusters (3622 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+749 clusters (3645 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
-- **Command::new call sites**: 359 site(s) - `dup-0006`
+- **Command::new call sites**: 372 site(s) - `dup-0006`
 - **/proc-path string literals**: 60 site(s) - `dup-0143`
 - **sqlite Connection::open call sites**: 46 site(s) - `dup-0122`
 - **.rigger-path string literals**: 697 site(s) - `dup-0060`
-- **error-shaping helper functions**: 7 site(s) - `dup-0079`
+- **error-shaping helper functions**: 8 site(s) - `dup-0079`
 
-### Clusters (244 exact, 422 near, 80 semantic)
+### Clusters (244 exact, 425 near, 80 semantic)
 
 #### `dup-0001` (near, 2 sites)
 
@@ -1711,7 +1713,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/blocker.rs:306-308` `ev`
 - `src/dash.rs:5041-5043` `ev`
 - `src/ledger.rs:719-721` `ev`
-- `src/main.rs:14417-14419` `ev`
+- `src/main.rs:14462-14464` `ev`
 - `src/metrics.rs:1400-1402` `ev`
 - `src/run.rs:549-551` `ev`
 - `src/watch.rs:607-609` `ev`
@@ -1748,11 +1750,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/budget.rs:128-136` `wait_until`
 - `tests/no_os_kill_test_helper_periphery.rs:64-72` `wait_until`
 
-#### `dup-0006` (semantic, 359 sites)
+#### `dup-0006` (semantic, 372 sites)
 
 Proposed home: `a single injected process-spawn port every Command::new site routes through instead of constructing its own Command`
 
-mandatory sweep: Command::new call sites - 359 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: Command::new call sites - 372 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/budget.rs:208-208` `Command::new`
 - `src/budget.rs:246-246` `Command::new`
@@ -1801,59 +1803,65 @@ mandatory sweep: Command::new call sites - 359 site(s), collected mechanically r
 - `src/gate.rs:754-754` `Command::new`
 - `src/gate.rs:1690-1690` `Command::new`
 - `src/main.rs:1181-1181` `Command::new`
-- `src/main.rs:1722-1722` `Command::new`
-- `src/main.rs:3086-3086` `Command::new`
-- `src/main.rs:3959-3959` `Command::new`
-- `src/main.rs:5874-5874` `Command::new`
-- `src/main.rs:5901-5901` `Command::new`
-- `src/main.rs:6019-6019` `Command::new`
-- `src/main.rs:6148-6148` `Command::new`
-- `src/main.rs:9825-9825` `Command::new`
-- `src/main.rs:9844-9844` `Command::new`
-- `src/main.rs:10022-10022` `Command::new`
-- `src/main.rs:10449-10449` `Command::new`
-- `src/main.rs:11512-11512` `Command::new`
-- `src/main.rs:12094-12094` `Command::new`
-- `src/main.rs:12228-12228` `Command::new`
-- `src/main.rs:12884-12884` `Command::new`
-- `src/main.rs:13393-13393` `Command::new`
-- `src/main.rs:13426-13426` `Command::new`
-- `src/main.rs:13470-13470` `Command::new`
-- `src/main.rs:13539-13539` `Command::new`
-- `src/main.rs:15636-15636` `Command::new`
-- `src/main.rs:15683-15683` `Command::new`
-- `src/main.rs:15793-15793` `Command::new`
-- `src/main.rs:15803-15803` `Command::new`
-- `src/main.rs:15820-15820` `Command::new`
-- `src/main.rs:15956-15956` `Command::new`
-- `src/main.rs:15968-15968` `Command::new`
-- `src/main.rs:16104-16104` `Command::new`
-- `src/main.rs:17463-17463` `Command::new`
-- `src/main.rs:17469-17469` `Command::new`
-- `src/main.rs:17571-17571` `Command::new`
-- `src/main.rs:17673-17673` `Command::new`
-- `src/main.rs:17739-17739` `Command::new`
-- `src/main.rs:17745-17745` `Command::new`
-- `src/main.rs:21325-21325` `Command::new`
-- `src/main.rs:22076-22076` `Command::new`
-- `src/main.rs:23812-23812` `Command::new`
-- `src/main.rs:23846-23846` `Command::new`
+- `src/main.rs:1767-1767` `Command::new`
+- `src/main.rs:3131-3131` `Command::new`
+- `src/main.rs:4004-4004` `Command::new`
+- `src/main.rs:5919-5919` `Command::new`
+- `src/main.rs:5946-5946` `Command::new`
+- `src/main.rs:6064-6064` `Command::new`
+- `src/main.rs:6193-6193` `Command::new`
+- `src/main.rs:9870-9870` `Command::new`
+- `src/main.rs:9889-9889` `Command::new`
+- `src/main.rs:10067-10067` `Command::new`
+- `src/main.rs:10494-10494` `Command::new`
+- `src/main.rs:11557-11557` `Command::new`
+- `src/main.rs:12139-12139` `Command::new`
+- `src/main.rs:12273-12273` `Command::new`
+- `src/main.rs:12929-12929` `Command::new`
+- `src/main.rs:13438-13438` `Command::new`
+- `src/main.rs:13471-13471` `Command::new`
+- `src/main.rs:13515-13515` `Command::new`
+- `src/main.rs:13584-13584` `Command::new`
+- `src/main.rs:15681-15681` `Command::new`
+- `src/main.rs:15728-15728` `Command::new`
+- `src/main.rs:15838-15838` `Command::new`
+- `src/main.rs:15848-15848` `Command::new`
+- `src/main.rs:15865-15865` `Command::new`
+- `src/main.rs:16001-16001` `Command::new`
+- `src/main.rs:16013-16013` `Command::new`
+- `src/main.rs:16149-16149` `Command::new`
+- `src/main.rs:17508-17508` `Command::new`
+- `src/main.rs:17514-17514` `Command::new`
+- `src/main.rs:17616-17616` `Command::new`
+- `src/main.rs:17718-17718` `Command::new`
+- `src/main.rs:17784-17784` `Command::new`
+- `src/main.rs:17790-17790` `Command::new`
+- `src/main.rs:17994-17994` `Command::new`
+- `src/main.rs:18000-18000` `Command::new`
+- `src/main.rs:18014-18014` `Command::new`
+- `src/main.rs:18048-18048` `Command::new`
+- `src/main.rs:18054-18054` `Command::new`
+- `src/main.rs:18071-18071` `Command::new`
+- `src/main.rs:21483-21483` `Command::new`
+- `src/main.rs:22234-22234` `Command::new`
+- `src/main.rs:23970-23970` `Command::new`
+- `src/main.rs:24004-24004` `Command::new`
 - `src/worktree.rs:600-600` `Command::new`
 - `src/worktree.rs:1131-1131` `Command::new`
 - `src/worktree.rs:1142-1142` `Command::new`
-- `src/worktree.rs:2150-2150` `Command::new`
-- `src/worktree.rs:2610-2610` `Command::new`
-- `src/worktree.rs:3435-3435` `Command::new`
-- `src/worktree.rs:4743-4743` `Command::new`
-- `src/worktree.rs:5076-5076` `Command::new`
-- `src/worktree.rs:5866-5866` `Command::new`
-- `src/worktree.rs:5872-5872` `Command::new`
+- `src/worktree.rs:2205-2205` `Command::new`
+- `src/worktree.rs:2666-2666` `Command::new`
+- `src/worktree.rs:3491-3491` `Command::new`
+- `src/worktree.rs:4916-4916` `Command::new`
+- `src/worktree.rs:5249-5249` `Command::new`
+- `src/worktree.rs:6039-6039` `Command::new`
+- `src/worktree.rs:6045-6045` `Command::new`
 - `tests/adaptive_labels_periphery.rs:66-66` `Command::new`
 - `tests/adaptive_labels_periphery.rs:105-105` `Command::new`
-- `tests/adoption_keys_on_criterion_periphery.rs:185-185` `Command::new`
-- `tests/adoption_keys_on_criterion_periphery.rs:197-197` `Command::new`
-- `tests/adoption_keys_on_criterion_periphery.rs:1583-1583` `Command::new`
-- `tests/adoption_keys_on_criterion_periphery.rs:2497-2497` `Command::new`
+- `tests/adoption_keys_on_criterion_periphery.rs:187-187` `Command::new`
+- `tests/adoption_keys_on_criterion_periphery.rs:199-199` `Command::new`
+- `tests/adoption_keys_on_criterion_periphery.rs:1594-1594` `Command::new`
+- `tests/adoption_keys_on_criterion_periphery.rs:2508-2508` `Command::new`
 - `tests/build_watch_paths.rs:43-43` `Command::new`
 - `tests/build_watch_paths.rs:60-60` `Command::new`
 - `tests/canary_model_drift_periphery.rs:41-41` `Command::new`
@@ -1870,37 +1878,38 @@ mandatory sweep: Command::new call sites - 359 site(s), collected mechanically r
 - `tests/cli.rs:113-113` `Command::new`
 - `tests/cli.rs:127-127` `Command::new`
 - `tests/cli.rs:190-190` `Command::new`
-- `tests/cli.rs:1691-1691` `Command::new`
-- `tests/cli.rs:5292-5292` `Command::new`
-- `tests/cli.rs:5517-5517` `Command::new`
-- `tests/cli.rs:5709-5709` `Command::new`
-- `tests/cli.rs:5959-5959` `Command::new`
-- `tests/cli.rs:6121-6121` `Command::new`
-- `tests/cli.rs:11483-11483` `Command::new`
-- `tests/cli.rs:11493-11493` `Command::new`
-- `tests/cli.rs:11525-11525` `Command::new`
-- `tests/cli.rs:14205-14205` `Command::new`
-- `tests/cli.rs:14970-14970` `Command::new`
-- `tests/cli.rs:15023-15023` `Command::new`
-- `tests/cli.rs:20175-20175` `Command::new`
-- `tests/cli.rs:20244-20244` `Command::new`
-- `tests/cli.rs:20317-20317` `Command::new`
-- `tests/cli.rs:20398-20398` `Command::new`
-- `tests/cli.rs:20574-20574` `Command::new`
-- `tests/cli.rs:20634-20634` `Command::new`
-- `tests/cli.rs:20742-20742` `Command::new`
-- `tests/cli.rs:20770-20770` `Command::new`
-- `tests/cli.rs:20891-20891` `Command::new`
-- `tests/cli.rs:20951-20951` `Command::new`
-- `tests/cli.rs:21000-21000` `Command::new`
-- `tests/cli.rs:21038-21038` `Command::new`
-- `tests/cli.rs:21100-21100` `Command::new`
-- `tests/cli.rs:21179-21179` `Command::new`
-- `tests/cli.rs:21237-21237` `Command::new`
-- `tests/cli.rs:21283-21283` `Command::new`
+- `tests/cli.rs:1825-1825` `Command::new`
+- `tests/cli.rs:1886-1886` `Command::new`
+- `tests/cli.rs:5481-5481` `Command::new`
+- `tests/cli.rs:5706-5706` `Command::new`
+- `tests/cli.rs:5898-5898` `Command::new`
+- `tests/cli.rs:6148-6148` `Command::new`
+- `tests/cli.rs:6310-6310` `Command::new`
+- `tests/cli.rs:11675-11675` `Command::new`
+- `tests/cli.rs:11685-11685` `Command::new`
+- `tests/cli.rs:11717-11717` `Command::new`
+- `tests/cli.rs:14457-14457` `Command::new`
+- `tests/cli.rs:15222-15222` `Command::new`
+- `tests/cli.rs:15275-15275` `Command::new`
+- `tests/cli.rs:20427-20427` `Command::new`
+- `tests/cli.rs:20496-20496` `Command::new`
+- `tests/cli.rs:20569-20569` `Command::new`
+- `tests/cli.rs:20650-20650` `Command::new`
+- `tests/cli.rs:20826-20826` `Command::new`
+- `tests/cli.rs:20886-20886` `Command::new`
+- `tests/cli.rs:20994-20994` `Command::new`
+- `tests/cli.rs:21022-21022` `Command::new`
+- `tests/cli.rs:21143-21143` `Command::new`
+- `tests/cli.rs:21203-21203` `Command::new`
+- `tests/cli.rs:21252-21252` `Command::new`
+- `tests/cli.rs:21290-21290` `Command::new`
+- `tests/cli.rs:21352-21352` `Command::new`
+- `tests/cli.rs:21431-21431` `Command::new`
+- `tests/cli.rs:21489-21489` `Command::new`
+- `tests/cli.rs:21535-21535` `Command::new`
 - `tests/code_lens_overview_collapse_viz.rs:40-40` `Command::new`
 - `tests/code_lens_overview_collapse_viz.rs:102-102` `Command::new`
-- `tests/common/mod.rs:118-118` `Command::new`
+- `tests/common/mod.rs:130-130` `Command::new`
 - `tests/community_detection_cli.rs:59-59` `Command::new`
 - `tests/community_detection_cli.rs:81-81` `Command::new`
 - `tests/compiler_pass_stage1_audit.rs:195-195` `Command::new`
@@ -1970,15 +1979,15 @@ mandatory sweep: Command::new call sites - 359 site(s), collected mechanically r
 - `tests/integrate_conflict_merge_periphery.rs:291-291` `Command::new`
 - `tests/integrate_conflict_merge_periphery.rs:310-310` `Command::new`
 - `tests/integrate_conflict_merge_periphery.rs:556-556` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:746-746` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:996-996` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1217-1217` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1413-1413` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1670-1670` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:1770-1770` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2082-2082` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2208-2208` `Command::new`
-- `tests/integrate_conflict_merge_periphery.rs:2446-2446` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:756-756` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1016-1016` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1247-1247` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1453-1453` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1720-1720` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:1830-1830` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2152-2152` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2288-2288` `Command::new`
+- `tests/integrate_conflict_merge_periphery.rs:2546-2546` `Command::new`
 - `tests/meta_phases_declaration_periphery.rs:119-119` `Command::new`
 - `tests/metadata_card_handoff_viz.rs:43-43` `Command::new`
 - `tests/metadata_card_handoff_viz.rs:151-151` `Command::new`
@@ -1992,40 +2001,40 @@ mandatory sweep: Command::new call sites - 359 site(s), collected mechanically r
 - `tests/no_os_kill_test_helper_periphery.rs:28-28` `Command::new`
 - `tests/no_os_kill_test_helper_periphery.rs:46-46` `Command::new`
 - `tests/phase_of_role_mapping_periphery.rs:95-95` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:228-228` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:247-247` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:386-386` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:399-399` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:406-406` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:755-755` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:762-762` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:779-779` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:786-786` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1025-1025` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1176-1176` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1189-1189` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1314-1314` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1374-1374` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1389-1389` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1425-1425` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1432-1432` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1543-1543` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1555-1555` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1591-1591` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1598-1598` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1615-1615` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1622-1622` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1795-1795` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1804-1804` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1836-1836` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1972-1972` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1979-1979` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:1994-1994` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:2013-2013` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:2263-2263` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:2270-2270` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:2282-2282` `Command::new`
-- `tests/plan_stage_commit_landing_periphery.rs:2298-2298` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:230-230` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:249-249` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:388-388` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:401-401` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:408-408` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:769-769` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:776-776` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:793-793` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:800-800` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1047-1047` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1202-1202` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1215-1215` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1344-1344` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1404-1404` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1419-1419` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1455-1455` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1462-1462` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1577-1577` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1589-1589` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1625-1625` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1632-1632` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1649-1649` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1656-1656` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1833-1833` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1842-1842` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:1874-1874` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:2014-2014` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:2021-2021` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:2036-2036` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:2055-2055` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:2309-2309` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:2316-2316` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:2328-2328` `Command::new`
+- `tests/plan_stage_commit_landing_periphery.rs:2344-2344` `Command::new`
 - `tests/product_binary_authority_periphery.rs:155-155` `Command::new`
 - `tests/projections_stay_local.rs:135-135` `Command::new`
 - `tests/projections_stay_local.rs:199-199` `Command::new`
@@ -2042,11 +2051,14 @@ mandatory sweep: Command::new call sites - 359 site(s), collected mechanically r
 - `tests/reap_before_removal_periphery.rs:407-407` `Command::new`
 - `tests/registry_refresh_driver_courier_convergence_periphery.rs:41-41` `Command::new`
 - `tests/registry_refresh_driver_courier_convergence_periphery.rs:53-53` `Command::new`
+- `tests/relocated_worktree_store_resolution_periphery.rs:37-37` `Command::new`
+- `tests/relocated_worktree_store_resolution_periphery.rs:138-138` `Command::new`
+- `tests/relocated_worktree_store_resolution_periphery.rs:208-208` `Command::new`
 - `tests/reset_build_cache_periphery.rs:38-38` `Command::new`
-- `tests/reset_build_cache_periphery.rs:278-278` `Command::new`
-- `tests/reset_build_cache_periphery.rs:290-290` `Command::new`
-- `tests/reset_build_cache_periphery.rs:368-368` `Command::new`
-- `tests/reset_build_cache_periphery.rs:386-386` `Command::new`
+- `tests/reset_build_cache_periphery.rs:280-280` `Command::new`
+- `tests/reset_build_cache_periphery.rs:292-292` `Command::new`
+- `tests/reset_build_cache_periphery.rs:370-370` `Command::new`
+- `tests/reset_build_cache_periphery.rs:388-388` `Command::new`
 - `tests/reset_derived_compaction.rs:41-41` `Command::new`
 - `tests/reset_derived_compaction.rs:52-52` `Command::new`
 - `tests/reset_derived_compaction_periphery.rs:602-602` `Command::new`
@@ -2063,6 +2075,7 @@ mandatory sweep: Command::new call sites - 359 site(s), collected mechanically r
 - `tests/review_tier_roster_periphery.rs:111-111` `Command::new`
 - `tests/scaffold_grounder_resolves.rs:93-93` `Command::new`
 - `tests/scaffold_grounder_resolves.rs:98-98` `Command::new`
+- `tests/scratch_workdir_isolation_leak_guard_periphery.rs:72-72` `Command::new`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:47-47` `Command::new`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:66-66` `Command::new`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:139-139` `Command::new`
@@ -2092,7 +2105,7 @@ mandatory sweep: Command::new call sites - 359 site(s), collected mechanically r
 - `tests/subject_view_memory_rail_client.rs:35-35` `Command::new`
 - `tests/subject_view_memory_rail_client.rs:129-129` `Command::new`
 - `tests/turbovec_retired_cargo_boundary.rs:50-50` `Command::new`
-- `tests/unified_traversal_grounding.rs:582-582` `Command::new`
+- `tests/unified_traversal_grounding.rs:584-584` `Command::new`
 - `tests/validate_advisories.rs:49-49` `Command::new`
 - `tests/validate_advisories.rs:58-58` `Command::new`
 - `tests/validate_behind_the_tree_periphery.rs:68-68` `Command::new`
@@ -2100,6 +2113,8 @@ mandatory sweep: Command::new call sites - 359 site(s), collected mechanically r
 - `tests/validate_behind_the_tree_periphery.rs:114-114` `Command::new`
 - `tests/validate_behind_the_tree_periphery.rs:140-140` `Command::new`
 - `tests/validate_behind_the_tree_periphery.rs:202-202` `Command::new`
+- `tests/validate_footprint_default_scratch_root_periphery.rs:28-28` `Command::new`
+- `tests/validate_footprint_default_scratch_root_periphery.rs:88-88` `Command::new`
 - `tests/watchdog_cli_periphery.rs:46-46` `Command::new`
 - `tests/watchdog_cli_periphery.rs:67-67` `Command::new`
 - `tests/worker_persona_label_periphery.rs:94-94` `Command::new`
@@ -2141,7 +2156,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_tolerant_attribution_periphery.rs:88-93` `agent`
 - `tests/canary_unattributed_rejects_periphery.rs:110-115` `agent`
 - `tests/integrate_conflict_merge_periphery.rs:325-330` `agent`
-- `tests/plan_stage_commit_landing_periphery.rs:265-270` `agent`
+- `tests/plan_stage_commit_landing_periphery.rs:267-272` `agent`
 
 #### `dup-0009` (exact, 2 sites)
 
@@ -2361,11 +2376,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/eventstore/namespace.rs:69-71` `prefix_for`
 - `src/eventstore/sqlite.rs:1404-1406` `successor`
 - `src/grounder/mod.rs:207-213` `retired_grounder_error`
-- `src/main.rs:11721-11723` `skill_source_rel`
-- `src/main.rs:12738-12744` `spec_lint_next_step`
+- `src/main.rs:11766-11768` `skill_source_rel`
+- `src/main.rs:12783-12789` `spec_lint_next_step`
 - `src/spawn.rs:65-67` `lens_role`
 - `src/spawn.rs:143-145` `speculation_group_id`
-- `src/worktree.rs:1448-1450` `shared_build_cache_guard_path`
+- `src/worktree.rs:1503-1505` `shared_build_cache_guard_path`
 - `tests/canary_model_drift_periphery.rs:140-142` `prose_claiming`
 - `tests/halted_spawn_wip_recovery_periphery.rs:201-203` `unit_branch`
 - `tests/reset_derived_compaction_periphery.rs:2816-2818` `derived_key_for`
@@ -2474,7 +2489,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/conductor.rs:10772-10774` `normalize_ws`
 - `src/distiller.rs:60-62` `normalize`
-- `tests/cli.rs:25530-25532` `normalize_ws`
+- `tests/cli.rs:25791-25793` `normalize_ws`
 
 #### `dup-0040` (semantic, 2 sites)
 
@@ -2483,7 +2498,7 @@ Proposed home: `one shared `normalize_ws` helper (e.g. relocated into `tests/com
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/conductor.rs:10772-10774` `normalize_ws`
-- `tests/cli.rs:25530-25532` `normalize_ws`
+- `tests/cli.rs:25791-25793` `normalize_ws`
 
 #### `dup-0041` (near, 2 sites)
 
@@ -2620,9 +2635,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:29017-29051` `planner_leaving_a_gap_flags_a_spec_defect`
 - `src/conductor.rs:29054-29088` `gate_only_stage_is_a_coverage_proxy_gap`
 
-#### `dup-0054` (near, 9 sites)
+#### `dup-0054` (near, 10 sites)
 
-Proposed home: `a new shared module (sites span 4 files: src/conductor.rs, src/driver/replay.rs, tests/adoption_keys_on_criterion_periphery.rs, tests/replan_episode_identity.rs)`
+Proposed home: `a new shared module (sites span 5 files: src/conductor.rs, src/driver/replay.rs, tests/adoption_keys_on_criterion_periphery.rs, tests/replan_episode_identity.rs, tests/scratch_workdir_isolation_leak_guard_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
@@ -2632,9 +2647,10 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:34155-34177` `content_cache_cfg`
 - `src/conductor.rs:40093-40132` `critique_cfg`
 - `src/driver/replay.rs:1726-1746` `reviewed_unit_cfg`
-- `tests/adoption_keys_on_criterion_periphery.rs:298-328` `baseline_only_cfg`
+- `tests/adoption_keys_on_criterion_periphery.rs:305-336` `baseline_only_cfg`
 - `tests/replan_episode_identity.rs:234-296` `two_episode_cfg`
 - `tests/replan_episode_identity.rs:1050-1087` `resume_seam_cfg`
+- `tests/scratch_workdir_isolation_leak_guard_periphery.rs:86-119` `one_unit_cfg`
 
 #### `dup-0055` (near, 2 sites)
 
@@ -2957,23 +2973,23 @@ halting. The explicit mid-campaign-edit escape (a live\n                        
 run otherwise HALTS loudly on definition drift)\n\n\
 storage and graph live in ./.rigger/ (per project, like .git/), scoped to the\n\
 project identity so one backend can hold many projects without their data mixing.\n"`
-- `src/main.rs:4019-4019` `"workflow: the per-project JS driver is not provisioned (looked for {}). \
+- `src/main.rs:4064-4064` `"workflow: the per-project JS driver is not provisioned (looked for {}). \
          Run `rigger setup` to write the shim into .rigger/shim/ and install its \
          dependencies, then re-run `rigger workflow`."`
-- `src/main.rs:6912-6912` `".rigger"`
-- `src/main.rs:8603-8603` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
-- `src/main.rs:9791-9791` `".rigger-workflow-provenance"`
-- `src/main.rs:10035-10035` `"warning: tracked .rigger/ files have uncommitted modifications:"`
-- `src/main.rs:11421-11421` `".rigger/shim/"`
-- `src/main.rs:11422-11422` `".rigger/dash.url"`
-- `src/main.rs:11423-11423` `".rigger/dash.marker"`
-- `src/main.rs:11424-11424` `".rigger/dash.attempt"`
-- `src/main.rs:11425-11425` `".rigger/store.conn"`
-- `src/main.rs:11588-11588` `"minted the durable project identity in .rigger/{PROJECT_ID_FILE}: {id} \
+- `src/main.rs:6957-6957` `".rigger"`
+- `src/main.rs:8648-8648` `"a `rigger step` is running right now (it holds .rigger/step.lock)"`
+- `src/main.rs:9836-9836` `".rigger-workflow-provenance"`
+- `src/main.rs:10080-10080` `"warning: tracked .rigger/ files have uncommitted modifications:"`
+- `src/main.rs:11466-11466` `".rigger/shim/"`
+- `src/main.rs:11467-11467` `".rigger/dash.url"`
+- `src/main.rs:11468-11468` `".rigger/dash.marker"`
+- `src/main.rs:11469-11469` `".rigger/dash.attempt"`
+- `src/main.rs:11470-11470` `".rigger/store.conn"`
+- `src/main.rs:11633-11633` `"minted the durable project identity in .rigger/{PROJECT_ID_FILE}: {id} \
              (commit it so a rename never orphans this project's history)"`
-- `src/main.rs:11593-11593` `"scaffolded .rigger/workflow.yml"`
-- `src/main.rs:11597-11597` `"scaffolded .rigger/agents/{{{}}}"`
-- `src/main.rs:11877-11877` `r#"__BEGIN__
+- `src/main.rs:11638-11638` `"scaffolded .rigger/workflow.yml"`
+- `src/main.rs:11642-11642` `"scaffolded .rigger/agents/{{{}}}"`
+- `src/main.rs:11922-11922` `r#"__BEGIN__
 # Check rigger's code-derived docs against a fresh render before THIS commit lands, so a
 # commit that changes a documented code fact can only land carrying freshly rendered docs.
 # SAFE to share: it reads and compares ONLY the two rendered outputs (never other working-tree
@@ -3080,12 +3096,12 @@ fi
 true
 __END__
 "#`
-- `src/main.rs:12286-12286` `"imported {} agent {} from {} into .rigger/agents/ ({} kept - already present)"`
-- `src/main.rs:12330-12330` `"provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
+- `src/main.rs:12331-12331` `"imported {} agent {} from {} into .rigger/agents/ ({} kept - already present)"`
+- `src/main.rs:12375-12375` `"provisioned the JS driver in .rigger/shim/ (wrote shim.mjs + package.json + \
              package-lock.json and ran npm install)"`
-- `src/main.rs:12478-12478` `"kept existing .rigger/agents/{name} (import never overwrites)"`
-- `src/main.rs:12506-12506` `"imported .rigger/agents/{name} (id: {id})"`
-- `src/main.rs:12940-12940` `"# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
+- `src/main.rs:12523-12523` `"kept existing .rigger/agents/{name} (import never overwrites)"`
+- `src/main.rs:12551-12551` `"imported .rigger/agents/{name} (id: {id})"`
+- `src/main.rs:12985-12985` `"# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
 # review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\n\
 # adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\n\
 # Replace the gate commands with your own.\n\
@@ -3175,89 +3191,89 @@ max_retries: 1          # one remediation round for the whole spec diff's mutant
 gates: [build, test, lint, mutation]\n    \
 on_pass: merge\n    \
 coverage: \"mutation efficacy of the whole spec diff\"\n"`
-- `src/main.rs:14164-14164` `"/.rigger/tmp/cargo-target/debug/rigger"`
-- `src/main.rs:14165-14165` `"/.rigger/tmp/cargo-target/release/rigger"`
-- `src/main.rs:15475-15475` `" M .rigger/workflow.yml\n\
+- `src/main.rs:14209-14209` `"/.rigger/tmp/cargo-target/debug/rigger"`
+- `src/main.rs:14210-14210` `"/.rigger/tmp/cargo-target/release/rigger"`
+- `src/main.rs:15520-15520` `" M .rigger/workflow.yml\n\
                          M  .rigger/agents/sdet.md\n\
                          A  .rigger/agents/new.md\n\
                          D  .rigger/agents/gone.md\n\
                          ?? .rigger/events.db\n\
                          !! .rigger/shim/node_modules\n"`
-- `src/main.rs:15485-15485` `".rigger/workflow.yml"`
-- `src/main.rs:15486-15486` `".rigger/agents/sdet.md"`
-- `src/main.rs:15487-15487` `".rigger/agents/new.md"`
-- `src/main.rs:15488-15488` `".rigger/agents/gone.md"`
-- `src/main.rs:16454-16454` `".rigger"`
-- `src/main.rs:16458-16458` `".rigger"`
-- `src/main.rs:16484-16484` `"probe/.rigger/events.db"`
-- `src/main.rs:16485-16485` `"rigger-wt-x/.rigger/events.db"`
-- `src/main.rs:16637-16637` `".rigger"`
-- `src/main.rs:16672-16672` `"rigger-wt-unit-99-ghost-12345678/.rigger/events.db"`
-- `src/main.rs:16707-16707` `"probe/.rigger/events.db"`
-- `src/main.rs:16718-16718` `"shadow store: probe/.rigger/events.db (6B)"`
-- `src/main.rs:16803-16803` `".rigger"`
-- `src/main.rs:16870-16870` `".rigger"`
-- `src/main.rs:16938-16938` `".rigger"`
-- `src/main.rs:17017-17017` `".rigger"`
-- `src/main.rs:17123-17123` `".rigger"`
-- `src/main.rs:17695-17695` `".rigger"`
-- `src/main.rs:17735-17735` `".rigger"`
-- `src/main.rs:17917-17917` `".rigger"`
-- `src/main.rs:17928-17928` `"must walk past the storeless worktree `.rigger/` to the repo's real store"`
-- `src/main.rs:18877-18877` `".rigger"`
-- `src/main.rs:18879-18879` `".rigger"`
-- `src/main.rs:18934-18934` `".rigger"`
-- `src/main.rs:18970-18970` `".rigger"`
-- `src/main.rs:19012-19012` `".rigger"`
-- `src/main.rs:19118-19118` `".rigger/store.conn beats the committed config"`
-- `src/main.rs:19811-19811` `"{name} must be written into .rigger/shim/"`
-- `src/main.rs:20360-20360` `".rigger/agents/"`
-- `src/main.rs:20386-20386` `".rigger/dash.url"`
-- `src/main.rs:20389-20389` `".rigger/dash.marker"`
-- `src/main.rs:20392-20392` `".rigger/dash.attempt"`
-- `src/main.rs:20401-20401` `".rigger/dash.url"`
-- `src/main.rs:20405-20405` `".rigger/dash.marker"`
-- `src/main.rs:20409-20409` `".rigger/dash.attempt"`
-- `src/main.rs:20420-20420` `".rigger/dash.url"`
-- `src/main.rs:20423-20423` `".rigger/dash.marker"`
-- `src/main.rs:20426-20426` `".rigger/dash.attempt"`
-- `src/main.rs:20435-20435` `".rigger/dash.url"`
-- `src/main.rs:20438-20438` `"exactly one .rigger/dash.url ignore line - no duplicate accrued, got:\n{after}"`
-- `src/main.rs:20443-20443` `".rigger/dash.marker"`
-- `src/main.rs:20446-20446` `"exactly one .rigger/dash.marker ignore line - no duplicate accrued, got:\n{after}"`
-- `src/main.rs:20451-20451` `".rigger/dash.attempt"`
-- `src/main.rs:20454-20454` `"exactly one .rigger/dash.attempt ignore line - no duplicate accrued, got:\n{after}"`
-- `src/main.rs:20474-20474` `".rigger/store.conn"`
-- `src/main.rs:20482-20482` `".rigger/store.conn"`
-- `src/main.rs:20491-20491` `".rigger/store.conn"`
-- `src/main.rs:20500-20500` `".rigger/store.conn"`
-- `src/main.rs:20503-20503` `"exactly one .rigger/store.conn ignore line - no duplicate accrued, got:\n{after}"`
-- `src/main.rs:20544-20544` `".rigger/\n"`
-- `src/main.rs:20550-20550` `".rigger/dash.url"`
-- `src/main.rs:20553-20553` `".rigger/dash.marker"`
-- `src/main.rs:20556-20556` `".rigger/dash.attempt"`
-- `src/main.rs:20557-20557` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
-             even when .rigger/ broadly covers them, so the committed .gitignore stays \
-             self-contained, got: {:?}"`
-- `src/main.rs:20565-20565` `".rigger/dash.url"`
-- `src/main.rs:20566-20566` `".rigger/dash.marker"`
+- `src/main.rs:15530-15530` `".rigger/workflow.yml"`
+- `src/main.rs:15531-15531` `".rigger/agents/sdet.md"`
+- `src/main.rs:15532-15532` `".rigger/agents/new.md"`
+- `src/main.rs:15533-15533` `".rigger/agents/gone.md"`
+- `src/main.rs:16499-16499` `".rigger"`
+- `src/main.rs:16503-16503` `".rigger"`
+- `src/main.rs:16529-16529` `"probe/.rigger/events.db"`
+- `src/main.rs:16530-16530` `"rigger-wt-x/.rigger/events.db"`
+- `src/main.rs:16682-16682` `".rigger"`
+- `src/main.rs:16717-16717` `"rigger-wt-unit-99-ghost-12345678/.rigger/events.db"`
+- `src/main.rs:16752-16752` `"probe/.rigger/events.db"`
+- `src/main.rs:16763-16763` `"shadow store: probe/.rigger/events.db (6B)"`
+- `src/main.rs:16848-16848` `".rigger"`
+- `src/main.rs:16915-16915` `".rigger"`
+- `src/main.rs:16983-16983` `".rigger"`
+- `src/main.rs:17062-17062` `".rigger"`
+- `src/main.rs:17168-17168` `".rigger"`
+- `src/main.rs:17740-17740` `".rigger"`
+- `src/main.rs:17780-17780` `".rigger"`
+- `src/main.rs:17962-17962` `".rigger"`
+- `src/main.rs:17973-17973` `"must walk past the storeless worktree `.rigger/` to the repo's real store"`
+- `src/main.rs:19035-19035` `".rigger"`
+- `src/main.rs:19037-19037` `".rigger"`
+- `src/main.rs:19092-19092` `".rigger"`
+- `src/main.rs:19128-19128` `".rigger"`
+- `src/main.rs:19170-19170` `".rigger"`
+- `src/main.rs:19276-19276` `".rigger/store.conn beats the committed config"`
+- `src/main.rs:19969-19969` `"{name} must be written into .rigger/shim/"`
+- `src/main.rs:20518-20518` `".rigger/agents/"`
+- `src/main.rs:20544-20544` `".rigger/dash.url"`
+- `src/main.rs:20547-20547` `".rigger/dash.marker"`
+- `src/main.rs:20550-20550` `".rigger/dash.attempt"`
+- `src/main.rs:20559-20559` `".rigger/dash.url"`
+- `src/main.rs:20563-20563` `".rigger/dash.marker"`
 - `src/main.rs:20567-20567` `".rigger/dash.attempt"`
-- `src/main.rs:20568-20568` `"all three explicit per-file dash ignore lines are present in the committed \
-             .gitignore even though .rigger/ already covers them, got:\n{content}"`
 - `src/main.rs:20578-20578` `".rigger/dash.url"`
 - `src/main.rs:20581-20581` `".rigger/dash.marker"`
 - `src/main.rs:20584-20584` `".rigger/dash.attempt"`
-- `src/main.rs:20844-20844` `".rigger/agents/researcher.md"`
-- `src/main.rs:20873-20873` `".rigger/agents/planner.md"`
-- `src/main.rs:20903-20903` `".rigger/agents/newcomer.md"`
-- `src/main.rs:20951-20951` `".rigger/agents/my-planner.md"`
-- `src/main.rs:20976-20976` `".rigger/agents/a-dup.md"`
-- `src/main.rs:20977-20977` `".rigger/agents/b-dup.md"`
-- `src/main.rs:21004-21004` `".rigger/agents/blank.md"`
-- `src/main.rs:21019-21019` `".rigger/workflow.yml"`
-- `src/main.rs:22067-22067` `"locate_shim must return the provisioned .rigger/shim/shim.mjs"`
-- `src/main.rs:23185-23185` `".rigger"`
-- `src/main.rs:23239-23239` `".rigger"`
+- `src/main.rs:20593-20593` `".rigger/dash.url"`
+- `src/main.rs:20596-20596` `"exactly one .rigger/dash.url ignore line - no duplicate accrued, got:\n{after}"`
+- `src/main.rs:20601-20601` `".rigger/dash.marker"`
+- `src/main.rs:20604-20604` `"exactly one .rigger/dash.marker ignore line - no duplicate accrued, got:\n{after}"`
+- `src/main.rs:20609-20609` `".rigger/dash.attempt"`
+- `src/main.rs:20612-20612` `"exactly one .rigger/dash.attempt ignore line - no duplicate accrued, got:\n{after}"`
+- `src/main.rs:20632-20632` `".rigger/store.conn"`
+- `src/main.rs:20640-20640` `".rigger/store.conn"`
+- `src/main.rs:20649-20649` `".rigger/store.conn"`
+- `src/main.rs:20658-20658` `".rigger/store.conn"`
+- `src/main.rs:20661-20661` `"exactly one .rigger/store.conn ignore line - no duplicate accrued, got:\n{after}"`
+- `src/main.rs:20702-20702` `".rigger/\n"`
+- `src/main.rs:20708-20708` `".rigger/dash.url"`
+- `src/main.rs:20711-20711` `".rigger/dash.marker"`
+- `src/main.rs:20714-20714` `".rigger/dash.attempt"`
+- `src/main.rs:20715-20715` `"setup appends the explicit dash lines (including the round-8 attempt breadcrumb) \
+             even when .rigger/ broadly covers them, so the committed .gitignore stays \
+             self-contained, got: {:?}"`
+- `src/main.rs:20723-20723` `".rigger/dash.url"`
+- `src/main.rs:20724-20724` `".rigger/dash.marker"`
+- `src/main.rs:20725-20725` `".rigger/dash.attempt"`
+- `src/main.rs:20726-20726` `"all three explicit per-file dash ignore lines are present in the committed \
+             .gitignore even though .rigger/ already covers them, got:\n{content}"`
+- `src/main.rs:20736-20736` `".rigger/dash.url"`
+- `src/main.rs:20739-20739` `".rigger/dash.marker"`
+- `src/main.rs:20742-20742` `".rigger/dash.attempt"`
+- `src/main.rs:21002-21002` `".rigger/agents/researcher.md"`
+- `src/main.rs:21031-21031` `".rigger/agents/planner.md"`
+- `src/main.rs:21061-21061` `".rigger/agents/newcomer.md"`
+- `src/main.rs:21109-21109` `".rigger/agents/my-planner.md"`
+- `src/main.rs:21134-21134` `".rigger/agents/a-dup.md"`
+- `src/main.rs:21135-21135` `".rigger/agents/b-dup.md"`
+- `src/main.rs:21162-21162` `".rigger/agents/blank.md"`
+- `src/main.rs:21177-21177` `".rigger/workflow.yml"`
+- `src/main.rs:22225-22225` `"locate_shim must return the provisioned .rigger/shim/shim.mjs"`
+- `src/main.rs:23343-23343` `".rigger"`
+- `src/main.rs:23397-23397` `".rigger"`
 - `src/reap.rs:514-514` `".rigger"`
 - `src/reap.rs:871-871` `"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \
              must still authorize the reap"`
@@ -3272,12 +3288,17 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `src/registry.rs:433-433` `"/home/dev/proj-b/.rigger/events.db"`
 - `src/registry.rs:453-453` `"/a/.rigger/events.db"`
 - `src/registry.rs:454-454` `"/b/.rigger/events.db"`
-- `src/worktree.rs:1391-1391` `"{}/.rigger/tmp"`
-- `src/worktree.rs:4044-4044` `"{repo_path}/.rigger/tmp"`
-- `src/worktree.rs:4061-4061` `"~/.rigger-scratch-test"`
-- `src/worktree.rs:4062-4062` `"{home}/.rigger-scratch-test"`
-- `src/worktree.rs:5804-5804` `"{base}..rigger-run"`
-- `src/worktree.rs:5853-5853` `".rigger"`
+- `src/worktree.rs:1409-1409` `"{}/.rigger/tmp"`
+- `src/worktree.rs:4117-4117` `"{repo_path}/.rigger/tmp"`
+- `src/worktree.rs:4118-4118` `"the default must no longer nest inside the repo's own .rigger: {dflt:?}"`
+- `src/worktree.rs:4121-4121` `"/.rigger/"`
+- `src/worktree.rs:4121-4121` `"/.rigger"`
+- `src/worktree.rs:4122-4122` `"the default must never live under any .rigger: {dflt:?}"`
+- `src/worktree.rs:4141-4141` `"{repo_path}/.rigger/tmp"`
+- `src/worktree.rs:4165-4165` `"~/.rigger-scratch-test"`
+- `src/worktree.rs:4166-4166` `"{home}/.rigger-scratch-test"`
+- `src/worktree.rs:5977-5977` `"{base}..rigger-run"`
+- `src/worktree.rs:6026-6026` `".rigger"`
 - `tests/architecture_current_surface.rs:107-107` `".rigger/store.conn"`
 - `tests/architecture_current_surface.rs:163-163` `"docs/architecture.md must describe the system that exists today (spec 56, \
          criterion 1): it must name the store-resolution and configuration surface (the \
@@ -3312,294 +3333,283 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/cli.rs:1203-1203` `".rigger"`
 - `tests/cli.rs:1360-1360` `".rigger"`
 - `tests/cli.rs:1386-1386` `".rigger"`
-- `tests/cli.rs:1415-1415` `".rigger"`
-- `tests/cli.rs:1447-1447` `".rigger"`
-- `tests/cli.rs:1537-1537` `".rigger"`
-- `tests/cli.rs:1547-1547` `".rigger"`
-- `tests/cli.rs:1560-1560` `".rigger"`
-- `tests/cli.rs:1616-1616` `".rigger"`
-- `tests/cli.rs:1617-1617` `".rigger"`
-- `tests/cli.rs:1629-1629` `".rigger"`
-- `tests/cli.rs:1651-1651` `".rigger"`
-- `tests/cli.rs:1689-1689` `".rigger"`
-- `tests/cli.rs:1711-1711` `".rigger"`
-- `tests/cli.rs:1747-1747` `".rigger"`
-- `tests/cli.rs:1762-1762` `".rigger"`
-- `tests/cli.rs:1920-1920` `".rigger"`
-- `tests/cli.rs:2176-2176` `".rigger"`
-- `tests/cli.rs:2418-2418` `".rigger"`
-- `tests/cli.rs:2516-2516` `".rigger"`
-- `tests/cli.rs:2557-2557` `".rigger"`
-- `tests/cli.rs:2589-2589` `".rigger"`
-- `tests/cli.rs:2590-2590` `"graph build must create .rigger/graph.db from a cold checkout"`
-- `tests/cli.rs:2640-2640` `".rigger"`
-- `tests/cli.rs:2641-2641` `"graph build must create .rigger/graph.db even when there is nothing to ingest"`
-- `tests/cli.rs:2664-2664` `".rigger"`
-- `tests/cli.rs:2742-2742` `".rigger"`
-- `tests/cli.rs:2757-2757` `".rigger"`
-- `tests/cli.rs:2805-2805` `".rigger"`
-- `tests/cli.rs:2830-2830` `".rigger"`
-- `tests/cli.rs:2949-2949` `".rigger"`
-- `tests/cli.rs:2953-2953` `"grounding via symbols must persist the structural index to .rigger/symbols/"`
-- `tests/cli.rs:3126-3126` `".rigger"`
-- `tests/cli.rs:3402-3402` `".rigger"`
-- `tests/cli.rs:3547-3547` `".rigger"`
-- `tests/cli.rs:3688-3688` `"cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step"`
-- `tests/cli.rs:3736-3736` `"cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step"`
-- `tests/cli.rs:3923-3923` `".rigger/tmp/agent-scratch/"`
-- `tests/cli.rs:3929-3929` `".rigger/tmp/cargo-target"`
-- `tests/cli.rs:3937-3937` `"CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step"`
-- `tests/cli.rs:4185-4185` `".rigger"`
-- `tests/cli.rs:4214-4214` `".rigger"`
-- `tests/cli.rs:4324-4324` `".rigger"`
-- `tests/cli.rs:4388-4388` `".rigger"`
-- `tests/cli.rs:4443-4443` `".rigger"`
-- `tests/cli.rs:4520-4520` `".rigger"`
-- `tests/cli.rs:4549-4549` `".rigger"`
-- `tests/cli.rs:4639-4639` `".rigger"`
-- `tests/cli.rs:4741-4741` `".rigger"`
-- `tests/cli.rs:4772-4772` `".rigger"`
-- `tests/cli.rs:4826-4826` `".rigger"`
-- `tests/cli.rs:4913-4913` `".rigger"`
-- `tests/cli.rs:5215-5215` `".rigger"`
-- `tests/cli.rs:5268-5268` `".rigger"`
-- `tests/cli.rs:5384-5384` `".rigger"`
-- `tests/cli.rs:5454-5454` `".rigger"`
-- `tests/cli.rs:5504-5504` `".rigger"`
-- `tests/cli.rs:5592-5592` `".rigger"`
-- `tests/cli.rs:5649-5649` `".rigger"`
-- `tests/cli.rs:5688-5688` `".rigger"`
-- `tests/cli.rs:5855-5855` `".rigger"`
-- `tests/cli.rs:5909-5909` `".rigger"`
-- `tests/cli.rs:5948-5948` `".rigger"`
-- `tests/cli.rs:6079-6079` `".rigger"`
-- `tests/cli.rs:6110-6110` `".rigger"`
-- `tests/cli.rs:6185-6185` `".rigger"`
-- `tests/cli.rs:6264-6264` `".rigger"`
-- `tests/cli.rs:6397-6397` `".rigger"`
-- `tests/cli.rs:6454-6454` `".rigger"`
-- `tests/cli.rs:6624-6624` `".rigger"`
-- `tests/cli.rs:6639-6639` `".rigger"`
-- `tests/cli.rs:6712-6712` `".rigger"`
-- `tests/cli.rs:6818-6818` `".rigger"`
-- `tests/cli.rs:6887-6887` `".rigger"`
-- `tests/cli.rs:6934-6934` `".rigger"`
-- `tests/cli.rs:6991-6991` `".rigger"`
-- `tests/cli.rs:7057-7057` `".rigger"`
-- `tests/cli.rs:7070-7070` `".rigger"`
-- `tests/cli.rs:7193-7193` `".rigger"`
-- `tests/cli.rs:7261-7261` `".rigger"`
-- `tests/cli.rs:7279-7279` `".rigger"`
-- `tests/cli.rs:7392-7392` `".rigger"`
-- `tests/cli.rs:7492-7492` `".rigger/events.db"`
-- `tests/cli.rs:7691-7691` `".rigger"`
-- `tests/cli.rs:7725-7725` `".rigger"`
-- `tests/cli.rs:7953-7953` `".rigger"`
-- `tests/cli.rs:8043-8043` `".rigger"`
-- `tests/cli.rs:8099-8099` `"/.rigger/tmp/agent-live/"`
-- `tests/cli.rs:8384-8384` `".rigger"`
-- `tests/cli.rs:8684-8684` `"/.rigger/tmp/agent-live/"`
-- `tests/cli.rs:8685-8685` `"under RIGGER_TMPDIR the marker is not under the repo's .rigger/tmp; got: {marker_str:?}"`
-- `tests/cli.rs:9466-9466` `".rigger"`
-- `tests/cli.rs:9629-9629` `".rigger"`
-- `tests/cli.rs:9733-9733` `".rigger"`
-- `tests/cli.rs:9782-9782` `".rigger"`
-- `tests/cli.rs:9884-9884` `".rigger"`
-- `tests/cli.rs:9943-9943` `".rigger"`
-- `tests/cli.rs:10047-10047` `".rigger"`
-- `tests/cli.rs:10114-10114` `".rigger"`
-- `tests/cli.rs:10256-10256` `".rigger"`
-- `tests/cli.rs:10304-10304` `".rigger"`
-- `tests/cli.rs:10422-10422` `".rigger"`
-- `tests/cli.rs:10693-10693` `".rigger"`
-- `tests/cli.rs:10792-10792` `".rigger"`
-- `tests/cli.rs:10881-10881` `".rigger"`
-- `tests/cli.rs:10921-10921` `".rigger"`
-- `tests/cli.rs:11578-11578` `".rigger"`
-- `tests/cli.rs:11740-11740` `".rigger"`
-- `tests/cli.rs:12119-12119` `".rigger/workflow.yml"`
-- `tests/cli.rs:12119-12119` `".rigger/agents"`
-- `tests/cli.rs:12184-12184` `".rigger"`
-- `tests/cli.rs:12218-12218` `".rigger/workflow.yml"`
-- `tests/cli.rs:12218-12218` `".rigger/agents"`
-- `tests/cli.rs:12221-12221` `".rigger/workflow.yml"`
-- `tests/cli.rs:12253-12253` `".rigger"`
-- `tests/cli.rs:12287-12287` `".rigger/workflow.yml"`
-- `tests/cli.rs:12287-12287` `".rigger/agents"`
-- `tests/cli.rs:12290-12290` `".rigger/workflow.yml"`
-- `tests/cli.rs:12325-12325` `".rigger"`
-- `tests/cli.rs:12364-12364` `".rigger/workflow.yml"`
-- `tests/cli.rs:12364-12364` `".rigger/agents"`
-- `tests/cli.rs:12367-12367` `".rigger/workflow.yml"`
-- `tests/cli.rs:12401-12401` `".rigger"`
-- `tests/cli.rs:12439-12439` `".rigger/workflow.yml"`
-- `tests/cli.rs:12439-12439` `".rigger/agents"`
-- `tests/cli.rs:12442-12442` `".rigger/workflow.yml"`
-- `tests/cli.rs:12497-12497` `".rigger/workflow.yml"`
-- `tests/cli.rs:12497-12497` `".rigger/agents"`
-- `tests/cli.rs:12505-12505` `".rigger"`
-- `tests/cli.rs:12544-12544` `".rigger/workflow.yml"`
-- `tests/cli.rs:12544-12544` `".rigger/agents"`
-- `tests/cli.rs:12557-12557` `".rigger"`
-- `tests/cli.rs:12566-12566` `".rigger"`
-- `tests/cli.rs:12568-12568` `".rigger"`
-- `tests/cli.rs:12665-12665` `".rigger/workflow.yml"`
-- `tests/cli.rs:12666-12666` `"validate must NOT flag a clean tracked `.rigger/` tree; stderr:\n{err}"`
-- `tests/cli.rs:12675-12675` `".rigger"`
-- `tests/cli.rs:12682-12682` `"validate must still succeed (exit 0) when it only FLAGS uncommitted `.rigger/` \
+- `tests/cli.rs:1484-1484` `"/.rigger/"`
+- `tests/cli.rs:1485-1485` `"the default must never live under any .rigger, even on the HOME-only fallback \
+         rung; got: {stdout:?}"`
+- `tests/cli.rs:1539-1539` `"{}/.rigger/tmp"`
+- `tests/cli.rs:1551-1551` `"/.rigger/tmp/"`
+- `tests/cli.rs:1575-1575` `".rigger"`
+- `tests/cli.rs:1665-1665` `".rigger"`
+- `tests/cli.rs:1675-1675` `".rigger"`
+- `tests/cli.rs:1742-1742` `".rigger"`
+- `tests/cli.rs:1743-1743` `".rigger"`
+- `tests/cli.rs:1755-1755` `".rigger"`
+- `tests/cli.rs:1777-1777` `".rigger"`
+- `tests/cli.rs:1846-1846` `".rigger"`
+- `tests/cli.rs:1884-1884` `".rigger"`
+- `tests/cli.rs:1904-1904` `".rigger"`
+- `tests/cli.rs:1937-1937` `".rigger"`
+- `tests/cli.rs:1952-1952` `".rigger"`
+- `tests/cli.rs:2612-2612` `".rigger"`
+- `tests/cli.rs:2710-2710` `".rigger"`
+- `tests/cli.rs:2751-2751` `".rigger"`
+- `tests/cli.rs:2783-2783` `".rigger"`
+- `tests/cli.rs:2784-2784` `"graph build must create .rigger/graph.db from a cold checkout"`
+- `tests/cli.rs:2834-2834` `".rigger"`
+- `tests/cli.rs:2835-2835` `"graph build must create .rigger/graph.db even when there is nothing to ingest"`
+- `tests/cli.rs:2858-2858` `".rigger"`
+- `tests/cli.rs:2936-2936` `".rigger"`
+- `tests/cli.rs:2951-2951` `".rigger"`
+- `tests/cli.rs:2999-2999` `".rigger"`
+- `tests/cli.rs:3024-3024` `".rigger"`
+- `tests/cli.rs:3143-3143` `".rigger"`
+- `tests/cli.rs:3147-3147` `"grounding via symbols must persist the structural index to .rigger/symbols/"`
+- `tests/cli.rs:3320-3320` `".rigger"`
+- `tests/cli.rs:3596-3596` `".rigger"`
+- `tests/cli.rs:3741-3741` `".rigger"`
+- `tests/cli.rs:3882-3882` `"cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step"`
+- `tests/cli.rs:3930-3930` `"cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step"`
+- `tests/cli.rs:4117-4117` `".rigger/tmp/agent-scratch/"`
+- `tests/cli.rs:4123-4123` `".rigger/tmp/cargo-target"`
+- `tests/cli.rs:4131-4131` `"CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step"`
+- `tests/cli.rs:4379-4379` `".rigger"`
+- `tests/cli.rs:4408-4408` `".rigger"`
+- `tests/cli.rs:4518-4518` `".rigger"`
+- `tests/cli.rs:4634-4634` `".rigger"`
+- `tests/cli.rs:4737-4737` `".rigger"`
+- `tests/cli.rs:4929-4929` `".rigger"`
+- `tests/cli.rs:4960-4960` `".rigger"`
+- `tests/cli.rs:5403-5403` `".rigger"`
+- `tests/cli.rs:5573-5573` `".rigger"`
+- `tests/cli.rs:5643-5643` `".rigger"`
+- `tests/cli.rs:5781-5781` `".rigger"`
+- `tests/cli.rs:5838-5838` `".rigger"`
+- `tests/cli.rs:6044-6044` `".rigger"`
+- `tests/cli.rs:6098-6098` `".rigger"`
+- `tests/cli.rs:6268-6268` `".rigger"`
+- `tests/cli.rs:6374-6374` `".rigger"`
+- `tests/cli.rs:6453-6453` `".rigger"`
+- `tests/cli.rs:6586-6586` `".rigger"`
+- `tests/cli.rs:6643-6643` `".rigger"`
+- `tests/cli.rs:6828-6828` `".rigger"`
+- `tests/cli.rs:6901-6901` `".rigger"`
+- `tests/cli.rs:7007-7007` `".rigger"`
+- `tests/cli.rs:7076-7076` `".rigger"`
+- `tests/cli.rs:7178-7178` `".rigger"`
+- `tests/cli.rs:7244-7244` `".rigger"`
+- `tests/cli.rs:7378-7378` `".rigger"`
+- `tests/cli.rs:7446-7446` `".rigger"`
+- `tests/cli.rs:7577-7577` `".rigger"`
+- `tests/cli.rs:7677-7677` `".rigger/events.db"`
+- `tests/cli.rs:7876-7876` `".rigger"`
+- `tests/cli.rs:7910-7910` `".rigger"`
+- `tests/cli.rs:8138-8138` `".rigger"`
+- `tests/cli.rs:8228-8228` `".rigger"`
+- `tests/cli.rs:8291-8291` `"/.rigger/"`
+- `tests/cli.rs:8292-8292` `"the default marker path must never live under any .rigger; got: {marker_str:?}"`
+- `tests/cli.rs:8576-8576` `".rigger"`
+- `tests/cli.rs:8876-8876` `"/.rigger/tmp/agent-live/"`
+- `tests/cli.rs:8877-8877` `"under RIGGER_TMPDIR the marker is not under the repo's .rigger/tmp; got: {marker_str:?}"`
+- `tests/cli.rs:9658-9658` `".rigger"`
+- `tests/cli.rs:9821-9821` `".rigger"`
+- `tests/cli.rs:9925-9925` `".rigger"`
+- `tests/cli.rs:9974-9974` `".rigger"`
+- `tests/cli.rs:10076-10076` `".rigger"`
+- `tests/cli.rs:10135-10135` `".rigger"`
+- `tests/cli.rs:10239-10239` `".rigger"`
+- `tests/cli.rs:10306-10306` `".rigger"`
+- `tests/cli.rs:10448-10448` `".rigger"`
+- `tests/cli.rs:10496-10496` `".rigger"`
+- `tests/cli.rs:10614-10614` `".rigger"`
+- `tests/cli.rs:10885-10885` `".rigger"`
+- `tests/cli.rs:10984-10984` `".rigger"`
+- `tests/cli.rs:11073-11073` `".rigger"`
+- `tests/cli.rs:11113-11113` `".rigger"`
+- `tests/cli.rs:11770-11770` `".rigger"`
+- `tests/cli.rs:11932-11932` `".rigger"`
+- `tests/cli.rs:12311-12311` `".rigger/workflow.yml"`
+- `tests/cli.rs:12311-12311` `".rigger/agents"`
+- `tests/cli.rs:12376-12376` `".rigger"`
+- `tests/cli.rs:12410-12410` `".rigger/workflow.yml"`
+- `tests/cli.rs:12410-12410` `".rigger/agents"`
+- `tests/cli.rs:12413-12413` `".rigger/workflow.yml"`
+- `tests/cli.rs:12445-12445` `".rigger"`
+- `tests/cli.rs:12479-12479` `".rigger/workflow.yml"`
+- `tests/cli.rs:12479-12479` `".rigger/agents"`
+- `tests/cli.rs:12482-12482` `".rigger/workflow.yml"`
+- `tests/cli.rs:12517-12517` `".rigger"`
+- `tests/cli.rs:12556-12556` `".rigger/workflow.yml"`
+- `tests/cli.rs:12556-12556` `".rigger/agents"`
+- `tests/cli.rs:12559-12559` `".rigger/workflow.yml"`
+- `tests/cli.rs:12593-12593` `".rigger"`
+- `tests/cli.rs:12631-12631` `".rigger/workflow.yml"`
+- `tests/cli.rs:12631-12631` `".rigger/agents"`
+- `tests/cli.rs:12634-12634` `".rigger/workflow.yml"`
+- `tests/cli.rs:12689-12689` `".rigger/workflow.yml"`
+- `tests/cli.rs:12689-12689` `".rigger/agents"`
+- `tests/cli.rs:12736-12736` `".rigger/workflow.yml"`
+- `tests/cli.rs:12736-12736` `".rigger/agents"`
+- `tests/cli.rs:12749-12749` `".rigger"`
+- `tests/cli.rs:12758-12758` `".rigger"`
+- `tests/cli.rs:12760-12760` `".rigger"`
+- `tests/cli.rs:12857-12857` `".rigger/workflow.yml"`
+- `tests/cli.rs:12858-12858` `"validate must NOT flag a clean tracked `.rigger/` tree; stderr:\n{err}"`
+- `tests/cli.rs:12867-12867` `".rigger"`
+- `tests/cli.rs:12874-12874` `"validate must still succeed (exit 0) when it only FLAGS uncommitted `.rigger/` \
          changes; stderr:\n{err}"`
-- `tests/cli.rs:12686-12686` `".rigger/workflow.yml"`
-- `tests/cli.rs:12687-12687` `"validate must flag the tracked-but-modified `.rigger/workflow.yml` on stderr; \
+- `tests/cli.rs:12878-12878` `".rigger/workflow.yml"`
+- `tests/cli.rs:12879-12879` `"validate must flag the tracked-but-modified `.rigger/workflow.yml` on stderr; \
          stderr:\n{err}"`
-- `tests/cli.rs:12703-12703` `".rigger"`
-- `tests/cli.rs:12948-12948` `".rigger"`
-- `tests/cli.rs:13365-13365` `".rigger"`
-- `tests/cli.rs:13509-13509` `".rigger"`
-- `tests/cli.rs:13511-13511` `".rigger"`
-- `tests/cli.rs:13514-13514` `".rigger"`
-- `tests/cli.rs:13516-13516` `".rigger"`
-- `tests/cli.rs:13544-13544` `"probe/.rigger/events.db"`
-- `tests/cli.rs:13578-13578` `".rigger"`
-- `tests/cli.rs:14498-14498` `".rigger"`
-- `tests/cli.rs:14595-14595` `"scaffolded .rigger/workflow.yml"`
-- `tests/cli.rs:14599-14599` `"scaffolded .rigger/agents/"`
-- `tests/cli.rs:14631-14631` `".rigger"`
-- `tests/cli.rs:14663-14663` `".rigger/agents/researcher.md"`
-- `tests/cli.rs:14664-14664` `"the agent was actually imported into .rigger/agents/"`
-- `tests/cli.rs:14711-14711` `".rigger"`
-- `tests/cli.rs:14940-14940` `".rigger/dash.url"`
-- `tests/cli.rs:14944-14944` `".rigger/dash.marker"`
-- `tests/cli.rs:14948-14948` `".rigger/dash.attempt"`
-- `tests/cli.rs:14957-14957` `".rigger"`
-- `tests/cli.rs:14959-14959` `".rigger"`
+- `tests/cli.rs:12895-12895` `".rigger"`
+- `tests/cli.rs:13140-13140` `".rigger"`
+- `tests/cli.rs:13557-13557` `".rigger"`
+- `tests/cli.rs:13701-13701` `".rigger"`
+- `tests/cli.rs:13703-13703` `".rigger"`
+- `tests/cli.rs:13706-13706` `".rigger"`
+- `tests/cli.rs:13708-13708` `".rigger"`
+- `tests/cli.rs:13736-13736` `"probe/.rigger/events.db"`
+- `tests/cli.rs:13800-13800` `"validate must warn about residue planted under the relocated cache-home DEFAULT \
+         root - a regression that left its residue scan still rooted at the pre-relocation \
+         `.rigger/tmp` would silently miss this and print nothing; stderr:\n{err}"`
+- `tests/cli.rs:13830-13830` `".rigger"`
+- `tests/cli.rs:14750-14750` `".rigger"`
+- `tests/cli.rs:14847-14847` `"scaffolded .rigger/workflow.yml"`
+- `tests/cli.rs:14851-14851` `"scaffolded .rigger/agents/"`
+- `tests/cli.rs:14883-14883` `".rigger"`
+- `tests/cli.rs:14915-14915` `".rigger/agents/researcher.md"`
+- `tests/cli.rs:14916-14916` `"the agent was actually imported into .rigger/agents/"`
 - `tests/cli.rs:14963-14963` `".rigger"`
-- `tests/cli.rs:14964-14964` `".rigger"`
-- `tests/cli.rs:14966-14966` `".rigger/dash.url"`
-- `tests/cli.rs:14967-14967` `".rigger/dash.marker"`
-- `tests/cli.rs:14968-14968` `".rigger/dash.attempt"`
-- `tests/cli.rs:15008-15008` `".claude/\n.rigger/\n"`
-- `tests/cli.rs:15024-15024` `".rigger/dash.url"`
-- `tests/cli.rs:15032-15032` `"the test's global config must actually ignore .rigger/dash.url (else the regression \
+- `tests/cli.rs:15192-15192` `".rigger/dash.url"`
+- `tests/cli.rs:15196-15196` `".rigger/dash.marker"`
+- `tests/cli.rs:15200-15200` `".rigger/dash.attempt"`
+- `tests/cli.rs:15209-15209` `".rigger"`
+- `tests/cli.rs:15211-15211` `".rigger"`
+- `tests/cli.rs:15215-15215` `".rigger"`
+- `tests/cli.rs:15216-15216` `".rigger"`
+- `tests/cli.rs:15218-15218` `".rigger/dash.url"`
+- `tests/cli.rs:15219-15219` `".rigger/dash.marker"`
+- `tests/cli.rs:15220-15220` `".rigger/dash.attempt"`
+- `tests/cli.rs:15260-15260` `".claude/\n.rigger/\n"`
+- `tests/cli.rs:15276-15276` `".rigger/dash.url"`
+- `tests/cli.rs:15284-15284` `"the test's global config must actually ignore .rigger/dash.url (else the regression \
          guard is inconclusive)"`
-- `tests/cli.rs:15055-15055` `".rigger/shim"`
-- `tests/cli.rs:15056-15056` `".rigger/dash.url"`
-- `tests/cli.rs:15057-15057` `".rigger/dash.marker"`
-- `tests/cli.rs:15058-15058` `".rigger/dash.attempt"`
-- `tests/cli.rs:15262-15262` `".rigger/project.id"`
-- `tests/cli.rs:15265-15265` `".rigger/project.id"`
-- `tests/cli.rs:15278-15278` `".rigger/project.id"`
-- `tests/cli.rs:15367-15367` `".rigger/project.id"`
-- `tests/cli.rs:15416-15416` `".rigger/project.id"`
-- `tests/cli.rs:15421-15421` `".rigger/project.id"`
-- `tests/cli.rs:15435-15435` `".rigger"`
-- `tests/cli.rs:15578-15578` `".rigger"`
-- `tests/cli.rs:15697-15697` `".rigger"`
-- `tests/cli.rs:15789-15789` `".rigger"`
-- `tests/cli.rs:15854-15854` `".rigger"`
-- `tests/cli.rs:15924-15924` `".rigger"`
-- `tests/cli.rs:16288-16288` `".rigger"`
-- `tests/cli.rs:16356-16356` `".rigger"`
-- `tests/cli.rs:16493-16493` `".rigger"`
-- `tests/cli.rs:16692-16692` `".rigger"`
-- `tests/cli.rs:16882-16882` `".rigger"`
-- `tests/cli.rs:17064-17064` `".rigger"`
-- `tests/cli.rs:17109-17109` `".rigger"`
-- `tests/cli.rs:17521-17521` `".rigger"`
-- `tests/cli.rs:17536-17536` `"the driver never recorded a dash URL in .rigger/dash.url; stderr:\n{err}"`
-- `tests/cli.rs:17581-17581` `".rigger"`
-- `tests/cli.rs:17644-17644` `".rigger"`
-- `tests/cli.rs:17719-17719` `".rigger"`
-- `tests/cli.rs:17795-17795` `".rigger"`
-- `tests/cli.rs:17879-17879` `".rigger"`
-- `tests/cli.rs:17986-17986` `".rigger"`
-- `tests/cli.rs:18702-18702` `".rigger"`
-- `tests/cli.rs:18704-18704` `".rigger"`
-- `tests/cli.rs:19401-19401` `".rigger/dash.marker"`
-- `tests/cli.rs:19442-19442` `".rigger/dash.marker"`
-- `tests/cli.rs:19445-19445` `".rigger/dash.url"`
-- `tests/cli.rs:19497-19497` `".rigger/dash.url"`
-- `tests/cli.rs:19502-19502` `".rigger/dash.marker"`
-- `tests/cli.rs:19558-19558` `".rigger/dash.url"`
-- `tests/cli.rs:19560-19560` `".rigger/dash.marker"`
-- `tests/cli.rs:19629-19629` `".rigger/dash.marker"`
-- `tests/cli.rs:19687-19687` `".rigger/dash.marker"`
-- `tests/cli.rs:19792-19792` `".rigger/dash.marker"`
-- `tests/cli.rs:19846-19846` `".rigger/dash.marker"`
-- `tests/cli.rs:19868-19868` `".rigger/dash.attempt"`
-- `tests/cli.rs:19878-19878` `"a marker that LOOKS like it predates this run's own RunStarted must still be reported \
+- `tests/cli.rs:15307-15307` `".rigger/shim"`
+- `tests/cli.rs:15308-15308` `".rigger/dash.url"`
+- `tests/cli.rs:15309-15309` `".rigger/dash.marker"`
+- `tests/cli.rs:15310-15310` `".rigger/dash.attempt"`
+- `tests/cli.rs:15514-15514` `".rigger/project.id"`
+- `tests/cli.rs:15517-15517` `".rigger/project.id"`
+- `tests/cli.rs:15530-15530` `".rigger/project.id"`
+- `tests/cli.rs:15619-15619` `".rigger/project.id"`
+- `tests/cli.rs:15668-15668` `".rigger/project.id"`
+- `tests/cli.rs:15673-15673` `".rigger/project.id"`
+- `tests/cli.rs:15687-15687` `".rigger"`
+- `tests/cli.rs:15830-15830` `".rigger"`
+- `tests/cli.rs:15949-15949` `".rigger"`
+- `tests/cli.rs:16041-16041` `".rigger"`
+- `tests/cli.rs:16106-16106` `".rigger"`
+- `tests/cli.rs:16176-16176` `".rigger"`
+- `tests/cli.rs:16540-16540` `".rigger"`
+- `tests/cli.rs:16608-16608` `".rigger"`
+- `tests/cli.rs:16745-16745` `".rigger"`
+- `tests/cli.rs:16944-16944` `".rigger"`
+- `tests/cli.rs:17134-17134` `".rigger"`
+- `tests/cli.rs:17316-17316` `".rigger"`
+- `tests/cli.rs:17361-17361` `".rigger"`
+- `tests/cli.rs:17773-17773` `".rigger"`
+- `tests/cli.rs:17788-17788` `"the driver never recorded a dash URL in .rigger/dash.url; stderr:\n{err}"`
+- `tests/cli.rs:17833-17833` `".rigger"`
+- `tests/cli.rs:17896-17896` `".rigger"`
+- `tests/cli.rs:17971-17971` `".rigger"`
+- `tests/cli.rs:18047-18047` `".rigger"`
+- `tests/cli.rs:18131-18131` `".rigger"`
+- `tests/cli.rs:18238-18238` `".rigger"`
+- `tests/cli.rs:18954-18954` `".rigger"`
+- `tests/cli.rs:18956-18956` `".rigger"`
+- `tests/cli.rs:19653-19653` `".rigger/dash.marker"`
+- `tests/cli.rs:19694-19694` `".rigger/dash.marker"`
+- `tests/cli.rs:19697-19697` `".rigger/dash.url"`
+- `tests/cli.rs:19749-19749` `".rigger/dash.url"`
+- `tests/cli.rs:19754-19754` `".rigger/dash.marker"`
+- `tests/cli.rs:19810-19810` `".rigger/dash.url"`
+- `tests/cli.rs:19812-19812` `".rigger/dash.marker"`
+- `tests/cli.rs:19881-19881` `".rigger/dash.marker"`
+- `tests/cli.rs:19939-19939` `".rigger/dash.marker"`
+- `tests/cli.rs:20044-20044` `".rigger/dash.marker"`
+- `tests/cli.rs:20098-20098` `".rigger/dash.marker"`
+- `tests/cli.rs:20120-20120` `".rigger/dash.attempt"`
+- `tests/cli.rs:20130-20130` `"a marker that LOOKS like it predates this run's own RunStarted must still be reported \
          when .rigger/dash.attempt explicitly names this exact run - proving watch_poll's own \
          file-read-and-match wiring (not merely the pure watch::detect fallback comparison, \
          which alone would suppress this exact shape) is what forced the report; got:\n{out}"`
-- `tests/cli.rs:19926-19926` `".rigger/dash.marker"`
-- `tests/cli.rs:19948-19948` `".rigger/dash.attempt"`
-- `tests/cli.rs:20674-20674` `".rigger"`
-- `tests/cli.rs:21489-21489` `".rigger"`
-- `tests/cli.rs:21830-21830` `".rigger"`
-- `tests/cli.rs:21865-21865` `".rigger"`
-- `tests/cli.rs:21940-21940` `"the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}"`
-- `tests/cli.rs:22021-22021` `"the step must record a dash marker at .rigger/dash.marker; stderr:\n{err}"`
-- `tests/cli.rs:22035-22035` `"`rigger step` under RIGGER_DASH_PORT={dash_port} must bind its step-path dash at EXACTLY \
+- `tests/cli.rs:20178-20178` `".rigger/dash.marker"`
+- `tests/cli.rs:20200-20200` `".rigger/dash.attempt"`
+- `tests/cli.rs:20926-20926` `".rigger"`
+- `tests/cli.rs:21741-21741` `".rigger"`
+- `tests/cli.rs:22082-22082` `".rigger"`
+- `tests/cli.rs:22117-22117` `".rigger"`
+- `tests/cli.rs:22192-22192` `"the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}"`
+- `tests/cli.rs:22273-22273` `"the step must record a dash marker at .rigger/dash.marker; stderr:\n{err}"`
+- `tests/cli.rs:22287-22287` `"`rigger step` under RIGGER_DASH_PORT={dash_port} must bind its step-path dash at EXACTLY \
          that port and record it in .rigger/dash.marker (proving the override reaches the real \
          bind, not the fixed dash::DEFAULT_PORT); the marker instead recorded {marker_port}"`
-- `tests/cli.rs:22096-22096` `".rigger"`
-- `tests/cli.rs:22177-22177` `".rigger"`
-- `tests/cli.rs:22248-22248` `".rigger"`
-- `tests/cli.rs:22610-22610` `".rigger"`
-- `tests/cli.rs:22622-22622` `".rigger"`
-- `tests/cli.rs:22649-22649` `".rigger"`
-- `tests/cli.rs:22677-22677` `".rigger"`
-- `tests/cli.rs:22688-22688` `".rigger"`
-- `tests/cli.rs:22725-22725` `".rigger"`
-- `tests/cli.rs:22814-22814` `"the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}"`
-- `tests/cli.rs:22886-22886` `"{root}/.rigger/events.db"`
-- `tests/cli.rs:22903-22903` `"{root}/.rigger/events.db"`
-- `tests/cli.rs:23503-23503` `"{other_root}/.rigger/tmp"`
-- `tests/cli.rs:23643-23643` `"{other_root}/.rigger/tmp"`
-- `tests/cli.rs:23778-23778` `"{other_root}/.rigger/tmp"`
-- `tests/cli.rs:23785-23785` `"{other_root}/.rigger/events.db"`
-- `tests/cli.rs:24164-24164` `"/stale/root/.rigger/events.db"`
-- `tests/cli.rs:24185-24185` `"/live/root/.rigger/events.db"`
-- `tests/cli.rs:24287-24287` `"the step must record a dash marker at .rigger/dash.marker"`
-- `tests/cli.rs:24487-24487` `".rigger"`
-- `tests/cli.rs:24669-24669` `".rigger"`
-- `tests/cli.rs:24772-24772` `".rigger"`
-- `tests/cli.rs:24897-24897` `".rigger"`
-- `tests/cli.rs:25539-25539` `".rigger"`
-- `tests/cli.rs:25558-25558` `".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}"`
-- `tests/cli.rs:25562-25562` `".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \
+- `tests/cli.rs:22348-22348` `".rigger"`
+- `tests/cli.rs:22429-22429` `".rigger"`
+- `tests/cli.rs:22500-22500` `".rigger"`
+- `tests/cli.rs:22862-22862` `".rigger"`
+- `tests/cli.rs:22874-22874` `".rigger"`
+- `tests/cli.rs:22901-22901` `".rigger"`
+- `tests/cli.rs:22929-22929` `".rigger"`
+- `tests/cli.rs:22940-22940` `".rigger"`
+- `tests/cli.rs:22977-22977` `".rigger"`
+- `tests/cli.rs:23066-23066` `"the first step must record a dash marker at .rigger/dash.marker; stderr:\n{err1}"`
+- `tests/cli.rs:23138-23138` `"{root}/.rigger/events.db"`
+- `tests/cli.rs:23155-23155` `"{root}/.rigger/events.db"`
+- `tests/cli.rs:24046-24046` `"{other_root}/.rigger/events.db"`
+- `tests/cli.rs:24425-24425` `"/stale/root/.rigger/events.db"`
+- `tests/cli.rs:24446-24446` `"/live/root/.rigger/events.db"`
+- `tests/cli.rs:24548-24548` `"the step must record a dash marker at .rigger/dash.marker"`
+- `tests/cli.rs:24748-24748` `".rigger"`
+- `tests/cli.rs:24930-24930` `".rigger"`
+- `tests/cli.rs:25033-25033` `".rigger"`
+- `tests/cli.rs:25158-25158` `".rigger"`
+- `tests/cli.rs:25800-25800` `".rigger"`
+- `tests/cli.rs:25819-25819` `".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}"`
+- `tests/cli.rs:25823-25823` `".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \
          (spec 91): {text:?}"`
-- `tests/cli.rs:25567-25567` `".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \
+- `tests/cli.rs:25828-25828` `".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \
          so drift in the committed workflow fails this suite instead of silently diverging \
          from the spec it satisfies: {text:?}"`
-- `tests/cli.rs:25593-25593` `"this repository's own .rigger/workflow.yml and agents must load: {e}"`
-- `tests/cli.rs:25600-25600` `".rigger/workflow.yml must define a `checkin` stage (spec 91)"`
-- `tests/cli.rs:25634-25634` `".rigger/workflow.yml must define a `mutation` gate (spec 91)"`
-- `tests/cli.rs:25655-25655` `"this repository's own committed .rigger/workflow.yml must pass Config::validate \
+- `tests/cli.rs:25854-25854` `"this repository's own .rigger/workflow.yml and agents must load: {e}"`
+- `tests/cli.rs:25861-25861` `".rigger/workflow.yml must define a `checkin` stage (spec 91)"`
+- `tests/cli.rs:25895-25895` `".rigger/workflow.yml must define a `mutation` gate (spec 91)"`
+- `tests/cli.rs:25916-25916` `"this repository's own committed .rigger/workflow.yml must pass Config::validate \
          on a correctly-provisioned machine (cargo-mutants installed)"`
-- `tests/cli.rs:25700-25700` `".rigger/dash.attempt"`
-- `tests/cli.rs:25701-25701` `"a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \
+- `tests/cli.rs:25961-25961` `".rigger/dash.attempt"`
+- `tests/cli.rs:25962-25962` `"a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \
          (record_dash_attempt); without it this test cannot exercise the round-8 fact at all"`
-- `tests/cli.rs:25758-25758` `".rigger/dash.url"`
-- `tests/cli.rs:25766-25766` `".rigger/dash.marker"`
-- `tests/cli.rs:25830-25830` `".rigger/dash.marker"`
-- `tests/cli.rs:25859-25859` `".rigger/dash.url"`
-- `tests/cli.rs:25866-25866` `".rigger/dash.attempt"`
-- `tests/cli.rs:25927-25927` `".rigger/dash.marker"`
-- `tests/cli.rs:25930-25930` `".rigger/dash.url"`
-- `tests/cli.rs:25984-25984` `".rigger/dash.marker"`
-- `tests/cli.rs:26006-26006` `".rigger/dash.url"`
-- `tests/cli.rs:26011-26011` `".rigger/dash.attempt"`
-- `tests/cli.rs:26050-26050` `".rigger/dash.url"`
-- `tests/cli.rs:26061-26061` `".rigger/dash.marker"`
-- `tests/cli.rs:26097-26097` `".rigger/dash.url"`
-- `tests/cli.rs:26105-26105` `".rigger/dash.marker"`
-- `tests/cli.rs:26157-26157` `".rigger/dash.url"`
-- `tests/cli.rs:26162-26162` `".rigger/dash.marker"`
-- `tests/cli.rs:26224-26224` `".rigger/dash.url"`
-- `tests/cli.rs:26232-26232` `".rigger/dash.marker"`
-- `tests/cli.rs:26485-26485` `".rigger"`
-- `tests/cli.rs:27193-27193` `".rigger"`
-- `tests/cli.rs:27231-27231` `".rigger"`
+- `tests/cli.rs:26019-26019` `".rigger/dash.url"`
+- `tests/cli.rs:26027-26027` `".rigger/dash.marker"`
+- `tests/cli.rs:26091-26091` `".rigger/dash.marker"`
+- `tests/cli.rs:26120-26120` `".rigger/dash.url"`
+- `tests/cli.rs:26127-26127` `".rigger/dash.attempt"`
+- `tests/cli.rs:26188-26188` `".rigger/dash.marker"`
+- `tests/cli.rs:26191-26191` `".rigger/dash.url"`
+- `tests/cli.rs:26245-26245` `".rigger/dash.marker"`
+- `tests/cli.rs:26267-26267` `".rigger/dash.url"`
+- `tests/cli.rs:26272-26272` `".rigger/dash.attempt"`
+- `tests/cli.rs:26311-26311` `".rigger/dash.url"`
+- `tests/cli.rs:26322-26322` `".rigger/dash.marker"`
+- `tests/cli.rs:26358-26358` `".rigger/dash.url"`
+- `tests/cli.rs:26366-26366` `".rigger/dash.marker"`
+- `tests/cli.rs:26418-26418` `".rigger/dash.url"`
+- `tests/cli.rs:26423-26423` `".rigger/dash.marker"`
+- `tests/cli.rs:26485-26485` `".rigger/dash.url"`
+- `tests/cli.rs:26493-26493` `".rigger/dash.marker"`
+- `tests/cli.rs:26746-26746` `".rigger"`
+- `tests/cli.rs:27454-27454` `".rigger"`
+- `tests/cli.rs:27492-27492` `".rigger"`
+- `tests/common/mod.rs:225-225` `"{}/.rigger-test-scratch"`
 - `tests/community_detection_cli.rs:64-64` `".rigger"`
 - `tests/community_detection_cli.rs:65-65` `".rigger"`
 - `tests/community_detection_cli.rs:71-71` `".rigger"`
@@ -3629,17 +3639,10 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:211-211` `".rigger"`
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:224-224` `".rigger"`
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:252-252` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:305-305` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:334-334` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:379-379` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:717-717` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:805-805` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:878-878` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:913-913` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:976-976` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:1213-1213` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:1262-1262` `".rigger"`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:1320-1320` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:373-373` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:715-715` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:1255-1255` `".rigger"`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:1313-1313` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:208-208` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:209-209` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:214-214` `".rigger"`
@@ -3648,20 +3651,20 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/gate_store_fence_periphery.rs:222-222` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:455-455` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:478-478` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:513-513` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:514-514` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:527-527` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:529-529` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:530-530` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:600-600` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:601-601` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:618-618` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:543-543` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:546-546` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:619-619` `".rigger"`
 - `tests/gate_store_fence_periphery.rs:620-620` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:699-699` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:700-700` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:710-710` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:712-712` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:814-814` `".rigger"`
-- `tests/gate_store_fence_periphery.rs:815-815` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:637-637` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:639-639` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:720-720` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:721-721` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:731-731` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:733-733` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:835-835` `".rigger"`
+- `tests/gate_store_fence_periphery.rs:836-836` `".rigger"`
 - `tests/graph_show_periphery.rs:81-81` `".rigger"`
 - `tests/graph_show_periphery.rs:134-134` `".rigger"`
 - `tests/graph_show_staleness.rs:69-69` `".rigger"`
@@ -3688,15 +3691,29 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/heartbeat_write_read_agree_periphery.rs:135-135` `".rigger"`
 - `tests/heartbeat_write_read_agree_periphery.rs:152-152` `".rigger"`
 - `tests/heartbeat_write_read_agree_periphery.rs:206-206` `".rigger"`
-- `tests/heartbeat_write_read_agree_periphery.rs:414-414` `".rigger"`
-- `tests/heartbeat_write_read_agree_periphery.rs:425-425` `".rigger"`
-- `tests/heartbeat_write_read_agree_periphery.rs:510-510` `".rigger"`
-- `tests/heartbeat_write_read_agree_periphery.rs:521-521` `".rigger"`
-- `tests/heartbeat_write_read_agree_periphery.rs:593-593` `".rigger"`
-- `tests/heartbeat_write_read_agree_periphery.rs:603-603` `".rigger"`
+- `tests/heartbeat_write_read_agree_periphery.rs:432-432` `".rigger"`
+- `tests/heartbeat_write_read_agree_periphery.rs:443-443` `".rigger"`
+- `tests/heartbeat_write_read_agree_periphery.rs:528-528` `".rigger"`
+- `tests/heartbeat_write_read_agree_periphery.rs:539-539` `".rigger"`
+- `tests/heartbeat_write_read_agree_periphery.rs:611-611` `".rigger"`
+- `tests/heartbeat_write_read_agree_periphery.rs:621-621` `".rigger"`
 - `tests/integrate_conflict_merge_periphery.rs:390-390` `".rigger"`
 - `tests/integrate_conflict_merge_periphery.rs:391-391` `"create .rigger/agents"`
 - `tests/integrate_conflict_merge_periphery.rs:460-460` `"the project's own .rigger/workflow.yml must load through the real loader"`
+- `tests/integrate_conflict_merge_periphery.rs:613-613` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:829-829` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:1067-1067` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:1303-1303` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:1544-1544` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:1754-1754` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:1946-1946` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:2182-2182` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:2317-2317` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:2483-2483` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:2692-2692` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:2921-2921` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:3031-3031` `"{repo_path}/.rigger-test-scratch"`
+- `tests/integrate_conflict_merge_periphery.rs:3184-3184` `"{repo_path}/.rigger-test-scratch"`
 - `tests/migration_is_deliberate_periphery.rs:454-454` `".rigger"`
 - `tests/migration_is_deliberate_periphery.rs:454-454` `"create .rigger"`
 - `tests/migration_is_deliberate_periphery.rs:474-474` `".rigger"`
@@ -3753,12 +3770,15 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/registry_periphery.rs:272-272` `"/home/dev/proj/.rigger/events.db"`
 - `tests/registry_refresh_driver_courier_convergence_periphery.rs:61-61` `".rigger"`
 - `tests/registry_refresh_driver_courier_convergence_periphery.rs:62-62` `"create .rigger/agents"`
+- `tests/relocated_worktree_store_resolution_periphery.rs:58-58` `".rigger"`
+- `tests/relocated_worktree_store_resolution_periphery.rs:59-59` `"create .rigger"`
+- `tests/relocated_worktree_store_resolution_periphery.rs:68-68` `".rigger"`
+- `tests/relocated_worktree_store_resolution_periphery.rs:86-86` `".rigger"`
+- `tests/relocated_worktree_store_resolution_periphery.rs:168-168` `".rigger"`
 - `tests/reset_build_cache_periphery.rs:46-46` `".rigger"`
 - `tests/reset_build_cache_periphery.rs:55-55` `".rigger"`
-- `tests/reset_build_cache_periphery.rs:62-62` `".rigger"`
-- `tests/reset_build_cache_periphery.rs:66-66` `".rigger"`
-- `tests/reset_build_cache_periphery.rs:463-463` `".rigger"`
-- `tests/reset_build_cache_periphery.rs:540-540` `".rigger"`
+- `tests/reset_build_cache_periphery.rs:465-465` `".rigger"`
+- `tests/reset_build_cache_periphery.rs:542-542` `".rigger"`
 - `tests/reset_derived_compaction.rs:45-45` `".rigger"`
 - `tests/reset_derived_compaction.rs:45-45` `"create .rigger"`
 - `tests/reset_derived_compaction.rs:62-62` `".rigger"`
@@ -3863,12 +3883,10 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:57-57` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:76-76` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:98-98` `".rigger"`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:177-177` `".rigger"`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:297-297` `".rigger"`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:308-308` `".rigger"`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:322-322` `".rigger"`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:418-418` `".rigger"`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:490-490` `".rigger"`
+- `tests/spawn_scratch_reap_authorized_root_periphery.rs:305-305` `".rigger"`
+- `tests/spawn_scratch_reap_authorized_root_periphery.rs:316-316` `".rigger"`
+- `tests/spawn_scratch_reap_authorized_root_periphery.rs:427-427` `".rigger"`
+- `tests/spawn_scratch_reap_authorized_root_periphery.rs:499-499` `".rigger"`
 - `tests/step_attention_periphery.rs:161-161` `".rigger"`
 - `tests/step_attention_periphery.rs:183-183` `".rigger"`
 - `tests/step_attention_periphery.rs:222-222` `".rigger"`
@@ -3926,6 +3944,9 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/validate_advisories.rs:244-244` `".rigger"`
 - `tests/validate_behind_the_tree_periphery.rs:72-72` `".rigger"`
 - `tests/validate_behind_the_tree_periphery.rs:72-72` `"create .rigger"`
+- `tests/validate_footprint_default_scratch_root_periphery.rs:40-40` `".rigger"`
+- `tests/validate_footprint_default_scratch_root_periphery.rs:41-41` `".rigger"`
+- `tests/validate_footprint_default_scratch_root_periphery.rs:101-101` `".rigger"`
 - `tests/watchdog_cli_periphery.rs:57-57` `".rigger"`
 - `tests/watchdog_cli_periphery.rs:77-77` `".rigger"`
 - `tests/watchdog_cli_periphery.rs:94-94` `".rigger"`
@@ -3938,9 +3959,6 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `tests/worktree_liveness_fence_periphery.rs:175-175` `".rigger"`
 - `tests/worktree_liveness_fence_periphery.rs:199-199` `".rigger"`
 - `tests/worktree_liveness_fence_periphery.rs:235-235` `".rigger"`
-- `tests/worktree_liveness_fence_periphery.rs:312-312` `".rigger"`
-- `tests/worktree_liveness_fence_periphery.rs:315-315` `"premise: the default scratch root is `.rigger/tmp` (load-bearing for the worktree \
-         paths built below)"`
 - `tests/worktree_remove_relocated_scratch_base_guard_periphery.rs:139-139` `"Worktree::remove's own doc comment promises every process rooted in the worktree is \
          reaped BEFORE the dir is removed, unconditionally - a SIGTERM-ignoring process here \
          must still be SIGKILLed, exactly as the DEFAULT (unrelocated) shape already is (see \
@@ -4125,19 +4143,20 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:25950-26012` `planner_proposed_unit_inherits_the_default_review_panel`
 - `src/conductor.rs:26015-26110` `a_producer_stage_skips_the_three_tier_review_and_unblocks_its_dependents`
 
-#### `dup-0079` (semantic, 7 sites)
+#### `dup-0079` (semantic, 8 sites)
 
 Proposed home: `one error-shaping helper module`
 
-mandatory sweep: error-shaping helper functions - 7 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: error-shaping helper functions - 8 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/conductor.rs:26786-26844` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
 - `src/grounder/mod.rs:207-213` `retired_grounder_error`
-- `src/worktree.rs:3745-3799` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
-- `tests/adoption_keys_on_criterion_periphery.rs:2414-2586` `a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh`
+- `src/worktree.rs:3801-3855` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
+- `tests/adoption_keys_on_criterion_periphery.rs:2425-2597` `a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh`
 - `tests/batched_fold_cadence.rs:184-262` `append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch`
 - `tests/canary_item_sharding_jobs_cap_periphery.rs:352-440` `run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors`
 - `tests/grounder_name_contract.rs:40-171` `public_name_contract_predicate_error_and_resolver_agree`
+- `tests/integrate_conflict_merge_periphery.rs:1735-1843` `a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact`
 
 #### `dup-0080` (near, 5 sites)
 
@@ -4387,17 +4406,18 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:38242-38346` `a_replayed_step_re_runs_no_recorded_gate_and_appends_no_duplicate_events`
 - `src/conductor.rs:38349-38434` `a_re_step_replays_a_recorded_deferred_gate_without_re_running_it`
 
-#### `dup-0106` (near, 5 sites)
+#### `dup-0106` (near, 6 sites)
 
-Proposed home: `a new shared module (sites span 5 files: src/conductor.rs, tests/gate_store_fence_periphery.rs, tests/integrate_conflict_merge_periphery.rs, tests/spawn_target_dir_periphery.rs, tests/unified_traversal_grounding.rs)`
+Proposed home: `a new shared module (sites span 6 files: src/conductor.rs, tests/gate_store_fence_periphery.rs, tests/integrate_conflict_merge_periphery.rs, tests/scratch_workdir_isolation_leak_guard_periphery.rs, tests/spawn_target_dir_periphery.rs, tests/unified_traversal_grounding.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/conductor.rs:39095-39112` `init_repo`
 - `tests/gate_store_fence_periphery.rs:491-507` `init_repo_with_head`
 - `tests/integrate_conflict_merge_periphery.rs:260-277` `init_repo`
+- `tests/scratch_workdir_isolation_leak_guard_periphery.rs:63-80` `init_repo`
 - `tests/spawn_target_dir_periphery.rs:55-71` `init_repo_with_head`
-- `tests/unified_traversal_grounding.rs:573-590` `init_seam_repo`
+- `tests/unified_traversal_grounding.rs:575-592` `init_seam_repo`
 
 #### `dup-0107` (near, 3 sites)
 
@@ -4445,7 +4465,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/config.rs:221-223` `is_empty`
 - `src/failure.rs:168-170` `is_any`
-- `src/main.rs:10091-10096` `is_empty`
+- `src/main.rs:10136-10141` `is_empty`
 
 #### `dup-0112` (near, 2 sites)
 
@@ -4483,7 +4503,7 @@ Proposed home: `a new shared module (sites span 3 files: src/config.rs, src/main
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/config.rs:1974-2007` `literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word`
-- `src/main.rs:16185-16191` `is_uuid8_accepts_exactly_eight_hex_digits`
+- `src/main.rs:16230-16236` `is_uuid8_accepts_exactly_eight_hex_digits`
 - `tests/simplification_audit.rs:7156-7164` `looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring`
 
 #### `dup-0116` (near, 2 sites)
@@ -4502,7 +4522,7 @@ Proposed home: `a new shared module (sites span 3 files: src/config.rs, src/main
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/config.rs:2171-2173` `rejects_missing_frontmatter`
-- `src/main.rs:15496-15498` `dirty_tracked_paths_on_a_clean_tree_is_empty`
+- `src/main.rs:15541-15543` `dirty_tracked_paths_on_a_clean_tree_is_empty`
 - `src/spec.rs:895-897` `empty_when_no_criteria`
 
 #### `dup-0118` (near, 6 sites)
@@ -4563,14 +4583,14 @@ mandatory sweep: sqlite Connection::open call sites - 46 site(s), collected mech
 - `src/eventstore/sqlite.rs:3833-3833` `Connection::open_with_flags`
 - `src/eventstore/sqlite.rs:3851-3851` `Connection::open`
 - `src/eventstore/sqlite.rs:3865-3865` `Connection::open`
-- `src/main.rs:24581-24581` `Connection::open`
+- `src/main.rs:24739-24739` `Connection::open`
 - `tests/cli.rs:901-901` `Connection::open`
 - `tests/cli.rs:970-970` `Connection::open`
 - `tests/cli.rs:1066-1066` `Connection::open`
 - `tests/cli.rs:1159-1159` `Connection::open`
 - `tests/cli.rs:1214-1214` `Connection::open`
-- `tests/cli.rs:10430-10430` `Connection::open`
-- `tests/cli.rs:16504-16504` `Connection::open`
+- `tests/cli.rs:10622-10622` `Connection::open`
+- `tests/cli.rs:16756-16756` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:69-69` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:165-165` `Connection::open`
 - `tests/graph_additive_indexes_persist.rs:189-189` `Connection::open`
@@ -4781,7 +4801,7 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/contextgraph/sqlite.rs:7643-7645` `edge_desc`
-- `src/main.rs:8278-8284` `runs_menu_line`
+- `src/main.rs:8323-8329` `runs_menu_line`
 
 #### `dup-0141` (near, 2 sites)
 
@@ -4818,38 +4838,38 @@ mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically
 - `src/dash.rs:9421-9421` `"/proc"`
 - `src/dash.rs:9454-9454` `"/proc"`
 - `src/dash.rs:9477-9477` `"/proc"`
-- `src/main.rs:13531-13531` `"/proc"`
-- `src/main.rs:13635-13635` `"/proc"`
-- `src/main.rs:23786-23786` `"/proc/{pid}/stat"`
-- `src/main.rs:23787-23787` `"read /proc/{pid}/stat: {e}"`
-- `src/main.rs:23790-23790` `"/proc stat has a parenthesised comm field"`
-- `src/main.rs:23795-23795` `"/proc stat has a pgrp field after comm"`
+- `src/main.rs:13576-13576` `"/proc"`
+- `src/main.rs:13680-13680` `"/proc"`
+- `src/main.rs:23944-23944` `"/proc/{pid}/stat"`
+- `src/main.rs:23945-23945` `"read /proc/{pid}/stat: {e}"`
+- `src/main.rs:23948-23948` `"/proc stat has a parenthesised comm field"`
+- `src/main.rs:23953-23953` `"/proc stat has a pgrp field after comm"`
 - `src/reap.rs:133-133` `"/proc"`
 - `src/reap.rs:215-215` `"/proc/{pid}/stat"`
 - `src/reap.rs:226-226` `"/proc/{pid}/status"`
 - `src/reap.rs:276-276` `"/proc/{}/cwd"`
-- `tests/cli.rs:22123-22123` `"/proc"`
-- `tests/cli.rs:24220-24220` `"/proc/{pid}/stat"`
-- `tests/cli.rs:24221-24221` `"read /proc/{pid}/stat: {e}"`
-- `tests/cli.rs:24224-24224` `"/proc stat has a parenthesised comm field"`
-- `tests/cli.rs:24229-24229` `"/proc stat has a pgrp field after comm"`
-- `tests/cli.rs:27262-27262` `"/proc"`
-- `tests/cli.rs:27347-27347` `"/proc"`
-- `tests/cli.rs:27394-27394` `"/proc/{holder_pid}/stat"`
-- `tests/cli.rs:27409-27409` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
-- `tests/cli.rs:27475-27475` `"/proc"`
-- `tests/cli.rs:27498-27498` `"/proc"`
-- `tests/cli.rs:27527-27527` `"/proc"`
-- `tests/cli.rs:27577-27577` `"/proc/{holder_pid}/stat"`
-- `tests/cli.rs:27592-27592` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
-- `tests/cli.rs:27666-27666` `"/proc"`
-- `tests/cli.rs:27692-27692` `"/proc"`
-- `tests/cli.rs:27790-27790` `"/proc"`
-- `tests/cli.rs:27828-27828` `"held_port_holder's message half and describe_held_port_if_confirmed's own return \
+- `tests/cli.rs:22375-22375` `"/proc"`
+- `tests/cli.rs:24481-24481` `"/proc/{pid}/stat"`
+- `tests/cli.rs:24482-24482` `"read /proc/{pid}/stat: {e}"`
+- `tests/cli.rs:24485-24485` `"/proc stat has a parenthesised comm field"`
+- `tests/cli.rs:24490-24490` `"/proc stat has a pgrp field after comm"`
+- `tests/cli.rs:27523-27523` `"/proc"`
+- `tests/cli.rs:27608-27608` `"/proc"`
+- `tests/cli.rs:27655-27655` `"/proc/{holder_pid}/stat"`
+- `tests/cli.rs:27670-27670` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
+- `tests/cli.rs:27736-27736` `"/proc"`
+- `tests/cli.rs:27759-27759` `"/proc"`
+- `tests/cli.rs:27788-27788` `"/proc"`
+- `tests/cli.rs:27838-27838` `"/proc/{holder_pid}/stat"`
+- `tests/cli.rs:27853-27853` `"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"`
+- `tests/cli.rs:27927-27927` `"/proc"`
+- `tests/cli.rs:27953-27953` `"/proc"`
+- `tests/cli.rs:28051-28051` `"/proc"`
+- `tests/cli.rs:28089-28089` `"held_port_holder's message half and describe_held_port_if_confirmed's own return \
              must agree (scheduler-state letter normalized away since each call independently \
              re-reads /proc and can observe a state flap) - they are documented as sharing one \
              discovery"`
-- `tests/cli.rs:27847-27847` `"/proc"`
+- `tests/cli.rs:28108-28108` `"/proc"`
 - `tests/duplication_catalog_contract_periphery.rs:67-67` `"/proc-path string literals"`
 - `tests/mutation_runner_pdeathsig_periphery.rs:75-75` `"/proc/{pid}/stat"`
 - `tests/simplification_audit.rs:2570-2570` `"/proc-path string literals"`
@@ -5032,12 +5052,12 @@ Proposed home: `src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status p
 mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functions - 15 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/dash.rs:499-507` `process_state`
-- `src/main.rs:23785-23798` `pgid_of`
+- `src/main.rs:23943-23956` `pgid_of`
 - `src/reap.rs:214-221` `pid_starttime`
 - `src/reap.rs:225-231` `read_ppid`
-- `tests/cli.rs:24219-24232` `proc_pgid_of`
-- `tests/cli.rs:27342-27442` `cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill`
-- `tests/cli.rs:27521-27636` `step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario`
+- `tests/cli.rs:24480-24493` `proc_pgid_of`
+- `tests/cli.rs:27603-27703` `cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill`
+- `tests/cli.rs:27782-27897` `step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario`
 - `tests/mutation_runner_pdeathsig_periphery.rs:74-85` `is_running`
 - `tests/simplification_audit.rs:2691-2722` `build_sweep_clusters`
 - `tests/simplification_audit.rs:2961-2982` `build_extra_semantic_clusters`
@@ -5335,7 +5355,7 @@ Proposed home: `a new shared module (sites span 2 files: src/docs.rs, tests/cli.
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/docs.rs:1987-2005` `restore_the_dash_carries_the_hung_holder_diagnosis`
-- `tests/cli.rs:25553-25571` `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`
+- `tests/cli.rs:25814-25832` `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`
 
 #### `dup-0174` (near, 2 sites)
 
@@ -5420,7 +5440,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/eventstore/contract.rs:825-832` `read_stream`
 - `src/spawn.rs:1492-1499` `read_stream`
-- `tests/adoption_keys_on_criterion_periphery.rs:2625-2632` `read_stream`
+- `tests/adoption_keys_on_criterion_periphery.rs:2636-2643` `read_stream`
 
 #### `dup-0183` (exact, 4 sites)
 
@@ -5430,8 +5450,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/eventstore/contract.rs:844-846` `subscribe_stream`
 - `src/spawn.rs:1514-1516` `subscribe_stream`
-- `tests/adoption_keys_on_criterion_periphery.rs:2647-2649` `subscribe_stream`
-- `tests/integrate_conflict_merge_periphery.rs:2031-2033` `subscribe_stream`
+- `tests/adoption_keys_on_criterion_periphery.rs:2658-2660` `subscribe_stream`
+- `tests/integrate_conflict_merge_periphery.rs:2101-2103` `subscribe_stream`
 
 #### `dup-0184` (exact, 2 sites)
 
@@ -5960,7 +5980,7 @@ Proposed home: `a new shared module (sites span 2 files: src/liveness.rs, src/ma
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/liveness.rs:567-581` `marker_filename_is_injective_so_two_ids_that_collided_under_a_prior_placeholder_scheme_no_longer_do`
-- `src/main.rs:19252-19266` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
+- `src/main.rs:19410-19424` `normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host`
 
 #### `dup-0238` (exact, 3 sites)
 
@@ -5969,7 +5989,7 @@ Proposed home: `a new shared module (sites span 3 files: src/liveness.rs, src/wo
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/liveness.rs:734-736` `read`
-- `src/worktree.rs:4162-4164` `read_stream`
+- `src/worktree.rs:4335-4337` `read_stream`
 - `tests/run_scoping_survives_periphery.rs:133-135` `read`
 
 #### `dup-0239` (near, 2 sites)
@@ -5989,7 +6009,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/main.rs:539-542` `config_rigger_dir`
 - `src/main.rs:907-910` `project_identity`
-- `src/main.rs:12872-12875` `git_repo`
+- `src/main.rs:12917-12920` `git_repo`
 
 #### `dup-0241` (semantic, 2 sites)
 
@@ -6007,7 +6027,7 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/main.rs:1645-1647` `usage`
-- `src/main.rs:11447-11454` `print_scaffold_pointer`
+- `src/main.rs:11492-11499` `print_scaffold_pointer`
 
 #### `dup-0243` (near, 2 sites)
 
@@ -6015,8 +6035,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:4476-4535` `cmd_graph_communities`
-- `src/main.rs:4555-4614` `cmd_graph_concepts`
+- `src/main.rs:4521-4580` `cmd_graph_communities`
+- `src/main.rs:4600-4659` `cmd_graph_concepts`
 
 #### `dup-0244` (near, 2 sites)
 
@@ -6024,8 +6044,8 @@ Proposed home: `a new shared module (sites span 2 files: src/main.rs, tests/rese
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:10613-10632` `dir_size_bytes`
-- `tests/reset_build_cache_periphery.rs:91-108` `dir_bytes`
+- `src/main.rs:10658-10677` `dir_size_bytes`
+- `tests/reset_build_cache_periphery.rs:93-110` `dir_bytes`
 
 #### `dup-0245` (exact, 2 sites)
 
@@ -6033,8 +6053,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:11642-11644` `shim_dir`
-- `src/main.rs:11742-11744` `docs_overlay_path`
+- `src/main.rs:11687-11689` `shim_dir`
+- `src/main.rs:11787-11789` `docs_overlay_path`
 
 #### `dup-0246` (near, 3 sites)
 
@@ -6042,7 +6062,7 @@ Proposed home: `a new shared module (sites span 3 files: src/main.rs, tests/hear
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:12883-12893` `git_repo_at`
+- `src/main.rs:12928-12938` `git_repo_at`
 - `tests/heartbeat_write_read_agree_periphery.rs:68-78` `git_toplevel`
 - `tests/reset_derived_live_writer_guard_periphery.rs:57-68` `git_toplevel`
 
@@ -6052,8 +6072,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:14469-14475` `run_started_at`
-- `src/main.rs:14476-14482` `decision`
+- `src/main.rs:14514-14520` `run_started_at`
+- `src/main.rs:14521-14527` `decision`
 
 #### `dup-0248` (exact, 3 sites)
 
@@ -6061,7 +6081,7 @@ Proposed home: `a new shared module (sites span 3 files: src/main.rs, tests/grap
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:14539-14543` `ev`
+- `src/main.rs:14584-14588` `ev`
 - `tests/graph_click_to_seed_repoint.rs:26-30` `ev`
 - `tests/graph_seeds_repoint_denoise.rs:23-27` `ev`
 
@@ -6071,8 +6091,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:15023-15062` `per_operation_skills_reference_only_real_subcommands`
-- `src/main.rs:15072-15100` `watching_discipline_skills_reference_only_real_subcommands`
+- `src/main.rs:15068-15107` `per_operation_skills_reference_only_real_subcommands`
+- `src/main.rs:15117-15145` `watching_discipline_skills_reference_only_real_subcommands`
 
 #### `dup-0250` (near, 2 sites)
 
@@ -6080,8 +6100,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:15632-15676` `git_is_ancestor_decides_commit_order_in_a_real_repo`
-- `src/main.rs:15679-15725` `git_commit_distance_counts_commits_ahead_in_a_real_repo`
+- `src/main.rs:15677-15721` `git_is_ancestor_decides_commit_order_in_a_real_repo`
+- `src/main.rs:15724-15770` `git_commit_distance_counts_commits_ahead_in_a_real_repo`
 
 #### `dup-0251` (near, 3 sites)
 
@@ -6089,9 +6109,9 @@ Proposed home: `main::support (consolidate these 3 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:15745-15750` `behind_the_tree_message_is_silent_when_versions_already_match`
-- `src/main.rs:15753-15763` `behind_the_tree_message_is_silent_when_either_side_is_unversioned`
-- `src/main.rs:15766-15775` `behind_the_tree_message_is_silent_on_an_undecidable_or_zero_distance`
+- `src/main.rs:15790-15795` `behind_the_tree_message_is_silent_when_versions_already_match`
+- `src/main.rs:15798-15808` `behind_the_tree_message_is_silent_when_either_side_is_unversioned`
+- `src/main.rs:15811-15820` `behind_the_tree_message_is_silent_on_an_undecidable_or_zero_distance`
 
 #### `dup-0252` (exact, 25 sites)
 
@@ -6099,8 +6119,8 @@ Proposed home: `a new shared module (sites span 24 files: src/main.rs, tests/ada
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:15792-15798` `gitsemver_available`
-- `src/main.rs:22075-22081` `npm_available`
+- `src/main.rs:15837-15843` `gitsemver_available`
+- `src/main.rs:22233-22239` `npm_available`
 - `tests/adaptive_labels_periphery.rs:65-71` `node_available`
 - `tests/code_lens_overview_collapse_viz.rs:39-45` `node_available`
 - `tests/concepts_lens_view_periphery.rs:702-708` `node_available`
@@ -6131,7 +6151,7 @@ Proposed home: `a new shared module (sites span 5 files: src/main.rs, tests/buil
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:15802-15817` `behind_the_tree_git`
+- `src/main.rs:15847-15862` `behind_the_tree_git`
 - `tests/build_watch_paths.rs:42-53` `git`
 - `tests/gitsemver_derivation.rs:43-54` `git`
 - `tests/gitsemver_worktree_periphery.rs:56-67` `git`
@@ -6143,7 +6163,7 @@ Proposed home: `a new shared module (sites span 4 files: src/main.rs, tests/buil
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:15819-15831` `behind_the_tree_git_output`
+- `src/main.rs:15864-15876` `behind_the_tree_git_output`
 - `tests/build_watch_paths.rs:59-74` `git_output`
 - `tests/gitsemver_worktree_periphery.rs:75-90` `git_output`
 - `tests/validate_behind_the_tree_periphery.rs:113-134` `git_output`
@@ -6154,8 +6174,8 @@ Proposed home: `a new shared module (sites span 2 files: src/main.rs, tests/rese
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:15941-15944` `write_file`
-- `tests/reset_build_cache_periphery.rs:69-72` `write_file`
+- `src/main.rs:15986-15989` `write_file`
+- `tests/reset_build_cache_periphery.rs:71-74` `write_file`
 
 #### `dup-0256` (near, 3 sites)
 
@@ -6163,9 +6183,9 @@ Proposed home: `main::support (consolidate these 3 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:16007-16024` `refuse_when_base_lacks_spec_paths_proceeds_when_the_base_contains_them`
-- `src/main.rs:16027-16045` `refuse_when_base_lacks_spec_paths_partial_match_warns_and_proceeds`
-- `src/main.rs:16048-16088` `refuse_when_base_lacks_spec_paths_skips_without_tokens_or_off_a_fresh_from_base_anchor`
+- `src/main.rs:16052-16069` `refuse_when_base_lacks_spec_paths_proceeds_when_the_base_contains_them`
+- `src/main.rs:16072-16090` `refuse_when_base_lacks_spec_paths_partial_match_warns_and_proceeds`
+- `src/main.rs:16093-16133` `refuse_when_base_lacks_spec_paths_skips_without_tokens_or_off_a_fresh_from_base_anchor`
 
 #### `dup-0257` (exact, 2 sites)
 
@@ -6173,8 +6193,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:17208-17216` `footprint_advisories_is_silent_below_the_threshold`
-- `src/main.rs:17252-17260` `footprint_advisories_is_silent_on_an_empty_category`
+- `src/main.rs:17253-17261` `footprint_advisories_is_silent_below_the_threshold`
+- `src/main.rs:17297-17305` `footprint_advisories_is_silent_on_an_empty_category`
 
 #### `dup-0258` (near, 3 sites)
 
@@ -6182,9 +6202,9 @@ Proposed home: `main::support (consolidate these 3 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:17263-17286` `owning_repo_root_prefers_the_stores_own_root_over_the_git_toplevel`
-- `src/main.rs:17657-17669` `find_store_dir_from_walks_up_from_a_subdirectory`
-- `src/main.rs:17901-17930` `find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above`
+- `src/main.rs:17308-17331` `owning_repo_root_prefers_the_stores_own_root_over_the_git_toplevel`
+- `src/main.rs:17702-17714` `find_store_dir_from_walks_up_from_a_subdirectory`
+- `src/main.rs:17946-17975` `find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above`
 
 #### `dup-0259` (exact, 2 sites)
 
@@ -6192,27 +6212,27 @@ Proposed home: `a new shared module (sites span 2 files: src/main.rs, src/reap.r
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:17617-17624` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
+- `src/main.rs:17662-17669` `leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent`
 - `src/reap.rs:630-637` `processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent`
 
-#### `dup-0260` (exact, 3 sites)
-
-Proposed home: `main::restore`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/main.rs:18069-18071` `drop`
-- `src/main.rs:23343-23345` `drop`
-- `src/main.rs:23370-23372` `drop`
-
-#### `dup-0261` (near, 2 sites)
+#### `dup-0260` (near, 2 sites)
 
 Proposed home: `main::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:18330-18368` `a_recorded_result_lets_the_replay_driver_advance_past_the_spawn`
-- `src/main.rs:18371-18403` `a_recorded_error_result_replays_as_a_failure_not_a_fake_success`
+- `src/main.rs:17978-18031` `find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it`
+- `src/main.rs:18034-18088` `find_store_dir_from_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store`
+
+#### `dup-0261` (exact, 3 sites)
+
+Proposed home: `main::restore`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `src/main.rs:18227-18229` `drop`
+- `src/main.rs:23501-23503` `drop`
+- `src/main.rs:23528-23530` `drop`
 
 #### `dup-0262` (near, 2 sites)
 
@@ -6220,8 +6240,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:18700-18705` `parse_run_args_rejects_unknown_flags_and_values`
-- `src/main.rs:24489-24493` `parse_watch_args_rejects_a_non_integer_interval_a_missing_value_and_an_unknown_flag`
+- `src/main.rs:18488-18526` `a_recorded_result_lets_the_replay_driver_advance_past_the_spawn`
+- `src/main.rs:18529-18561` `a_recorded_error_result_replays_as_a_failure_not_a_fake_success`
 
 #### `dup-0263` (near, 2 sites)
 
@@ -6229,8 +6249,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:19385-19450` `migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned`
-- `src/main.rs:19536-19631` `migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename`
+- `src/main.rs:18858-18863` `parse_run_args_rejects_unknown_flags_and_values`
+- `src/main.rs:24647-24651` `parse_watch_args_rejects_a_non_integer_interval_a_missing_value_and_an_unknown_flag`
 
 #### `dup-0264` (near, 2 sites)
 
@@ -6238,50 +6258,50 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:20377-20456` `init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently`
-- `src/main.rs:20465-20505` `init_project_gitignores_the_store_conn_secret_file_idempotently`
+- `src/main.rs:19543-19608` `migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned`
+- `src/main.rs:19694-19789` `migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename`
 
-#### `dup-0265` (near, 4 sites)
+#### `dup-0265` (near, 2 sites)
+
+Proposed home: `main::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `src/main.rs:20535-20614` `init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently`
+- `src/main.rs:20623-20663` `init_project_gitignores_the_store_conn_secret_file_idempotently`
+
+#### `dup-0266` (near, 4 sites)
 
 Proposed home: `main::support (consolidate these 4 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:20910-20923` `import_agents_validates_and_rejects_a_malformed_agent`
-- `src/main.rs:20932-20954` `import_agents_rejects_an_id_colliding_with_an_existing_agent`
-- `src/main.rs:20960-20980` `import_agents_rejects_a_duplicate_id_within_one_import`
-- `src/main.rs:20986-21007` `import_agents_rejects_an_agent_with_a_blank_id`
+- `src/main.rs:21068-21081` `import_agents_validates_and_rejects_a_malformed_agent`
+- `src/main.rs:21090-21112` `import_agents_rejects_an_id_colliding_with_an_existing_agent`
+- `src/main.rs:21118-21138` `import_agents_rejects_a_duplicate_id_within_one_import`
+- `src/main.rs:21144-21165` `import_agents_rejects_an_agent_with_a_blank_id`
 
-#### `dup-0266` (exact, 2 sites)
+#### `dup-0267` (exact, 2 sites)
 
 Proposed home: `main::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:21345-21356` `the_step_schema_admits_the_attention_array`
-- `src/main.rs:23418-23421` `no_runs_message_points_at_rigger_run`
+- `src/main.rs:21503-21514` `the_step_schema_admits_the_attention_array`
+- `src/main.rs:23576-23579` `no_runs_message_points_at_rigger_run`
 
-#### `dup-0267` (exact, 6 sites)
+#### `dup-0268` (exact, 6 sites)
 
 Proposed home: `a new shared module (sites span 6 files: src/main.rs, tests/meta_phases_declaration_periphery.rs, tests/phase_of_role_mapping_periphery.rs, tests/review_tier_roster_periphery.rs, tests/step_attention_periphery.rs, tests/worker_persona_label_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:21362-21384` `js_function_body`
+- `src/main.rs:21520-21542` `js_function_body`
 - `tests/meta_phases_declaration_periphery.rs:65-87` `js_declaration`
 - `tests/phase_of_role_mapping_periphery.rs:50-72` `js_declaration`
 - `tests/review_tier_roster_periphery.rs:18-40` `js_declaration`
 - `tests/step_attention_periphery.rs:655-677` `js_declaration`
 - `tests/worker_persona_label_periphery.rs:21-43` `js_declaration`
-
-#### `dup-0268` (near, 2 sites)
-
-Proposed home: `main::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/main.rs:22163-22180` `format_canary_stats_reports_findings_raised_by_tier`
-- `src/main.rs:22185-22195` `format_canary_stats_reports_a_zero_findings_count_honestly`
 
 #### `dup-0269` (near, 2 sites)
 
@@ -6289,8 +6309,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:22201-22207` `format_canary_stats_omits_the_findings_volume_section_when_empty`
-- `src/main.rs:22429-22435` `format_canary_stats_omits_the_model_pinning_header_when_the_run_never_recorded_one`
+- `src/main.rs:22321-22338` `format_canary_stats_reports_findings_raised_by_tier`
+- `src/main.rs:22343-22353` `format_canary_stats_reports_a_zero_findings_count_honestly`
 
 #### `dup-0270` (near, 2 sites)
 
@@ -6298,8 +6318,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:22345-22364` `format_canary_stats_reports_control_items_and_false_positives`
-- `src/main.rs:22372-22387` `format_canary_stats_reports_zero_false_positives_honestly`
+- `src/main.rs:22359-22365` `format_canary_stats_omits_the_findings_volume_section_when_empty`
+- `src/main.rs:22587-22593` `format_canary_stats_omits_the_model_pinning_header_when_the_run_never_recorded_one`
 
 #### `dup-0271` (near, 2 sites)
 
@@ -6307,8 +6327,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:22644-22689` `stats_discloses_when_no_verdict_was_recorded_on_this_driver`
-- `src/main.rs:22700-22773` `stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed`
+- `src/main.rs:22503-22522` `format_canary_stats_reports_control_items_and_false_positives`
+- `src/main.rs:22530-22545` `format_canary_stats_reports_zero_false_positives_honestly`
 
 #### `dup-0272` (near, 2 sites)
 
@@ -6316,8 +6336,8 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:23440-23452` `stats_lines_absent_db_returns_none_and_creates_no_file`
-- `src/main.rs:23650-23662` `result_of_at_absent_db_reads_as_unreported_and_creates_no_file`
+- `src/main.rs:22802-22847` `stats_discloses_when_no_verdict_was_recorded_on_this_driver`
+- `src/main.rs:22858-22931` `stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed`
 
 #### `dup-0273` (near, 2 sites)
 
@@ -6325,26 +6345,26 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:23668-23688` `result_of_at_unrecorded_spawn_reads_as_unreported`
-- `src/main.rs:23726-23755` `result_of_at_is_namespace_scoped`
+- `src/main.rs:23598-23610` `stats_lines_absent_db_returns_none_and_creates_no_file`
+- `src/main.rs:23808-23820` `result_of_at_absent_db_reads_as_unreported_and_creates_no_file`
 
-#### `dup-0274` (exact, 2 sites)
-
-Proposed home: `a new shared module (sites span 2 files: src/main.rs, tests/cli.rs)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/main.rs:23785-23798` `pgid_of`
-- `tests/cli.rs:24219-24232` `proc_pgid_of`
-
-#### `dup-0275` (near, 2 sites)
+#### `dup-0274` (near, 2 sites)
 
 Proposed home: `main::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:24259-24280` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
-- `src/main.rs:24287-24304` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
+- `src/main.rs:23826-23846` `result_of_at_unrecorded_spawn_reads_as_unreported`
+- `src/main.rs:23884-23913` `result_of_at_is_namespace_scoped`
+
+#### `dup-0275` (exact, 2 sites)
+
+Proposed home: `a new shared module (sites span 2 files: src/main.rs, tests/cli.rs)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `src/main.rs:23943-23956` `pgid_of`
+- `tests/cli.rs:24480-24493` `proc_pgid_of`
 
 #### `dup-0276` (near, 2 sites)
 
@@ -6352,10 +6372,19 @@ Proposed home: `main::support (consolidate these 2 sites into one function in th
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/main.rs:24821-24914` `implementer_persona_pins_the_checkin_stage_kill_or_justify_contract`
-- `src/main.rs:24922-24964` `implementer_persona_pins_the_checkpoint_before_long_work_contract`
+- `src/main.rs:24417-24438` `reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode`
+- `src/main.rs:24445-24462` `reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates`
 
-#### `dup-0277` (exact, 2 sites)
+#### `dup-0277` (near, 2 sites)
+
+Proposed home: `main::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `src/main.rs:24979-25072` `implementer_persona_pins_the_checkin_stage_kill_or_justify_contract`
+- `src/main.rs:25080-25122` `implementer_persona_pins_the_checkpoint_before_long_work_contract`
+
+#### `dup-0278` (exact, 2 sites)
 
 Proposed home: `mcpserver::tool_error`
 
@@ -6364,7 +6393,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/mcpserver.rs:29-34` `internal`
 - `src/mcpserver.rs:38-43` `invalid_params`
 
-#### `dup-0278` (semantic, 4 sites)
+#### `dup-0279` (semantic, 4 sites)
 
 Proposed home: `mcpserver::tool_error - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field`
 
@@ -6375,7 +6404,7 @@ mandatory sweep: parallel constructor functions - 4 site(s), collected mechanica
 - `src/mcpserver.rs:47-49` `from`
 - `src/mcpserver.rs:53-55` `from`
 
-#### `dup-0279` (near, 2 sites)
+#### `dup-0280` (near, 2 sites)
 
 Proposed home: `mcpserver::support (consolidate these 2 sites into one function in this file)`
 
@@ -6384,7 +6413,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/mcpserver.rs:1127-1145` `emit_tool_carries_meta_actor`
 - `src/mcpserver.rs:1148-1170` `emit_tool_sets_valid_from_from_nanos`
 
-#### `dup-0280` (near, 2 sites)
+#### `dup-0281` (near, 2 sites)
 
 Proposed home: `mcpserver::support (consolidate these 2 sites into one function in this file)`
 
@@ -6393,7 +6422,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/mcpserver.rs:1184-1222` `peers_tool_scopes_to_the_files_arg`
 - `src/mcpserver.rs:1225-1270` `peers_tool_surfaces_findings_scoped_to_the_files_arg`
 
-#### `dup-0281` (near, 4 sites)
+#### `dup-0282` (near, 4 sites)
 
 Proposed home: `mcpserver::support (consolidate these 4 sites into one function in this file)`
 
@@ -6404,7 +6433,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/mcpserver.rs:1369-1387` `request_missing_method_gets_an_invalid_request_error`
 - `src/mcpserver.rs:1390-1408` `tools_call_missing_name_gets_an_invalid_params_error`
 
-#### `dup-0282` (exact, 7 sites)
+#### `dup-0283` (exact, 7 sites)
 
 Proposed home: `metrics::support (consolidate these 7 sites into one function in this file)`
 
@@ -6418,7 +6447,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/metrics.rs:1152-1154` `adjudicator_accuracy`
 - `src/metrics.rs:1158-1160` `stability_rate`
 
-#### `dup-0283` (exact, 2 sites)
+#### `dup-0284` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: src/metrics.rs, src/run.rs)`
 
@@ -6427,7 +6456,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/metrics.rs:1009-1011` `gate_verdict`
 - `src/run.rs:117-119` `from_event`
 
-#### `dup-0284` (semantic, 2 sites)
+#### `dup-0285` (semantic, 2 sites)
 
 Proposed home: `one shared `gate_verdict` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -6436,7 +6465,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `src/metrics.rs:1009-1011` `gate_verdict`
 - `tests/dash_run_tree_spine.rs:80-86` `gate_verdict`
 
-#### `dup-0285` (exact, 2 sites)
+#### `dup-0286` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: src/metrics.rs, src/spawn.rs)`
 
@@ -6445,7 +6474,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/metrics.rs:1323-1325` `changed`
 - `src/spawn.rs:574-576` `is_error`
 
-#### `dup-0286` (exact, 3 sites)
+#### `dup-0287` (exact, 3 sites)
 
 Proposed home: `metrics::support (consolidate these 3 sites into one function in this file)`
 
@@ -6455,7 +6484,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/metrics.rs:1411-1416` `status`
 - `src/metrics.rs:1443-1448` `artifact_verdict`
 
-#### `dup-0287` (near, 6 sites)
+#### `dup-0288` (near, 6 sites)
 
 Proposed home: `a new shared module (sites span 2 files: src/metrics.rs, src/run.rs)`
 
@@ -6468,7 +6497,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/run.rs:566-568` `finding`
 - `src/run.rs:569-571` `lesson`
 
-#### `dup-0288` (near, 5 sites)
+#### `dup-0289` (near, 5 sites)
 
 Proposed home: `metrics::support (consolidate these 5 sites into one function in this file)`
 
@@ -6480,7 +6509,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/metrics.rs:1882-1899` `interleaved_units_keep_per_id_review_state`
 - `src/metrics.rs:1902-1913` `escalation_is_counted_once_per_unit`
 
-#### `dup-0289` (near, 2 sites)
+#### `dup-0290` (near, 2 sites)
 
 Proposed home: `metrics::support (consolidate these 2 sites into one function in this file)`
 
@@ -6489,7 +6518,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/metrics.rs:1970-1981` `finding`
 - `src/metrics.rs:1986-1996` `courier_finding`
 
-#### `dup-0290` (near, 2 sites)
+#### `dup-0291` (near, 2 sites)
 
 Proposed home: `metrics::support (consolidate these 2 sites into one function in this file)`
 
@@ -6498,7 +6527,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/metrics.rs:2134-2154` `spawn_timing_never_pairs_a_cross_run_id_collision`
 - `src/metrics.rs:2251-2266` `spawn_timing_excludes_a_same_batch_zero_duration_pair_as_suspect`
 
-#### `dup-0291` (near, 2 sites)
+#### `dup-0292` (near, 2 sites)
 
 Proposed home: `metrics::support (consolidate these 2 sites into one function in this file)`
 
@@ -6507,7 +6536,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/metrics.rs:2309-2332` `finding_survival_is_upheld_over_raised_per_actor`
 - `src/metrics.rs:2404-2432` `cost_per_upheld_finding_is_spawns_over_upheld_per_tier`
 
-#### `dup-0292` (near, 2 sites)
+#### `dup-0293` (near, 2 sites)
 
 Proposed home: `metrics::support (consolidate these 2 sites into one function in this file)`
 
@@ -6516,7 +6545,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/metrics.rs:2853-2872` `project_canary_counts_correctly_rejected_items_with_empty_attribution`
 - `src/metrics.rs:2881-2899` `project_canary_counts_controls_and_false_positives`
 
-#### `dup-0293` (near, 2 sites)
+#### `dup-0294` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: src/progress.rs, tests/reset_derived_compaction.rs)`
 
@@ -6525,7 +6554,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/progress.rs:197-200` `event_unit_id`
 - `tests/reset_derived_compaction.rs:161-164` `replay_key`
 
-#### `dup-0294` (near, 6 sites)
+#### `dup-0295` (near, 6 sites)
 
 Proposed home: `a new shared module (sites span 5 files: src/reap.rs, tests/mutation_scratch_reap_base_guard_periphery.rs, tests/reap_before_removal_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/worktree_remove_relocated_scratch_base_guard_periphery.rs)`
 
@@ -6538,7 +6567,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:138-145` `sigterm_ignorer_in`
 - `tests/worktree_remove_relocated_scratch_base_guard_periphery.rs:55-62` `sigterm_ignorer_in`
 
-#### `dup-0295` (exact, 4 sites)
+#### `dup-0296` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 4 files: src/reap.rs, tests/mutation_scratch_reap_base_guard_periphery.rs, tests/no_os_kill_test_helper_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs)`
 
@@ -6549,7 +6578,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_test_helper_periphery.rs:84-87` `cleanup`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:161-164` `cleanup`
 
-#### `dup-0296` (exact, 2 sites)
+#### `dup-0297` (exact, 2 sites)
 
 Proposed home: `reap::support (consolidate these 2 sites into one function in this file)`
 
@@ -6558,7 +6587,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/reap.rs:715-720` `is_reapable_base_refuses_a_dir_that_is_not_under_the_given_authorized_root`
 - `src/reap.rs:723-726` `is_reapable_base_refuses_the_authorized_root_itself`
 
-#### `dup-0297` (near, 2 sites)
+#### `dup-0298` (near, 2 sites)
 
 Proposed home: `reap::support (consolidate these 2 sites into one function in this file)`
 
@@ -6567,7 +6596,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/reap.rs:1071-1097` `signal_if_unchanged_skips_a_starttime_mismatch`
 - `src/reap.rs:1100-1127` `signal_if_unchanged_skips_when_cwd_is_outside_the_given_base`
 
-#### `dup-0298` (near, 15 sites)
+#### `dup-0299` (near, 13 sites)
 
 Proposed home: `a new shared module (sites span 11 files: src/registry.rs, tests/reset_build_cache_periphery.rs, tests/reset_derived_compaction.rs, tests/reset_derived_compaction_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/store_flag_precedence.rs, tests/store_precedence.rs, tests/store_resolution_cli.rs, tests/store_secrets.rs, tests/validate_advisories.rs)`
 
@@ -6575,8 +6604,6 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/registry.rs:133-135` `instances_dir`
 - `tests/reset_build_cache_periphery.rs:45-47` `event_log`
-- `tests/reset_build_cache_periphery.rs:61-63` `shared_cache_dir`
-- `tests/reset_build_cache_periphery.rs:65-67` `guard_path`
 - `tests/reset_derived_compaction.rs:75-77` `event_log`
 - `tests/reset_derived_compaction_periphery.rs:610-612` `event_log`
 - `tests/reset_derived_compaction_periphery.rs:1364-1366` `graph_db`
@@ -6589,7 +6616,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_secrets.rs:62-64` `local_event_log`
 - `tests/validate_advisories.rs:81-83` `event_log`
 
-#### `dup-0299` (near, 3 sites)
+#### `dup-0300` (near, 3 sites)
 
 Proposed home: `registry::support (consolidate these 3 sites into one function in this file)`
 
@@ -6599,7 +6626,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/registry.rs:411-423` `read_live_no_prune_still_returns_a_fresh_entry`
 - `src/registry.rs:426-447` `read_all_returns_a_stale_entry_read_live_would_have_pruned_and_never_deletes_it`
 
-#### `dup-0300` (near, 2 sites)
+#### `dup-0301` (near, 2 sites)
 
 Proposed home: `registry::support (consolidate these 2 sites into one function in this file)`
 
@@ -6608,7 +6635,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/registry.rs:335-346` `two_projects_get_distinct_entries`
 - `src/registry.rs:450-462` `read_all_returns_every_registered_root_regardless_of_freshness`
 
-#### `dup-0301` (near, 2 sites)
+#### `dup-0302` (near, 2 sites)
 
 Proposed home: `registry::support (consolidate these 2 sites into one function in this file)`
 
@@ -6617,7 +6644,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/registry.rs:349-362` `a_reader_prunes_a_stale_heartbeat`
 - `src/registry.rs:383-408` `read_live_no_prune_filters_a_stale_heartbeat_but_never_deletes_its_file`
 
-#### `dup-0302` (near, 3 sites)
+#### `dup-0303` (near, 3 sites)
 
 Proposed home: `run::support (consolidate these 3 sites into one function in this file)`
 
@@ -6627,7 +6654,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/run.rs:770-841` `the_base_tip_is_persisted_on_the_run_start_and_survives_adopt`
 - `src/run.rs:844-909` `the_spec_path_is_persisted_on_the_run_start_and_survives_adopt`
 
-#### `dup-0303` (near, 2 sites)
+#### `dup-0304` (near, 2 sites)
 
 Proposed home: `run::support (consolidate these 2 sites into one function in this file)`
 
@@ -6636,7 +6663,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/run.rs:935-952` `ensure_started_adopts_the_same_criteria_run_without_re_minting`
 - `src/run.rs:1010-1028` `ensure_started_mints_a_new_run_when_the_criteria_change`
 
-#### `dup-0304` (exact, 3 sites)
+#### `dup-0305` (exact, 3 sites)
 
 Proposed home: `sidecar::sidecar`
 
@@ -6646,7 +6673,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/sidecar.rs:168-178` `findings_for`
 - `src/sidecar.rs:196-206` `lessons_for`
 
-#### `dup-0305` (exact, 2 sites)
+#### `dup-0306` (exact, 2 sites)
 
 Proposed home: `sidecar::sidecar`
 
@@ -6655,7 +6682,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/sidecar.rs:155-161` `findings`
 - `src/sidecar.rs:184-190` `lessons`
 
-#### `dup-0306` (near, 2 sites)
+#### `dup-0307` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: src/sidecar.rs, tests/store_content_identity_periphery.rs)`
 
@@ -6664,7 +6691,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/sidecar.rs:209-211` `len`
 - `tests/store_content_identity_periphery.rs:87-89` `batch_calls`
 
-#### `dup-0307` (near, 3 sites)
+#### `dup-0308` (near, 3 sites)
 
 Proposed home: `sidecar::support (consolidate these 3 sites into one function in this file)`
 
@@ -6674,7 +6701,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/sidecar.rs:311-359` `findings_for_scopes_to_the_blast_radius`
 - `src/sidecar.rs:362-413` `lessons_for_scopes_to_the_blast_radius`
 
-#### `dup-0308` (exact, 4 sites)
+#### `dup-0309` (exact, 4 sites)
 
 Proposed home: `spawn::spawn_request`
 
@@ -6685,7 +6712,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:356-359` `with_dir`
 - `src/spawn.rs:368-371` `with_title`
 
-#### `dup-0309` (exact, 3 sites)
+#### `dup-0310` (exact, 3 sites)
 
 Proposed home: `spawn::spawn_request`
 
@@ -6695,7 +6722,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:362-365` `with_blast_radius`
 - `src/spawn.rs:374-377` `with_reviews`
 
-#### `dup-0310` (exact, 2 sites)
+#### `dup-0311` (exact, 2 sites)
 
 Proposed home: `spawn::support (consolidate these 2 sites into one function in this file)`
 
@@ -6704,7 +6731,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:381-383` `to_event`
 - `src/spawn.rs:663-665` `to_event`
 
-#### `dup-0311` (exact, 2 sites)
+#### `dup-0312` (exact, 2 sites)
 
 Proposed home: `spawn::support (consolidate these 2 sites into one function in this file)`
 
@@ -6713,7 +6740,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:386-388` `from_event`
 - `src/spawn.rs:668-670` `from_event`
 
-#### `dup-0312` (near, 2 sites)
+#### `dup-0313` (near, 2 sites)
 
 Proposed home: `spawn::spawn_result`
 
@@ -6722,7 +6749,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:527-534` `ok`
 - `src/spawn.rs:539-546` `failed`
 
-#### `dup-0313` (semantic, 3 sites)
+#### `dup-0314` (semantic, 3 sites)
 
 Proposed home: `spawn::spawn_result - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field`
 
@@ -6732,7 +6759,7 @@ mandatory sweep: parallel constructor functions - 3 site(s), collected mechanica
 - `src/spawn.rs:539-546` `failed`
 - `src/spawn.rs:554-565` `liveness_fault`
 
-#### `dup-0314` (semantic, 2 sites)
+#### `dup-0315` (semantic, 2 sites)
 
 Proposed home: `one shared `liveness_fault` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -6741,7 +6768,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `src/spawn.rs:554-565` `liveness_fault`
 - `tests/dash_run_tree_spine.rs:90-94` `liveness_fault`
 
-#### `dup-0315` (exact, 2 sites)
+#### `dup-0316` (exact, 2 sites)
 
 Proposed home: `spawn::spawn_result`
 
@@ -6750,7 +6777,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:587-593` `liveness_class`
 - `src/spawn.rs:600-606` `resolved_model`
 
-#### `dup-0316` (near, 2 sites)
+#### `dup-0317` (near, 2 sites)
 
 Proposed home: `spawn::support (consolidate these 2 sites into one function in this file)`
 
@@ -6759,26 +6786,26 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:1417-1451` `record_result_if_absent_is_a_noop_that_never_clobbers_an_existing_result`
 - `src/spawn.rs:1566-1603` `record_result_if_absent_honors_a_self_report_that_won_the_race`
 
-#### `dup-0317` (exact, 2 sites)
+#### `dup-0318` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: src/spawn.rs, tests/adoption_keys_on_criterion_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/spawn.rs:1501-1508` `read_all`
-- `tests/adoption_keys_on_criterion_periphery.rs:2634-2641` `read_all`
+- `tests/adoption_keys_on_criterion_periphery.rs:2645-2652` `read_all`
 
-#### `dup-0318` (exact, 3 sites)
+#### `dup-0319` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: src/spawn.rs, tests/adoption_keys_on_criterion_periphery.rs, tests/integrate_conflict_merge_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/spawn.rs:1510-1512` `subscribe_all`
-- `tests/adoption_keys_on_criterion_periphery.rs:2643-2645` `subscribe_all`
-- `tests/integrate_conflict_merge_periphery.rs:2028-2030` `subscribe_all`
+- `tests/adoption_keys_on_criterion_periphery.rs:2654-2656` `subscribe_all`
+- `tests/integrate_conflict_merge_periphery.rs:2098-2100` `subscribe_all`
 
-#### `dup-0319` (near, 2 sites)
+#### `dup-0320` (near, 2 sites)
 
 Proposed home: `spawn::support (consolidate these 2 sites into one function in this file)`
 
@@ -6787,7 +6814,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:1735-1768` `step_wave_is_the_full_pending_frontier_never_answered_spawns`
 - `src/spawn.rs:2022-2054` `step_rerun_reprints_unanswered_spawns_so_a_killed_step_orphans_nothing`
 
-#### `dup-0320` (near, 2 sites)
+#### `dup-0321` (near, 2 sites)
 
 Proposed home: `spawn::support (consolidate these 2 sites into one function in this file)`
 
@@ -6796,7 +6823,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:1797-1824` `spawn_request_carries_a_title_via_builder_and_omits_it_when_empty`
 - `src/spawn.rs:1827-1857` `wave_item_copies_the_request_title_so_the_thin_driver_renders_the_work`
 
-#### `dup-0321` (near, 2 sites)
+#### `dup-0322` (near, 2 sites)
 
 Proposed home: `spawn::support (consolidate these 2 sites into one function in this file)`
 
@@ -6805,7 +6832,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spawn.rs:1921-1961` `spawn_request_carries_a_reviews_roster_via_builder_and_omits_it_when_empty`
 - `src/spawn.rs:1964-1999` `wave_item_copies_the_request_reviews_roster`
 
-#### `dup-0322` (near, 2 sites)
+#### `dup-0323` (near, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6814,7 +6841,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:652-654` `find_word`
 - `src/spec.rs:662-664` `find_word_across_hyphen`
 
-#### `dup-0323` (exact, 3 sites)
+#### `dup-0324` (exact, 3 sites)
 
 Proposed home: `spec::support (consolidate these 3 sites into one function in this file)`
 
@@ -6824,7 +6851,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:931-943` `extract_criteria_stops_a_wrap_at_the_next_checkbox_item_with_no_blank_line_between`
 - `src/spec.rs:981-994` `extract_criteria_includes_a_nested_sub_bullet_as_part_of_the_criterion_text`
 
-#### `dup-0324` (exact, 2 sites)
+#### `dup-0325` (exact, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6833,7 +6860,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:949-959` `extract_criteria_stops_a_wrap_at_a_blank_line_and_excludes_the_prose_after_it`
 - `src/spec.rs:964-974` `extract_criteria_stops_a_wrap_at_a_following_heading`
 
-#### `dup-0325` (exact, 17 sites)
+#### `dup-0326` (exact, 17 sites)
 
 Proposed home: `spec::support (consolidate these 17 sites into one function in this file)`
 
@@ -6857,7 +6884,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:2078-2087` `disposition_check_ignores_fenced_and_inline_code`
 - `src/spec.rs:2249-2262` `spec_lint_advisories_is_silent_on_a_clean_fixture`
 
-#### `dup-0326` (near, 2 sites)
+#### `dup-0327` (near, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6866,7 +6893,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:1041-1050` `a_single_coordinator_does_not_flag_multi_behavior`
 - `src/spec.rs:1181-1194` `spec_shape_advisories_ignores_coordinators_added_by_continuation_lines`
 
-#### `dup-0327` (near, 2 sites)
+#### `dup-0328` (near, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6875,7 +6902,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:1197-1206` `path_tokens_extracts_relative_file_paths_and_trims_markdown`
 - `src/spec.rs:1222-1228` `path_tokens_dedupes_and_preserves_first_seen_order`
 
-#### `dup-0328` (exact, 2 sites)
+#### `dup-0329` (exact, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6884,7 +6911,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:1209-1219` `path_tokens_ignores_prose_flags_versions_types_and_urls`
 - `src/spec.rs:1237-1248` `path_tokens_requires_an_alphabetic_extension_and_a_separator`
 
-#### `dup-0329` (near, 2 sites)
+#### `dup-0330` (near, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6893,7 +6920,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:1296-1307` `ownership_check_accepts_the_word_owner`
 - `src/spec.rs:1316-1332` `ownership_check_finds_an_owns_sentence_on_a_wrapped_continuation_line`
 
-#### `dup-0330` (near, 2 sites)
+#### `dup-0331` (near, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6902,7 +6929,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:1351-1375` `ownership_check_finds_an_owns_sentence_on_an_unindented_continuation_line`
 - `src/spec.rs:1384-1406` `ownership_check_does_not_reattach_prose_after_a_blank_line_to_the_prior_criterion`
 
-#### `dup-0331` (exact, 2 sites)
+#### `dup-0332` (exact, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6911,7 +6938,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:1414-1430` `ownership_check_does_not_let_a_dropped_word_boundary_fake_an_owns_sentence`
 - `src/spec.rs:1442-1458` `ownership_check_does_not_let_a_dropped_word_boundary_weld_own_and_er_into_owner`
 
-#### `dup-0332` (near, 4 sites)
+#### `dup-0333` (near, 4 sites)
 
 Proposed home: `spec::support (consolidate these 4 sites into one function in this file)`
 
@@ -6922,7 +6949,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:1537-1559` `ownership_check_lets_an_affirmative_owns_win_over_an_unrelated_denial_elsewhere`
 - `src/spec.rs:2117-2127` `starts_new_element_recognizes_every_prefix_kind_independently`
 
-#### `dup-0333` (exact, 2 sites)
+#### `dup-0334` (exact, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6931,7 +6958,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:1733-1742` `disposition_check_does_not_exempt_unsatisfied_either_or`
 - `src/spec.rs:1781-1790` `disposition_check_still_flags_a_bare_either_or_with_no_satisfied_word`
 
-#### `dup-0334` (exact, 2 sites)
+#### `dup-0335` (exact, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6940,7 +6967,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:1767-1776` `disposition_check_finds_a_genuine_hedge_after_an_earlier_non_disjunctive_either`
 - `src/spec.rs:1853-1864` `disposition_check_still_fires_outside_a_balanced_quote_pair`
 
-#### `dup-0335` (exact, 2 sites)
+#### `dup-0336` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: src/spec.rs, tests/simplification_audit.rs)`
 
@@ -6949,7 +6976,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:1835-1847` `disposition_check_fails_closed_after_a_stray_unmatched_quote_earlier_in_the_paragraph`
 - `tests/simplification_audit.rs:6051-6055` `a_trait_method_signature_without_a_body_is_not_recorded`
 
-#### `dup-0336` (exact, 2 sites)
+#### `dup-0337` (exact, 2 sites)
 
 Proposed home: `spec::support (consolidate these 2 sites into one function in this file)`
 
@@ -6958,7 +6985,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/spec.rs:2092-2102` `disposition_check_attributes_a_hit_inside_a_criterion`
 - `src/spec.rs:2145-2155` `hygiene_check_attributes_a_hit_inside_a_criterion`
 
-#### `dup-0337` (near, 4 sites)
+#### `dup-0338` (near, 4 sites)
 
 Proposed home: `watch::support (consolidate these 4 sites into one function in this file)`
 
@@ -6969,7 +6996,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/watch.rs:754-775` `a_cause_change_resets_the_streak_so_three_failures_split_across_two_causes_do_not_alert`
 - `src/watch.rs:825-831` `a_spawn_answered_twice_is_below_the_frontier_stall_threshold`
 
-#### `dup-0338` (near, 2 sites)
+#### `dup-0339` (near, 2 sites)
 
 Proposed home: `watch::support (consolidate these 2 sites into one function in this file)`
 
@@ -6978,7 +7005,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/watch.rs:708-734` `a_unit_at_reject_recurrence_three_same_cause_is_reported`
 - `src/watch.rs:797-822` `a_spawn_answered_three_times_is_reported_as_a_frontier_stall`
 
-#### `dup-0339` (near, 3 sites)
+#### `dup-0340` (near, 3 sites)
 
 Proposed home: `watch::support (consolidate these 3 sites into one function in this file)`
 
@@ -6988,7 +7015,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/watch.rs:907-935` `a_heartbeat_ten_minutes_stale_does_not_cross_the_thirty_minute_bound`
 - `src/watch.rs:938-969` `a_heartbeat_exactly_thirty_minutes_stale_does_not_yet_cross_the_bound`
 
-#### `dup-0340` (near, 3 sites)
+#### `dup-0341` (near, 3 sites)
 
 Proposed home: `watch::support (consolidate these 3 sites into one function in this file)`
 
@@ -6998,7 +7025,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/watch.rs:1061-1089` `a_dead_dash_url_with_no_marker_is_reported_without_inventing_a_pid`
 - `src/watch.rs:1173-1201` `dash_attempted_this_run_overrides_a_breadcrumb_that_looks_like_it_predates_the_run`
 
-#### `dup-0341` (exact, 2 sites)
+#### `dup-0342` (exact, 2 sites)
 
 Proposed home: `watch::support (consolidate these 2 sites into one function in this file)`
 
@@ -7007,7 +7034,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/watch.rs:1092-1106` `no_dash_ever_recorded_is_not_an_anomaly`
 - `src/watch.rs:1109-1123` `a_serving_dash_is_not_an_anomaly`
 
-#### `dup-0342` (near, 2 sites)
+#### `dup-0343` (near, 2 sites)
 
 Proposed home: `watch::support (consolidate these 2 sites into one function in this file)`
 
@@ -7016,7 +7043,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/watch.rs:1452-1464` `dedup_suppresses_a_persisting_anomaly_at_the_same_magnitude`
 - `src/watch.rs:1483-1496` `dedup_re_alerts_a_cleared_and_later_recurring_anomaly`
 
-#### `dup-0343` (exact, 2 sites)
+#### `dup-0344` (exact, 2 sites)
 
 Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
 
@@ -7025,7 +7052,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/worktree.rs:1299-1310` `branch_exists`
 - `src/worktree.rs:1333-1344` `ref_resolves`
 
-#### `dup-0344` (semantic, 2 sites)
+#### `dup-0345` (semantic, 2 sites)
 
 Proposed home: `one shared `branch_exists` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7034,7 +7061,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `src/worktree.rs:1299-1310` `branch_exists`
 - `tests/step_root_resolution_periphery.rs:234-241` `branch_exists`
 
-#### `dup-0345` (semantic, 2 sites)
+#### `dup-0346` (semantic, 2 sites)
 
 Proposed home: `one shared `current_branch` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7043,23 +7070,14 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `src/worktree.rs:1362-1367` `current_branch`
 - `tests/step_root_resolution_periphery.rs:221-232` `current_branch`
 
-#### `dup-0346` (exact, 2 sites)
-
-Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/worktree.rs:1400-1403` `scratch_root_from_env`
-- `src/worktree.rs:1407-1410` `scratch_root_path_from_env`
-
 #### `dup-0347` (exact, 2 sites)
 
 Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:1460-1468` `unit_cache_sibling`
-- `src/worktree.rs:1488-1496` `unit_mutants_sibling`
+- `src/worktree.rs:1455-1458` `scratch_root_from_env`
+- `src/worktree.rs:1462-1465` `scratch_root_path_from_env`
 
 #### `dup-0348` (exact, 2 sites)
 
@@ -7067,17 +7085,17 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:2091-2098` `head_sha_of`
-- `src/worktree.rs:2113-2120` `tree_sha_of`
+- `src/worktree.rs:1515-1523` `unit_cache_sibling`
+- `src/worktree.rs:1543-1551` `unit_mutants_sibling`
 
-#### `dup-0349` (near, 2 sites)
+#### `dup-0349` (exact, 2 sites)
 
 Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:2253-2273` `integrate_lands_work_in_the_repo`
-- `src/worktree.rs:3846-3879` `commit_cleans_the_tree_so_a_gate_sees_the_committed_artifact`
+- `src/worktree.rs:2146-2153` `head_sha_of`
+- `src/worktree.rs:2168-2175` `tree_sha_of`
 
 #### `dup-0350` (near, 2 sites)
 
@@ -7085,8 +7103,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:2981-3081` `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_from_a_crash_mid_skip_loop`
-- `src/worktree.rs:3084-3193` `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained_empty_commits`
+- `src/worktree.rs:2309-2329` `integrate_lands_work_in_the_repo`
+- `src/worktree.rs:3902-3935` `commit_cleans_the_tree_so_a_gate_sees_the_committed_artifact`
 
 #### `dup-0351` (near, 2 sites)
 
@@ -7094,8 +7112,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:3950-3977` `changed_files_reports_only_the_rename_destination`
-- `src/worktree.rs:5829-5841` `changed_files_unquotes_paths_with_spaces`
+- `src/worktree.rs:3037-3137` `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_from_a_crash_mid_skip_loop`
+- `src/worktree.rs:3140-3249` `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained_empty_commits`
 
 #### `dup-0352` (near, 2 sites)
 
@@ -7103,8 +7121,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4068-4106` `sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones`
-- `src/worktree.rs:4676-4724` `sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache`
+- `src/worktree.rs:4006-4033` `changed_files_reports_only_the_rename_destination`
+- `src/worktree.rs:6002-6014` `changed_files_unquotes_paths_with_spaces`
 
 #### `dup-0353` (near, 2 sites)
 
@@ -7112,70 +7130,79 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4380-4384` `requested_and_answered`
-- `src/worktree.rs:4388-4392` `requested_and_hung`
+- `src/worktree.rs:4241-4279` `sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones`
+- `src/worktree.rs:4849-4897` `sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache`
 
-#### `dup-0354` (near, 4 sites)
-
-Proposed home: `worktree::support (consolidate these 4 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/worktree.rs:4395-4428` `sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight`
-- `src/worktree.rs:4431-4457` `sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result`
-- `src/worktree.rs:4460-4484` `sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung`
-- `src/worktree.rs:4487-4510` `sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged`
-
-#### `dup-0355` (near, 2 sites)
+#### `dup-0354` (near, 2 sites)
 
 Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4596-4636` `sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one`
-- `src/worktree.rs:4639-4673` `sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision`
+- `src/worktree.rs:4553-4557` `requested_and_answered`
+- `src/worktree.rs:4561-4565` `requested_and_hung`
 
-#### `dup-0356` (near, 4 sites)
+#### `dup-0355` (near, 4 sites)
 
 Proposed home: `worktree::support (consolidate these 4 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4797-4838` `worktree_remove_reclaims_the_sibling_per_unit_cache`
-- `src/worktree.rs:4841-4883` `worktree_remove_also_reclaims_the_sibling_mutants_root`
-- `src/worktree.rs:4886-4921` `worktree_remove_also_reclaims_the_store_fence_sibling`
-- `src/worktree.rs:4941-4970` `worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling`
+- `src/worktree.rs:4568-4601` `sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight`
+- `src/worktree.rs:4604-4630` `sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result`
+- `src/worktree.rs:4633-4657` `sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung`
+- `src/worktree.rs:4660-4683` `sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged`
 
-#### `dup-0357` (near, 3 sites)
-
-Proposed home: `worktree::support (consolidate these 3 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `src/worktree.rs:4924-4938` `review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest`
-- `src/worktree.rs:5252-5265` `unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest`
-- `src/worktree.rs:5268-5280` `unit_mutants_sibling_maps_a_unit_worktree_to_its_mutants_root_and_ignores_the_rest`
-
-#### `dup-0358` (near, 2 sites)
+#### `dup-0356` (near, 2 sites)
 
 Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4981-5042` `reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch`
-- `src/worktree.rs:5199-5249` `reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch`
+- `src/worktree.rs:4769-4809` `sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one`
+- `src/worktree.rs:4812-4846` `sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision`
 
-#### `dup-0359` (near, 3 sites)
+#### `dup-0357` (near, 4 sites)
+
+Proposed home: `worktree::support (consolidate these 4 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `src/worktree.rs:4970-5011` `worktree_remove_reclaims_the_sibling_per_unit_cache`
+- `src/worktree.rs:5014-5056` `worktree_remove_also_reclaims_the_sibling_mutants_root`
+- `src/worktree.rs:5059-5094` `worktree_remove_also_reclaims_the_store_fence_sibling`
+- `src/worktree.rs:5114-5143` `worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling`
+
+#### `dup-0358` (near, 3 sites)
 
 Proposed home: `worktree::support (consolidate these 3 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:5930-6006` `create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones`
-- `src/worktree.rs:6009-6080` `create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested`
-- `src/worktree.rs:6083-6146` `create_heals_a_fully_missing_marker_not_just_a_truncated_one`
+- `src/worktree.rs:5097-5111` `review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest`
+- `src/worktree.rs:5425-5438` `unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest`
+- `src/worktree.rs:5441-5453` `unit_mutants_sibling_maps_a_unit_worktree_to_its_mutants_root_and_ignores_the_rest`
 
-#### `dup-0360` (exact, 19 sites)
+#### `dup-0359` (near, 2 sites)
+
+Proposed home: `worktree::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `src/worktree.rs:5154-5215` `reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch`
+- `src/worktree.rs:5372-5422` `reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch`
+
+#### `dup-0360` (near, 3 sites)
+
+Proposed home: `worktree::support (consolidate these 3 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `src/worktree.rs:6103-6179` `create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones`
+- `src/worktree.rs:6182-6253` `create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested`
+- `src/worktree.rs:6256-6319` `create_heals_a_fully_missing_marker_not_just_a_truncated_one`
+
+#### `dup-0361` (exact, 19 sites)
 
 Proposed home: `a new shared module (sites span 19 files: tests/adaptive_labels_periphery.rs, tests/code_lens_overview_collapse_viz.rs, tests/concepts_lens_view_periphery.rs, tests/dash_calls_render_viz.rs, tests/dash_decisions_progressive_disclosure.rs, tests/dash_graph_exploration_viz.rs, tests/dash_kg_graph_route.rs, tests/dash_release_ready.rs, tests/files_lens_directory_hulls_viz.rs, tests/graph_collision_body_and_tiebreak.rs, tests/graph_density_spread_floor_and_centring.rs, tests/metadata_card_handoff_viz.rs, tests/proof_row_renders_on_the_card.rs, tests/readable_graph_adaptive_labels.rs, tests/readable_graph_density_scaled_spacing.rs, tests/readable_graph_layout_separation.rs, tests/subject_lens_overlay_client_arms.rs, tests/subject_lens_overlay_served_page.rs, tests/subject_view_memory_rail_client.rs)`
 
@@ -7201,7 +7228,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_overlay_served_page.rs:35-44` `page_script`
 - `tests/subject_view_memory_rail_client.rs:21-30` `page_script`
 
-#### `dup-0361` (semantic, 20 sites)
+#### `dup-0362` (semantic, 20 sites)
 
 Proposed home: `one shared `node_available` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7228,7 +7255,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/subject_lens_overlay_served_page.rs:48-54` `node_available`
 - `tests/subject_view_memory_rail_client.rs:34-40` `node_available`
 
-#### `dup-0362` (exact, 3 sites)
+#### `dup-0363` (exact, 3 sites)
 
 Proposed home: `adaptive_labels_periphery::support (consolidate these 3 sites into one function in this file)`
 
@@ -7238,7 +7265,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/adaptive_labels_periphery.rs:484-496` `the_declutter_holds_its_contract_at_the_edges_and_across_scales`
 - `tests/adaptive_labels_periphery.rs:502-514` `a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_hover`
 
-#### `dup-0363` (exact, 4 sites)
+#### `dup-0364` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/adaptive_labels_periphery.rs, tests/subject_lens_overlay_client_arms.rs, tests/subject_view_memory_rail_client.rs)`
 
@@ -7249,35 +7276,26 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_overlay_client_arms.rs:310-323` `a_failed_live_reprojection_fetch_degrades_to_a_message`
 - `tests/subject_view_memory_rail_client.rs:207-220` `clicking_a_node_reveals_the_memory_rail_without_touching_the_neighborhood_panel`
 
-#### `dup-0364` (exact, 4 sites)
+#### `dup-0365` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/adoption_keys_on_criterion_periphery.rs, tests/reap_before_removal_periphery.rs, tests/worktree_liveness_fence_periphery.rs, tests/worktree_remove_relocated_scratch_base_guard_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/adoption_keys_on_criterion_periphery.rs:178-193` `init_repo`
+- `tests/adoption_keys_on_criterion_periphery.rs:180-195` `init_repo`
 - `tests/reap_before_removal_periphery.rs:62-77` `init_repo`
 - `tests/worktree_liveness_fence_periphery.rs:120-135` `init_repo`
 - `tests/worktree_remove_relocated_scratch_base_guard_periphery.rs:76-91` `init_repo`
 
-#### `dup-0365` (near, 3 sites)
+#### `dup-0366` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/adoption_keys_on_criterion_periphery.rs, tests/cli.rs, tests/worktree_liveness_fence_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/adoption_keys_on_criterion_periphery.rs:196-205` `git_out`
+- `tests/adoption_keys_on_criterion_periphery.rs:198-207` `git_out`
 - `tests/cli.rs:126-136` `git_out`
 - `tests/worktree_liveness_fence_periphery.rs:149-159` `git_out`
-
-#### `dup-0366` (near, 2 sites)
-
-Proposed home: `adoption_keys_on_criterion_periphery::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/adoption_keys_on_criterion_periphery.rs:394-410` `find_unit_started`
-- `tests/adoption_keys_on_criterion_periphery.rs:843-862` `find_unit_integrated_commit`
 
 #### `dup-0367` (near, 2 sites)
 
@@ -7285,8 +7303,8 @@ Proposed home: `adoption_keys_on_criterion_periphery::support (consolidate these
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/adoption_keys_on_criterion_periphery.rs:871-1016` `spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_across_two_runs_of_the_same_spec`
-- `tests/adoption_keys_on_criterion_periphery.rs:1683-1823` `a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_decision`
+- `tests/adoption_keys_on_criterion_periphery.rs:405-421` `find_unit_started`
+- `tests/adoption_keys_on_criterion_periphery.rs:854-873` `find_unit_integrated_commit`
 
 #### `dup-0368` (near, 2 sites)
 
@@ -7294,8 +7312,8 @@ Proposed home: `adoption_keys_on_criterion_periphery::support (consolidate these
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/adoption_keys_on_criterion_periphery.rs:1103-1187` `a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existing_branch`
-- `tests/adoption_keys_on_criterion_periphery.rs:1195-1265` `a_plain_remediation_failure_after_integration_never_reopens_adoption_even_though_a_same_named_branch_exists`
+- `tests/adoption_keys_on_criterion_periphery.rs:882-1027` `spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_across_two_runs_of_the_same_spec`
+- `tests/adoption_keys_on_criterion_periphery.rs:1694-1834` `a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_decision`
 
 #### `dup-0369` (near, 2 sites)
 
@@ -7303,8 +7321,8 @@ Proposed home: `adoption_keys_on_criterion_periphery::support (consolidate these
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/adoption_keys_on_criterion_periphery.rs:1276-1407` `a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_recorded_adoption`
-- `tests/adoption_keys_on_criterion_periphery.rs:1414-1536` `a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_completes_the_adoption_on_resume`
+- `tests/adoption_keys_on_criterion_periphery.rs:1114-1198` `a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existing_branch`
+- `tests/adoption_keys_on_criterion_periphery.rs:1206-1276` `a_plain_remediation_failure_after_integration_never_reopens_adoption_even_though_a_same_named_branch_exists`
 
 #### `dup-0370` (near, 2 sites)
 
@@ -7312,26 +7330,35 @@ Proposed home: `adoption_keys_on_criterion_periphery::support (consolidate these
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/adoption_keys_on_criterion_periphery.rs:1967-2085` `an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_slug_collision`
-- `tests/adoption_keys_on_criterion_periphery.rs:2113-2252` `a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref`
+- `tests/adoption_keys_on_criterion_periphery.rs:1287-1418` `a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_recorded_adoption`
+- `tests/adoption_keys_on_criterion_periphery.rs:1425-1547` `a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_completes_the_adoption_on_resume`
 
-#### `dup-0371` (exact, 9 sites)
+#### `dup-0371` (near, 2 sites)
+
+Proposed home: `adoption_keys_on_criterion_periphery::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/adoption_keys_on_criterion_periphery.rs:1978-2096` `an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_slug_collision`
+- `tests/adoption_keys_on_criterion_periphery.rs:2124-2263` `a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref`
+
+#### `dup-0372` (exact, 9 sites)
 
 Proposed home: `a new shared module (sites span 7 files: tests/architecture_current_surface.rs, tests/cli.rs, tests/meta_phases_declaration_periphery.rs, tests/phase_of_role_mapping_periphery.rs, tests/review_tier_roster_periphery.rs, tests/step_attention_periphery.rs, tests/worker_persona_label_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/architecture_current_surface.rs:49-54` `architecture_text`
-- `tests/cli.rs:3155-3160` `main_rs_source`
-- `tests/cli.rs:3626-3631` `rigger_js_source`
-- `tests/cli.rs:25537-25542` `rigger_workflow_yml_text`
+- `tests/cli.rs:3349-3354` `main_rs_source`
+- `tests/cli.rs:3820-3825` `rigger_js_source`
+- `tests/cli.rs:25798-25803` `rigger_workflow_yml_text`
 - `tests/meta_phases_declaration_periphery.rs:54-59` `rigger_js_source`
 - `tests/phase_of_role_mapping_periphery.rs:38-43` `rigger_js_source`
 - `tests/review_tier_roster_periphery.rs:44-49` `rigger_js_source`
 - `tests/step_attention_periphery.rs:964-969` `rigger_js_source`
 - `tests/worker_persona_label_periphery.rs:48-53` `rigger_js_source`
 
-#### `dup-0372` (semantic, 2 sites)
+#### `dup-0373` (semantic, 2 sites)
 
 Proposed home: `one shared `architecture_text` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7340,7 +7367,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/architecture_current_surface.rs:49-54` `architecture_text`
 - `tests/architecture_integrity.rs:50-53` `architecture_text`
 
-#### `dup-0373` (exact, 2 sites)
+#### `dup-0374` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/architecture_current_surface.rs, tests/kurrentdb_contract_test_surface.rs)`
 
@@ -7349,7 +7376,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/architecture_current_surface.rs:57-63` `eventstore_source`
 - `tests/kurrentdb_contract_test_surface.rs:38-45` `adapter_source`
 
-#### `dup-0374` (near, 2 sites)
+#### `dup-0375` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/architecture_current_surface.rs, tests/readme_retirement_rationale.rs)`
 
@@ -7358,7 +7385,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/architecture_current_surface.rs:152-170` `architecture_names_the_current_store_and_inspector_surface`
 - `tests/readme_retirement_rationale.rs:89-107` `readme_records_the_symbols_default_and_the_retirement_rationale`
 
-#### `dup-0375` (exact, 2 sites)
+#### `dup-0376` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/architecture_current_surface.rs, tests/readme_retirement_rationale.rs)`
 
@@ -7367,7 +7394,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/architecture_current_surface.rs:188-209` `architecture_names_no_retired_or_wrong_default_grounder`
 - `tests/readme_retirement_rationale.rs:110-126` `readme_carries_none_of_the_retired_grounder_inversions`
 
-#### `dup-0376` (exact, 4 sites)
+#### `dup-0377` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/batched_fold_cadence.rs, tests/calls_down_execution_path_periphery.rs, tests/store_content_identity_periphery.rs)`
 
@@ -7378,7 +7405,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/calls_down_execution_path_periphery.rs:142-144` `subgraph`
 - `tests/store_content_identity_periphery.rs:104-106` `subgraph`
 
-#### `dup-0377` (exact, 4 sites)
+#### `dup-0378` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/batched_fold_cadence.rs, tests/calls_down_execution_path_periphery.rs, tests/store_content_identity_periphery.rs)`
 
@@ -7389,7 +7416,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/calls_down_execution_path_periphery.rs:145-147` `resolve`
 - `tests/store_content_identity_periphery.rs:107-109` `resolve`
 
-#### `dup-0378` (exact, 4 sites)
+#### `dup-0379` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/build_budget_slots_periphery.rs, tests/build_env_authority_periphery.rs, tests/integrate_conflict_merge_periphery.rs, tests/store_flag_precedence.rs)`
 
@@ -7400,7 +7427,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/integrate_conflict_merge_periphery.rs:389-404` `write_workflow`
 - `tests/store_flag_precedence.rs:75-90` `write_workflow`
 
-#### `dup-0379` (semantic, 6 sites)
+#### `dup-0380` (semantic, 6 sites)
 
 Proposed home: `one shared `write_workflow` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7413,7 +7440,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/store_config.rs:40-42` `write_workflow`
 - `tests/store_flag_precedence.rs:75-90` `write_workflow`
 
-#### `dup-0380` (exact, 3 sites)
+#### `dup-0381` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/build_env_authority_periphery.rs, tests/rigger_run_base_gate_env_periphery.rs, tests/spawn_target_dir_periphery.rs)`
 
@@ -7423,7 +7450,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/rigger_run_base_gate_env_periphery.rs:80-84` `env_test_lock`
 - `tests/spawn_target_dir_periphery.rs:104-108` `spawn_env_test_lock`
 
-#### `dup-0381` (semantic, 2 sites)
+#### `dup-0382` (semantic, 2 sites)
 
 Proposed home: `one shared `env_test_lock` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7432,7 +7459,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/build_env_authority_periphery.rs:215-219` `env_test_lock`
 - `tests/rigger_run_base_gate_env_periphery.rs:80-84` `env_test_lock`
 
-#### `dup-0382` (exact, 2 sites)
+#### `dup-0383` (exact, 2 sites)
 
 Proposed home: `build_env_authority_periphery::real_driver_spy`
 
@@ -7441,7 +7468,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/build_env_authority_periphery.rs:369-376` `new`
 - `tests/rigger_run_base_gate_env_periphery.rs:120-127` `new`
 
-#### `dup-0383` (exact, 2 sites)
+#### `dup-0384` (exact, 2 sites)
 
 Proposed home: `build_env_authority_periphery::real_driver_spy`
 
@@ -7450,7 +7477,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/build_env_authority_periphery.rs:384-394` `spawn`
 - `tests/rigger_run_base_gate_env_periphery.rs:135-145` `spawn`
 
-#### `dup-0384` (near, 2 sites)
+#### `dup-0385` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/build_env_authority_periphery.rs, tests/rigger_run_base_gate_env_periphery.rs)`
 
@@ -7459,7 +7486,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/build_env_authority_periphery.rs:413-466` `run_once`
 - `tests/rigger_run_base_gate_env_periphery.rs:155-206` `run_once`
 
-#### `dup-0385` (near, 3 sites)
+#### `dup-0386` (near, 3 sites)
 
 Proposed home: `build_env_authority_periphery::support (consolidate these 3 sites into one function in this file)`
 
@@ -7469,7 +7496,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/build_env_authority_periphery.rs:641-693` `jobs_cap_coexists_with_a_configured_wrapper_at_both_real_injection_sites`
 - `tests/build_env_authority_periphery.rs:720-766` `auto_wrapper_resolves_to_a_real_probed_binary_and_reaches_both_real_subprocesses`
 
-#### `dup-0386` (near, 2 sites)
+#### `dup-0387` (near, 2 sites)
 
 Proposed home: `build_env_authority_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -7478,7 +7505,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/build_env_authority_periphery.rs:932-1007` `run_propagates_a_named_wrappers_uncreatable_cache_dir_at_the_library_entry_point`
 - `tests/build_env_authority_periphery.rs:1025-1104` `run_propagates_a_named_wrappers_preexisting_unwritable_cache_dir_at_the_library_entry_point`
 
-#### `dup-0387` (near, 2 sites)
+#### `dup-0388` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/build_watch_paths.rs, tests/gitsemver_worktree_periphery.rs)`
 
@@ -7487,7 +7514,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/build_watch_paths.rs:78-85` `fixture_repo`
 - `tests/gitsemver_worktree_periphery.rs:97-112` `fixture_repo`
 
-#### `dup-0388` (semantic, 3 sites)
+#### `dup-0389` (semantic, 3 sites)
 
 Proposed home: `one shared `fixture_repo` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7497,7 +7524,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/gitsemver_derivation.rs:61-76` `fixture_repo`
 - `tests/gitsemver_worktree_periphery.rs:97-112` `fixture_repo`
 
-#### `dup-0389` (near, 3 sites)
+#### `dup-0390` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/calls_down_execution_path_periphery.rs, tests/community_resolution_knob.rs, tests/concepts_fold_periphery.rs)`
 
@@ -7507,7 +7534,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_resolution_knob.rs:192-201` `community_nodes`
 - `tests/concepts_fold_periphery.rs:80-89` `concept_nodes`
 
-#### `dup-0390` (near, 2 sites)
+#### `dup-0391` (near, 2 sites)
 
 Proposed home: `calls_down_execution_path_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -7516,7 +7543,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/calls_down_execution_path_periphery.rs:314-355` `the_depth_bound_clamps_the_layers_the_walk_returns`
 - `tests/calls_down_execution_path_periphery.rs:796-864` `the_up_walk_clamps_the_caller_dag_to_the_depth_bound_and_emits_a_deterministic_layered_order`
 
-#### `dup-0391` (near, 2 sites)
+#### `dup-0392` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/canary_false_positives_periphery.rs, tests/canary_unattributed_rejects_periphery.rs)`
 
@@ -7525,7 +7552,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_false_positives_periphery.rs:55-120` `spawn`
 - `tests/canary_unattributed_rejects_periphery.rs:54-107` `spawn`
 
-#### `dup-0392` (exact, 3 sites)
+#### `dup-0393` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/canary_false_positives_periphery.rs, tests/canary_tolerant_attribution_periphery.rs, tests/canary_unattributed_rejects_periphery.rs)`
 
@@ -7535,7 +7562,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_tolerant_attribution_periphery.rs:103-110` `panel`
 - `tests/canary_unattributed_rejects_periphery.rs:125-132` `panel`
 
-#### `dup-0393` (near, 5 sites)
+#### `dup-0394` (near, 5 sites)
 
 Proposed home: `a new shared module (sites span 5 files: tests/canary_false_positives_periphery.rs, tests/canary_findings_volume_periphery.rs, tests/canary_item_sharding_jobs_cap_periphery.rs, tests/canary_progress_hook_periphery.rs, tests/canary_unattributed_rejects_periphery.rs)`
 
@@ -7547,7 +7574,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_progress_hook_periphery.rs:71-85` `item`
 - `tests/canary_unattributed_rejects_periphery.rs:134-148` `item`
 
-#### `dup-0394` (near, 2 sites)
+#### `dup-0395` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/canary_false_positives_periphery.rs, tests/canary_unattributed_rejects_periphery.rs)`
 
@@ -7556,7 +7583,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_false_positives_periphery.rs:170-297` `run_canary_scores_false_positive_controls_and_project_canary_counts_them`
 - `tests/canary_unattributed_rejects_periphery.rs:157-290` `run_canary_scores_an_unattributed_correct_reject_and_project_canary_counts_only_it`
 
-#### `dup-0395` (exact, 2 sites)
+#### `dup-0396` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/canary_item_sharding_jobs_cap_periphery.rs, tests/canary_progress_hook_periphery.rs)`
 
@@ -7565,7 +7592,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_item_sharding_jobs_cap_periphery.rs:84-90` `anchor_of`
 - `tests/canary_progress_hook_periphery.rs:91-97` `anchor_of`
 
-#### `dup-0396` (near, 3 sites)
+#### `dup-0397` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/canary_item_sharding_jobs_cap_periphery.rs, tests/canary_progress_hook_periphery.rs)`
 
@@ -7575,9 +7602,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_item_sharding_jobs_cap_periphery.rs:288-317` `spawn`
 - `tests/canary_progress_hook_periphery.rs:107-134` `spawn`
 
-#### `dup-0397` (near, 13 sites)
+#### `dup-0398` (near, 14 sites)
 
-Proposed home: `a new shared module (sites span 13 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/reset_build_cache_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/spec_lint.rs, tests/watchdog_cli_periphery.rs)`
+Proposed home: `a new shared module (sites span 14 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/reset_build_cache_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/spec_lint.rs, tests/validate_footprint_default_scratch_root_periphery.rs, tests/watchdog_cli_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
@@ -7593,13 +7620,14 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_menu_identity_migration_periphery.rs:32-39` `temp_project`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:45-52` `temp_project`
 - `tests/spec_lint.rs:23-30` `temp_project`
+- `tests/validate_footprint_default_scratch_root_periphery.rs:26-33` `temp_project`
 - `tests/watchdog_cli_periphery.rs:44-51` `temp_project`
 
-#### `dup-0398` (semantic, 20 sites)
+#### `dup-0399` (semantic, 21 sites)
 
 Proposed home: `one shared `temp_project` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
-mandatory sweep: same-named helper function defined independently in 2+ files - 20 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: same-named helper function defined independently in 2+ files - 21 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `tests/canary_model_drift_periphery.rs:39-46` `temp_project`
 - `tests/cause_wire_periphery.rs:54-61` `temp_project`
@@ -7620,9 +7648,10 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/spec_lint.rs:23-30` `temp_project`
 - `tests/validate_advisories.rs:47-55` `temp_project`
 - `tests/validate_behind_the_tree_periphery.rs:66-74` `temp_project`
+- `tests/validate_footprint_default_scratch_root_periphery.rs:26-33` `temp_project`
 - `tests/watchdog_cli_periphery.rs:44-51` `temp_project`
 
-#### `dup-0399` (exact, 15 sites)
+#### `dup-0400` (exact, 15 sites)
 
 Proposed home: `a new shared module (sites span 15 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/escalation_resume_periphery.rs, tests/fanout_template_needs_and_stage_retries_periphery.rs, tests/migration_is_deliberate_periphery.rs, tests/reset_build_cache_periphery.rs, tests/reset_derived_compaction_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spec_lint.rs, tests/step_attention_periphery.rs, tests/validate_advisories.rs, tests/validate_behind_the_tree_periphery.rs, tests/watchdog_cli_periphery.rs, tests/worktree_liveness_fence_periphery.rs)`
 
@@ -7633,7 +7662,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/escalation_resume_periphery.rs:159-171` `run_rigger`
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:193-205` `run_rigger`
 - `tests/migration_is_deliberate_periphery.rs:491-503` `run_rigger`
-- `tests/reset_build_cache_periphery.rs:74-86` `run_rigger`
+- `tests/reset_build_cache_periphery.rs:76-88` `run_rigger`
 - `tests/reset_derived_compaction_periphery.rs:642-654` `run_rigger`
 - `tests/reset_menu.rs:86-98` `run_rigger`
 - `tests/reset_menu_identity_migration_periphery.rs:74-86` `run_rigger`
@@ -7644,7 +7673,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/watchdog_cli_periphery.rs:110-122` `run_rigger`
 - `tests/worktree_liveness_fence_periphery.rs:214-226` `run_rigger`
 
-#### `dup-0400` (near, 2 sites)
+#### `dup-0401` (near, 2 sites)
 
 Proposed home: `canary_model_drift_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -7653,7 +7682,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_model_drift_periphery.rs:151-204` `canary_and_validate_treat_an_unattributed_tier_as_unmeasured_never_defaulted_from_output_prose`
 - `tests/canary_model_drift_periphery.rs:213-293` `canary_and_validate_drift_reads_only_metadata_prose_can_neither_mask_nor_forge_it`
 
-#### `dup-0401` (near, 2 sites)
+#### `dup-0402` (near, 2 sites)
 
 Proposed home: `canary_tolerant_attribution_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -7662,7 +7691,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/canary_tolerant_attribution_periphery.rs:130-155` `a_tolerant_match_in_a_later_about_entry_still_scores_the_catch`
 - `tests/canary_tolerant_attribution_periphery.rs:166-190` `an_empty_about_entry_never_scores_a_catch_even_against_a_trailing_slash_anchor`
 
-#### `dup-0402` (exact, 6 sites)
+#### `dup-0403` (exact, 6 sites)
 
 Proposed home: `a new shared module (sites span 6 files: tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs, tests/heartbeat_write_read_agree_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/watchdog_cli_periphery.rs)`
 
@@ -7675,7 +7704,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:56-60` `seed_store`
 - `tests/watchdog_cli_periphery.rs:56-60` `seed_store`
 
-#### `dup-0403` (near, 19 sites)
+#### `dup-0404` (near, 19 sites)
 
 Proposed home: `a new shared module (sites span 19 files: tests/cause_wire_periphery.rs, tests/change_path_revert_periphery.rs, tests/cli.rs, tests/dedup_seeding_periphery.rs, tests/escalation_resume_periphery.rs, tests/fanout_template_needs_and_stage_retries_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/migration_is_deliberate_periphery.rs, tests/projections_stay_local.rs, tests/reset_derived_compaction.rs, tests/reset_derived_compaction_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/step_attention_periphery.rs, tests/store_resolution.rs, tests/validate_advisories.rs, tests/watchdog_cli_periphery.rs, tests/worktree_liveness_fence_periphery.rs)`
 
@@ -7701,7 +7730,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/watchdog_cli_periphery.rs:66-88` `run_stream_identity`
 - `tests/worktree_liveness_fence_periphery.rs:164-186` `run_stream_identity`
 
-#### `dup-0404` (semantic, 21 sites)
+#### `dup-0405` (semantic, 21 sites)
 
 Proposed home: `one shared `run_stream_identity` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7729,7 +7758,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/watchdog_cli_periphery.rs:66-88` `run_stream_identity`
 - `tests/worktree_liveness_fence_periphery.rs:164-186` `run_stream_identity`
 
-#### `dup-0405` (near, 7 sites)
+#### `dup-0406` (near, 7 sites)
 
 Proposed home: `a new shared module (sites span 7 files: tests/cause_wire_periphery.rs, tests/escalation_resume_periphery.rs, tests/heartbeat_write_read_agree_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/watchdog_cli_periphery.rs)`
 
@@ -7743,7 +7772,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_menu_identity_migration_periphery.rs:95-107` `seed_run_events`
 - `tests/watchdog_cli_periphery.rs:93-106` `seed_run_events`
 
-#### `dup-0406` (semantic, 11 sites)
+#### `dup-0407` (semantic, 11 sites)
 
 Proposed home: `one shared `seed_run_events` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7761,7 +7790,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/step_attention_periphery.rs:178-196` `seed_run_events`
 - `tests/watchdog_cli_periphery.rs:93-106` `seed_run_events`
 
-#### `dup-0407` (near, 13 sites)
+#### `dup-0408` (near, 13 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs)`
 
@@ -7769,11 +7798,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `tests/cause_wire_periphery.rs:195-217` `a_legacy_causeless_unit_failed_event_survives_a_real_store_round_trip_and_renders_unknown`
 - `tests/cause_wire_periphery.rs:224-256` `the_reject_recurrence_line_names_the_latest_of_several_recorded_causes_through_the_real_binary`
-- `tests/cli.rs:10369-10407` `stats_reports_the_latest_run_by_default_and_all_for_the_aggregate`
-- `tests/cli.rs:21336-21395` `release_ready_handoff_surfaces_on_status_for_a_done_run`
-- `tests/cli.rs:21605-21646` `release_ready_is_silent_on_status_for_an_unfinished_run`
-- `tests/cli.rs:21717-21750` `release_ready_pluralizes_the_unit_count_on_status_for_a_multi_unit_run`
-- `tests/cli.rs:21795-21817` `release_ready_is_silent_on_status_for_a_spec_defective_run`
+- `tests/cli.rs:10561-10599` `stats_reports_the_latest_run_by_default_and_all_for_the_aggregate`
+- `tests/cli.rs:21588-21647` `release_ready_handoff_surfaces_on_status_for_a_done_run`
+- `tests/cli.rs:21857-21898` `release_ready_is_silent_on_status_for_an_unfinished_run`
+- `tests/cli.rs:21969-22002` `release_ready_pluralizes_the_unit_count_on_status_for_a_multi_unit_run`
+- `tests/cli.rs:22047-22069` `release_ready_is_silent_on_status_for_a_spec_defective_run`
 - `tests/escalation_resume_periphery.rs:183-207` `a_unit_resumed_event_seeded_directly_through_a_real_store_reaches_status_without_the_command`
 - `tests/escalation_resume_periphery.rs:218-247` `a_legacy_shaped_unit_resumed_event_missing_both_optional_fields_survives_a_real_store_round_trip`
 - `tests/escalation_resume_periphery.rs:336-367` `the_resumed_banner_survives_a_genuinely_in_flight_re_parked_attempt_not_yet_resolved`
@@ -7781,7 +7810,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/escalation_resume_periphery.rs:472-496` `resume_unit_refuses_when_the_recorded_branch_was_never_created`
 - `tests/escalation_resume_periphery.rs:503-526` `resume_unit_refuses_an_already_integrated_unit`
 
-#### `dup-0408` (exact, 2 sites)
+#### `dup-0409` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/change_path_revert_periphery.rs, tests/dedup_seeding_periphery.rs)`
 
@@ -7790,7 +7819,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/change_path_revert_periphery.rs:58-72` `run_rigger`
 - `tests/dedup_seeding_periphery.rs:655-671` `run_rigger`
 
-#### `dup-0409` (exact, 2 sites)
+#### `dup-0410` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/change_path_revert_periphery.rs, tests/dedup_seeding_periphery.rs)`
 
@@ -7799,7 +7828,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/change_path_revert_periphery.rs:77-83` `ingested_count`
 - `tests/dedup_seeding_periphery.rs:676-682` `ingested_count`
 
-#### `dup-0410` (semantic, 2 sites)
+#### `dup-0411` (semantic, 2 sites)
 
 Proposed home: `one shared `ingested_count` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7808,7 +7837,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/change_path_revert_periphery.rs:77-83` `ingested_count`
 - `tests/dedup_seeding_periphery.rs:676-682` `ingested_count`
 
-#### `dup-0411` (near, 2 sites)
+#### `dup-0412` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/change_path_revert_periphery.rs, tests/dedup_seeding_periphery.rs)`
 
@@ -7817,7 +7846,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/change_path_revert_periphery.rs:159-175` `read_run_stream`
 - `tests/dedup_seeding_periphery.rs:630-646` `read_run_stream`
 
-#### `dup-0412` (semantic, 3 sites)
+#### `dup-0413` (semantic, 3 sites)
 
 Proposed home: `one shared `read_run_stream` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7827,7 +7856,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/dedup_seeding_periphery.rs:630-646` `read_run_stream`
 - `tests/reset_derived_compaction_periphery.rs:2835-2839` `read_run_stream`
 
-#### `dup-0413` (exact, 2 sites)
+#### `dup-0414` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/checkin_mutation_diff_base_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs)`
 
@@ -7836,7 +7865,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/checkin_mutation_diff_base_periphery.rs:67-74` `run_git`
 - `tests/halted_spawn_wip_recovery_periphery.rs:89-96` `run_git`
 
-#### `dup-0414` (exact, 2 sites)
+#### `dup-0415` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/checkin_mutation_diff_base_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs)`
 
@@ -7845,7 +7874,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/checkin_mutation_diff_base_periphery.rs:76-83` `git_ok`
 - `tests/halted_spawn_wip_recovery_periphery.rs:98-105` `git_ok`
 
-#### `dup-0415` (exact, 2 sites)
+#### `dup-0416` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/checkin_mutation_diff_base_periphery.rs, tests/halted_spawn_wip_recovery_periphery.rs)`
 
@@ -7854,7 +7883,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/checkin_mutation_diff_base_periphery.rs:85-93` `git_out`
 - `tests/halted_spawn_wip_recovery_periphery.rs:107-115` `git_out`
 
-#### `dup-0416` (exact, 2 sites)
+#### `dup-0417` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/checkin_mutation_diff_base_periphery.rs, tests/store_resolution.rs)`
 
@@ -7863,7 +7892,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/checkin_mutation_diff_base_periphery.rs:107-124` `the_shipped_mutation_gate_guards_on_rigger_run_base_never_a_merge_base`
 - `tests/store_resolution.rs:119-135` `the_single_resolver_exists_and_the_old_per_command_helper_is_retired`
 
-#### `dup-0417` (exact, 3 sites)
+#### `dup-0418` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/cli.rs, tests/fanout_template_needs_and_stage_retries_periphery.rs, tests/step_attention_periphery.rs)`
 
@@ -7873,7 +7902,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:142-160` `seed_run_events`
 - `tests/step_attention_periphery.rs:178-196` `seed_run_events`
 
-#### `dup-0418` (semantic, 7 sites)
+#### `dup-0419` (semantic, 7 sites)
 
 Proposed home: `one shared `temp_git_project_with_commit` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7887,7 +7916,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/workflow_driver_resolved_model_periphery.rs:57-78` `temp_git_project_with_commit`
 - `tests/worktree_liveness_fence_periphery.rs:94-115` `temp_git_project_with_commit`
 
-#### `dup-0419` (exact, 4 sites)
+#### `dup-0420` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/cli.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/reset_derived_compaction.rs, tests/step_root_resolution_periphery.rs)`
 
@@ -7898,7 +7927,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_derived_compaction.rs:82-84` `run_rigger`
 - `tests/step_root_resolution_periphery.rs:213-215` `run_rigger`
 
-#### `dup-0420` (exact, 6 sites)
+#### `dup-0421` (exact, 6 sites)
 
 Proposed home: `a new shared module (sites span 6 files: tests/cli.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/reset_derived_compaction.rs, tests/reset_derived_live_writer_guard_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/step_root_resolution_periphery.rs)`
 
@@ -7911,7 +7940,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:118-133` `run_rigger_envs`
 - `tests/step_root_resolution_periphery.rs:196-211` `run_rigger_envs`
 
-#### `dup-0421` (semantic, 5 sites)
+#### `dup-0422` (semantic, 5 sites)
 
 Proposed home: `one shared `run_rigger_envs` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7923,7 +7952,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:118-133` `run_rigger_envs`
 - `tests/step_root_resolution_periphery.rs:196-211` `run_rigger_envs`
 
-#### `dup-0422` (exact, 2 sites)
+#### `dup-0423` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/cli.rs, tests/worktree_liveness_fence_periphery.rs)`
 
@@ -7932,20 +7961,20 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:189-197` `git_ok`
 - `tests/worktree_liveness_fence_periphery.rs:138-146` `git_ok`
 
-#### `dup-0423` (near, 6 sites)
+#### `dup-0424` (near, 6 sites)
 
 Proposed home: `cli::support (consolidate these 6 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:352-375` `emit_review_finding_shows_in_peers`
-- `tests/cli.rs:8410-8513` `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`
-- `tests/cli.rs:8538-8601` `step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less`
-- `tests/cli.rs:11882-11946` `a_liveness_fault_on_a_review_spawn_halts_instead_of_re_parking`
-- `tests/cli.rs:15163-15193` `result_if_absent_records_when_the_spawn_is_unanswered`
-- `tests/cli.rs:15201-15239` `result_if_absent_never_clobbers_a_self_reported_success`
+- `tests/cli.rs:8602-8705` `step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver`
+- `tests/cli.rs:8730-8793` `step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less`
+- `tests/cli.rs:12074-12138` `a_liveness_fault_on_a_review_spawn_halts_instead_of_re_parking`
+- `tests/cli.rs:15415-15445` `result_if_absent_records_when_the_spawn_is_unanswered`
+- `tests/cli.rs:15453-15491` `result_if_absent_never_clobbers_a_self_reported_success`
 
-#### `dup-0424` (near, 2 sites)
+#### `dup-0425` (near, 2 sites)
 
 Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
@@ -7954,7 +7983,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/cli.rs:871-1008` `reset_runs_compacts_the_on_disk_graph_after_reclaiming_superseded_rows`
 - `tests/cli.rs:1038-1183` `reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempotent_no_op`
 
-#### `dup-0425` (semantic, 2 sites)
+#### `dup-0426` (semantic, 2 sites)
 
 Proposed home: `one shared `reported_reclaimed_bytes` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -7963,25 +7992,14 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/cli.rs:1014-1020` `reported_reclaimed_bytes`
 - `tests/reset_derived_compaction_periphery.rs:4409-4422` `reported_reclaimed_bytes`
 
-#### `dup-0426` (exact, 2 sites)
+#### `dup-0427` (exact, 2 sites)
 
 Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/cli.rs:1372-1389` `prompt_refuses_to_fabricate_a_store_when_none_exists`
-- `tests/cli.rs:1433-1450` `scratch_refuses_to_fabricate_a_store_when_none_exists`
-
-#### `dup-0427` (near, 4 sites)
-
-Proposed home: `cli::support (consolidate these 4 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:1792-1815` `result_if_absent_orphan_advisory_states_the_conditional_not_a_recording`
-- `tests/cli.rs:16586-16606` `canary_if_model_changed_skips_when_the_model_is_unchanged`
-- `tests/cli.rs:16613-16635` `canary_if_model_changed_runs_when_a_tier_resolved_model_repointed`
-- `tests/cli.rs:16644-16678` `canary_if_model_changed_skips_a_snapshot_only_date_suffix_bump_without_running_the_panel`
+- `tests/cli.rs:1561-1578` `scratch_refuses_to_fabricate_a_store_when_none_exists`
 
 #### `dup-0428` (near, 2 sites)
 
@@ -7989,8 +8007,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:1880-1953` `a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome`
-- `tests/cli.rs:1969-2043` `a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome`
+- `tests/cli.rs:1813-1864` `result_from_a_relocated_git_worktree_outside_the_repo_records_into_the_repo_stream`
+- `tests/cli.rs:1877-1919` `result_from_a_configured_nested_git_worktree_records_into_the_repo_stream`
 
 #### `dup-0429` (near, 4 sites)
 
@@ -7998,98 +8016,118 @@ Proposed home: `cli::support (consolidate these 4 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:2057-2092` `a_reviewers_result_never_reclaims_the_implementers_mutation_scratch`
-- `tests/cli.rs:2105-2148` `a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots`
-- `tests/cli.rs:2165-2212` `a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either`
-- `tests/cli.rs:2233-2271` `a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root`
+- `tests/cli.rs:1982-2005` `result_if_absent_orphan_advisory_states_the_conditional_not_a_recording`
+- `tests/cli.rs:16838-16858` `canary_if_model_changed_skips_when_the_model_is_unchanged`
+- `tests/cli.rs:16865-16887` `canary_if_model_changed_runs_when_a_tier_resolved_model_repointed`
+- `tests/cli.rs:16896-16930` `canary_if_model_changed_skips_a_snapshot_only_date_suffix_bump_without_running_the_panel`
 
-#### `dup-0430` (near, 3 sites)
-
-Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:2361-2409` `two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs`
-- `tests/cli.rs:9280-9344` `a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_survives`
-- `tests/cli.rs:10110-10227` `a_resumed_run_reaps_an_escalated_and_an_on_pass_none_settled_units_registered_mutation_scratch_not_just_an_integrated_ones`
-
-#### `dup-0431` (near, 2 sites)
+#### `dup-0430` (near, 2 sites)
 
 Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:2417-2428` `write_grounder_workflow`
-- `tests/cli.rs:16881-16896` `write_gating_lint_project`
+- `tests/cli.rs:2070-2141` `a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome`
+- `tests/cli.rs:2157-2231` `a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome`
 
-#### `dup-0432` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:3179-3235` `worktree_sweep_completes_before_any_add_within_one_step`
-- `tests/cli.rs:8619-8654` `the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed`
-
-#### `dup-0433` (near, 4 sites)
+#### `dup-0431` (near, 4 sites)
 
 Proposed home: `cli::support (consolidate these 4 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:3358-3405` `step_from_a_linked_worktree_refuses_naming_both_trees`
-- `tests/cli.rs:3412-3449` `run_from_a_linked_worktree_refuses_naming_both_trees`
-- `tests/cli.rs:3456-3493` `workflow_from_a_linked_worktree_refuses_naming_both_trees`
-- `tests/cli.rs:3506-3556` `serve_from_a_linked_worktree_refuses_naming_both_trees`
+- `tests/cli.rs:2245-2280` `a_reviewers_result_never_reclaims_the_implementers_mutation_scratch`
+- `tests/cli.rs:2293-2336` `a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots`
+- `tests/cli.rs:2353-2406` `a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either`
+- `tests/cli.rs:2427-2465` `a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root`
 
-#### `dup-0434` (semantic, 6 sites)
+#### `dup-0432` (near, 3 sites)
+
+Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:2555-2603` `two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs`
+- `tests/cli.rs:9472-9536` `a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_survives`
+- `tests/cli.rs:10302-10419` `a_resumed_run_reaps_an_escalated_and_an_on_pass_none_settled_units_registered_mutation_scratch_not_just_an_integrated_ones`
+
+#### `dup-0433` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:2611-2622` `write_grounder_workflow`
+- `tests/cli.rs:17133-17148` `write_gating_lint_project`
+
+#### `dup-0434` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:3373-3429` `worktree_sweep_completes_before_any_add_within_one_step`
+- `tests/cli.rs:8811-8846` `the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed`
+
+#### `dup-0435` (near, 4 sites)
+
+Proposed home: `cli::support (consolidate these 4 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:3552-3599` `step_from_a_linked_worktree_refuses_naming_both_trees`
+- `tests/cli.rs:3606-3643` `run_from_a_linked_worktree_refuses_naming_both_trees`
+- `tests/cli.rs:3650-3687` `workflow_from_a_linked_worktree_refuses_naming_both_trees`
+- `tests/cli.rs:3700-3750` `serve_from_a_linked_worktree_refuses_naming_both_trees`
+
+#### `dup-0436` (semantic, 6 sites)
 
 Proposed home: `one shared `rigger_js_source` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 6 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/cli.rs:3626-3631` `rigger_js_source`
+- `tests/cli.rs:3820-3825` `rigger_js_source`
 - `tests/meta_phases_declaration_periphery.rs:54-59` `rigger_js_source`
 - `tests/phase_of_role_mapping_periphery.rs:38-43` `rigger_js_source`
 - `tests/review_tier_roster_periphery.rs:44-49` `rigger_js_source`
 - `tests/step_attention_periphery.rs:964-969` `rigger_js_source`
 - `tests/worker_persona_label_periphery.rs:48-53` `rigger_js_source`
 
-#### `dup-0435` (near, 2 sites)
+#### `dup-0437` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/cli.rs, tests/worker_persona_label_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:3884-3940` `native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_container`
+- `tests/cli.rs:4078-4134` `native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_container`
 - `tests/worker_persona_label_periphery.rs:413-434` `workerlabel_is_actually_wired_into_runworkers_agent_call_label`
 
-#### `dup-0436` (exact, 2 sites)
+#### `dup-0438` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/cli.rs, tests/projections_stay_local.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:4164-4177` `native_driver_drains_in_flight_workers_before_a_loud_stop`
+- `tests/cli.rs:4358-4371` `native_driver_drains_in_flight_workers_before_a_loud_stop`
 - `tests/projections_stay_local.rs:101-119` `the_graph_and_progress_projections_open_via_the_local_sqlite_constructors`
 
-#### `dup-0437` (near, 17 sites)
+#### `dup-0439` (near, 17 sites)
 
 Proposed home: `a new shared module (sites span 6 files: tests/cli.rs, tests/halted_spawn_wip_recovery_periphery.rs, tests/step_attention_periphery.rs, tests/step_root_resolution_periphery.rs, tests/workflow_driver_resolved_model_periphery.rs, tests/worktree_liveness_fence_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:4184-4208` `write_two_stage_workflow`
-- `tests/cli.rs:4213-4237` `write_budget_one_two_stage_workflow`
-- `tests/cli.rs:4323-4343` `write_standalone_review_workflow`
-- `tests/cli.rs:4740-4764` `write_reviewless_git_unit_workflow`
-- `tests/cli.rs:4771-4796` `write_reviewless_git_escalating_unit_workflow`
-- `tests/cli.rs:7690-7715` `write_failing_gate_escalating_workflow`
-- `tests/cli.rs:7724-7749` `write_manual_review_workflow`
-- `tests/cli.rs:7952-7975` `write_budget_one_dependency_workflow`
-- `tests/cli.rs:8042-8055` `write_liveness_workflow`
-- `tests/cli.rs:8383-8396` `write_unbounded_liveness_workflow`
-- `tests/cli.rs:11577-11608` `write_gated_reviewed_workflow`
+- `tests/cli.rs:4378-4402` `write_two_stage_workflow`
+- `tests/cli.rs:4407-4431` `write_budget_one_two_stage_workflow`
+- `tests/cli.rs:4517-4537` `write_standalone_review_workflow`
+- `tests/cli.rs:4928-4952` `write_reviewless_git_unit_workflow`
+- `tests/cli.rs:4959-4984` `write_reviewless_git_escalating_unit_workflow`
+- `tests/cli.rs:7875-7900` `write_failing_gate_escalating_workflow`
+- `tests/cli.rs:7909-7934` `write_manual_review_workflow`
+- `tests/cli.rs:8137-8160` `write_budget_one_dependency_workflow`
+- `tests/cli.rs:8227-8240` `write_liveness_workflow`
+- `tests/cli.rs:8575-8588` `write_unbounded_liveness_workflow`
+- `tests/cli.rs:11769-11800` `write_gated_reviewed_workflow`
 - `tests/halted_spawn_wip_recovery_periphery.rs:134-158` `write_solo_unit_workflow`
 - `tests/step_attention_periphery.rs:221-246` `write_attention_progression_workflow`
 - `tests/step_attention_periphery.rs:492-518` `write_attention_ordering_workflow`
@@ -8097,121 +8135,102 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/workflow_driver_resolved_model_periphery.rs:85-98` `write_one_stage_workflow`
 - `tests/worktree_liveness_fence_periphery.rs:234-258` `write_reviewless_git_unit_workflow`
 
-#### `dup-0438` (semantic, 3 sites)
+#### `dup-0440` (semantic, 3 sites)
 
 Proposed home: `one shared `write_reviewless_git_unit_workflow` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/cli.rs:4740-4764` `write_reviewless_git_unit_workflow`
+- `tests/cli.rs:4928-4952` `write_reviewless_git_unit_workflow`
 - `tests/step_root_resolution_periphery.rs:167-191` `write_reviewless_git_unit_workflow`
 - `tests/worktree_liveness_fence_periphery.rs:234-258` `write_reviewless_git_unit_workflow`
 
-#### `dup-0439` (near, 2 sites)
+#### `dup-0441` (near, 2 sites)
 
 Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:4811-4886` `step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate`
-- `tests/cli.rs:4901-4969` `step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalation`
+- `tests/cli.rs:4999-5074` `step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate`
+- `tests/cli.rs:5089-5157` `step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalation`
 
-#### `dup-0440` (exact, 4 sites)
+#### `dup-0442` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/cli.rs, tests/watchdog_cli_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:5122-5136` `resume_unit_refuses_an_unknown_unit`
-- `tests/cli.rs:10979-10990` `step_rejects_an_unknown_flag`
-- `tests/cli.rs:11029-11040` `step_rejects_base_without_a_value`
+- `tests/cli.rs:5310-5324` `resume_unit_refuses_an_unknown_unit`
+- `tests/cli.rs:11171-11182` `step_rejects_an_unknown_flag`
+- `tests/cli.rs:11221-11232` `step_rejects_base_without_a_value`
 - `tests/watchdog_cli_periphery.rs:356-370` `watch_rejects_an_unknown_flag_through_the_real_binary_with_a_nonzero_exit`
 
-#### `dup-0441` (near, 3 sites)
+#### `dup-0443` (near, 3 sites)
 
 Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:5208-5416` `step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn`
-- `tests/cli.rs:5642-5889` `step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions`
-- `tests/cli.rs:6072-6215` `step_stamps_a_real_failed_sha_after_a_deletion_before_the_reject_stamp`
+- `tests/cli.rs:5396-5605` `step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn`
+- `tests/cli.rs:5831-6078` `step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions`
+- `tests/cli.rs:6261-6404` `step_stamps_a_real_failed_sha_after_a_deletion_before_the_reject_stamp`
 
-#### `dup-0442` (near, 5 sites)
+#### `dup-0444` (near, 5 sites)
 
 Proposed home: `cli::support (consolidate these 5 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:6255-6417` `run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review`
-- `tests/cli.rs:6702-6855` `speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end`
-- `tests/cli.rs:9619-9758` `a_speculation_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_winner_integrate_teardown`
-- `tests/cli.rs:9772-9910` `a_speculation_escalations_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_escalation_tail_teardown`
-- `tests/cli.rs:9933-10083` `a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown`
-
-#### `dup-0443` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:6879-7026` `resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_exhaustive_gates_own_deletion_is_restored`
-- `tests/cli.rs:7049-7228` `resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored`
-
-#### `dup-0444` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:7536-7597` `run_registers_a_credential_free_shared_instance`
-- `tests/cli.rs:7617-7682` `run_driver_workflow_registers_a_credential_free_shared_instance`
+- `tests/cli.rs:6444-6606` `run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review`
+- `tests/cli.rs:6891-7044` `speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end`
+- `tests/cli.rs:9811-9950` `a_speculation_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_winner_integrate_teardown`
+- `tests/cli.rs:9964-10102` `a_speculation_escalations_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_escalation_tail_teardown`
+- `tests/cli.rs:10125-10275` `a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown`
 
 #### `dup-0445` (near, 2 sites)
 
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:7068-7213` `resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_exhaustive_gates_own_deletion_is_restored`
+- `tests/cli.rs:7236-7413` `resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored`
+
+#### `dup-0446` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:7721-7782` `run_registers_a_credential_free_shared_instance`
+- `tests/cli.rs:7802-7867` `run_driver_workflow_registers_a_credential_free_shared_instance`
+
+#### `dup-0447` (near, 2 sites)
+
 Proposed home: `a new shared module (sites span 2 files: tests/cli.rs, tests/step_attention_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:7759-7851` `step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit`
+- `tests/cli.rs:7944-8036` `step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit`
 - `tests/step_attention_periphery.rs:252-351` `recurrence_and_stalled_frontier_survive_real_process_boundaries`
 
-#### `dup-0446` (exact, 2 sites)
+#### `dup-0448` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/cli.rs, tests/step_attention_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:8060-8070` `plant_stale_marker`
+- `tests/cli.rs:8245-8255` `plant_stale_marker`
 - `tests/step_attention_periphery.rs:416-426` `plant_stale_marker`
 
-#### `dup-0447` (semantic, 2 sites)
+#### `dup-0449` (semantic, 2 sites)
 
 Proposed home: `one shared `plant_stale_marker` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/cli.rs:8060-8070` `plant_stale_marker`
+- `tests/cli.rs:8245-8255` `plant_stale_marker`
 - `tests/step_attention_periphery.rs:416-426` `plant_stale_marker`
-
-#### `dup-0448` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:8955-9003` `run_teardown_reclaims_run_level_scratch_at_a_definition_drift_halt`
-- `tests/cli.rs:9020-9076` `run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_hung_spawn_may_be_alive`
-
-#### `dup-0449` (near, 3 sites)
-
-Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:9099-9126` `run_teardown_spares_run_level_scratch_at_a_manual_review_pause`
-- `tests/cli.rs:9151-9199` `run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_manual_review_is_pending`
-- `tests/cli.rs:9209-9257` `run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated`
 
 #### `dup-0450` (near, 2 sites)
 
@@ -8219,76 +8238,77 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:10454-10528` `stats_cli_renders_exact_per_role_spawn_timing_and_unpaired_disclosure`
-- `tests/cli.rs:10602-10653` `stats_cli_excludes_suspect_non_positive_duration_pairs_as_unpaired_not_zero`
+- `tests/cli.rs:9147-9195` `run_teardown_reclaims_run_level_scratch_at_a_definition_drift_halt`
+- `tests/cli.rs:9212-9268` `run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_hung_spawn_may_be_alive`
 
-#### `dup-0451` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:10996-11024` `step_accepts_base_and_anchors_the_run_branch`
-- `tests/cli.rs:11049-11093` `step_creates_run_branch_off_head_when_base_unresolvable`
-
-#### `dup-0452` (near, 3 sites)
+#### `dup-0451` (near, 3 sites)
 
 Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:11103-11133` `step_refuses_when_there_is_no_reachable_base`
-- `tests/cli.rs:11144-11175` `run_refuses_when_there_is_no_reachable_base`
-- `tests/cli.rs:11185-11228` `run_workflow_refuses_when_there_is_no_reachable_base`
+- `tests/cli.rs:9291-9318` `run_teardown_spares_run_level_scratch_at_a_manual_review_pause`
+- `tests/cli.rs:9343-9391` `run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_manual_review_is_pending`
+- `tests/cli.rs:9401-9449` `run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated`
 
-#### `dup-0453` (near, 3 sites)
+#### `dup-0452` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:10646-10720` `stats_cli_renders_exact_per_role_spawn_timing_and_unpaired_disclosure`
+- `tests/cli.rs:10794-10845` `stats_cli_excludes_suspect_non_positive_duration_pairs_as_unpaired_not_zero`
+
+#### `dup-0453` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:11188-11216` `step_accepts_base_and_anchors_the_run_branch`
+- `tests/cli.rs:11241-11285` `step_creates_run_branch_off_head_when_base_unresolvable`
+
+#### `dup-0454` (near, 3 sites)
+
+Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:11295-11325` `step_refuses_when_there_is_no_reachable_base`
+- `tests/cli.rs:11336-11367` `run_refuses_when_there_is_no_reachable_base`
+- `tests/cli.rs:11377-11420` `run_workflow_refuses_when_there_is_no_reachable_base`
+
+#### `dup-0455` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/cli.rs, tests/fanout_template_needs_and_stage_retries_periphery.rs, tests/step_attention_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:11565-11567` `temp_repoless_project`
+- `tests/cli.rs:11757-11759` `temp_repoless_project`
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:134-136` `temp_repoless_project`
 - `tests/step_attention_periphery.rs:143-145` `temp_repoless_project`
 
-#### `dup-0454` (semantic, 3 sites)
+#### `dup-0456` (semantic, 3 sites)
 
 Proposed home: `one shared `temp_repoless_project` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `tests/cli.rs:11565-11567` `temp_repoless_project`
+- `tests/cli.rs:11757-11759` `temp_repoless_project`
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:134-136` `temp_repoless_project`
 - `tests/step_attention_periphery.rs:143-145` `temp_repoless_project`
 
-#### `dup-0455` (exact, 4 sites)
+#### `dup-0457` (exact, 4 sites)
 
 Proposed home: `cli::support (consolidate these 4 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:12182-12199` `write_gated_workflow_no_review`
-- `tests/cli.rs:12251-12268` `write_reviewed_workflow_no_gate`
-- `tests/cli.rs:12323-12343` `write_reviewed_workflow_added_gate`
-- `tests/cli.rs:12399-12421` `write_reviewed_workflow_extra_stage`
-
-#### `dup-0456` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:12208-12244` `replay_candidate_column_reacts_to_a_changed_config`
-- `tests/cli.rs:12277-12317` `replay_removing_a_gate_lowers_the_candidate_gate_runs`
-
-#### `dup-0457` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:12355-12394` `replay_an_added_gate_fails_safe_and_never_fabricates_a_pass`
-- `tests/cli.rs:12430-12462` `replay_an_uncovered_candidate_spawn_parks_and_still_prints_a_partial_column`
+- `tests/cli.rs:12374-12391` `write_gated_workflow_no_review`
+- `tests/cli.rs:12443-12460` `write_reviewed_workflow_no_gate`
+- `tests/cli.rs:12515-12535` `write_reviewed_workflow_added_gate`
+- `tests/cli.rs:12591-12613` `write_reviewed_workflow_extra_stage`
 
 #### `dup-0458` (near, 2 sites)
 
@@ -8296,49 +8316,49 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:12788-12812` `validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path`
-- `tests/cli.rs:13305-13326` `validate_rejects_an_explicit_build_mutation_value_naming_spec_91_end_to_end`
+- `tests/cli.rs:12400-12436` `replay_candidate_column_reacts_to_a_changed_config`
+- `tests/cli.rs:12469-12509` `replay_removing_a_gate_lowers_the_candidate_gate_runs`
 
-#### `dup-0459` (near, 7 sites)
+#### `dup-0459` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:12547-12586` `replay_an_added_gate_fails_safe_and_never_fabricates_a_pass`
+- `tests/cli.rs:12622-12654` `replay_an_uncovered_candidate_spawn_parks_and_still_prints_a_partial_column`
+
+#### `dup-0460` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:12980-13004` `validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path`
+- `tests/cli.rs:13497-13518` `validate_rejects_an_explicit_build_mutation_value_naming_spec_91_end_to_end`
+
+#### `dup-0461` (near, 7 sites)
 
 Proposed home: `cli::support (consolidate these 7 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:12819-12837` `validate_reports_none_when_auto_finds_no_known_wrapper_on_path`
-- `tests/cli.rs:12842-12859` `validate_reports_the_resolved_wrapper_when_auto_finds_a_known_wrapper_on_path`
-- `tests/cli.rs:12866-12896` `validate_reports_cache_dir_and_budget_alongside_the_wrapper`
-- `tests/cli.rs:13038-13063` `validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir`
-- `tests/cli.rs:13134-13160` `validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwritable_cache_dir`
-- `tests/cli.rs:13254-13271` `validate_reports_mutation_gate_declared_when_cargo_mutants_is_resolvable`
-- `tests/cli.rs:13278-13295` `validate_reports_mutation_gate_declared_by_default_on_a_fresh_scaffold`
+- `tests/cli.rs:13011-13029` `validate_reports_none_when_auto_finds_no_known_wrapper_on_path`
+- `tests/cli.rs:13034-13051` `validate_reports_the_resolved_wrapper_when_auto_finds_a_known_wrapper_on_path`
+- `tests/cli.rs:13058-13088` `validate_reports_cache_dir_and_budget_alongside_the_wrapper`
+- `tests/cli.rs:13230-13255` `validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir`
+- `tests/cli.rs:13326-13352` `validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwritable_cache_dir`
+- `tests/cli.rs:13446-13463` `validate_reports_mutation_gate_declared_when_cargo_mutants_is_resolvable`
+- `tests/cli.rs:13470-13487` `validate_reports_mutation_gate_declared_by_default_on_a_fresh_scaffold`
 
-#### `dup-0460` (exact, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:13001-13030` `validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created`
-- `tests/cli.rs:13095-13124` `validate_fails_at_run_start_when_a_named_wrappers_cache_dir_is_preexisting_but_unwritable`
-
-#### `dup-0461` (near, 2 sites)
+#### `dup-0462` (exact, 2 sites)
 
 Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:13191-13212` `validate_fails_at_run_start_when_the_scaffolded_mutation_gate_has_no_cargo_mutants_on_path`
-- `tests/cli.rs:13229-13249` `validate_fails_before_any_output_when_the_mutation_gate_has_no_cargo_mutants`
-
-#### `dup-0462` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:13657-13699` `validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratch_root`
-- `tests/cli.rs:14075-14185` `validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_entries_through_the_binary`
+- `tests/cli.rs:13193-13222` `validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created`
+- `tests/cli.rs:13287-13316` `validate_fails_at_run_start_when_a_named_wrappers_cache_dir_is_preexisting_but_unwritable`
 
 #### `dup-0463` (near, 2 sites)
 
@@ -8346,18 +8366,17 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:13721-13847` `validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liveness_in_the_store`
-- `tests/cli.rs:13867-13963` `validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the_identical_spawn_id`
+- `tests/cli.rs:13383-13404` `validate_fails_at_run_start_when_the_scaffolded_mutation_gate_has_no_cargo_mutants_on_path`
+- `tests/cli.rs:13421-13441` `validate_fails_before_any_output_when_the_mutation_gate_has_no_cargo_mutants`
 
-#### `dup-0464` (near, 3 sites)
+#### `dup-0464` (near, 2 sites)
 
-Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:14741-14809` `installed_workflow_courier_prompt_is_foreground_and_honest`
-- `tests/cli.rs:14829-14907` `installed_workflow_courier_waits_on_an_auto_backgrounded_step`
-- `tests/cli.rs:15084-15156` `installed_workflow_driver_guards_a_null_step`
+- `tests/cli.rs:13909-13951` `validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratch_root`
+- `tests/cli.rs:14327-14437` `validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_entries_through_the_binary`
 
 #### `dup-0465` (near, 2 sites)
 
@@ -8365,20 +8384,18 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:15446-15513` `step_halts_on_definition_drift_and_rebase_definition_continues`
-- `tests/cli.rs:15519-15560` `a_fresh_run_repins_the_current_definition_and_never_halts`
+- `tests/cli.rs:13973-14099` `validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liveness_in_the_store`
+- `tests/cli.rs:14119-14215` `validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the_identical_spawn_id`
 
-#### `dup-0466` (near, 5 sites)
+#### `dup-0466` (near, 3 sites)
 
-Proposed home: `cli::support (consolidate these 5 sites into one function in this file)`
+Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:15690-15747` `stats_canary_reports_the_findings_raised_total_summed_across_items`
-- `tests/cli.rs:15782-15836` `stats_canary_renders_na_for_a_tier_with_an_unattributed_correct_reject`
-- `tests/cli.rs:15847-15896` `stats_canary_still_renders_a_genuine_zero_when_every_reject_has_attribution`
-- `tests/cli.rs:15917-15972` `stats_canary_reports_the_control_false_positive_line`
-- `tests/cli.rs:16281-16342` `stats_canary_reports_the_model_pinning_header_through_a_real_wire_event`
+- `tests/cli.rs:14993-15061` `installed_workflow_courier_prompt_is_foreground_and_honest`
+- `tests/cli.rs:15081-15159` `installed_workflow_courier_waits_on_an_auto_backgrounded_step`
+- `tests/cli.rs:15336-15408` `installed_workflow_driver_guards_a_null_step`
 
 #### `dup-0467` (near, 2 sites)
 
@@ -8386,48 +8403,50 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:16064-16097` `rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_binary`
-- `tests/cli.rs:16112-16170` `rigger_help_gives_the_model_flag_its_own_description_line_through_the_real_binary`
+- `tests/cli.rs:15698-15765` `step_halts_on_definition_drift_and_rebase_definition_continues`
+- `tests/cli.rs:15771-15812` `a_fresh_run_repins_the_current_definition_and_never_halts`
 
 #### `dup-0468` (near, 5 sites)
 
-Proposed home: `a new shared module (sites span 3 files: tests/cli.rs, tests/migration_is_deliberate_periphery.rs, tests/validate_advisories.rs)`
+Proposed home: `cli::support (consolidate these 5 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:16397-16446` `validate_warns_when_a_tier_resolved_model_repointed_between_runs`
-- `tests/cli.rs:16453-16480` `validate_advises_softly_on_a_snapshot_only_date_suffix_bump`
-- `tests/cli.rs:16520-16580` `validate_detects_a_stream_whose_position_order_and_revision_order_disagree`
-- `tests/migration_is_deliberate_periphery.rs:566-591` `validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fails`
-- `tests/validate_advisories.rs:271-296` `validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived`
+- `tests/cli.rs:15942-15999` `stats_canary_reports_the_findings_raised_total_summed_across_items`
+- `tests/cli.rs:16034-16088` `stats_canary_renders_na_for_a_tier_with_an_unattributed_correct_reject`
+- `tests/cli.rs:16099-16148` `stats_canary_still_renders_a_genuine_zero_when_every_reject_has_attribution`
+- `tests/cli.rs:16169-16224` `stats_canary_reports_the_control_false_positive_line`
+- `tests/cli.rs:16533-16594` `stats_canary_reports_the_model_pinning_header_through_a_real_wire_event`
 
-#### `dup-0469` (semantic, 2 sites)
-
-Proposed home: `one shared `seed_order_signature` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
-
-mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
-
-- `tests/cli.rs:16492-16513` `seed_order_signature`
-- `tests/watchdog_cli_periphery.rs:224-246` `seed_order_signature`
-
-#### `dup-0470` (near, 2 sites)
+#### `dup-0469` (near, 2 sites)
 
 Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:17575-17625` `status_reports_not_serving_when_the_recorded_marker_names_a_dead_dash`
-- `tests/cli.rs:17638-17683` `status_never_names_the_unattributed_pid_sentinel_as_a_dead_process`
+- `tests/cli.rs:16316-16349` `rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_binary`
+- `tests/cli.rs:16364-16422` `rigger_help_gives_the_model_flag_its_own_description_line_through_the_real_binary`
 
-#### `dup-0471` (near, 3 sites)
+#### `dup-0470` (near, 5 sites)
 
-Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
+Proposed home: `a new shared module (sites span 3 files: tests/cli.rs, tests/migration_is_deliberate_periphery.rs, tests/validate_advisories.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:17694-17753` `status_shows_the_url_when_the_recorded_marker_names_a_genuinely_serving_dash`
-- `tests/cli.rs:17767-17834` `status_trusts_a_genuinely_alive_url_even_with_a_mismatched_marker`
-- `tests/cli.rs:17850-17928` `status_reports_not_serving_when_a_mismatched_marker_leaves_a_dead_url_unverified`
+- `tests/cli.rs:16649-16698` `validate_warns_when_a_tier_resolved_model_repointed_between_runs`
+- `tests/cli.rs:16705-16732` `validate_advises_softly_on_a_snapshot_only_date_suffix_bump`
+- `tests/cli.rs:16772-16832` `validate_detects_a_stream_whose_position_order_and_revision_order_disagree`
+- `tests/migration_is_deliberate_periphery.rs:566-591` `validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fails`
+- `tests/validate_advisories.rs:271-296` `validate_warns_of_log_bloat_with_the_measured_factor_and_names_reset_derived`
+
+#### `dup-0471` (semantic, 2 sites)
+
+Proposed home: `one shared `seed_order_signature` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
+
+mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+
+- `tests/cli.rs:16744-16765` `seed_order_signature`
+- `tests/watchdog_cli_periphery.rs:224-246` `seed_order_signature`
 
 #### `dup-0472` (near, 2 sites)
 
@@ -8435,8 +8454,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:18265-18327` `docs_ships_graph_hygiene_guidance_to_consumers`
-- `tests/cli.rs:18342-18385` `docs_ships_three_verb_lookup_guidance_to_consumers`
+- `tests/cli.rs:17827-17877` `status_reports_not_serving_when_the_recorded_marker_names_a_dead_dash`
+- `tests/cli.rs:17890-17935` `status_never_names_the_unattributed_pid_sentinel_as_a_dead_process`
 
 #### `dup-0473` (near, 3 sites)
 
@@ -8444,9 +8463,9 @@ Proposed home: `cli::support (consolidate these 3 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:18396-18468` `validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_sync`
-- `tests/cli.rs:18482-18535` `validate_docs_drift_gate_covers_the_second_registry_entry`
-- `tests/cli.rs:18632-18686` `validate_docs_drift_gate_covers_the_planning_field_guide_page`
+- `tests/cli.rs:17946-18005` `status_shows_the_url_when_the_recorded_marker_names_a_genuinely_serving_dash`
+- `tests/cli.rs:18019-18086` `status_trusts_a_genuinely_alive_url_even_with_a_mismatched_marker`
+- `tests/cli.rs:18102-18180` `status_reports_not_serving_when_a_mismatched_marker_leaves_a_dead_url_unverified`
 
 #### `dup-0474` (near, 2 sites)
 
@@ -8454,26 +8473,27 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:18863-18906` `docs_renders_every_per_operation_skill_through_the_compiled_binary`
-- `tests/cli.rs:19086-19181` `docs_renders_every_watching_discipline_skill_through_the_compiled_binary`
+- `tests/cli.rs:18517-18579` `docs_ships_graph_hygiene_guidance_to_consumers`
+- `tests/cli.rs:18594-18637` `docs_ships_three_verb_lookup_guidance_to_consumers`
 
-#### `dup-0475` (near, 2 sites)
+#### `dup-0475` (near, 3 sites)
+
+Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:18648-18720` `validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_sync`
+- `tests/cli.rs:18734-18787` `validate_docs_drift_gate_covers_the_second_registry_entry`
+- `tests/cli.rs:18884-18938` `validate_docs_drift_gate_covers_the_planning_field_guide_page`
+
+#### `dup-0476` (near, 2 sites)
 
 Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:18920-18979` `validate_docs_drift_gate_covers_each_per_operation_skill`
-- `tests/cli.rs:19195-19262` `validate_docs_drift_gate_covers_each_watching_discipline_skill`
-
-#### `dup-0476` (exact, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:18993-19054` `setup_installs_every_per_operation_skill_into_the_consumer_project`
-- `tests/cli.rs:19276-19337` `setup_installs_every_watching_discipline_skill_into_the_consumer_project`
+- `tests/cli.rs:19115-19158` `docs_renders_every_per_operation_skill_through_the_compiled_binary`
+- `tests/cli.rs:19338-19433` `docs_renders_every_watching_discipline_skill_through_the_compiled_binary`
 
 #### `dup-0477` (near, 2 sites)
 
@@ -8481,70 +8501,70 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:19430-19468` `watch_once_never_names_the_unattributed_pid_sentinel_when_no_url_is_recorded`
-- `tests/cli.rs:26090-26128` `watch_once_never_names_the_unattributed_pid_sentinel_when_the_url_is_unparseable`
+- `tests/cli.rs:19172-19231` `validate_docs_drift_gate_covers_each_per_operation_skill`
+- `tests/cli.rs:19447-19514` `validate_docs_drift_gate_covers_each_watching_discipline_skill`
 
-#### `dup-0478` (near, 2 sites)
+#### `dup-0478` (exact, 2 sites)
 
 Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:19488-19521` `watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_no_marker_exists`
-- `tests/cli.rs:26150-26179` `watch_once_parses_the_urls_port_past_a_colon_in_the_path_with_no_marker`
+- `tests/cli.rs:19245-19306` `setup_installs_every_per_operation_skill_into_the_consumer_project`
+- `tests/cli.rs:19528-19589` `setup_installs_every_watching_discipline_skill_into_the_consumer_project`
 
-#### `dup-0479` (near, 5 sites)
+#### `dup-0479` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:19682-19720` `watch_once_never_names_the_unattributed_pid_sentinel_when_no_url_is_recorded`
+- `tests/cli.rs:26351-26389` `watch_once_never_names_the_unattributed_pid_sentinel_when_the_url_is_unparseable`
+
+#### `dup-0480` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:19740-19773` `watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_no_marker_exists`
+- `tests/cli.rs:26411-26440` `watch_once_parses_the_urls_port_past_a_colon_in_the_path_with_no_marker`
+
+#### `dup-0481` (near, 5 sites)
 
 Proposed home: `cli::support (consolidate these 5 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:19601-19643` `watch_once_reports_no_dash_anomaly_for_a_done_run_even_with_a_dead_marker`
-- `tests/cli.rs:19660-19720` `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_marker`
-- `tests/cli.rs:19760-19809` `watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_started`
-- `tests/cli.rs:19831-19883` `watch_once_reports_a_dead_marker_predating_run_started_when_dash_attempt_names_this_run`
-- `tests/cli.rs:19912-19964` `watch_once_suppresses_a_predating_marker_when_dash_attempt_names_a_different_run`
+- `tests/cli.rs:19853-19895` `watch_once_reports_no_dash_anomaly_for_a_done_run_even_with_a_dead_marker`
+- `tests/cli.rs:19912-19972` `watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_marker`
+- `tests/cli.rs:20012-20061` `watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_started`
+- `tests/cli.rs:20083-20135` `watch_once_reports_a_dead_marker_predating_run_started_when_dash_attempt_names_this_run`
+- `tests/cli.rs:20164-20216` `watch_once_suppresses_a_predating_marker_when_dash_attempt_names_a_different_run`
 
-#### `dup-0480` (near, 3 sites)
+#### `dup-0482` (near, 3 sites)
 
 Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:20046-20062` `stage_rigger_shim`
-- `tests/cli.rs:20467-20487` `stage_failing_docs_rigger_shim`
-- `tests/cli.rs:20515-20543` `stage_stale_rigger_shim`
+- `tests/cli.rs:20298-20314` `stage_rigger_shim`
+- `tests/cli.rs:20719-20739` `stage_failing_docs_rigger_shim`
+- `tests/cli.rs:20767-20795` `stage_stale_rigger_shim`
 
-#### `dup-0481` (near, 6 sites)
+#### `dup-0483` (near, 6 sites)
 
 Proposed home: `cli::support (consolidate these 6 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:20230-20272` `setup_precommit_hook_passes_untouched_when_the_render_matches`
-- `tests/cli.rs:20287-20358` `setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_its_scope`
-- `tests/cli.rs:20555-20605` `setup_precommit_hook_prefers_the_trees_own_built_binary_over_a_stale_path_rigger`
-- `tests/cli.rs:20615-20665` `setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rigger`
-- `tests/cli.rs:20992-21023` `setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable`
-- `tests/cli.rs:21030-21060` `setup_precommit_hook_warns_and_proceeds_when_rigger_docs_errors`
-
-#### `dup-0482` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:20494-20505` `stage_tree_built_binary`
-- `tests/cli.rs:20672-20687` `stage_unit_derived_binary`
-
-#### `dup-0483` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:22170-22215` `step_self_heals_a_stale_marker_naming_a_dead_pid`
-- `tests/cli.rs:22240-22286` `step_self_heals_a_stale_marker_naming_a_live_pid_whose_port_is_unserved`
+- `tests/cli.rs:20482-20524` `setup_precommit_hook_passes_untouched_when_the_render_matches`
+- `tests/cli.rs:20539-20610` `setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_its_scope`
+- `tests/cli.rs:20807-20857` `setup_precommit_hook_prefers_the_trees_own_built_binary_over_a_stale_path_rigger`
+- `tests/cli.rs:20867-20917` `setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rigger`
+- `tests/cli.rs:21244-21275` `setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable`
+- `tests/cli.rs:21282-21312` `setup_precommit_hook_warns_and_proceeds_when_rigger_docs_errors`
 
 #### `dup-0484` (near, 2 sites)
 
@@ -8552,22 +8572,17 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:22880-22891` `write_live_instance`
-- `tests/cli.rs:22897-22908` `write_stale_instance`
+- `tests/cli.rs:20746-20757` `stage_tree_built_binary`
+- `tests/cli.rs:20924-20939` `stage_unit_derived_binary`
 
-#### `dup-0485` (near, 7 sites)
+#### `dup-0485` (near, 2 sites)
 
-Proposed home: `cli::support (consolidate these 7 sites into one function in this file)`
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:22921-23009` `a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_the_registry_empties`
-- `tests/cli.rs:23125-23209` `a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered`
-- `tests/cli.rs:23236-23340` `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out`
-- `tests/cli.rs:23358-23463` `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_with_no_git_repo_at_launch`
-- `tests/cli.rs:23478-23589` `a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker`
-- `tests/cli.rs:23612-23732` `a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_registry_entry_was_already_stale_before_the_watchers_first_poll`
-- `tests/cli.rs:23748-23887` `a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projects_only_route_into_known_roots`
+- `tests/cli.rs:22422-22467` `step_self_heals_a_stale_marker_naming_a_dead_pid`
+- `tests/cli.rs:22492-22538` `step_self_heals_a_stale_marker_naming_a_live_pid_whose_port_is_unserved`
 
 #### `dup-0486` (near, 2 sites)
 
@@ -8575,56 +8590,61 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:23894-23949` `a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine`
-- `tests/cli.rs:23964-24028` `a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher`
+- `tests/cli.rs:23132-23143` `write_live_instance`
+- `tests/cli.rs:23149-23160` `write_stale_instance`
 
-#### `dup-0487` (near, 2 sites)
+#### `dup-0487` (near, 7 sites)
+
+Proposed home: `cli::support (consolidate these 7 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:23173-23261` `a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_the_registry_empties`
+- `tests/cli.rs:23377-23461` `a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered`
+- `tests/cli.rs:23488-23592` `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out`
+- `tests/cli.rs:23610-23715` `a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_with_no_git_repo_at_launch`
+- `tests/cli.rs:23730-23844` `a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker`
+- `tests/cli.rs:23867-23990` `a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_registry_entry_was_already_stale_before_the_watchers_first_poll`
+- `tests/cli.rs:24006-24148` `a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projects_only_route_into_known_roots`
+
+#### `dup-0488` (near, 2 sites)
 
 Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:25742-25784` `watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port`
-- `tests/cli.rs:26208-26257` `watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a_colon`
+- `tests/cli.rs:24155-24210` `a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine`
+- `tests/cli.rs:24225-24289` `a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher`
 
-#### `dup-0488` (near, 4 sites)
+#### `dup-0489` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:26003-26045` `watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port`
+- `tests/cli.rs:26469-26518` `watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a_colon`
+
+#### `dup-0490` (near, 4 sites)
 
 Proposed home: `cli::support (consolidate these 4 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:26396-26434` `run_given_a_spec_path_names_the_spec_lint_as_a_next_step`
-- `tests/cli.rs:26559-26602` `step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base`
-- `tests/cli.rs:26876-26911` `step_reminder_prints_despite_env_naming_a_foreign_pid`
-- `tests/cli.rs:26955-26989` `run_reminder_prints_despite_env_naming_a_foreign_pid`
+- `tests/cli.rs:26657-26695` `run_given_a_spec_path_names_the_spec_lint_as_a_next_step`
+- `tests/cli.rs:26820-26863` `step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base`
+- `tests/cli.rs:27137-27172` `step_reminder_prints_despite_env_naming_a_foreign_pid`
+- `tests/cli.rs:27216-27250` `run_reminder_prints_despite_env_naming_a_foreign_pid`
 
-#### `dup-0489` (near, 3 sites)
+#### `dup-0491` (near, 3 sites)
 
 Proposed home: `cli::support (consolidate these 3 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:26622-26682` `run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
-- `tests/cli.rs:26691-26730` `step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
-- `tests/cli.rs:26748-26815` `run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
-
-#### `dup-0490` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:26835-26871` `step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid`
-- `tests/cli.rs:26915-26950` `run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid`
-
-#### `dup-0491` (near, 2 sites)
-
-Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/cli.rs:27053-27102` `run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup`
-- `tests/cli.rs:27114-27169` `run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction`
+- `tests/cli.rs:26883-26943` `run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
+- `tests/cli.rs:26952-26991` `step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
+- `tests/cli.rs:27009-27076` `run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site`
 
 #### `dup-0492` (near, 2 sites)
 
@@ -8632,8 +8652,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:27185-27219` `run_driver_workflow_fresh_notice_never_reaches_stdout`
-- `tests/cli.rs:27226-27250` `run_driver_cli_fresh_notice_still_prints_on_stdout`
+- `tests/cli.rs:27096-27132` `step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid`
+- `tests/cli.rs:27176-27211` `run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid`
 
 #### `dup-0493` (near, 2 sites)
 
@@ -8641,10 +8661,28 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/cli.rs:27342-27442` `cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill`
-- `tests/cli.rs:27521-27636` `step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario`
+- `tests/cli.rs:27314-27363` `run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup`
+- `tests/cli.rs:27375-27430` `run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction`
 
-#### `dup-0494` (near, 5 sites)
+#### `dup-0494` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:27446-27480` `run_driver_workflow_fresh_notice_never_reaches_stdout`
+- `tests/cli.rs:27487-27511` `run_driver_cli_fresh_notice_still_prints_on_stdout`
+
+#### `dup-0495` (near, 2 sites)
+
+Proposed home: `cli::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/cli.rs:27603-27703` `cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill`
+- `tests/cli.rs:27782-27897` `step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario`
+
+#### `dup-0496` (near, 5 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/code_entity_test_exclusion_periphery.rs, tests/symbol_ref_caller_attribution.rs)`
 
@@ -8656,7 +8694,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_entity_test_exclusion_periphery.rs:498-525` `enclosing_inline_module_path_none_serializes_byte_identically_to_the_pre_round9_form`
 - `tests/symbol_ref_caller_attribution.rs:32-77` `a_caller_less_reference_serializes_byte_identically_to_the_pre37_form`
 
-#### `dup-0495` (near, 4 sites)
+#### `dup-0497` (near, 4 sites)
 
 Proposed home: `code_entity_test_exclusion_periphery::support (consolidate these 4 sites into one function in this file)`
 
@@ -8667,7 +8705,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_entity_test_exclusion_periphery.rs:407-445` `path_override_some_serializes_the_key_and_round_trips`
 - `tests/code_entity_test_exclusion_periphery.rs:528-566` `enclosing_inline_module_path_some_serializes_the_key_and_round_trips`
 
-#### `dup-0496` (near, 5 sites)
+#### `dup-0498` (near, 5 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/code_entity_test_exclusion_periphery.rs, tests/symbol_ref_caller_attribution.rs)`
 
@@ -8679,7 +8717,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_entity_test_exclusion_periphery.rs:569-612` `a_pre_round9_persisted_index_with_no_enclosing_inline_module_path_key_loads_defaulting_to_none`
 - `tests/symbol_ref_caller_attribution.rs:130-180` `a_pre37_persisted_index_loads_folding_references_caller_less`
 
-#### `dup-0497` (near, 4 sites)
+#### `dup-0499` (near, 4 sites)
 
 Proposed home: `code_entity_test_exclusion_periphery::support (consolidate these 4 sites into one function in this file)`
 
@@ -8690,7 +8728,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_entity_test_exclusion_periphery.rs:1024-1059` `a_url_bearing_attribute_between_test_and_the_item_does_not_leak_the_item_into_the_graph`
 - `tests/code_entity_test_exclusion_periphery.rs:1140-1173` `a_comment_mentioning_test_attribute_text_does_not_exclude_the_item_through_the_public_api`
 
-#### `dup-0498` (near, 26 sites)
+#### `dup-0500` (near, 26 sites)
 
 Proposed home: `code_entity_test_exclusion_periphery::support (consolidate these 26 sites into one function in this file)`
 
@@ -8723,7 +8761,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_entity_test_exclusion_periphery.rs:3300-3348` `a_path_attribute_override_naming_a_windows_drive_letter_does_not_silently_collide_with_an_unrelated_real_file`
 - `tests/code_entity_test_exclusion_periphery.rs:3383-3442` `a_path_attribute_override_on_a_mod_declared_inside_a_function_body_is_not_treated_as_nested_in_a_module`
 
-#### `dup-0499` (exact, 6 sites)
+#### `dup-0501` (exact, 6 sites)
 
 Proposed home: `a new shared module (sites span 6 files: tests/code_ingest_events.rs, tests/community_detection_pass.rs, tests/community_fold_periphery.rs, tests/community_resolution_knob.rs, tests/concepts_fold_periphery.rs, tests/design_intent_events.rs)`
 
@@ -8736,7 +8774,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/concepts_fold_periphery.rs:42-46` `apply_json`
 - `tests/design_intent_events.rs:38-42` `apply_json`
 
-#### `dup-0500` (near, 2 sites)
+#### `dup-0502` (near, 2 sites)
 
 Proposed home: `code_ingest_events::support (consolidate these 2 sites into one function in this file)`
 
@@ -8745,7 +8783,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_ingest_events.rs:241-304` `real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline`
 - `tests/code_ingest_events.rs:308-378` `real_extraction_folds_caller_attributed_calls_edges_at_every_tier`
 
-#### `dup-0501` (near, 2 sites)
+#### `dup-0503` (near, 2 sites)
 
 Proposed home: `code_ingest_events::support (consolidate these 2 sites into one function in this file)`
 
@@ -8754,7 +8792,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_ingest_events.rs:382-451` `re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end`
 - `tests/code_ingest_events.rs:711-793` `re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end`
 
-#### `dup-0502` (near, 9 sites)
+#### `dup-0504` (near, 9 sites)
 
 Proposed home: `a new shared module (sites span 5 files: tests/code_ingest_events.rs, tests/community_detection_pass.rs, tests/community_fold_periphery.rs, tests/community_resolution_knob.rs, tests/concepts_fold_periphery.rs)`
 
@@ -8770,7 +8808,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_resolution_knob.rs:82-89` `call`
 - `tests/concepts_fold_periphery.rs:61-68` `realized`
 
-#### `dup-0503` (near, 2 sites)
+#### `dup-0505` (near, 2 sites)
 
 Proposed home: `code_ingest_events::support (consolidate these 2 sites into one function in this file)`
 
@@ -8779,7 +8817,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_ingest_events.rs:1129-1170` `a_refs_only_files_re_extraction_supersedes_via_the_reference_batch_boundary`
 - `tests/code_ingest_events.rs:1173-1227` `a_re_extraction_supersedes_only_its_own_files_edges_not_another_files_reference`
 
-#### `dup-0504` (exact, 2 sites)
+#### `dup-0506` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/code_lens_overview_collapse_viz.rs, tests/subject_lens_overlay_served_page.rs)`
 
@@ -8788,7 +8826,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_lens_overview_collapse_viz.rs:74-88` `build_harness`
 - `tests/subject_lens_overlay_served_page.rs:550-564` `build_additive_harness`
 
-#### `dup-0505` (semantic, 5 sites)
+#### `dup-0507` (semantic, 5 sites)
 
 Proposed home: `one shared `build_harness` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -8800,7 +8838,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/subject_lens_overlay_client_arms.rs:82-97` `build_harness`
 - `tests/subject_view_memory_rail_client.rs:100-115` `build_harness`
 
-#### `dup-0506` (exact, 6 sites)
+#### `dup-0508` (exact, 6 sites)
 
 Proposed home: `a new shared module (sites span 6 files: tests/code_lens_overview_collapse_viz.rs, tests/metadata_card_handoff_viz.rs, tests/proof_row_renders_on_the_card.rs, tests/subject_lens_overlay_client_arms.rs, tests/subject_lens_overlay_served_page.rs, tests/subject_view_memory_rail_client.rs)`
 
@@ -8813,7 +8851,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_overlay_served_page.rs:59-85` `run_node_harness`
 - `tests/subject_view_memory_rail_client.rs:119-145` `run_node_harness`
 
-#### `dup-0507` (semantic, 6 sites)
+#### `dup-0509` (semantic, 6 sites)
 
 Proposed home: `one shared `run_node_harness` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -8826,7 +8864,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/subject_lens_overlay_served_page.rs:59-85` `run_node_harness`
 - `tests/subject_view_memory_rail_client.rs:119-145` `run_node_harness`
 
-#### `dup-0508` (exact, 6 sites)
+#### `dup-0510` (exact, 6 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/code_lens_overview_collapse_viz.rs, tests/metadata_card_handoff_viz.rs, tests/proof_row_renders_on_the_card.rs, tests/subject_lens_overlay_served_page.rs)`
 
@@ -8839,7 +8877,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_overlay_served_page.rs:777-790` `a_neighborhood_rationale_badge_click_expands_and_does_not_reseed`
 - `tests/subject_lens_overlay_served_page.rs:797-810` `the_drill_view_is_byte_identical_with_the_overlay_off`
 
-#### `dup-0509` (near, 8 sites)
+#### `dup-0511` (near, 8 sites)
 
 Proposed home: `a new shared module (sites span 6 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs, tests/subject_lens_defined_cells.rs, tests/subject_lens_defined_cells_contract.rs, tests/subject_lens_reprojection_contract.rs, tests/subject_lens_reprojection_periphery.rs)`
 
@@ -8854,7 +8892,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_reprojection_periphery.rs:61-69` `def`
 - `tests/subject_lens_reprojection_periphery.rs:83-91` `super_node`
 
-#### `dup-0510` (exact, 3 sites)
+#### `dup-0512` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs, tests/files_lens_view_periphery.rs)`
 
@@ -8864,7 +8902,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/concepts_lens_view_periphery.rs:108-114` `plain`
 - `tests/files_lens_view_periphery.rs:91-97` `plain`
 
-#### `dup-0511` (near, 2 sites)
+#### `dup-0513` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)`
 
@@ -8873,7 +8911,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_lens_view_periphery.rs:120-146` `lens_graph`
 - `tests/concepts_lens_view_periphery.rs:140-167` `lens_graph`
 
-#### `dup-0512` (exact, 2 sites)
+#### `dup-0514` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)`
 
@@ -8882,7 +8920,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_lens_view_periphery.rs:149-153` `code_default`
 - `tests/concepts_lens_view_periphery.rs:170-174` `concepts_default`
 
-#### `dup-0513` (near, 2 sites)
+#### `dup-0515` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)`
 
@@ -8891,7 +8929,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_lens_view_periphery.rs:163-196` `lens_from_query_is_a_public_total_selector_that_falls_back_to_files`
 - `tests/concepts_lens_view_periphery.rs:185-213` `lens_from_query_is_a_public_total_selector_including_concepts`
 
-#### `dup-0514` (exact, 2 sites)
+#### `dup-0516` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)`
 
@@ -8900,7 +8938,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_lens_view_periphery.rs:209-258` `code_lens_overview_buckets_code_entities_by_community_and_excludes_every_other_kind`
 - `tests/concepts_lens_view_periphery.rs:226-279` `concepts_lens_overview_buckets_members_by_concept_across_directories_and_excludes_membershipless_nodes`
 
-#### `dup-0515` (exact, 2 sites)
+#### `dup-0517` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)`
 
@@ -8909,7 +8947,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_lens_view_periphery.rs:416-437` `code_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error`
 - `tests/concepts_lens_view_periphery.rs:463-484` `concepts_lens_at_an_underived_grain_carries_the_documented_empty_state_not_an_error`
 
-#### `dup-0516` (exact, 2 sites)
+#### `dup-0518` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)`
 
@@ -8918,7 +8956,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_lens_view_periphery.rs:558-578` `served`
 - `tests/concepts_lens_view_periphery.rs:538-558` `served`
 
-#### `dup-0517` (exact, 2 sites)
+#### `dup-0519` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/code_lens_view_periphery.rs, tests/concepts_lens_view_periphery.rs)`
 
@@ -8927,7 +8965,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/code_lens_view_periphery.rs:581-585` `served_json`
 - `tests/concepts_lens_view_periphery.rs:561-565` `served_json`
 
-#### `dup-0518` (near, 3 sites)
+#### `dup-0520` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/community_detection_cli.rs, tests/concepts_derivation_cli.rs, tests/projections_stay_local.rs)`
 
@@ -8937,7 +8975,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/concepts_derivation_cli.rs:60-72` `project`
 - `tests/projections_stay_local.rs:195-206` `server_project`
 
-#### `dup-0519` (exact, 2 sites)
+#### `dup-0521` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_detection_cli.rs, tests/concepts_derivation_cli.rs)`
 
@@ -8946,7 +8984,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_detection_cli.rs:70-75` `rigger_db`
 - `tests/concepts_derivation_cli.rs:75-80` `rigger_db`
 
-#### `dup-0520` (exact, 2 sites)
+#### `dup-0522` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_detection_cli.rs, tests/concepts_derivation_cli.rs)`
 
@@ -8955,7 +8993,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_detection_cli.rs:78-87` `communities`
 - `tests/concepts_derivation_cli.rs:83-92` `concepts`
 
-#### `dup-0521` (near, 4 sites)
+#### `dup-0523` (near, 4 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_detection_cli.rs, tests/concepts_derivation_cli.rs)`
 
@@ -8966,7 +9004,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/concepts_derivation_cli.rs:96-104` `doc`
 - `tests/concepts_derivation_cli.rs:109-114` `link`
 
-#### `dup-0522` (semantic, 2 sites)
+#### `dup-0524` (semantic, 2 sites)
 
 Proposed home: `one shared `seed_coupling` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -8975,7 +9013,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/community_detection_cli.rs:122-159` `seed_coupling`
 - `tests/community_fold_periphery.rs:100-110` `seed_coupling`
 
-#### `dup-0523` (exact, 2 sites)
+#### `dup-0525` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_detection_cli.rs, tests/concepts_derivation_cli.rs)`
 
@@ -8984,7 +9022,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_detection_cli.rs:164-183` `community_layer`
 - `tests/concepts_derivation_cli.rs:195-214` `concept_layer`
 
-#### `dup-0524` (exact, 2 sites)
+#### `dup-0526` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_detection_cli.rs, tests/concepts_derivation_cli.rs)`
 
@@ -8993,7 +9031,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_detection_cli.rs:186-191` `member_of`
 - `tests/concepts_derivation_cli.rs:217-222` `member_of`
 
-#### `dup-0525` (exact, 2 sites)
+#### `dup-0527` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_detection_cli.rs, tests/concepts_derivation_cli.rs)`
 
@@ -9002,7 +9040,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_detection_cli.rs:265-299` `an_empty_project_records_no_community_and_still_succeeds`
 - `tests/concepts_derivation_cli.rs:317-351` `an_empty_project_records_no_concept_and_still_succeeds`
 
-#### `dup-0526` (exact, 2 sites)
+#### `dup-0528` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_detection_cli.rs, tests/concepts_derivation_cli.rs)`
 
@@ -9011,7 +9049,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_detection_cli.rs:302-372` `resolution_grains_coexist_and_a_rerun_supersedes_only_its_own_grain`
 - `tests/concepts_derivation_cli.rs:354-424` `resolution_grains_coexist_and_a_rerun_supersedes_only_its_own_grain`
 
-#### `dup-0527` (exact, 2 sites)
+#### `dup-0529` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_detection_cli.rs, tests/concepts_derivation_cli.rs)`
 
@@ -9020,7 +9058,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_detection_cli.rs:375-411` `a_malformed_resolution_or_unknown_argument_fails_loudly`
 - `tests/concepts_derivation_cli.rs:427-463` `a_malformed_resolution_or_unknown_argument_fails_loudly`
 
-#### `dup-0528` (exact, 2 sites)
+#### `dup-0530` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_detection_cli.rs, tests/concepts_derivation_cli.rs)`
 
@@ -9029,7 +9067,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_detection_cli.rs:414-457` `re_running_a_grain_reproduces_the_byte_identical_live_layer`
 - `tests/concepts_derivation_cli.rs:466-508` `re_running_a_grain_reproduces_the_byte_identical_live_layer`
 
-#### `dup-0529` (exact, 2 sites)
+#### `dup-0531` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_detection_pass.rs, tests/community_resolution_knob.rs)`
 
@@ -9038,7 +9076,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_detection_pass.rs:67-95` `seed`
 - `tests/community_resolution_knob.rs:96-123` `seed`
 
-#### `dup-0530` (semantic, 2 sites)
+#### `dup-0532` (semantic, 2 sites)
 
 Proposed home: `one shared `community_snapshot` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9047,7 +9085,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/community_detection_pass.rs:100-115` `community_snapshot`
 - `tests/community_fold_periphery.rs:80-95` `community_snapshot`
 
-#### `dup-0531` (exact, 2 sites)
+#### `dup-0533` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_fold_periphery.rs, tests/concepts_fold_periphery.rs)`
 
@@ -9056,7 +9094,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_fold_periphery.rs:69-75` `live_memberships`
 - `tests/concepts_fold_periphery.rs:71-77` `live_realizes`
 
-#### `dup-0532` (semantic, 2 sites)
+#### `dup-0534` (semantic, 2 sites)
 
 Proposed home: `one shared `live_memberships` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9065,7 +9103,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/community_fold_periphery.rs:69-75` `live_memberships`
 - `tests/community_resolution_knob.rs:180-189` `live_memberships`
 
-#### `dup-0533` (near, 2 sites)
+#### `dup-0535` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_fold_periphery.rs, tests/concepts_fold_periphery.rs)`
 
@@ -9074,7 +9112,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_fold_periphery.rs:230-263` `a_community_assigned_event_without_a_fresh_key_is_a_non_boundary_and_never_supersedes`
 - `tests/concepts_fold_periphery.rs:218-262` `a_concept_derived_event_without_a_fresh_key_is_a_non_boundary_and_never_supersedes`
 
-#### `dup-0534` (near, 2 sites)
+#### `dup-0536` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_fold_periphery.rs, tests/concepts_fold_periphery.rs)`
 
@@ -9083,7 +9121,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_fold_periphery.rs:266-300` `the_community_layer_serialized_literals_are_stable_and_the_fold_matches_the_on_log_type`
 - `tests/concepts_fold_periphery.rs:265-306` `the_concept_layer_serialized_literals_are_stable_and_the_fold_matches_the_on_log_type`
 
-#### `dup-0535` (near, 2 sites)
+#### `dup-0537` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/community_resolution_knob.rs, tests/graph_superseded_prune.rs)`
 
@@ -9092,7 +9130,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/community_resolution_knob.rs:214-223` `live_memberships_of`
 - `tests/graph_superseded_prune.rs:59-68` `live_contains`
 
-#### `dup-0536` (near, 2 sites)
+#### `dup-0538` (near, 2 sites)
 
 Proposed home: `concepts_labels_membership::support (consolidate these 2 sites into one function in this file)`
 
@@ -9101,7 +9139,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/concepts_labels_membership.rs:136-178` `label_is_the_most_central_document_by_intent_degree`
 - `tests/concepts_labels_membership.rs:181-212` `label_ties_break_to_the_lexicographically_smallest_document`
 
-#### `dup-0537` (near, 2 sites)
+#### `dup-0539` (near, 2 sites)
 
 Proposed home: `concepts_labels_membership::support (consolidate these 2 sites into one function in this file)`
 
@@ -9110,7 +9148,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/concepts_labels_membership.rs:262-289` `a_documentless_concept_falls_back_to_its_most_central_members_name`
 - `tests/concepts_labels_membership.rs:292-317` `a_documentless_concept_with_no_named_member_falls_back_to_the_most_central_members_id`
 
-#### `dup-0538` (near, 13 sites)
+#### `dup-0540` (near, 13 sites)
 
 Proposed home: `a new shared module (sites span 9 files: tests/concepts_lens_view_periphery.rs, tests/dash_calls_render_viz.rs, tests/dash_decisions_progressive_disclosure.rs, tests/dash_graph_exploration_viz.rs, tests/dash_kg_graph_route.rs, tests/files_lens_directory_hulls_viz.rs, tests/readable_graph_adaptive_labels.rs, tests/readable_graph_density_scaled_spacing.rs, tests/readable_graph_layout_separation.rs)`
 
@@ -9130,7 +9168,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/readable_graph_density_scaled_spacing.rs:219-255` `the_layout_extent_scales_with_density_and_edges_are_drawable`
 - `tests/readable_graph_layout_separation.rs:206-242` `the_layout_leaves_no_collision_body_overlap_at_density`
 
-#### `dup-0539` (near, 4 sites)
+#### `dup-0541` (near, 4 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/confidence_tier_blast_radius.rs, tests/criteria_delivery_periphery.rs, tests/gate_store_fence_periphery.rs, tests/run_scoping_survives_periphery.rs)`
 
@@ -9138,19 +9176,19 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `tests/confidence_tier_blast_radius.rs:52-63` `spawn`
 - `tests/criteria_delivery_periphery.rs:43-54` `spawn`
-- `tests/gate_store_fence_periphery.rs:781-792` `spawn`
+- `tests/gate_store_fence_periphery.rs:802-813` `spawn`
 - `tests/run_scoping_survives_periphery.rs:64-75` `spawn`
 
-#### `dup-0540` (exact, 2 sites)
+#### `dup-0542` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/confidence_tier_blast_radius.rs, tests/unified_traversal_grounding.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/confidence_tier_blast_radius.rs:110-115` `fold`
-- `tests/unified_traversal_grounding.rs:180-185` `fold`
+- `tests/unified_traversal_grounding.rs:182-187` `fold`
 
-#### `dup-0541` (near, 2 sites)
+#### `dup-0543` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/courier_registry_refresh_boundary_periphery.rs, tests/registry_refresh_driver_courier_convergence_periphery.rs)`
 
@@ -9159,7 +9197,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/courier_registry_refresh_boundary_periphery.rs:37-64` `courier_project_with_commit`
 - `tests/registry_refresh_driver_courier_convergence_periphery.rs:38-82` `driver_project`
 
-#### `dup-0542` (near, 3 sites)
+#### `dup-0544` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/courier_registry_refresh_boundary_periphery.rs, tests/courier_registry_refresh_periphery.rs, tests/registry_refresh_driver_courier_convergence_periphery.rs)`
 
@@ -9169,7 +9207,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/courier_registry_refresh_periphery.rs:58-67` `run_rigger`
 - `tests/registry_refresh_driver_courier_convergence_periphery.rs:97-107` `run_rigger`
 
-#### `dup-0543` (exact, 4 sites)
+#### `dup-0545` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/courier_registry_refresh_boundary_periphery.rs, tests/courier_registry_refresh_fence_periphery.rs, tests/courier_registry_refresh_periphery.rs, tests/registry_refresh_driver_courier_convergence_periphery.rs)`
 
@@ -9180,7 +9218,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/courier_registry_refresh_periphery.rs:69-76` `assert_ok`
 - `tests/registry_refresh_driver_courier_convergence_periphery.rs:109-116` `assert_ok`
 
-#### `dup-0544` (near, 5 sites)
+#### `dup-0546` (near, 5 sites)
 
 Proposed home: `a new shared module (sites span 5 files: tests/courier_registry_refresh_boundary_periphery.rs, tests/courier_registry_refresh_fence_periphery.rs, tests/courier_registry_refresh_periphery.rs, tests/gate_store_fence_periphery.rs, tests/registry_refresh_driver_courier_convergence_periphery.rs)`
 
@@ -9192,7 +9230,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/gate_store_fence_periphery.rs:253-271` `registry_entries`
 - `tests/registry_refresh_driver_courier_convergence_periphery.rs:122-140` `registry_entries`
 
-#### `dup-0545` (semantic, 5 sites)
+#### `dup-0547` (semantic, 5 sites)
 
 Proposed home: `one shared `registry_entries` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9204,7 +9242,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/gate_store_fence_periphery.rs:253-271` `registry_entries`
 - `tests/registry_refresh_driver_courier_convergence_periphery.rs:122-140` `registry_entries`
 
-#### `dup-0546` (near, 2 sites)
+#### `dup-0548` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/courier_registry_refresh_boundary_periphery.rs, tests/courier_registry_refresh_periphery.rs)`
 
@@ -9213,7 +9251,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/courier_registry_refresh_boundary_periphery.rs:263-283` `an_ambient_kurrentdb_conn_never_leaks_into_a_boundary_courier`
 - `tests/courier_registry_refresh_periphery.rs:308-333` `an_ambient_kurrentdb_conn_never_leaks_into_a_courier_spawned_through_the_shared_helper`
 
-#### `dup-0547` (semantic, 2 sites)
+#### `dup-0549` (semantic, 2 sites)
 
 Proposed home: `one shared `courier_project` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9222,7 +9260,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/courier_registry_refresh_fence_periphery.rs:37-48` `courier_project`
 - `tests/courier_registry_refresh_periphery.rs:35-52` `courier_project`
 
-#### `dup-0548` (near, 2 sites)
+#### `dup-0550` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/courier_registry_refresh_periphery.rs, tests/store_content_identity_periphery.rs)`
 
@@ -9231,7 +9269,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/courier_registry_refresh_periphery.rs:35-52` `courier_project`
 - `tests/store_content_identity_periphery.rs:1339-1358` `cli_project`
 
-#### `dup-0549` (exact, 2 sites)
+#### `dup-0551` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/dash_cluster_detail_drill.rs, tests/dash_exploration_route_client_contract.rs)`
 
@@ -9240,7 +9278,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dash_cluster_detail_drill.rs:107-109` `spoke_id`
 - `tests/dash_exploration_route_client_contract.rs:103-105` `spoke`
 
-#### `dup-0550` (near, 6 sites)
+#### `dup-0552` (near, 6 sites)
 
 Proposed home: `a new shared module (sites span 6 files: tests/dash_decisions_progressive_disclosure.rs, tests/dash_kg_graph_route.rs, tests/dash_whole_projection_reach.rs, tests/proof_lands_on_the_card_periphery.rs, tests/rationale_overlay_data.rs, tests/rationale_overlay_seam.rs)`
 
@@ -9253,7 +9291,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/rationale_overlay_data.rs:103-154` `try_fetch_served`
 - `tests/rationale_overlay_seam.rs:65-117` `try_fetch_served`
 
-#### `dup-0551` (semantic, 2 sites)
+#### `dup-0553` (semantic, 2 sites)
 
 Proposed home: `one shared `exploration_graph` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9262,7 +9300,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/dash_exploration_route_client_contract.rs:116-146` `exploration_graph`
 - `tests/dash_kg_graph_route.rs:1415-1463` `exploration_graph`
 
-#### `dup-0552` (exact, 2 sites)
+#### `dup-0554` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/dash_exploration_route_client_contract.rs, tests/subject_lens_reprojection_periphery.rs)`
 
@@ -9271,7 +9309,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dash_exploration_route_client_contract.rs:151-172` `served_body`
 - `tests/subject_lens_reprojection_periphery.rs:330-351` `served_json`
 
-#### `dup-0553` (near, 2 sites)
+#### `dup-0555` (near, 2 sites)
 
 Proposed home: `dash_graph_exploration_fold::support (consolidate these 2 sites into one function in this file)`
 
@@ -9280,7 +9318,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dash_graph_exploration_fold.rs:37-62` `cluster_key_is_reachable_over_the_public_crate_boundary`
 - `tests/dash_graph_exploration_fold.rs:69-146` `cluster_key_honors_the_boundary_edges_of_the_names_a_file_predicate`
 
-#### `dup-0554` (semantic, 2 sites)
+#### `dup-0556` (semantic, 2 sites)
 
 Proposed home: `one shared `fixture_graph` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9289,7 +9327,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/dash_kg_graph_route.rs:39-69` `fixture_graph`
 - `tests/metadata_card_periphery.rs:69-105` `fixture_graph`
 
-#### `dup-0555` (semantic, 4 sites)
+#### `dup-0557` (semantic, 4 sites)
 
 Proposed home: `one shared `try_fetch_served` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9300,7 +9338,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/rationale_overlay_data.rs:103-154` `try_fetch_served`
 - `tests/rationale_overlay_seam.rs:65-117` `try_fetch_served`
 
-#### `dup-0556` (near, 3 sites)
+#### `dup-0558` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/dash_kg_graph_route.rs, tests/rationale_overlay_data.rs, tests/rationale_overlay_seam.rs)`
 
@@ -9310,7 +9348,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/rationale_overlay_data.rs:158-167` `fetch_served`
 - `tests/rationale_overlay_seam.rs:121-130` `fetch_served`
 
-#### `dup-0557` (semantic, 4 sites)
+#### `dup-0559` (semantic, 4 sites)
 
 Proposed home: `one shared `fetch_served` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9321,7 +9359,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/rationale_overlay_data.rs:158-167` `fetch_served`
 - `tests/rationale_overlay_seam.rs:121-130` `fetch_served`
 
-#### `dup-0558` (exact, 5 sites)
+#### `dup-0560` (exact, 5 sites)
 
 Proposed home: `a new shared module (sites span 5 files: tests/dash_kg_graph_route.rs, tests/dash_whole_projection_reach.rs, tests/proof_lands_on_the_card_periphery.rs, tests/rationale_overlay_data.rs, tests/rationale_overlay_seam.rs)`
 
@@ -9333,7 +9371,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/rationale_overlay_data.rs:170-174` `body_of`
 - `tests/rationale_overlay_seam.rs:135-139` `body_of`
 
-#### `dup-0559` (near, 2 sites)
+#### `dup-0561` (near, 2 sites)
 
 Proposed home: `dash_kg_graph_route::support (consolidate these 2 sites into one function in this file)`
 
@@ -9342,7 +9380,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dash_kg_graph_route.rs:264-321` `the_served_root_page_ships_the_kg_panel_and_select_to_seed_wiring`
 - `tests/dash_kg_graph_route.rs:740-784` `the_served_root_page_renders_god_nodes_and_the_query_path`
 
-#### `dup-0560` (exact, 2 sites)
+#### `dup-0562` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/dash_release_ready.rs, tests/dash_run_tree_spine.rs)`
 
@@ -9351,7 +9389,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dash_release_ready.rs:104-112` `connect_with_retry`
 - `tests/dash_run_tree_spine.rs:282-290` `connect_with_retry`
 
-#### `dup-0561` (semantic, 2 sites)
+#### `dup-0563` (semantic, 2 sites)
 
 Proposed home: `one shared `connect_with_retry` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9360,7 +9398,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/dash_release_ready.rs:104-112` `connect_with_retry`
 - `tests/dash_run_tree_spine.rs:282-290` `connect_with_retry`
 
-#### `dup-0562` (near, 4 sites)
+#### `dup-0564` (near, 4 sites)
 
 Proposed home: `dash_run_tree_spine::support (consolidate these 4 sites into one function in this file)`
 
@@ -9371,7 +9409,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dash_run_tree_spine.rs:710-761` `a_regated_green_unit_renders_gates_passed_despite_an_earlier_failed_attempt`
 - `tests/dash_run_tree_spine.rs:775-812` `a_review_rejected_unit_whose_gates_passed_renders_gates_passed_and_surfaces_the_reject`
 
-#### `dup-0563` (near, 2 sites)
+#### `dup-0565` (near, 2 sites)
 
 Proposed home: `dash_run_tree_spine::support (consolidate these 2 sites into one function in this file)`
 
@@ -9380,7 +9418,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dash_run_tree_spine.rs:820-850` `a_pre_gate_unit_whose_implementer_finished_does_not_render_gates_failed`
 - `tests/dash_run_tree_spine.rs:861-898` `a_gates_cleared_unit_with_no_recorded_verdict_still_renders_gates_passed`
 
-#### `dup-0564` (exact, 7 sites)
+#### `dup-0566` (exact, 7 sites)
 
 Proposed home: `a new shared module (sites span 7 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/gitsemver_path_inclusion_accounting_periphery.rs, tests/handbook_grounder_accuracy.rs, tests/prioritized_plan_citation_periphery.rs, tests/responsibility_map_contract_periphery.rs, tests/simplification_audit.rs)`
 
@@ -9394,7 +9432,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/responsibility_map_contract_periphery.rs:52-54` `repo_root`
 - `tests/simplification_audit.rs:1884-1886` `repo_root`
 
-#### `dup-0565` (exact, 3 sites)
+#### `dup-0567` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
 
@@ -9404,7 +9442,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/duplication_catalog_contract_periphery.rs:80-84` `read_committed_catalog_raw`
 - `tests/responsibility_map_contract_periphery.rs:56-60` `read_committed_map_raw`
 
-#### `dup-0566` (exact, 3 sites)
+#### `dup-0568` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
 
@@ -9414,7 +9452,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/duplication_catalog_contract_periphery.rs:86-95` `deserialize_committed_catalog`
 - `tests/responsibility_map_contract_periphery.rs:62-70` `deserialize_committed_map`
 
-#### `dup-0567` (exact, 3 sites)
+#### `dup-0569` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
 
@@ -9424,7 +9462,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/duplication_catalog_contract_periphery.rs:102-110` `the_committed_duplication_catalog_deserializes_as_a_downstream_consumer_would`
 - `tests/responsibility_map_contract_periphery.rs:77-84` `the_committed_responsibility_map_deserializes_as_a_downstream_consumer_would`
 
-#### `dup-0568` (exact, 3 sites)
+#### `dup-0570` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/dead_code_json_contract_periphery.rs, tests/duplication_catalog_contract_periphery.rs, tests/responsibility_map_contract_periphery.rs)`
 
@@ -9434,7 +9472,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/duplication_catalog_contract_periphery.rs:299-311` `deserializing_then_reserializing_the_committed_catalog_reproduces_the_committed_bytes_exactly`
 - `tests/responsibility_map_contract_periphery.rs:225-237` `deserializing_then_reserializing_reproduces_the_committed_bytes_exactly`
 
-#### `dup-0569` (near, 4 sites)
+#### `dup-0571` (near, 4 sites)
 
 Proposed home: `dead_code_json_contract_periphery::support (consolidate these 4 sites into one function in this file)`
 
@@ -9445,7 +9483,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dead_code_json_contract_periphery.rs:583-596` `the_general_ufcs_method_value_fix_also_closes_previously_unreported_same_class_instances`
 - `tests/dead_code_json_contract_periphery.rs:612-628` `getter_methods_kept_alive_only_by_a_same_named_production_field_or_local_are_also_absent`
 
-#### `dup-0570` (near, 2 sites)
+#### `dup-0572` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/dead_code_json_contract_periphery.rs, tests/simplification_audit.rs)`
 
@@ -9454,7 +9492,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dead_code_json_contract_periphery.rs:691-711` `the_committed_dead_code_json_disposition_split_is_22_delete_3_keep_pending_0_keep_public_surface`
 - `tests/simplification_audit.rs:9155-9175` `the_real_tree_disposition_split_matches_this_criterions_research`
 
-#### `dup-0571` (near, 2 sites)
+#### `dup-0573` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/dedup_seeding_periphery.rs, tests/published_content_key_split_periphery.rs)`
 
@@ -9463,7 +9501,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/dedup_seeding_periphery.rs:390-398` `minted`
 - `tests/published_content_key_split_periphery.rs:400-408` `minted`
 
-#### `dup-0572` (near, 2 sites)
+#### `dup-0574` (near, 2 sites)
 
 Proposed home: `design_intent_events::support (consolidate these 2 sites into one function in this file)`
 
@@ -9472,7 +9510,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/design_intent_events.rs:209-255` `the_public_emit_lowers_every_concept_kind_onto_the_fold_arm_that_matches_it`
 - `tests/design_intent_events.rs:413-456` `the_public_link_emit_lowers_every_link_rel_onto_the_fold_arm_that_matches_it`
 
-#### `dup-0573` (near, 2 sites)
+#### `dup-0575` (near, 2 sites)
 
 Proposed home: `design_intent_events::support (consolidate these 2 sites into one function in this file)`
 
@@ -9481,7 +9519,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/design_intent_events.rs:796-859` `every_recognized_end_user_usage_shape_is_dropped_before_the_fold`
 - `tests/design_intent_events.rs:965-1054` `a_design_word_in_a_non_handbook_usage_doc_does_not_leak_the_handbook_content_keep`
 
-#### `dup-0574` (near, 4 sites)
+#### `dup-0576` (near, 4 sites)
 
 Proposed home: `escalation_resume_periphery::support (consolidate these 4 sites into one function in this file)`
 
@@ -9492,7 +9530,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/escalation_resume_periphery.rs:401-409` `resume_unit_rejects_a_dangling_attempts_flag_with_no_value`
 - `tests/escalation_resume_periphery.rs:414-422` `resume_unit_rejects_an_unknown_flag`
 
-#### `dup-0575` (exact, 2 sites)
+#### `dup-0577` (exact, 2 sites)
 
 Proposed home: `fanout_template_needs_and_stage_retries_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -9501,25 +9539,25 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:210-218` `write_git_worker_agent`
 - `tests/fanout_template_needs_and_stage_retries_periphery.rs:223-231` `write_repoless_worker_agent`
 
-#### `dup-0576` (near, 2 sites)
+#### `dup-0578` (near, 2 sites)
 
 Proposed home: `fanout_template_needs_and_stage_retries_periphery::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:836-942` `checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_yet`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:951-1036` `checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_instead`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:831-937` `checkin_stays_unready_while_a_real_split_siblings_partner_has_not_integrated_yet`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:946-1031` `checkin_never_becomes_ready_when_a_real_split_siblings_partner_escalates_instead`
 
-#### `dup-0577` (near, 2 sites)
+#### `dup-0579` (near, 2 sites)
 
 Proposed home: `fanout_template_needs_and_stage_retries_periphery::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:1257-1306` `a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default`
-- `tests/fanout_template_needs_and_stage_retries_periphery.rs:1315-1398` `a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_default`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:1250-1299` `a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default`
+- `tests/fanout_template_needs_and_stage_retries_periphery.rs:1308-1391` `a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_default`
 
-#### `dup-0578` (semantic, 2 sites)
+#### `dup-0580` (semantic, 2 sites)
 
 Proposed home: `one shared `init_repo_with_head` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9528,16 +9566,16 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/gate_store_fence_periphery.rs:491-507` `init_repo_with_head`
 - `tests/spawn_target_dir_periphery.rs:55-71` `init_repo_with_head`
 
-#### `dup-0579` (near, 2 sites)
+#### `dup-0581` (near, 2 sites)
 
 Proposed home: `gate_store_fence_periphery::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/gate_store_fence_periphery.rs:510-581` `a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed`
-- `tests/gate_store_fence_periphery.rs:584-681` `a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too`
+- `tests/gate_store_fence_periphery.rs:526-597` `a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed`
+- `tests/gate_store_fence_periphery.rs:603-700` `a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too`
 
-#### `dup-0580` (semantic, 3 sites)
+#### `dup-0582` (semantic, 3 sites)
 
 Proposed home: `one shared `gitsemver_available` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9547,7 +9585,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/gitsemver_worktree_periphery.rs:117-123` `gitsemver_available`
 - `tests/validate_behind_the_tree_periphery.rs:139-145` `gitsemver_available`
 
-#### `dup-0581` (exact, 2 sites)
+#### `dup-0583` (exact, 2 sites)
 
 Proposed home: `gitsemver_derivation::support (consolidate these 2 sites into one function in this file)`
 
@@ -9556,7 +9594,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/gitsemver_derivation.rs:92-110` `a_plain_commit_after_a_tag_increments_the_patch`
 - `tests/gitsemver_derivation.rs:113-131` `a_feat_commit_after_a_tag_increments_the_minor`
 
-#### `dup-0582` (exact, 4 sites)
+#### `dup-0584` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/gitsemver_path_inclusion_accounting_periphery.rs, tests/no_os_kill_audit.rs, tests/reap_before_removal_audit.rs, tests/simplification_audit.rs)`
 
@@ -9567,7 +9605,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reap_before_removal_audit.rs:761-774` `collect_rs_files`
 - `tests/simplification_audit.rs:1937-1950` `collect_rs_files`
 
-#### `dup-0583` (semantic, 4 sites)
+#### `dup-0585` (semantic, 4 sites)
 
 Proposed home: `one shared `collect_rs_files` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9578,7 +9616,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/reap_before_removal_audit.rs:761-774` `collect_rs_files`
 - `tests/simplification_audit.rs:1937-1950` `collect_rs_files`
 
-#### `dup-0584` (exact, 2 sites)
+#### `dup-0586` (exact, 2 sites)
 
 Proposed home: `gitsemver_path_inclusion_accounting_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -9587,7 +9625,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/gitsemver_path_inclusion_accounting_periphery.rs:176-180` `a_real_top_level_path_attribute_line_is_recognized`
 - `tests/gitsemver_path_inclusion_accounting_periphery.rs:183-187` `an_indented_path_attribute_line_is_still_recognized`
 
-#### `dup-0585` (exact, 2 sites)
+#### `dup-0587` (exact, 2 sites)
 
 Proposed home: `gitsemver_path_inclusion_accounting_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -9596,7 +9634,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/gitsemver_path_inclusion_accounting_periphery.rs:190-196` `a_doc_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site`
 - `tests/gitsemver_path_inclusion_accounting_periphery.rs:199-203` `a_line_comment_quoting_the_attribute_as_prose_is_not_mistaken_for_a_real_site`
 
-#### `dup-0586` (exact, 2 sites)
+#### `dup-0588` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/graph_collision_body_and_tiebreak.rs, tests/graph_density_spread_floor_and_centring.rs)`
 
@@ -9605,7 +9643,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_collision_body_and_tiebreak.rs:98-118` `run_driver`
 - `tests/graph_density_spread_floor_and_centring.rs:104-124` `run_driver`
 
-#### `dup-0587` (exact, 2 sites)
+#### `dup-0589` (exact, 2 sites)
 
 Proposed home: `graph_collision_body_and_tiebreak::support (consolidate these 2 sites into one function in this file)`
 
@@ -9614,7 +9652,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_collision_body_and_tiebreak.rs:215-236` `the_collision_body_encloses_the_circle_and_its_label`
 - `tests/graph_collision_body_and_tiebreak.rs:242-263` `the_separation_pass_resolves_coincident_nodes_deterministically`
 
-#### `dup-0588` (exact, 2 sites)
+#### `dup-0590` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/graph_denoise_content_survives.rs, tests/graph_denoise_target_project.rs)`
 
@@ -9623,7 +9661,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_denoise_content_survives.rs:35-42` `fold`
 - `tests/graph_denoise_target_project.rs:36-43` `fold`
 
-#### `dup-0589` (near, 2 sites)
+#### `dup-0591` (near, 2 sites)
 
 Proposed home: `graph_denoise_target_project::support (consolidate these 2 sites into one function in this file)`
 
@@ -9632,7 +9670,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_denoise_target_project.rs:46-198` `a_whole_runs_fold_projects_the_content_but_none_of_the_machinery`
 - `tests/graph_denoise_target_project.rs:201-268` `the_actor_metadata_on_a_decision_and_finding_never_folds_an_agent_node`
 
-#### `dup-0590` (near, 4 sites)
+#### `dup-0592` (near, 4 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/graph_density_spread_floor_and_centring.rs, tests/readable_graph_adaptive_labels.rs, tests/readable_graph_density_scaled_spacing.rs, tests/readable_graph_layout_separation.rs)`
 
@@ -9643,7 +9681,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/readable_graph_density_scaled_spacing.rs:63-80` `the_served_page_ships_the_density_spread_lever`
 - `tests/readable_graph_layout_separation.rs:56-76` `the_served_page_ships_the_collision_separation_pass`
 
-#### `dup-0591` (exact, 3 sites)
+#### `dup-0593` (exact, 3 sites)
 
 Proposed home: `graph_density_spread_floor_and_centring::support (consolidate these 3 sites into one function in this file)`
 
@@ -9653,7 +9691,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_density_spread_floor_and_centring.rs:259-275` `the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it`
 - `tests/graph_density_spread_floor_and_centring.rs:323-339` `the_enlarged_canvas_is_centred_on_the_panel_middle`
 
-#### `dup-0592` (semantic, 2 sites)
+#### `dup-0594` (semantic, 2 sites)
 
 Proposed home: `one shared `apply_governs` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9662,7 +9700,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/graph_fold_dedup_live_edge.rs:38-46` `apply_governs`
 - `tests/graph_rebuild_collapses_dupes.rs:40-48` `apply_governs`
 
-#### `dup-0593` (exact, 4 sites)
+#### `dup-0595` (exact, 4 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/graph_fold_dedup_live_edge.rs, tests/graph_rebuild_collapses_dupes.rs, tests/graph_superseded_prune.rs, tests/reset_menu_previews_periphery.rs)`
 
@@ -9673,7 +9711,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_superseded_prune.rs:53-55` `nanos`
 - `tests/reset_menu_previews_periphery.rs:71-73` `nanos`
 
-#### `dup-0594` (exact, 2 sites)
+#### `dup-0596` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/graph_fold_dedup_live_edge.rs, tests/graph_rebuild_collapses_dupes.rs)`
 
@@ -9682,7 +9720,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_fold_dedup_live_edge.rs:57-65` `governs`
 - `tests/graph_rebuild_collapses_dupes.rs:59-67` `governs`
 
-#### `dup-0595` (near, 2 sites)
+#### `dup-0597` (near, 2 sites)
 
 Proposed home: `graph_fold_dedup_live_edge::support (consolidate these 2 sites into one function in this file)`
 
@@ -9691,7 +9729,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_fold_dedup_live_edge.rs:68-106` `subgraph_collapses_repeated_governs_to_one_live_edge_keeping_latest_provenance`
 - `tests/graph_fold_dedup_live_edge.rs:109-130` `the_collapsed_edge_keeps_the_earliest_fact_time_and_latest_source_regardless_of_arrival_order`
 
-#### `dup-0596` (exact, 3 sites)
+#### `dup-0598` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs)`
 
@@ -9701,7 +9739,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_show_staleness.rs:49-65` `run_stream_identity`
 - `tests/graph_show_surface.rs:48-64` `run_stream_identity`
 
-#### `dup-0597` (exact, 3 sites)
+#### `dup-0599` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs)`
 
@@ -9711,7 +9749,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_show_staleness.rs:68-70` `seed_rigger_dir`
 - `tests/graph_show_surface.rs:67-69` `seed_rigger_dir`
 
-#### `dup-0598` (semantic, 3 sites)
+#### `dup-0600` (semantic, 3 sites)
 
 Proposed home: `one shared `seed_rigger_dir` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9721,17 +9759,19 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/graph_show_staleness.rs:68-70` `seed_rigger_dir`
 - `tests/graph_show_surface.rs:67-69` `seed_rigger_dir`
 
-#### `dup-0599` (exact, 3 sites)
+#### `dup-0601` (near, 5 sites)
 
-Proposed home: `a new shared module (sites span 3 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs)`
+Proposed home: `a new shared module (sites span 5 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/relocated_worktree_store_resolution_periphery.rs, tests/validate_footprint_default_scratch_root_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/graph_show_periphery.rs:88-102` `run_rigger`
 - `tests/graph_show_staleness.rs:96-110` `run_rigger`
 - `tests/graph_show_surface.rs:75-89` `run_rigger`
+- `tests/relocated_worktree_store_resolution_periphery.rs:102-116` `run_rigger`
+- `tests/validate_footprint_default_scratch_root_periphery.rs:48-62` `run_rigger`
 
-#### `dup-0600` (near, 3 sites)
+#### `dup-0602` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs)`
 
@@ -9741,7 +9781,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_show_staleness.rs:83-90` `seed_def`
 - `tests/graph_show_surface.rs:94-101` `seed_def`
 
-#### `dup-0601` (exact, 2 sites)
+#### `dup-0603` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs)`
 
@@ -9750,7 +9790,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_show_periphery.rs:132-135` `open_graph`
 - `tests/graph_show_staleness.rs:73-76` `open_graph`
 
-#### `dup-0602` (exact, 2 sites)
+#### `dup-0604` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs)`
 
@@ -9759,7 +9799,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_show_periphery.rs:141-150` `body_line_count`
 - `tests/graph_show_staleness.rs:116-125` `body_line_count`
 
-#### `dup-0603` (semantic, 2 sites)
+#### `dup-0605` (semantic, 2 sites)
 
 Proposed home: `one shared `body_line_count` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9768,7 +9808,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/graph_show_periphery.rs:141-150` `body_line_count`
 - `tests/graph_show_staleness.rs:116-125` `body_line_count`
 
-#### `dup-0604` (semantic, 2 sites)
+#### `dup-0606` (semantic, 2 sites)
 
 Proposed home: `one shared `assert_light_lane_extent_note` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9777,7 +9817,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/graph_show_periphery.rs:157-171` `assert_light_lane_extent_note`
 - `tests/graph_show_surface.rs:109-118` `assert_light_lane_extent_note`
 
-#### `dup-0605` (near, 13 sites)
+#### `dup-0607` (near, 13 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs)`
 
@@ -9797,7 +9837,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/graph_show_staleness.rs:132-176` `graph_show_degrades_gracefully_when_the_recorded_file_is_missing`
 - `tests/graph_show_staleness.rs:190-260` `graph_show_never_presents_a_neighbours_body_when_the_line_drifted`
 
-#### `dup-0606` (semantic, 2 sites)
+#### `dup-0608` (semantic, 2 sites)
 
 Proposed home: `one shared `git_toplevel` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9806,16 +9846,17 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/heartbeat_write_read_agree_periphery.rs:68-78` `git_toplevel`
 - `tests/reset_derived_live_writer_guard_periphery.rs:57-68` `git_toplevel`
 
-#### `dup-0607` (near, 2 sites)
+#### `dup-0609` (near, 3 sites)
 
-Proposed home: `a new shared module (sites span 2 files: tests/heartbeat_write_read_agree_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs)`
+Proposed home: `a new shared module (sites span 3 files: tests/heartbeat_write_read_agree_periphery.rs, tests/relocated_worktree_store_resolution_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/heartbeat_write_read_agree_periphery.rs:128-146` `run_stream_identity`
+- `tests/relocated_worktree_store_resolution_periphery.rs:67-79` `stream_identity`
 - `tests/reset_derived_live_writer_guard_periphery.rs:73-87` `run_stream_identity`
 
-#### `dup-0608` (exact, 2 sites)
+#### `dup-0610` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/heartbeat_write_read_agree_periphery.rs, tests/watchdog_cli_periphery.rs)`
 
@@ -9824,33 +9865,14 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/heartbeat_write_read_agree_periphery.rs:189-194` `now_nanos`
 - `tests/watchdog_cli_periphery.rs:208-213` `now_nanos`
 
-#### `dup-0609` (near, 2 sites)
+#### `dup-0611` (near, 2 sites)
 
 Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/integrate_conflict_merge_periphery.rs:503-580` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:1380-1437` `spawn`
-
-#### `dup-0610` (near, 2 sites)
-
-Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/integrate_conflict_merge_periphery.rs:982-1018` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:1193-1239` `spawn`
-
-#### `dup-0611` (near, 3 sites)
-
-Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 3 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/integrate_conflict_merge_periphery.rs:1803-1828` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:2323-2345` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:2558-2578` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1420-1477` `spawn`
 
 #### `dup-0612` (near, 2 sites)
 
@@ -9858,42 +9880,68 @@ Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2038-2043` `has_status_marker`
-- `tests/integrate_conflict_merge_periphery.rs:2045-2053` `count_status_marker`
+- `tests/integrate_conflict_merge_periphery.rs:1002-1038` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:1223-1269` `spawn`
 
-#### `dup-0613` (near, 2 sites)
+#### `dup-0613` (near, 3 sites)
+
+Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 3 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/integrate_conflict_merge_periphery.rs:1863-1888` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2413-2435` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2658-2678` `spawn`
+
+#### `dup-0614` (near, 2 sites)
 
 Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2070-2093` `spawn`
-- `tests/integrate_conflict_merge_periphery.rs:2198-2218` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2108-2113` `has_status_marker`
+- `tests/integrate_conflict_merge_periphery.rs:2115-2123` `count_status_marker`
 
-#### `dup-0614` (near, 7 sites)
-
-Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 7 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/integrate_conflict_merge_periphery.rs:2098-2185` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
-- `tests/integrate_conflict_merge_periphery.rs:2223-2309` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
-- `tests/integrate_conflict_merge_periphery.rs:2603-2763` `a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3`
-- `tests/integrate_conflict_merge_periphery.rs:2797-2887` `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`
-- `tests/integrate_conflict_merge_periphery.rs:2897-2985` `a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record`
-- `tests/integrate_conflict_merge_periphery.rs:3067-3169` `a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed`
-- `tests/integrate_conflict_merge_periphery.rs:3182-3302` `a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume`
-
-#### `dup-0615` (exact, 2 sites)
+#### `dup-0615` (near, 2 sites)
 
 Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/integrate_conflict_merge_periphery.rs:2581-2596` `confined_cfg`
-- `tests/integrate_conflict_merge_periphery.rs:3043-3058` `mixed_cfg`
+- `tests/integrate_conflict_merge_periphery.rs:2140-2163` `spawn`
+- `tests/integrate_conflict_merge_periphery.rs:2278-2298` `spawn`
 
-#### `dup-0616` (exact, 3 sites)
+#### `dup-0616` (near, 4 sites)
+
+Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 4 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/integrate_conflict_merge_periphery.rs:2168-2265` `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`
+- `tests/integrate_conflict_merge_periphery.rs:2303-2399` `a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4`
+- `tests/integrate_conflict_merge_periphery.rs:2907-3007` `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`
+- `tests/integrate_conflict_merge_periphery.rs:3017-3115` `a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record`
+
+#### `dup-0617` (exact, 2 sites)
+
+Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/integrate_conflict_merge_periphery.rs:2681-2706` `confined_cfg`
+- `tests/integrate_conflict_merge_periphery.rs:3173-3198` `mixed_cfg`
+
+#### `dup-0618` (near, 3 sites)
+
+Proposed home: `integrate_conflict_merge_periphery::support (consolidate these 3 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/integrate_conflict_merge_periphery.rs:2713-2873` `a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3`
+- `tests/integrate_conflict_merge_periphery.rs:3207-3309` `a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed`
+- `tests/integrate_conflict_merge_periphery.rs:3322-3442` `a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume`
+
+#### `dup-0619` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/kurrentdb_always_available.rs, tests/readme_retirement_rationale.rs, tests/turbovec_retired.rs)`
 
@@ -9903,7 +9951,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/readme_retirement_rationale.rs:31-34` `readme_text`
 - `tests/turbovec_retired.rs:34-38` `manifest_text`
 
-#### `dup-0617` (semantic, 2 sites)
+#### `dup-0620` (semantic, 2 sites)
 
 Proposed home: `one shared `manifest_text` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9912,7 +9960,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/kurrentdb_always_available.rs:28-32` `manifest_text`
 - `tests/turbovec_retired.rs:34-38` `manifest_text`
 
-#### `dup-0618` (exact, 2 sites)
+#### `dup-0621` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/kurrentdb_always_available.rs, tests/turbovec_retired.rs)`
 
@@ -9921,7 +9969,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/kurrentdb_always_available.rs:37-52` `table_lines`
 - `tests/turbovec_retired.rs:43-58` `table_lines`
 
-#### `dup-0619` (exact, 2 sites)
+#### `dup-0622` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/kurrentdb_always_available.rs, tests/turbovec_retired.rs)`
 
@@ -9930,7 +9978,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/kurrentdb_always_available.rs:57-65` `table_declares_key`
 - `tests/turbovec_retired.rs:63-71` `table_declares_key`
 
-#### `dup-0620` (semantic, 2 sites)
+#### `dup-0623` (semantic, 2 sites)
 
 Proposed home: `one shared `table_declares_key` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9939,7 +9987,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/kurrentdb_always_available.rs:57-65` `table_declares_key`
 - `tests/turbovec_retired.rs:63-71` `table_declares_key`
 
-#### `dup-0621` (exact, 2 sites)
+#### `dup-0624` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/kurrentdb_always_available.rs, tests/turbovec_retired.rs)`
 
@@ -9948,7 +9996,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/kurrentdb_always_available.rs:164-179` `for_each_rs_file`
 - `tests/turbovec_retired.rs:75-90` `for_each_rs_file`
 
-#### `dup-0622` (semantic, 2 sites)
+#### `dup-0625` (semantic, 2 sites)
 
 Proposed home: `one shared `for_each_rs_file` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9957,7 +10005,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/kurrentdb_always_available.rs:164-179` `for_each_rs_file`
 - `tests/turbovec_retired.rs:75-90` `for_each_rs_file`
 
-#### `dup-0623` (near, 2 sites)
+#### `dup-0626` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/kurrentdb_always_available.rs, tests/turbovec_retired.rs)`
 
@@ -9966,7 +10014,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/kurrentdb_always_available.rs:190-209` `no_source_still_gates_on_the_retired_kurrentdb_feature`
 - `tests/turbovec_retired.rs:168-186` `no_source_still_gates_on_the_retired_turbovec_feature`
 
-#### `dup-0624` (semantic, 5 sites)
+#### `dup-0627` (semantic, 5 sites)
 
 Proposed home: `one shared `js_declaration` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -9978,7 +10026,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/step_attention_periphery.rs:655-677` `js_declaration`
 - `tests/worker_persona_label_periphery.rs:21-43` `js_declaration`
 
-#### `dup-0625` (near, 4 sites)
+#### `dup-0628` (near, 4 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/metadata_card_handoff_viz.rs, tests/proof_row_renders_on_the_card.rs, tests/subject_lens_overlay_client_arms.rs, tests/subject_view_memory_rail_client.rs)`
 
@@ -9989,7 +10037,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_overlay_client_arms.rs:82-97` `build_harness`
 - `tests/subject_view_memory_rail_client.rs:100-115` `build_harness`
 
-#### `dup-0626` (near, 8 sites)
+#### `dup-0629` (near, 8 sites)
 
 Proposed home: `a new shared module (sites span 8 files: tests/migration_is_deliberate_periphery.rs, tests/reset_derived_compaction.rs, tests/reset_derived_compaction_periphery.rs, tests/store_precedence.rs, tests/store_resolution_cli.rs, tests/store_secrets.rs, tests/validate_advisories.rs, tests/validate_behind_the_tree_periphery.rs)`
 
@@ -10004,7 +10052,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/validate_advisories.rs:47-55` `temp_project`
 - `tests/validate_behind_the_tree_periphery.rs:66-74` `temp_project`
 
-#### `dup-0627` (near, 2 sites)
+#### `dup-0630` (near, 2 sites)
 
 Proposed home: `migration_is_deliberate_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10013,7 +10061,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/migration_is_deliberate_periphery.rs:512-539` `seed_a_retired_entity`
 - `tests/migration_is_deliberate_periphery.rs:543-563` `seed_a_live_entity`
 
-#### `dup-0628` (semantic, 4 sites)
+#### `dup-0631` (semantic, 4 sites)
 
 Proposed home: `one shared `sigterm_ignorer_in` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -10024,7 +10072,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:138-145` `sigterm_ignorer_in`
 - `tests/worktree_remove_relocated_scratch_base_guard_periphery.rs:55-62` `sigterm_ignorer_in`
 
-#### `dup-0629` (exact, 2 sites)
+#### `dup-0632` (exact, 2 sites)
 
 Proposed home: `no_os_kill_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10033,7 +10081,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:65-67` `pkill_word`
 - `tests/no_os_kill_audit.rs:71-73` `xkill_word`
 
-#### `dup-0630` (exact, 2 sites)
+#### `dup-0633` (exact, 2 sites)
 
 Proposed home: `no_os_kill_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10042,7 +10090,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:68-70` `killall_word`
 - `tests/no_os_kill_audit.rs:74-76` `pg_signal_word`
 
-#### `dup-0631` (exact, 2 sites)
+#### `dup-0634` (exact, 2 sites)
 
 Proposed home: `no_os_kill_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10051,7 +10099,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:80-82` `libc_kill_open`
 - `tests/no_os_kill_audit.rs:83-85` `signal_kill_open`
 
-#### `dup-0632` (exact, 4 sites)
+#### `dup-0635` (exact, 4 sites)
 
 Proposed home: `no_os_kill_audit::support (consolidate these 4 sites into one function in this file)`
 
@@ -10062,7 +10110,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:185-187` `shape_signal_kill`
 - `tests/no_os_kill_audit.rs:191-193` `shape_direct_rustix_call`
 
-#### `dup-0633` (near, 2 sites)
+#### `dup-0636` (near, 2 sites)
 
 Proposed home: `no_os_kill_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10071,7 +10119,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:196-216` `shape_arg_dashdash`
 - `tests/no_os_kill_audit.rs:220-240` `shape_format_dash_brace`
 
-#### `dup-0634` (exact, 2 sites)
+#### `dup-0637` (exact, 2 sites)
 
 Proposed home: `no_os_kill_audit::finding`
 
@@ -10080,7 +10128,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:259-268` `fmt`
 - `tests/reap_before_removal_audit.rs:131-140` `fmt`
 
-#### `dup-0635` (near, 2 sites)
+#### `dup-0638` (near, 2 sites)
 
 Proposed home: `no_os_kill_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10089,7 +10137,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:273-303` `general_hits`
 - `tests/no_os_kill_audit.rs:309-321` `sanctioned_hits`
 
-#### `dup-0636` (exact, 2 sites)
+#### `dup-0639` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/no_os_kill_audit.rs, tests/reap_before_removal_audit.rs)`
 
@@ -10098,7 +10146,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:382-388` `write_file`
 - `tests/reap_before_removal_audit.rs:845-851` `write_file`
 
-#### `dup-0637` (near, 11 sites)
+#### `dup-0640` (near, 11 sites)
 
 Proposed home: `no_os_kill_audit::support (consolidate these 11 sites into one function in this file)`
 
@@ -10116,7 +10164,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:554-568` `a_shell_out_inside_a_sanctioned_file_is_still_caught`
 - `tests/no_os_kill_audit.rs:601-614` `a_shape_outside_src_and_tests_is_never_scanned`
 
-#### `dup-0638` (near, 4 sites)
+#### `dup-0641` (near, 4 sites)
 
 Proposed home: `no_os_kill_audit::support (consolidate these 4 sites into one function in this file)`
 
@@ -10127,7 +10175,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:571-583` `a_dashdash_separator_inside_a_sanctioned_file_is_still_caught`
 - `tests/no_os_kill_audit.rs:586-598` `a_negative_pid_format_inside_a_sanctioned_file_is_still_caught`
 
-#### `dup-0639` (exact, 2 sites)
+#### `dup-0642` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/no_os_kill_audit.rs, tests/reap_before_removal_audit.rs)`
 
@@ -10136,7 +10184,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_audit.rs:622-635` `the_real_tree_carries_no_forbidden_pattern`
 - `tests/reap_before_removal_audit.rs:1725-1738` `the_real_tree_carries_no_bare_removal`
 
-#### `dup-0640` (exact, 4 sites)
+#### `dup-0643` (exact, 4 sites)
 
 Proposed home: `no_os_kill_test_helper_periphery::support (consolidate these 4 sites into one function in this file)`
 
@@ -10147,7 +10195,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_test_helper_periphery.rs:213-218` `stop_pid_refuses_pid_zero`
 - `tests/no_os_kill_test_helper_periphery.rs:222-229` `stop_pid_refuses_pid_one`
 
-#### `dup-0641` (exact, 2 sites)
+#### `dup-0644` (exact, 2 sites)
 
 Proposed home: `no_os_kill_test_helper_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10156,7 +10204,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/no_os_kill_test_helper_periphery.rs:198-200` `terminate_pid_refuses_its_callers_own_pid`
 - `tests/no_os_kill_test_helper_periphery.rs:233-235` `stop_pid_refuses_its_callers_own_pid`
 
-#### `dup-0642` (near, 2 sites)
+#### `dup-0645` (near, 2 sites)
 
 Proposed home: `parallel_ordered_emit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10165,7 +10213,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/parallel_ordered_emit.rs:71-77` `drive_default`
 - `tests/parallel_ordered_emit.rs:80-89` `drive_paced`
 
-#### `dup-0643` (near, 3 sites)
+#### `dup-0646` (near, 3 sites)
 
 Proposed home: `phase_of_role_mapping_periphery::support (consolidate these 3 sites into one function in this file)`
 
@@ -10175,7 +10223,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/phase_of_role_mapping_periphery.rs:148-163` `review_tier_roles_resolve_to_review`
 - `tests/phase_of_role_mapping_periphery.rs:172-187` `implementer_and_any_unrecognized_role_resolve_to_the_fail_visible_build_default`
 
-#### `dup-0644` (semantic, 2 sites)
+#### `dup-0647` (semantic, 2 sites)
 
 Proposed home: `one shared `production_main_rs` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -10184,7 +10232,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/projections_stay_local.rs:38-48` `production_main_rs`
 - `tests/store_resolution.rs:28-32` `production_main_rs`
 
-#### `dup-0645` (semantic, 2 sites)
+#### `dup-0648` (semantic, 2 sites)
 
 Proposed home: `one shared `start_kurrentdb` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -10193,7 +10241,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/projections_stay_local.rs:161-191` `start_kurrentdb`
 - `tests/store_resolution.rs:176-207` `start_kurrentdb`
 
-#### `dup-0646` (near, 2 sites)
+#### `dup-0649` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/projections_stay_local.rs, tests/store_resolution.rs)`
 
@@ -10202,7 +10250,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/projections_stay_local.rs:269-346` `progress_against_the_server_keeps_progress_db_local_and_the_log_on_the_server`
 - `tests/store_resolution.rs:223-298` `a_courier_in_a_project_configured_for_the_server_resolves_the_server_store`
 
-#### `dup-0647` (near, 3 sites)
+#### `dup-0650` (near, 3 sites)
 
 Proposed home: `proof_lands_on_the_card_periphery::support (consolidate these 3 sites into one function in this file)`
 
@@ -10212,7 +10260,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/proof_lands_on_the_card_periphery.rs:642-685` `a_deleted_test_reference_retracts_its_stale_proof_through_the_real_pipeline`
 - `tests/proof_lands_on_the_card_periphery.rs:716-762` `a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_no_residue`
 
-#### `dup-0648` (exact, 15 sites)
+#### `dup-0651` (exact, 15 sites)
 
 Proposed home: `reap_before_removal_audit::support (consolidate these 15 sites into one function in this file)`
 
@@ -10234,7 +10282,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reap_before_removal_audit.rs:1607-1627` `a_non_empty_authorized_root_argument_still_covers_even_when_the_call_wraps_across_lines`
 - `tests/reap_before_removal_audit.rs:1672-1691` `a_worktree_token_with_no_nearby_remove_token_is_never_mistaken_for_the_shape`
 
-#### `dup-0649` (near, 11 sites)
+#### `dup-0652` (near, 11 sites)
 
 Proposed home: `reap_before_removal_audit::support (consolidate these 11 sites into one function in this file)`
 
@@ -10252,7 +10300,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reap_before_removal_audit.rs:1549-1573` `an_exemption_marker_attached_to_one_removal_never_covers_an_unrelated_second_removal`
 - `tests/reap_before_removal_audit.rs:1635-1665` `a_worktree_remove_args_array_wrapped_across_multiple_lines_by_rustfmt_is_still_caught`
 
-#### `dup-0650` (exact, 7 sites)
+#### `dup-0653` (exact, 7 sites)
 
 Proposed home: `reap_before_removal_audit::support (consolidate these 7 sites into one function in this file)`
 
@@ -10266,7 +10314,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reap_before_removal_audit.rs:1381-1399` `a_doc_comment_mentioning_the_cfg_test_attribute_in_prose_is_never_mistaken_for_it`
 - `tests/reap_before_removal_audit.rs:1581-1600` `a_literal_empty_string_authorized_root_argument_never_covers_the_removal`
 
-#### `dup-0651` (near, 5 sites)
+#### `dup-0654` (near, 5 sites)
 
 Proposed home: `reap_before_removal_periphery::support (consolidate these 5 sites into one function in this file)`
 
@@ -10278,7 +10326,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reap_before_removal_periphery.rs:269-329` `worktree_remove_reaps_a_process_rooted_in_the_cache_dirs_own_store_fence_sibling_before_reclaiming_it`
 - `tests/reap_before_removal_periphery.rs:332-393` `discard_reaps_a_process_rooted_in_the_review_worktree_itself_before_clearing_it`
 
-#### `dup-0652` (near, 2 sites)
+#### `dup-0655` (near, 2 sites)
 
 Proposed home: `reminder_dedup_workflow_child_env_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10287,7 +10335,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reminder_dedup_workflow_child_env_periphery.rs:83-115` `workflow_stamps_its_own_pid_on_the_spawned_child_with_no_inbound_sentinel`
 - `tests/reminder_dedup_workflow_child_env_periphery.rs:124-159` `workflow_still_stamps_a_fresh_own_pid_on_the_child_even_when_its_own_reminder_was_suppressed`
 
-#### `dup-0653` (exact, 2 sites)
+#### `dup-0656` (exact, 2 sites)
 
 Proposed home: `replan_episode_identity::support (consolidate these 2 sites into one function in this file)`
 
@@ -10296,7 +10344,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/replan_episode_identity.rs:141-151` `new`
 - `tests/replan_episode_identity.rs:404-414` `new`
 
-#### `dup-0654` (near, 2 sites)
+#### `dup-0657` (near, 2 sites)
 
 Proposed home: `replan_episode_identity::support (consolidate these 2 sites into one function in this file)`
 
@@ -10305,7 +10353,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/replan_episode_identity.rs:176-231` `spawn`
 - `tests/replan_episode_identity.rs:418-469` `spawn`
 
-#### `dup-0655` (near, 2 sites)
+#### `dup-0658` (near, 2 sites)
 
 Proposed home: `replan_episode_identity::support (consolidate these 2 sites into one function in this file)`
 
@@ -10314,7 +10362,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/replan_episode_identity.rs:305-384` `a_replan_after_a_critique_reject_supersedes_the_initial_episodes_unit`
 - `tests/replan_episode_identity.rs:483-561` `a_second_replan_supersedes_both_earlier_episodes_units`
 
-#### `dup-0656` (near, 3 sites)
+#### `dup-0659` (near, 3 sites)
 
 Proposed home: `replan_episode_identity::support (consolidate these 3 sites into one function in this file)`
 
@@ -10324,7 +10372,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/replan_episode_identity.rs:854-939` `a_same_id_refine_survives_its_own_episodes_new_sibling_walked_first_through_the_real_write_path`
 - `tests/replan_episode_identity.rs:954-1044` `a_same_id_refine_survives_its_own_episodes_genuinely_new_unmatched_sibling_through_the_real_write_path`
 
-#### `dup-0657` (exact, 3 sites)
+#### `dup-0660` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/reset_build_cache_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs)`
 
@@ -10334,7 +10382,16 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_menu.rs:81-84` `seed_store`
 - `tests/reset_menu_identity_migration_periphery.rs:69-72` `seed_store`
 
-#### `dup-0658` (near, 2 sites)
+#### `dup-0661` (exact, 2 sites)
+
+Proposed home: `reset_build_cache_periphery::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/reset_build_cache_periphery.rs:63-65` `shared_cache_dir`
+- `tests/reset_build_cache_periphery.rs:67-69` `guard_path`
+
+#### `dup-0662` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/reset_derived_compaction.rs, tests/reset_derived_compaction_periphery.rs)`
 
@@ -10343,7 +10400,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_derived_compaction.rs:131-157` `rows`
 - `tests/reset_derived_compaction_periphery.rs:116-139` `raw_rows`
 
-#### `dup-0659` (semantic, 2 sites)
+#### `dup-0663` (semantic, 2 sites)
 
 Proposed home: `one shared `edge_inferred` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -10352,7 +10409,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/reset_derived_compaction.rs:183-185` `edge_inferred`
 - `tests/reset_menu_previews_periphery.rs:88-91` `edge_inferred`
 
-#### `dup-0660` (exact, 3 sites)
+#### `dup-0664` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/reset_derived_compaction.rs, tests/reset_derived_compaction_periphery.rs, tests/reset_menu_previews_periphery.rs)`
 
@@ -10362,7 +10419,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_derived_compaction_periphery.rs:163-167` `keyed`
 - `tests/reset_menu_previews_periphery.rs:75-79` `keyed`
 
-#### `dup-0661` (semantic, 2 sites)
+#### `dup-0665` (semantic, 2 sites)
 
 Proposed home: `one shared `path_subject_of` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -10371,7 +10428,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/reset_derived_compaction_periphery.rs:2108-2123` `path_subject_of`
 - `tests/store_content_identity_periphery.rs:233-249` `path_subject_of`
 
-#### `dup-0662` (near, 3 sites)
+#### `dup-0666` (near, 3 sites)
 
 Proposed home: `reset_derived_live_writer_guard_periphery::support (consolidate these 3 sites into one function in this file)`
 
@@ -10381,7 +10438,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_derived_live_writer_guard_periphery.rs:731-741` `reset_force_live_alone_is_refused_as_no_mode`
 - `tests/reset_derived_live_writer_guard_periphery.rs:747-762` `the_derived_help_entry_documents_force_live_and_owns_the_risk`
 
-#### `dup-0663` (near, 4 sites)
+#### `dup-0667` (near, 4 sites)
 
 Proposed home: `reset_derived_live_writer_guard_periphery::support (consolidate these 4 sites into one function in this file)`
 
@@ -10392,7 +10449,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_derived_live_writer_guard_periphery.rs:645-665` `reset_derived_force_live_compacts_despite_an_in_flight_spawn`
 - `tests/reset_derived_live_writer_guard_periphery.rs:693-722` `runs_composed_with_a_refused_derived_still_completes_its_own_prune`
 
-#### `dup-0664` (near, 2 sites)
+#### `dup-0668` (near, 2 sites)
 
 Proposed home: `reset_derived_live_writer_guard_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10401,7 +10458,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_derived_live_writer_guard_periphery.rs:333-364` `reset_derived_refuses_a_non_terminal_unit_between_spawn_rounds_and_prunes_nothing`
 - `tests/reset_derived_live_writer_guard_periphery.rs:373-402` `reset_derived_refuses_an_in_flight_spawn_naming_its_id_and_prunes_nothing`
 
-#### `dup-0665` (near, 2 sites)
+#### `dup-0669` (near, 2 sites)
 
 Proposed home: `reset_derived_live_writer_guard_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10410,7 +10467,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_derived_live_writer_guard_periphery.rs:531-557` `reset_derived_ignores_a_registration_for_a_different_store`
 - `tests/reset_derived_live_writer_guard_periphery.rs:576-616` `reset_derived_never_deletes_a_stale_foreign_registry_entrys_file`
 
-#### `dup-0666` (exact, 2 sites)
+#### `dup-0670` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs)`
 
@@ -10419,7 +10476,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_menu.rs:100-103` `emit`
 - `tests/reset_menu_identity_migration_periphery.rs:88-91` `emit`
 
-#### `dup-0667` (exact, 3 sites)
+#### `dup-0671` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/reset_menu_previews_periphery.rs)`
 
@@ -10429,7 +10486,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_menu_identity_migration_periphery.rs:113-118` `code_entity`
 - `tests/reset_menu_previews_periphery.rs:81-86` `code_entity`
 
-#### `dup-0668` (exact, 2 sites)
+#### `dup-0672` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs)`
 
@@ -10438,7 +10495,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/reset_menu.rs:153-170` `seed_derived_duplicates`
 - `tests/reset_menu_identity_migration_periphery.rs:120-137` `seed_derived_duplicates`
 
-#### `dup-0669` (semantic, 2 sites)
+#### `dup-0673` (semantic, 2 sites)
 
 Proposed home: `one shared `seed_derived_duplicates` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -10447,7 +10504,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/reset_menu.rs:153-170` `seed_derived_duplicates`
 - `tests/reset_menu_identity_migration_periphery.rs:120-137` `seed_derived_duplicates`
 
-#### `dup-0670` (near, 2 sites)
+#### `dup-0674` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/review_tier_roster_periphery.rs, tests/worker_persona_label_periphery.rs)`
 
@@ -10456,7 +10513,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/review_tier_roster_periphery.rs:75-129` `run_worker_label_for_unit_and_reviews`
 - `tests/worker_persona_label_periphery.rs:72-112` `run_worker_label_for_unit`
 
-#### `dup-0671` (exact, 2 sites)
+#### `dup-0675` (exact, 2 sites)
 
 Proposed home: `review_tier_roster_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10465,7 +10522,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/review_tier_roster_periphery.rs:135-148` `the_adversarys_roster_renders_inside_its_action_phrase`
 - `tests/review_tier_roster_periphery.rs:154-167` `the_adjudicators_roster_renders_inside_its_action_phrase`
 
-#### `dup-0672` (exact, 2 sites)
+#### `dup-0676` (exact, 2 sites)
 
 Proposed home: `review_tier_roster_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10474,7 +10531,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/review_tier_roster_periphery.rs:211-224` `a_roster_on_a_role_with_no_roster_verb_entry_is_never_rendered`
 - `tests/review_tier_roster_periphery.rs:229-242` `a_single_entry_roster_renders_with_no_stray_separator`
 
-#### `dup-0673` (near, 2 sites)
+#### `dup-0677` (near, 2 sites)
 
 Proposed home: `rigger_run_base_gate_env_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10483,7 +10540,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/rigger_run_base_gate_env_periphery.rs:209-233` `rigger_run_base_reaches_a_real_inline_gate_subprocess_but_not_a_real_agent_subprocess`
 - `tests/rigger_run_base_gate_env_periphery.rs:236-254` `rigger_run_base_reaches_a_real_deferred_gate_subprocess_too`
 
-#### `dup-0674` (exact, 2 sites)
+#### `dup-0678` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/scratch_workdir_config.rs, tests/store_config.rs)`
 
@@ -10492,7 +10549,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/scratch_workdir_config.rs:30-35` `rigger_dir`
 - `tests/store_config.rs:32-37` `rigger_dir`
 
-#### `dup-0675` (near, 4 sites)
+#### `dup-0679` (near, 4 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/scratch_workdir_config.rs, tests/store_config.rs, tests/store_precedence.rs)`
 
@@ -10503,7 +10560,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_precedence.rs:64-66` `write_store_conn`
 - `tests/store_precedence.rs:78-80` `write_store_config`
 
-#### `dup-0676` (exact, 2 sites)
+#### `dup-0680` (exact, 2 sites)
 
 Proposed home: `scratch_workdir_config::support (consolidate these 2 sites into one function in this file)`
 
@@ -10512,7 +10569,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/scratch_workdir_config.rs:53-58` `a_present_workdir_deserializes_exactly`
 - `tests/scratch_workdir_config.rs:77-83` `a_workflow_with_no_defaults_block_at_all_reads_as_empty`
 
-#### `dup-0677` (exact, 3 sites)
+#### `dup-0681` (exact, 3 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 3 sites into one function in this file)`
 
@@ -10522,7 +10579,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:3036-3040` `catalog_to_json`
 - `tests/simplification_audit.rs:5873-5877` `dead_code_to_json`
 
-#### `dup-0678` (near, 2 sites)
+#### `dup-0682` (near, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10531,7 +10588,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:3022-3025` `real_files`
 - `tests/simplification_audit.rs:3029-3032` `real_catalog`
 
-#### `dup-0679` (near, 4 sites)
+#### `dup-0683` (near, 4 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 4 sites into one function in this file)`
 
@@ -10542,7 +10599,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:3789-4032` `render_section_5`
 - `tests/simplification_audit.rs:4121-4670` `render_section_6`
 
-#### `dup-0680` (near, 2 sites)
+#### `dup-0684` (near, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10551,7 +10608,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:5933-5942` `a_simple_free_function_is_found_with_its_line_span`
 - `tests/simplification_audit.rs:6173-6179` `production_functions_before_a_cfg_test_mod_are_not_flagged_test`
 
-#### `dup-0681` (exact, 11 sites)
+#### `dup-0685` (exact, 11 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 11 sites into one function in this file)`
 
@@ -10569,7 +10626,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:6039-6044` `an_escaped_quote_char_literal_does_not_confuse_the_scanner`
 - `tests/simplification_audit.rs:6058-6063` `a_trait_default_method_with_a_body_is_recorded`
 
-#### `dup-0682` (near, 5 sites)
+#### `dup-0686` (near, 5 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 5 sites into one function in this file)`
 
@@ -10581,7 +10638,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:6122-6131` `a_cfg_test_attribute_directly_on_an_impl_block_is_flagged_test`
 - `tests/simplification_audit.rs:6253-6261` `a_cfg_test_pub_fn_is_still_flagged_test_pub_survives_between_attribute_and_keyword`
 
-#### `dup-0683` (near, 2 sites)
+#### `dup-0687` (near, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10590,7 +10647,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:6144-6150` `a_function_directly_in_a_cfg_test_mod_is_flagged_test`
 - `tests/simplification_audit.rs:6153-6162` `a_nested_named_test_submodule_is_still_flagged_test_and_named`
 
-#### `dup-0684` (exact, 3 sites)
+#### `dup-0688` (exact, 3 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 3 sites into one function in this file)`
 
@@ -10600,7 +10657,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:6224-6227` `a_pub_crate_function_keeps_the_qualifier`
 - `tests/simplification_audit.rs:6230-6233` `a_pub_super_function_keeps_the_qualifier`
 
-#### `dup-0685` (near, 2 sites)
+#### `dup-0689` (near, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10609,7 +10666,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:6273-6277` `a_cfg_test_out_of_line_mod_is_flagged_test`
 - `tests/simplification_audit.rs:6294-6299` `an_out_of_line_mod_inherits_test_ness_from_an_enclosing_cfg_test_mod`
 
-#### `dup-0686` (near, 3 sites)
+#### `dup-0690` (near, 3 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 3 sites into one function in this file)`
 
@@ -10619,7 +10676,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:6372-6381` `a_method_on_a_generic_impl_block_strips_the_impls_own_leading_generics`
 - `tests/simplification_audit.rs:6461-6466` `a_trait_impl_method_is_classified_under_the_implementing_type_not_the_trait`
 
-#### `dup-0687` (near, 3 sites)
+#### `dup-0691` (near, 3 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 3 sites into one function in this file)`
 
@@ -10629,7 +10686,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7580-7587` `replace_section_2_only_touches_section_2_leaving_neighbors_intact`
 - `tests/simplification_audit.rs:7967-7984` `replace_section_6_only_touches_that_span_leaving_earlier_sections_intact`
 
-#### `dup-0688` (near, 3 sites)
+#### `dup-0692` (near, 3 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 3 sites into one function in this file)`
 
@@ -10639,7 +10696,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7723-7745` `duplication_catalog_json_matches_the_tree_or_is_rewritten`
 - `tests/simplification_audit.rs:9073-9095` `dead_code_json_matches_the_tree_or_is_rewritten`
 
-#### `dup-0689` (exact, 2 sites)
+#### `dup-0693` (exact, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10648,7 +10705,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:6748-6756` `string_and_raw_string_literals_are_one_lit_token_each`
 - `tests/simplification_audit.rs:6768-6776` `number_literals_including_a_fraction_are_lit_tokens`
 
-#### `dup-0690` (near, 2 sites)
+#### `dup-0694` (near, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10657,7 +10714,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7026-7052` `three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home`
 - `tests/simplification_audit.rs:7055-7073` `cluster_ids_are_assigned_after_deterministic_sort_and_sites_are_sorted_within_a_cluster`
 
-#### `dup-0691` (near, 2 sites)
+#### `dup-0695` (near, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10666,7 +10723,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7198-7211` `proc_stat_or_status_reader_sweep_finds_a_stat_reader_and_a_status_reader_but_not_an_unrelated_fn`
 - `tests/simplification_audit.rs:7458-7475` `bespoke_lexer_sweep_finds_the_named_trio_but_not_an_unrelated_fn`
 
-#### `dup-0692` (near, 2 sites)
+#### `dup-0696` (near, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10675,7 +10732,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7218-7231` `the_dash_reap_proc_stat_pair_the_spec_names_lands_in_one_real_cluster`
 - `tests/simplification_audit.rs:7330-7345` `the_two_exploration_graph_fixture_builders_the_adversarial_sample_found_land_in_one_real_cluster`
 
-#### `dup-0693` (near, 2 sites)
+#### `dup-0697` (near, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10684,7 +10741,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7234-7241` `constructs_own_type_literal_matches_self_and_the_named_type_but_not_an_unrelated_call`
 - `tests/simplification_audit.rs:7244-7252` `constructs_own_type_literal_matches_shorthand_field_init_too`
 
-#### `dup-0694` (exact, 2 sites)
+#### `dup-0698` (exact, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10693,7 +10750,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7278-7296` `the_spawn_result_constructor_triple_the_adversarial_sample_found_lands_in_one_real_cluster`
 - `tests/simplification_audit.rs:7482-7499` `the_bespoke_lexer_and_canonical_extractor_the_lens_routed_land_in_one_real_cluster`
 
-#### `dup-0695` (near, 3 sites)
+#### `dup-0699` (near, 3 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 3 sites into one function in this file)`
 
@@ -10703,7 +10760,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7379-7408` `same_named_helper_sweep_excludes_a_trait_default_method_and_its_override`
 - `tests/simplification_audit.rs:7411-7435` `same_named_helper_sweep_still_catches_two_inherent_impls_sharing_a_method_name`
 
-#### `dup-0696` (exact, 2 sites)
+#### `dup-0700` (exact, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10712,7 +10769,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7591-7596` `replace_section_2_panics_loudly_when_the_heading_is_entirely_absent`
 - `tests/simplification_audit.rs:7997-8002` `replace_section_6_panics_loudly_when_the_heading_is_entirely_absent`
 
-#### `dup-0697` (exact, 2 sites)
+#### `dup-0701` (exact, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10721,7 +10778,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7603-7607` `sample_indices_is_deterministic_for_a_fixed_seed`
 - `tests/simplification_audit.rs:7633-7637` `different_seeds_produce_different_draws`
 
-#### `dup-0698` (near, 3 sites)
+#### `dup-0702` (near, 3 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 3 sites into one function in this file)`
 
@@ -10731,7 +10788,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7868-7914` `report_sections_3_through_5_match_the_tree_or_are_rewritten`
 - `tests/simplification_audit.rs:8082-8115` `report_section_6_matches_the_tree_or_is_rewritten`
 
-#### `dup-0699` (near, 2 sites)
+#### `dup-0703` (near, 2 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 2 sites into one function in this file)`
 
@@ -10740,7 +10797,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:7797-7821` `replace_sections_3_to_5_only_touches_that_span_leaving_neighbors_intact`
 - `tests/simplification_audit.rs:7824-7841` `replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists`
 
-#### `dup-0700` (near, 5 sites)
+#### `dup-0704` (near, 5 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 5 sites into one function in this file)`
 
@@ -10752,7 +10809,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:8174-8192` `the_real_eventstore_mod_rs_shape_resolves_contract_rs_as_test`
 - `tests/simplification_audit.rs:8195-8216` `transitive_closure_pulls_in_a_second_hop_regardless_of_its_own_local_attribute`
 
-#### `dup-0701` (near, 4 sites)
+#### `dup-0705` (near, 4 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 4 sites into one function in this file)`
 
@@ -10763,7 +10820,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:8331-8347` `resolvers_agree_on_a_transitive_second_hop`
 - `tests/simplification_audit.rs:8351-8359` `resolvers_agree_on_a_non_test_out_of_line_mod`
 
-#### `dup-0702` (near, 18 sites)
+#### `dup-0706` (near, 18 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 18 sites into one function in this file)`
 
@@ -10788,7 +10845,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:9007-9017` `a_fn_named_in_a_return_expression_counts_as_a_reference`
 - `tests/simplification_audit.rs:9020-9033` `a_fn_named_as_a_generic_argument_to_another_type_counts_as_a_reference`
 
-#### `dup-0703` (near, 4 sites)
+#### `dup-0707` (near, 4 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 4 sites into one function in this file)`
 
@@ -10799,7 +10856,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:8746-8761` `a_method_name_shared_by_two_impls_with_a_call_site_excludes_both`
 - `tests/simplification_audit.rs:8793-8808` `a_trait_impl_method_is_exempted_even_with_zero_textual_call_sites`
 
-#### `dup-0704` (near, 8 sites)
+#### `dup-0708` (near, 8 sites)
 
 Proposed home: `simplification_audit::support (consolidate these 8 sites into one function in this file)`
 
@@ -10814,17 +10871,17 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/simplification_audit.rs:8843-8863` `a_qualified_call_site_attributes_only_to_the_sharer_it_names`
 - `tests/simplification_audit.rs:8866-8898` `a_qualified_call_site_on_an_impls_own_generic_self_type_attributes_correctly`
 
-#### `dup-0705` (near, 3 sites)
+#### `dup-0709` (near, 3 sites)
 
 Proposed home: `spawn_scratch_reap_authorized_root_periphery::support (consolidate these 3 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:167-222` `rigger_result_reaps_a_live_process_in_the_spawns_registered_agent_scratch_dir`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:225-273` `rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_dir`
-- `tests/spawn_scratch_reap_authorized_root_periphery.rs:406-470` `rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_already_removed_before_the_call`
+- `tests/spawn_scratch_reap_authorized_root_periphery.rs:167-230` `rigger_result_reaps_a_live_process_in_the_spawns_registered_agent_scratch_dir`
+- `tests/spawn_scratch_reap_authorized_root_periphery.rs:233-281` `rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_dir`
+- `tests/spawn_scratch_reap_authorized_root_periphery.rs:415-479` `rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_already_removed_before_the_call`
 
-#### `dup-0706` (near, 2 sites)
+#### `dup-0710` (near, 2 sites)
 
 Proposed home: `spawn_timing_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10833,7 +10890,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/spawn_timing_periphery.rs:104-183` `spawn_timing_pairs_real_writer_events_through_a_real_store_by_role`
 - `tests/spawn_timing_periphery.rs:280-335` `spawn_timing_excludes_a_real_same_batch_pair_as_suspect_not_a_silent_zero`
 
-#### `dup-0707` (near, 42 sites)
+#### `dup-0711` (near, 42 sites)
 
 Proposed home: `spec_lint::support (consolidate these 42 sites into one function in this file)`
 
@@ -10882,7 +10939,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/spec_lint.rs:1912-1946` `validate_all_four_digit_adjacency_shapes_together_never_false_positive`
 - `tests/spec_lint.rs:1974-2001` `validate_a_digit_glued_to_a_quotes_own_opening_mark_still_masks_the_real_span`
 
-#### `dup-0708` (near, 3 sites)
+#### `dup-0712` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/step_attention_periphery.rs, tests/workflow_driver_resolved_model_periphery.rs, tests/worktree_liveness_fence_periphery.rs)`
 
@@ -10892,7 +10949,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/workflow_driver_resolved_model_periphery.rs:57-78` `temp_git_project_with_commit`
 - `tests/worktree_liveness_fence_periphery.rs:94-115` `temp_git_project_with_commit`
 
-#### `dup-0709` (near, 2 sites)
+#### `dup-0713` (near, 2 sites)
 
 Proposed home: `step_sheds_the_freshen::support (consolidate these 2 sites into one function in this file)`
 
@@ -10901,7 +10958,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/step_sheds_the_freshen.rs:128-163` `fingerprint_subtree`
 - `tests/step_sheds_the_freshen.rs:129-159` `walk`
 
-#### `dup-0710` (near, 2 sites)
+#### `dup-0714` (near, 2 sites)
 
 Proposed home: `store_config::support (consolidate these 2 sites into one function in this file)`
 
@@ -10910,7 +10967,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_config.rs:63-75` `a_present_store_block_deserializes_backend_and_url`
 - `tests/store_config.rs:92-110` `unrelated_workflow_keys_are_ignored_by_the_lightweight_probe`
 
-#### `dup-0711` (exact, 2 sites)
+#### `dup-0715` (exact, 2 sites)
 
 Proposed home: `store_config::support (consolidate these 2 sites into one function in this file)`
 
@@ -10919,7 +10976,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_config.rs:78-89` `a_workflow_without_a_store_key_reads_as_the_default`
 - `tests/store_config.rs:149-160` `an_empty_store_block_and_empty_values_are_no_opinion`
 
-#### `dup-0712` (semantic, 4 sites)
+#### `dup-0716` (semantic, 4 sites)
 
 Proposed home: `store_content_identity_periphery::port_double - one canonical constructor, the rest thin variants over it (or a builder), rather than each re-listing every field`
 
@@ -10930,7 +10987,7 @@ mandatory sweep: parallel constructor functions - 4 site(s), collected mechanica
 - `tests/store_content_identity_periphery.rs:164-166` `over_an_empty_stream`
 - `tests/store_content_identity_periphery.rs:170-178` `over_a_stream`
 
-#### `dup-0713` (exact, 2 sites)
+#### `dup-0717` (exact, 2 sites)
 
 Proposed home: `store_content_identity_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10939,7 +10996,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_content_identity_periphery.rs:1508-1510` `detached_subject`
 - `tests/store_content_identity_periphery.rs:1520-1522` `mid_character`
 
-#### `dup-0714` (near, 2 sites)
+#### `dup-0718` (near, 2 sites)
 
 Proposed home: `store_content_identity_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -10948,7 +11005,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_content_identity_periphery.rs:1512-1514` `past_the_end`
 - `tests/store_content_identity_periphery.rs:1516-1518` `inverted`
 
-#### `dup-0715` (semantic, 4 sites)
+#### `dup-0719` (semantic, 4 sites)
 
 Proposed home: `one shared `local_event_log` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -10959,7 +11016,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/store_resolution_cli.rs:66-68` `local_event_log`
 - `tests/store_secrets.rs:62-64` `local_event_log`
 
-#### `dup-0716` (near, 4 sites)
+#### `dup-0720` (near, 4 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/store_flag_precedence.rs, tests/store_precedence.rs, tests/store_secrets.rs)`
 
@@ -10970,7 +11027,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_precedence.rs:143-159` `assert_selected_sqlite`
 - `tests/store_secrets.rs:106-144` `assert_server_reached_and_credentials_redacted`
 
-#### `dup-0717` (semantic, 2 sites)
+#### `dup-0721` (semantic, 2 sites)
 
 Proposed home: `one shared `assert_selected_server` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -10979,7 +11036,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/store_flag_precedence.rs:125-145` `assert_selected_server`
 - `tests/store_precedence.rs:119-139` `assert_selected_server`
 
-#### `dup-0718` (exact, 2 sites)
+#### `dup-0722` (exact, 2 sites)
 
 Proposed home: `store_flag_precedence::support (consolidate these 2 sites into one function in this file)`
 
@@ -10988,7 +11045,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_flag_precedence.rs:148-165` `run_bare_conn_flag_selects_the_server_never_dropped_to_sqlite`
 - `tests/store_flag_precedence.rs:168-183` `run_conn_flag_beats_a_committed_sqlite_store_config`
 
-#### `dup-0719` (semantic, 3 sites)
+#### `dup-0723` (semantic, 3 sites)
 
 Proposed home: `one shared `empty_project` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -10998,7 +11055,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/store_resolution_cli.rs:54-62` `empty_project`
 - `tests/store_secrets.rs:50-58` `empty_project`
 
-#### `dup-0720` (semantic, 2 sites)
+#### `dup-0724` (semantic, 2 sites)
 
 Proposed home: `one shared `write_store_conn` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -11007,7 +11064,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/store_precedence.rs:64-66` `write_store_conn`
 - `tests/store_secrets.rs:70-79` `write_store_conn`
 
-#### `dup-0721` (near, 3 sites)
+#### `dup-0725` (near, 3 sites)
 
 Proposed home: `store_precedence::support (consolidate these 3 sites into one function in this file)`
 
@@ -11017,7 +11074,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_precedence.rs:269-312` `an_unknown_committed_backend_surfaces_loudly_not_a_silent_sqlite_fallback`
 - `tests/store_precedence.rs:315-355` `a_committed_kurrentdb_backend_with_no_credential_names_all_three_sources`
 
-#### `dup-0722` (exact, 2 sites)
+#### `dup-0726` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/store_resolution_cli.rs, tests/store_secrets.rs)`
 
@@ -11026,7 +11083,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_resolution_cli.rs:78-90` `run_bare_result`
 - `tests/store_secrets.rs:88-100` `run_bare_result`
 
-#### `dup-0723` (semantic, 2 sites)
+#### `dup-0727` (semantic, 2 sites)
 
 Proposed home: `one shared `run_bare_result` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -11035,7 +11092,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/store_resolution_cli.rs:78-90` `run_bare_result`
 - `tests/store_secrets.rs:88-100` `run_bare_result`
 
-#### `dup-0724` (near, 3 sites)
+#### `dup-0728` (near, 3 sites)
 
 Proposed home: `store_resolution_cli::support (consolidate these 3 sites into one function in this file)`
 
@@ -11045,7 +11102,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_resolution_cli.rs:130-157` `a_courier_with_no_server_configured_resolves_the_local_sqlite_log`
 - `tests/store_resolution_cli.rs:160-184` `an_empty_kurrentdb_conn_is_treated_as_unset_not_a_server_with_no_address`
 
-#### `dup-0725` (exact, 2 sites)
+#### `dup-0729` (exact, 2 sites)
 
 Proposed home: `store_resolution_cli::support (consolidate these 2 sites into one function in this file)`
 
@@ -11054,7 +11111,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_resolution_cli.rs:278-285` `prime_resolves_the_configured_server_never_the_local_absent_sentinel`
 - `tests/store_resolution_cli.rs:288-297` `stats_resolves_the_configured_server_never_the_local_absent_sentinel`
 
-#### `dup-0726` (exact, 2 sites)
+#### `dup-0730` (exact, 2 sites)
 
 Proposed home: `store_secrets_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -11063,7 +11120,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/store_secrets_periphery.rs:52-59` `redact_conn_is_a_public_symbol_that_scrubs_userinfo_but_keeps_scheme_host_and_query`
 - `tests/store_secrets_periphery.rs:248-256` `redact_conn_scrubs_the_credential_but_keeps_a_benign_at_sign_later_in_the_same_url`
 
-#### `dup-0727` (exact, 3 sites)
+#### `dup-0731` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/subject_lens_defined_cells.rs, tests/subject_lens_defined_cells_contract.rs, tests/subject_lens_reprojection_contract.rs)`
 
@@ -11073,7 +11130,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_defined_cells_contract.rs:48-58` `node`
 - `tests/subject_lens_reprojection_contract.rs:63-73` `node`
 
-#### `dup-0728` (exact, 3 sites)
+#### `dup-0732` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/subject_lens_defined_cells.rs, tests/subject_lens_defined_cells_contract.rs, tests/subject_lens_reprojection_contract.rs)`
 
@@ -11083,7 +11140,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_defined_cells_contract.rs:61-71` `edge`
 - `tests/subject_lens_reprojection_contract.rs:88-98` `edge`
 
-#### `dup-0729` (exact, 7 sites)
+#### `dup-0733` (exact, 7 sites)
 
 Proposed home: `a new shared module (sites span 4 files: tests/subject_lens_defined_cells.rs, tests/subject_lens_defined_cells_contract.rs, tests/subject_lens_reprojection_contract.rs, tests/subject_lens_reprojection_periphery.rs)`
 
@@ -11097,7 +11154,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_reprojection_contract.rs:106-108` `code_lens`
 - `tests/subject_lens_reprojection_periphery.rs:315-317` `code_lens`
 
-#### `dup-0730` (semantic, 3 sites)
+#### `dup-0734` (semantic, 3 sites)
 
 Proposed home: `one shared `concepts_lens` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -11107,7 +11164,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/subject_lens_defined_cells_contract.rs:77-79` `concepts_lens`
 - `tests/subject_lens_reprojection_contract.rs:101-103` `concepts_lens`
 
-#### `dup-0731` (exact, 3 sites)
+#### `dup-0735` (exact, 3 sites)
 
 Proposed home: `a new shared module (sites span 3 files: tests/subject_lens_defined_cells.rs, tests/subject_lens_defined_cells_contract.rs, tests/subject_lens_reprojection_contract.rs)`
 
@@ -11117,7 +11174,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_defined_cells_contract.rs:87-104` `served_json`
 - `tests/subject_lens_reprojection_contract.rs:122-142` `served_json`
 
-#### `dup-0732` (near, 3 sites)
+#### `dup-0736` (near, 3 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/subject_lens_defined_cells.rs, tests/subject_lens_reprojection_contract.rs)`
 
@@ -11127,7 +11184,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_defined_cells.rs:255-272` `mixed_membership_graph`
 - `tests/subject_lens_reprojection_contract.rs:380-401` `file_over_code_graph`
 
-#### `dup-0733` (exact, 2 sites)
+#### `dup-0737` (exact, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/subject_lens_defined_cells.rs, tests/subject_lens_defined_cells_contract.rs)`
 
@@ -11136,7 +11193,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_defined_cells.rs:510-530` `shared_member_graph`
 - `tests/subject_lens_defined_cells_contract.rs:238-256` `shared_member_graph`
 
-#### `dup-0734` (semantic, 2 sites)
+#### `dup-0738` (semantic, 2 sites)
 
 Proposed home: `one shared `shared_member_graph` helper (e.g. relocated into `tests/common`) rather than each file defining its own`
 
@@ -11145,7 +11202,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 - `tests/subject_lens_defined_cells.rs:510-530` `shared_member_graph`
 - `tests/subject_lens_defined_cells_contract.rs:238-256` `shared_member_graph`
 
-#### `dup-0735` (near, 2 sites)
+#### `dup-0739` (near, 2 sites)
 
 Proposed home: `a new shared module (sites span 2 files: tests/subject_lens_defined_cells_contract.rs, tests/subject_lens_reprojection_contract.rs)`
 
@@ -11154,7 +11211,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_defined_cells_contract.rs:318-334` `full_in_budget_graph`
 - `tests/subject_lens_reprojection_contract.rs:154-177` `community_over_concepts_graph`
 
-#### `dup-0736` (near, 3 sites)
+#### `dup-0740` (near, 3 sites)
 
 Proposed home: `subject_lens_reprojection_contract::support (consolidate these 3 sites into one function in this file)`
 
@@ -11164,7 +11221,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_reprojection_contract.rs:493-526` `reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens`
 - `tests/subject_lens_reprojection_contract.rs:543-573` `reprojection_excludes_a_decision_member_even_when_it_carries_a_live_community_membership`
 
-#### `dup-0737` (near, 2 sites)
+#### `dup-0741` (near, 2 sites)
 
 Proposed home: `subject_lens_reprojection_contract::support (consolidate these 2 sites into one function in this file)`
 
@@ -11173,39 +11230,39 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/subject_lens_reprojection_contract.rs:297-328` `reprojection_carries_empty_state_when_no_member_realizes_any_concept_under_the_concepts_lens`
 - `tests/subject_lens_reprojection_contract.rs:590-621` `reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded`
 
-#### `dup-0738` (near, 7 sites)
+#### `dup-0742` (near, 7 sites)
 
 Proposed home: `unified_traversal_grounding::support (consolidate these 7 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/unified_traversal_grounding.rs:304-339` `a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_structural_stitch`
-- `tests/unified_traversal_grounding.rs:357-461` `the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_pointer`
-- `tests/unified_traversal_grounding.rs:475-515` `the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim`
-- `tests/unified_traversal_grounding.rs:682-786` `the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice`
-- `tests/unified_traversal_grounding.rs:1225-1355` `a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_traversal`
-- `tests/unified_traversal_grounding.rs:1444-1501` `a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section`
-- `tests/unified_traversal_grounding.rs:1578-1611` `a_spawn_prompt_with_no_governing_design_intent_renders_no_design_intent_header`
+- `tests/unified_traversal_grounding.rs:306-341` `a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_structural_stitch`
+- `tests/unified_traversal_grounding.rs:359-463` `the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_pointer`
+- `tests/unified_traversal_grounding.rs:477-517` `the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim`
+- `tests/unified_traversal_grounding.rs:688-792` `the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice`
+- `tests/unified_traversal_grounding.rs:1231-1361` `a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_traversal`
+- `tests/unified_traversal_grounding.rs:1450-1507` `a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section`
+- `tests/unified_traversal_grounding.rs:1584-1617` `a_spawn_prompt_with_no_governing_design_intent_renders_no_design_intent_header`
 
-#### `dup-0739` (near, 2 sites)
-
-Proposed home: `unified_traversal_grounding::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/unified_traversal_grounding.rs:1016-1059` `the_code_neighborhood_section_is_budget_capped_with_a_visible_elision_note`
-- `tests/unified_traversal_grounding.rs:1078-1119` `the_spawn_prompt_code_neighborhood_elision_note_names_the_honest_graph_around_recovery`
-
-#### `dup-0740` (near, 2 sites)
+#### `dup-0743` (near, 2 sites)
 
 Proposed home: `unified_traversal_grounding::support (consolidate these 2 sites into one function in this file)`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/unified_traversal_grounding.rs:1377-1424` `the_design_intent_section_is_budget_capped_and_its_elision_note_names_the_honest_graph_around_recovery`
-- `tests/unified_traversal_grounding.rs:1515-1559` `the_spawn_prompt_design_intent_section_renders_the_newest_binding_and_elides_the_oldest`
+- `tests/unified_traversal_grounding.rs:1022-1065` `the_code_neighborhood_section_is_budget_capped_with_a_visible_elision_note`
+- `tests/unified_traversal_grounding.rs:1084-1125` `the_spawn_prompt_code_neighborhood_elision_note_names_the_honest_graph_around_recovery`
 
-#### `dup-0741` (exact, 2 sites)
+#### `dup-0744` (near, 2 sites)
+
+Proposed home: `unified_traversal_grounding::support (consolidate these 2 sites into one function in this file)`
+
+mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
+
+- `tests/unified_traversal_grounding.rs:1383-1430` `the_design_intent_section_is_budget_capped_and_its_elision_note_names_the_honest_graph_around_recovery`
+- `tests/unified_traversal_grounding.rs:1521-1565` `the_spawn_prompt_design_intent_section_renders_the_newest_binding_and_elides_the_oldest`
+
+#### `dup-0745` (exact, 2 sites)
 
 Proposed home: `validate_advisories::support (consolidate these 2 sites into one function in this file)`
 
@@ -11214,7 +11271,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/validate_advisories.rs:299-312` `validate_is_silent_on_log_bloat_when_every_key_is_recorded_once`
 - `tests/validate_advisories.rs:315-343` `validate_is_silent_on_log_bloat_when_the_same_key_recurs_only_across_different_covered_types`
 
-#### `dup-0742` (near, 3 sites)
+#### `dup-0746` (near, 3 sites)
 
 Proposed home: `watchdog_cli_periphery::support (consolidate these 3 sites into one function in this file)`
 
@@ -11224,7 +11281,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/watchdog_cli_periphery.rs:299-326` `watch_once_reports_a_store_integrity_anomaly_through_the_real_compiled_binary`
 - `tests/watchdog_cli_periphery.rs:573-654` `watch_once_reports_the_criterions_own_multi_anomaly_scenario_through_the_real_compiled_binary`
 
-#### `dup-0743` (near, 3 sites)
+#### `dup-0747` (near, 3 sites)
 
 Proposed home: `watchdog_cli_periphery::support (consolidate these 3 sites into one function in this file)`
 
@@ -11234,7 +11291,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/watchdog_cli_periphery.rs:462-545` `watch_streaming_survives_a_transient_store_read_failure_and_recovers`
 - `tests/watchdog_cli_periphery.rs:669-771` `watch_streaming_re_alerts_a_reject_recurrence_churn_count_on_each_increment`
 
-#### `dup-0744` (near, 2 sites)
+#### `dup-0748` (near, 2 sites)
 
 Proposed home: `worker_persona_label_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -11243,7 +11300,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/worker_persona_label_periphery.rs:241-253` `a_gap_18_respawn_id_still_renders_the_full_persona_led_label`
 - `tests/worker_persona_label_periphery.rs:337-348` `internal_whitespace_is_normalized_before_the_sentence_is_cut`
 
-#### `dup-0745` (near, 2 sites)
+#### `dup-0749` (near, 2 sites)
 
 Proposed home: `workflow_driver_resolved_model_periphery::support (consolidate these 2 sites into one function in this file)`
 
@@ -11252,49 +11309,40 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/workflow_driver_resolved_model_periphery.rs:163-319` `workflow_driven_rigger_result_meta_resolved_model_reaches_the_persisted_green_event`
 - `tests/workflow_driver_resolved_model_periphery.rs:334-473` `workflow_driven_rigger_result_with_no_meta_omits_the_resolved_model_key_and_ignores_a_prose_claim`
 
-#### `dup-0746` (near, 2 sites)
-
-Proposed home: `worktree_liveness_fence_periphery::support (consolidate these 2 sites into one function in this file)`
-
-mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
-
-- `tests/worktree_liveness_fence_periphery.rs:297-542` `step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_real_process_boundaries`
-- `tests/worktree_liveness_fence_periphery.rs:579-674` `gc_integrated_branches_removing_evidence_reaches_real_stderr_for_a_still_registered_worktree_it_alone_reclaims`
-
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6542 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6576 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
-- `src/canary.rs:863-875` `review_header` - no duplicate found by reading
-- `src/concepts.rs:557-616` `a_rebuild_from_the_recorded_events_reproduces_identical_membership` - no duplicate found by reading
-- `src/conductor.rs:28484-28571` `a_re_step_already_past_the_budget_threshold_does_not_re_stamp` - no duplicate found by reading
-- `src/conductor.rs:33882-33946` `single_wide_wave_overruns_budget_and_is_stopped` - no duplicate found by reading
-- `src/conductor.rs:34564-34587` `tiered_stage` - no duplicate found by reading
-- `src/conductor.rs:34923-34925` `apply` - no duplicate found by reading
-- `src/conductor.rs:38349-38434` `a_re_step_replays_a_recorded_deferred_gate_without_re_running_it` - caught: `dup-0105`
-- `src/conductor.rs:40422-40473` `a_clean_decomposition_approves_and_releases_the_fan_out` - caught: `dup-0109`
-- `src/contextgraph/sqlite.rs:5873-5921` `review_finding_creates_a_finding_node_about_each_file` - no duplicate found by reading
-- `src/dash.rs:4213-4224` `event_view` - no duplicate found by reading
-- `src/dash.rs:6744-6837` `clustered_overview_under_files_lens_admits_only_code_entities_keyed_by_their_own_file` - no duplicate found by reading
-- `src/eventstore/namespace.rs:79-84` `scope_filter` - no duplicate found by reading
-- `src/eventstore/sqlite.rs:3618-3655` `measure_derived_duplication_scopes_to_the_stream_prefix` - caught: `dup-0203`
-- `src/main.rs:9958-9972` `drift_side` - no duplicate found by reading
-- `src/main.rs:22610-22637` `parallelism_retention_line_is_single_sourced_and_warns_below_the_floor` - no duplicate found by reading
-- `src/reap.rs:328-349` `is_reapable_base` - no duplicate found by reading
-- `tests/canary_unattributed_rejects_periphery.rs:54-107` `spawn` - caught: `dup-0391`
-- `tests/cli.rs:11577-11608` `write_gated_reviewed_workflow` - caught: `dup-0437`
-- `tests/cli.rs:12355-12394` `replay_an_added_gate_fails_safe_and_never_fabricates_a_pass` - caught: `dup-0457`
-- `tests/concepts_derivation_cli.rs:109-114` `link` - caught: `dup-0521`
-- `tests/halted_spawn_wip_recovery_periphery.rs:107-115` `git_out` - caught: `dup-0415`
-- `tests/heartbeat_write_read_agree_periphery.rs:363-390` `status_human_output_from_a_nested_worktree_never_prints_a_dash_heartbeat_for_a_live_spawn` - no duplicate found by reading
-- `tests/reap_before_removal_audit.rs:287-298` `enclosing_fn_span` - no duplicate found by reading
-- `tests/reap_before_removal_audit.rs:1381-1399` `a_doc_comment_mentioning_the_cfg_test_attribute_in_prose_is_never_mistaken_for_it` - caught: `dup-0650`
-- `tests/reset_derived_compaction_periphery.rs:2835-2839` `read_run_stream` - caught: `dup-0412`
-- `tests/simplification_audit.rs:2411-2418` `dup_site` - no duplicate found by reading
-- `tests/simplification_audit.rs:6007-6012` `a_brace_inside_a_raw_string_with_hashes_is_ignored` - caught: `dup-0681`
-- `tests/simplification_audit.rs:6398-6400` `impl_self_type_still_handles_a_generic_self_type_with_a_where_clause` - caught: `dup-0190`
-- `tests/simplification_audit.rs:8384-8398` `a_fn_referenced_only_by_its_own_test_is_listed` - caught: `dup-0702`
-- `tests/store_secrets_periphery.rs:92-94` `redact_conn_on_the_empty_string_is_empty` - caught: `dup-0190`
+- `src/community.rs:119-171` `from_graph` - no duplicate found by reading
+- `src/concepts.rs:80-82` `is_label_doc` - caught: `dup-0022`
+- `src/conductor.rs:10723-10745` `resolve_served_criterion` - no duplicate found by reading
+- `src/conductor.rs:20868-20924` `branch_gc_falls_back_to_the_derived_branch_when_unitstarted_recorded_no_branch` - caught: `dup-0071`
+- `src/conductor.rs:34589-34596` `tiered_cfg` - no duplicate found by reading
+- `src/conductor.rs:39907-39982` `a_crashed_sdet_author_spawn_does_not_block_the_build_the_lifecycle_proceeds` - caught: `dup-0107`
+- `src/contextgraph/sqlite.rs:7760-7816` `additive_indexes_exist_and_the_pinned_name_suffix_query_uses_its_index` - no duplicate found by reading
+- `src/contextgraph/sqlite.rs:8013-8062` `re_extracting_an_edited_file_does_not_silently_drop_an_unrelated_files_accumulated_proof` - no duplicate found by reading
+- `src/dash.rs:407-409` `read` - no duplicate found by reading
+- `src/dash.rs:438-457` `tcp_listen_inode_for_port` - no duplicate found by reading
+- `src/eventstore/mod.rs:520-522` `recv_timeout` - no duplicate found by reading
+- `src/eventstore/mod.rs:773-790` `endpoint_label` - no duplicate found by reading
+- `src/gate.rs:1430-1486` `exec_runner_fences_gate_store_resolution_when_target_dir_is_given` - no duplicate found by reading
+- `src/gate.rs:1909-1918` `mutation_gate_binary_on_path_reads_the_real_ambient_path` - no duplicate found by reading
+- `src/grounder/symbols/model.rs:630-648` `a_pre_upgrade_index_with_no_hashes_field_loads_with_every_hash_unknown` - no duplicate found by reading
+- `src/main.rs:24786-24805` `the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names` - no duplicate found by reading
+- `src/reap.rs:214-221` `pid_starttime` - caught: `dup-0144`
+- `src/spec.rs:406-419` `criterion_blocks` - no duplicate found by reading
+- `src/spec.rs:1567-1573` `ownership_check_recognizes_owner_inside_a_hyphenated_compound` - caught: `dup-0190`
+- `tests/architecture_current_surface.rs:188-209` `architecture_names_no_retired_or_wrong_default_grounder` - caught: `dup-0376`
+- `tests/code_entity_test_exclusion_periphery.rs:2424-2461` `a_tests_rooted_design_doc_mention_never_becomes_a_live_node_through_the_public_api` - no duplicate found by reading
+- `tests/community_detection_pass.rs:167-196` `a_rebuild_from_the_recorded_events_reproduces_byte_identical_membership_rows` - no duplicate found by reading
+- `tests/escalation_resume_periphery.rs:79-86` `temp_project` - caught: `dup-0398`
+- `tests/reset_menu_previews_periphery.rs:104-156` `count_prunable_reports_the_same_nodes_and_superseded_edges_a_real_prune_then_removes` - no duplicate found by reading
+- `tests/simplification_audit.rs:639-644` `extract_quoted` - no duplicate found by reading
+- `tests/simplification_audit.rs:8501-8513` `recursion_through_the_fns_own_body_still_counts_as_a_reference` - caught: `dup-0706`
+- `tests/simplification_audit.rs:8866-8898` `a_qualified_call_site_on_an_impls_own_generic_self_type_attributes_correctly` - caught: `dup-0708`
+- `tests/simplification_audit.rs:9073-9095` `dead_code_json_matches_the_tree_or_is_rewritten` - caught: `dup-0692`
+- `tests/store_content_identity_periphery.rs:224-226` `subscribe_stream` - no duplicate found by reading
+- `tests/subject_lens_reprojection_periphery.rs:330-351` `served_json` - caught: `dup-0554`
 
 Two real recall gaps surfaced this way and were closed by widening the mechanical sweep with a new generalizable detector each - not a one-off citation - so the fix catches every present and future instance of its class, each pinned by a real-tree regression test: `find_proc_stat_or_status_readers` (decision `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or `/proc/<pid>/status` literal, closing the spec's own named worked example - `src/dash.rs:499-507` `process_state` next to `src/reap.rs:190-197` `pid_starttime`, the same job on the same file with a different field/shape, upheld at spec 62's capstone; `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) groups 2+ non-test functions per `(file, Self type)` that build a `Self { .. }` / `TypeName { .. }` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` reading MISSING from its own `ok`/`failed` cluster even though all three are parallel constructors for one struct. A third worked example, `exploration_graph` (independently defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass with no sweep needed - confirming the mechanical pass itself has real recall, not only the two widened sweeps. Two further real defects, found on review rather than in this draw, were closed the same way: a RECALL gap the architecture lens routed to this criterion by name across two prior review rounds - this file's own bespoke source-text lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the adversary found by reading every `same-named helper` cluster against `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/`subscribe_stream` across the `EventStore` trait's three backend adapters plus a test double, `blast_radius` across the `Grounder` trait's own default method, its override, and a test double) - closed by excluding members whose extracted Self type differs across the group when at least one comes from an actual `" for "` trait impl (decision `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) excluded this criterion's own citation-guard periphery file from the draw's population (see this subsection's opening paragraph) and redrew the sample; every one of the 19 functions above marked "no duplicate found by reading" was re-read by hand against its host file's surrounding context, exactly as this THOROUGHNESS check requires whenever the draw changes. 18 of the 19 are genuinely not duplicates; `apply` at `src/conductor.rs:29832-29834` is one shape worth naming so it is not mistaken for a miss - a `Projection` test double's own required trait-impl body, the same port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) already excludes from clustering by design, confirmed to still hold for this draw's own instance of it. The 19th is a genuine small duplicate this catalog's `fn`-only scanner (module doc, THE SCANNER) structurally cannot represent as a cluster: `gate_verdict_event` (`src/conductor.rs:29191-29200`) and the `verdict` closure inside `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` (`src/conductor.rs:30596-30605`) do the identical job - find the recorded `GateVerdict` for a `"<unit>/gate:g#<attempt>"` replay key, panicking with the same message when none exists - differing only in whether the unit segment is the literal `"s"` or a parameter. A `let`-bound closure is not a `fn` item, so no change to this scanner short of teaching it to see closures could catalog this pair as a cluster; named here, prominently, rather than silently, so a later refactor - or a scanner that learns to see closures - does not miss it.
 

@@ -66,23 +66,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 13247
+        "line": 13292
       },
       {
         "file": "src/main.rs",
-        "line": 13268
+        "line": 13313
       },
       {
         "file": "src/main.rs",
-        "line": 13783
+        "line": 13828
       },
       {
         "file": "tests/cli.rs",
-        "line": 22821
+        "line": 23073
       },
       {
         "file": "tests/cli.rs",
-        "line": 22836
+        "line": 23088
       }
     ],
     "disposition": "delete",
@@ -759,15 +759,15 @@
       },
       {
         "file": "tests/cli.rs",
-        "line": 2674
+        "line": 2868
       },
       {
         "file": "tests/cli.rs",
-        "line": 2771
+        "line": 2965
       },
       {
         "file": "tests/cli.rs",
-        "line": 2838
+        "line": 3032
       },
       {
         "file": "tests/parallel_ordered_emit.rs",
@@ -793,15 +793,15 @@
       },
       {
         "file": "tests/cli.rs",
-        "line": 2674
+        "line": 2868
       },
       {
         "file": "tests/cli.rs",
-        "line": 2771
+        "line": 2965
       },
       {
         "file": "tests/cli.rs",
-        "line": 2838
+        "line": 3032
       },
       {
         "file": "tests/parallel_ordered_emit.rs",
@@ -1009,47 +1009,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 16315
+        "line": 16360
       },
       {
         "file": "src/main.rs",
-        "line": 16348
+        "line": 16393
       },
       {
         "file": "src/main.rs",
-        "line": 16367
+        "line": 16412
       },
       {
         "file": "src/main.rs",
-        "line": 16370
+        "line": 16415
       },
       {
         "file": "src/main.rs",
-        "line": 16373
+        "line": 16418
       },
       {
         "file": "src/main.rs",
-        "line": 18130
+        "line": 18288
       },
       {
         "file": "src/main.rs",
-        "line": 18143
+        "line": 18301
       },
       {
         "file": "src/main.rs",
-        "line": 18158
+        "line": 18316
       },
       {
         "file": "src/main.rs",
-        "line": 23578
+        "line": 23736
       },
       {
         "file": "src/main.rs",
-        "line": 23579
+        "line": 23737
       },
       {
         "file": "src/main.rs",
-        "line": 23580
+        "line": 23738
       },
       {
         "file": "src/mcpserver.rs",
@@ -1185,75 +1185,75 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 4175
+        "line": 4348
       },
       {
         "file": "src/worktree.rs",
-        "line": 4198
+        "line": 4371
       },
       {
         "file": "src/worktree.rs",
-        "line": 4234
+        "line": 4407
       },
       {
         "file": "src/worktree.rs",
-        "line": 4266
+        "line": 4439
       },
       {
         "file": "src/worktree.rs",
-        "line": 4301
+        "line": 4474
       },
       {
         "file": "src/worktree.rs",
-        "line": 4317
+        "line": 4490
       },
       {
         "file": "src/worktree.rs",
-        "line": 4344
+        "line": 4517
       },
       {
         "file": "src/worktree.rs",
-        "line": 4374
+        "line": 4547
       },
       {
         "file": "src/worktree.rs",
-        "line": 4381
+        "line": 4554
       },
       {
         "file": "src/worktree.rs",
-        "line": 4389
+        "line": 4562
       },
       {
         "file": "tests/cli.rs",
-        "line": 10460
+        "line": 10652
       },
       {
         "file": "tests/cli.rs",
-        "line": 10461
+        "line": 10653
       },
       {
         "file": "tests/cli.rs",
-        "line": 10462
+        "line": 10654
       },
       {
         "file": "tests/cli.rs",
-        "line": 10463
+        "line": 10655
       },
       {
         "file": "tests/cli.rs",
-        "line": 10548
+        "line": 10740
       },
       {
         "file": "tests/cli.rs",
-        "line": 10608
+        "line": 10800
       },
       {
         "file": "tests/cli.rs",
-        "line": 10609
+        "line": 10801
       },
       {
         "file": "tests/cli.rs",
-        "line": 10610
+        "line": 10802
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -1381,19 +1381,19 @@
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 367
+        "line": 368
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 378
+        "line": 379
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 619
+        "line": 620
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 723
+        "line": 724
       }
     ],
     "disposition": "delete",
@@ -1692,15 +1692,15 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 3859
+        "line": 3915
       },
       {
         "file": "src/worktree.rs",
-        "line": 3869
+        "line": 3925
       },
       {
         "file": "src/worktree.rs",
-        "line": 3935
+        "line": 3991
       }
     ],
     "disposition": "delete",
