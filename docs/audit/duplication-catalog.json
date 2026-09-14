@@ -1862,6 +1862,24 @@
         "name": "Command::new"
       },
       {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "start_line": 37,
+        "end_line": 37,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "start_line": 138,
+        "end_line": 138,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "start_line": 208,
+        "end_line": 208,
+        "name": "Command::new"
+      },
+      {
         "file": "tests/reset_build_cache_periphery.rs",
         "start_line": 38,
         "end_line": 38,
@@ -2192,6 +2210,18 @@
         "name": "Command::new"
       },
       {
+        "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
+        "start_line": 28,
+        "end_line": 28,
+        "name": "Command::new"
+      },
+      {
+        "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
+        "start_line": 88,
+        "end_line": 88,
+        "name": "Command::new"
+      },
+      {
         "file": "tests/watchdog_cli_periphery.rs",
         "start_line": 46,
         "end_line": 46,
@@ -2271,7 +2301,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 351 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 356 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -7224,6 +7254,36 @@
         "name": "\"create .rigger/agents\""
       },
       {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "start_line": 58,
+        "end_line": 58,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "start_line": 59,
+        "end_line": 59,
+        "name": "\"create .rigger\""
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "start_line": 68,
+        "end_line": 68,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "start_line": 86,
+        "end_line": 86,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "start_line": 168,
+        "end_line": 168,
+        "name": "\".rigger\""
+      },
+      {
         "file": "tests/reset_build_cache_periphery.rs",
         "start_line": 46,
         "end_line": 46,
@@ -7854,6 +7914,24 @@
         "name": "\"create .rigger\""
       },
       {
+        "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
+        "start_line": 40,
+        "end_line": 40,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
+        "start_line": 41,
+        "end_line": 41,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
+        "start_line": 101,
+        "end_line": 101,
+        "name": "\".rigger\""
+      },
+      {
         "file": "tests/watchdog_cli_periphery.rs",
         "start_line": 57,
         "end_line": 57,
@@ -7933,7 +8011,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 676 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 684 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0060",
@@ -17318,13 +17396,19 @@
         "name": "temp_project"
       },
       {
+        "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
+        "start_line": 26,
+        "end_line": 33,
+        "name": "temp_project"
+      },
+      {
         "file": "tests/watchdog_cli_periphery.rs",
         "start_line": 44,
         "end_line": 51,
         "name": "temp_project"
       }
     ],
-    "proposed_home": "a new shared module (sites span 13 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/reset_build_cache_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/spec_lint.rs, tests/watchdog_cli_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 14 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/reset_build_cache_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/spec_lint.rs, tests/validate_footprint_default_scratch_root_periphery.rs, tests/watchdog_cli_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -17446,6 +17530,12 @@
         "name": "temp_project"
       },
       {
+        "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
+        "start_line": 26,
+        "end_line": 33,
+        "name": "temp_project"
+      },
+      {
         "file": "tests/watchdog_cli_periphery.rs",
         "start_line": 44,
         "end_line": 51,
@@ -17453,7 +17543,7 @@
       }
     ],
     "proposed_home": "one shared `temp_project` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 20 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 21 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0395",
@@ -23075,7 +23165,7 @@
   },
   {
     "id": "dup-0591",
-    "classification": "exact",
+    "classification": "near",
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
@@ -23094,9 +23184,21 @@
         "start_line": 75,
         "end_line": 89,
         "name": "run_rigger"
+      },
+      {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "start_line": 102,
+        "end_line": 116,
+        "name": "run_rigger"
+      },
+      {
+        "file": "tests/validate_footprint_default_scratch_root_periphery.rs",
+        "start_line": 48,
+        "end_line": 62,
+        "name": "run_rigger"
       }
     ],
-    "proposed_home": "a new shared module (sites span 3 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/relocated_worktree_store_resolution_periphery.rs, tests/validate_footprint_default_scratch_root_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -23322,13 +23424,19 @@
         "name": "run_stream_identity"
       },
       {
+        "file": "tests/relocated_worktree_store_resolution_periphery.rs",
+        "start_line": 67,
+        "end_line": 79,
+        "name": "stream_identity"
+      },
+      {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
         "start_line": 73,
         "end_line": 87,
         "name": "run_stream_identity"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/heartbeat_write_read_agree_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: tests/heartbeat_write_read_agree_periphery.rs, tests/relocated_worktree_store_resolution_periphery.rs, tests/reset_derived_live_writer_guard_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
