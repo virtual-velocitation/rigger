@@ -25868,9 +25868,10 @@ fn rigger_workflow_yml_wires_the_checkin_stage_and_mutation_gate_with_the_spec_9
         checkin.needs
     );
     assert_eq!(
-        checkin.max_retries, 1,
-        "checkin overrides the run default with exactly one remediation round for the \
-         whole spec diff's mutants, never per-round"
+        checkin.max_retries, 2,
+        "checkin overrides the run default with an ATTEMPT bound of 2 - the sweep, exactly \
+         one remediation round for the whole spec diff's mutants, the sweep again; a value \
+         of 1 escalates on the first miss (spec 91)"
     );
     assert!(
         checkin.gates.iter().any(|g| g == "mutation"),

@@ -7404,7 +7404,30 @@ impl RunCtx<'_> {
         // crate. Empty for anything that owns no per-unit `target` either (a review/plan
         // worktree-less run), mirroring `target`'s own empty case; harmless for every OTHER
         // gate, whose command never reads `$MUTANTS`.
-        let mutants = crate::worktree::unit_mutants_sibling(dir).unwrap_or_default();
+        //
+        // EXCEPT the POST-MERGE re-gate (spec 12, unit 5): it runs in the repo's OWN checkout,
+        // whose basename is no `rigger-wt-<slug>`, so the sibling derivation yields nothing
+        // there - yet the merged tree it certifies is still THIS unit's, and a `checkin`
+        // stage's `mutation` gate must sweep it into a real root (`mkdir -p ""` fails the gate
+        // before cargo-mutants ever runs, blocking the integration of a green unit - spec 89's
+        // own check-in, 2026-09-13). The root is the SAME unit-keyed sibling the pre-merge
+        // sweep used, derived from the SAME `unit_worktree_dir` the unit's worktree was cut
+        // at, so the one terminus reap (`Worktree::remove` / `sweep_terminal`) removes both.
+        let mutants = crate::worktree::unit_mutants_sibling(dir)
+            .or_else(|| {
+                matches!(selection, GateSelection::PostMerge)
+                    .then(|| {
+                        let scratch = crate::worktree::scratch_root_from_env(
+                            &self.deps.repo,
+                            &self.cfg.workflow.defaults.workdir,
+                        );
+                        crate::worktree::unit_mutants_sibling(&unit_worktree_dir(
+                            &scratch, &st.name,
+                        ))
+                    })
+                    .flatten()
+            })
+            .unwrap_or_default();
         // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
         // CACHE), on the SAME signal as `target` above: a non-empty `target` means this
         // gate builds into its OWN per-unit `cargo-target-<slug>` cache, never at risk from
@@ -37381,6 +37404,116 @@ mod tests {
                 output: "reviewed the diff".into(),
                 resolved_model: String::new(),
             })
+        }
+    }
+
+    #[test]
+    fn the_post_merge_re_gate_gets_the_units_mutants_root_though_it_runs_in_the_repo() {
+        // Spec 91, THE GATE ENVIRONMENT, at the post-merge re-gate (spec 12, unit 5): the
+        // second of two batch-mates merges into a tree its own gate never saw, so its re-gate
+        // MISSES the content cache and RUNS - in the repo's own checkout, never a
+        // `rigger-wt-<slug>` worktree. A `checkin` stage's `mutation` gate there runs
+        // `rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`, so an EMPTY `$MUTANTS` fails the gate
+        // (`mkdir: cannot create directory ''`) and blocks the integration of a green unit -
+        // exactly what spec 89's own check-in hit (2026-09-13). The re-gate must export the
+        // SAME unit-keyed root the pre-merge sweep used: keyed by the unit's worktree name,
+        // not by the directory the gate happens to run in.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
+        for args in [
+            &["add", "m.rs"][..],
+            &["commit", "-q", "-m", "base m.rs"][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+        // Every gate run appends "<physical cwd> <$MUTANTS>" to a log OUTSIDE the repo (an
+        // untracked file inside it would dirty the very tree the integrate lock guards).
+        let log_dir = tempfile::tempdir().unwrap();
+        let log = log_dir.path().join("mutants-seen.log");
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert(
+            "g".into(),
+            gate_def(&format!(
+                "printf '%s %s\\n' \"$(pwd -P)\" \"$MUTANTS\" >> '{}'",
+                log.display()
+            )),
+        );
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec![],
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
+        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = MergeBreakDriver {
+            repo: repo_path.clone(),
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        for u in ["unit-a", "unit-b"] {
+            assert_eq!(
+                rs.units[u].status,
+                ledger::Status::Integrated,
+                "{u}: the gate only records its environment, so both merges land"
+            );
+        }
+
+        let seen = std::fs::read_to_string(&log).unwrap();
+        let repo_physical = std::fs::canonicalize(&repo_path).unwrap();
+        let in_repo: Vec<&str> = seen
+            .lines()
+            .filter(|l| l.split(' ').next() == repo_physical.to_str())
+            .collect();
+        assert!(
+            !in_repo.is_empty(),
+            "the second integrator's post-merge re-gate must RUN in the repo checkout (a \
+             content-cache miss over the merged two-MARK tree); gate runs seen:\n{seen}"
+        );
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let unit_roots: HashSet<String> = ["unit-a", "unit-b"]
+            .iter()
+            .map(|u| {
+                crate::worktree::unit_mutants_sibling(&unit_worktree_dir(&scratch, u)).unwrap()
+            })
+            .collect();
+        for line in &in_repo {
+            let root = line.split_once(' ').map(|(_, r)| r).unwrap_or_default();
+            assert!(
+                unit_roots.contains(root),
+                "a post-merge re-gate in the repo must get the integrating unit's own \
+                 unit-keyed $MUTANTS root (one of {unit_roots:?}), never an empty or \
+                 foreign one; got {root:?} in:\n{seen}"
+            );
         }
     }
 
