@@ -855,176 +855,176 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1759,
-        "end_line": 1759,
+        "start_line": 1825,
+        "end_line": 1825,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1820,
-        "end_line": 1820,
+        "start_line": 1886,
+        "end_line": 1886,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4848,
-        "end_line": 4848,
+        "start_line": 4914,
+        "end_line": 4914,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5073,
-        "end_line": 5073,
+        "start_line": 5139,
+        "end_line": 5139,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5265,
-        "end_line": 5265,
+        "start_line": 5331,
+        "end_line": 5331,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5515,
-        "end_line": 5515,
+        "start_line": 5581,
+        "end_line": 5581,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5677,
-        "end_line": 5677,
+        "start_line": 5743,
+        "end_line": 5743,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11042,
-        "end_line": 11042,
+        "start_line": 11108,
+        "end_line": 11108,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11052,
-        "end_line": 11052,
+        "start_line": 11118,
+        "end_line": 11118,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11084,
-        "end_line": 11084,
+        "start_line": 11150,
+        "end_line": 11150,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13824,
-        "end_line": 13824,
+        "start_line": 13890,
+        "end_line": 13890,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14589,
-        "end_line": 14589,
+        "start_line": 14655,
+        "end_line": 14655,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14642,
-        "end_line": 14642,
+        "start_line": 14708,
+        "end_line": 14708,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19794,
-        "end_line": 19794,
+        "start_line": 19860,
+        "end_line": 19860,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19863,
-        "end_line": 19863,
+        "start_line": 19929,
+        "end_line": 19929,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19936,
-        "end_line": 19936,
+        "start_line": 20002,
+        "end_line": 20002,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20017,
-        "end_line": 20017,
+        "start_line": 20083,
+        "end_line": 20083,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20193,
-        "end_line": 20193,
+        "start_line": 20259,
+        "end_line": 20259,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20253,
-        "end_line": 20253,
+        "start_line": 20319,
+        "end_line": 20319,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20361,
-        "end_line": 20361,
+        "start_line": 20427,
+        "end_line": 20427,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20389,
-        "end_line": 20389,
+        "start_line": 20455,
+        "end_line": 20455,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20510,
-        "end_line": 20510,
+        "start_line": 20576,
+        "end_line": 20576,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20570,
-        "end_line": 20570,
+        "start_line": 20636,
+        "end_line": 20636,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20619,
-        "end_line": 20619,
+        "start_line": 20685,
+        "end_line": 20685,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20657,
-        "end_line": 20657,
+        "start_line": 20723,
+        "end_line": 20723,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20719,
-        "end_line": 20719,
+        "start_line": 20785,
+        "end_line": 20785,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20798,
-        "end_line": 20798,
+        "start_line": 20864,
+        "end_line": 20864,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20856,
-        "end_line": 20856,
+        "start_line": 20922,
+        "end_line": 20922,
         "name": "Command::new"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20902,
-        "end_line": 20902,
+        "start_line": 20968,
+        "end_line": 20968,
         "name": "Command::new"
       },
       {
@@ -1443,56 +1443,56 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 746,
-        "end_line": 746,
+        "start_line": 756,
+        "end_line": 756,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 996,
-        "end_line": 996,
+        "start_line": 1016,
+        "end_line": 1016,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1217,
-        "end_line": 1217,
+        "start_line": 1247,
+        "end_line": 1247,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1413,
-        "end_line": 1413,
+        "start_line": 1453,
+        "end_line": 1453,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1670,
-        "end_line": 1670,
+        "start_line": 1720,
+        "end_line": 1720,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1770,
-        "end_line": 1770,
+        "start_line": 1830,
+        "end_line": 1830,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2082,
-        "end_line": 2082,
+        "start_line": 2152,
+        "end_line": 2152,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2208,
-        "end_line": 2208,
+        "start_line": 2288,
+        "end_line": 2288,
         "name": "Command::new"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2446,
-        "end_line": 2446,
+        "start_line": 2546,
+        "end_line": 2546,
         "name": "Command::new"
       },
       {
@@ -3309,8 +3309,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25158,
-        "end_line": 25160,
+        "start_line": 25224,
+        "end_line": 25226,
         "name": "normalize_ws"
       }
     ],
@@ -3329,8 +3329,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25158,
-        "end_line": 25160,
+        "start_line": 25224,
+        "end_line": 25226,
         "name": "normalize_ws"
       }
     ],
@@ -4963,326 +4963,332 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1509,
-        "end_line": 1509,
+        "start_line": 1539,
+        "end_line": 1539,
+        "name": "\"{}/.rigger/tmp\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 1551,
+        "end_line": 1551,
+        "name": "\"/.rigger/tmp/\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 1575,
+        "end_line": 1575,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1599,
-        "end_line": 1599,
+        "start_line": 1665,
+        "end_line": 1665,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1609,
-        "end_line": 1609,
+        "start_line": 1675,
+        "end_line": 1675,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1676,
-        "end_line": 1676,
+        "start_line": 1742,
+        "end_line": 1742,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1677,
-        "end_line": 1677,
+        "start_line": 1743,
+        "end_line": 1743,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1689,
-        "end_line": 1689,
+        "start_line": 1755,
+        "end_line": 1755,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1711,
-        "end_line": 1711,
+        "start_line": 1777,
+        "end_line": 1777,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1780,
-        "end_line": 1780,
+        "start_line": 1846,
+        "end_line": 1846,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1818,
-        "end_line": 1818,
+        "start_line": 1884,
+        "end_line": 1884,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1838,
-        "end_line": 1838,
+        "start_line": 1904,
+        "end_line": 1904,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1871,
-        "end_line": 1871,
+        "start_line": 1937,
+        "end_line": 1937,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1886,
-        "end_line": 1886,
+        "start_line": 1952,
+        "end_line": 1952,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2546,
-        "end_line": 2546,
+        "start_line": 2612,
+        "end_line": 2612,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2644,
-        "end_line": 2644,
+        "start_line": 2710,
+        "end_line": 2710,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2685,
-        "end_line": 2685,
+        "start_line": 2751,
+        "end_line": 2751,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2717,
-        "end_line": 2717,
+        "start_line": 2783,
+        "end_line": 2783,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2718,
-        "end_line": 2718,
+        "start_line": 2784,
+        "end_line": 2784,
         "name": "\"graph build must create .rigger/graph.db from a cold checkout\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2768,
-        "end_line": 2768,
+        "start_line": 2834,
+        "end_line": 2834,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2769,
-        "end_line": 2769,
+        "start_line": 2835,
+        "end_line": 2835,
         "name": "\"graph build must create .rigger/graph.db even when there is nothing to ingest\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2792,
-        "end_line": 2792,
+        "start_line": 2858,
+        "end_line": 2858,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2870,
-        "end_line": 2870,
+        "start_line": 2936,
+        "end_line": 2936,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2885,
-        "end_line": 2885,
+        "start_line": 2951,
+        "end_line": 2951,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2933,
-        "end_line": 2933,
+        "start_line": 2999,
+        "end_line": 2999,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2958,
-        "end_line": 2958,
+        "start_line": 3024,
+        "end_line": 3024,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3077,
-        "end_line": 3077,
+        "start_line": 3143,
+        "end_line": 3143,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3081,
-        "end_line": 3081,
+        "start_line": 3147,
+        "end_line": 3147,
         "name": "\"grounding via symbols must persist the structural index to .rigger/symbols/\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3254,
-        "end_line": 3254,
+        "start_line": 3320,
+        "end_line": 3320,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3648,
-        "end_line": 3648,
+        "start_line": 3714,
+        "end_line": 3714,
         "name": "\".rigger/tmp/agent-scratch/\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3654,
-        "end_line": 3654,
+        "start_line": 3720,
+        "end_line": 3720,
         "name": "\".rigger/tmp/cargo-target\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3662,
-        "end_line": 3662,
+        "start_line": 3728,
+        "end_line": 3728,
         "name": "\"CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3746,
-        "end_line": 3746,
+        "start_line": 3812,
+        "end_line": 3812,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3775,
-        "end_line": 3775,
+        "start_line": 3841,
+        "end_line": 3841,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3885,
-        "end_line": 3885,
+        "start_line": 3951,
+        "end_line": 3951,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4001,
-        "end_line": 4001,
+        "start_line": 4067,
+        "end_line": 4067,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4104,
-        "end_line": 4104,
+        "start_line": 4170,
+        "end_line": 4170,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4296,
-        "end_line": 4296,
+        "start_line": 4362,
+        "end_line": 4362,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4327,
-        "end_line": 4327,
+        "start_line": 4393,
+        "end_line": 4393,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4770,
-        "end_line": 4770,
+        "start_line": 4836,
+        "end_line": 4836,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4940,
-        "end_line": 4940,
+        "start_line": 5006,
+        "end_line": 5006,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5010,
-        "end_line": 5010,
+        "start_line": 5076,
+        "end_line": 5076,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5148,
-        "end_line": 5148,
+        "start_line": 5214,
+        "end_line": 5214,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5205,
-        "end_line": 5205,
+        "start_line": 5271,
+        "end_line": 5271,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5411,
-        "end_line": 5411,
+        "start_line": 5477,
+        "end_line": 5477,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5465,
-        "end_line": 5465,
+        "start_line": 5531,
+        "end_line": 5531,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5635,
-        "end_line": 5635,
+        "start_line": 5701,
+        "end_line": 5701,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5741,
-        "end_line": 5741,
+        "start_line": 5807,
+        "end_line": 5807,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5820,
-        "end_line": 5820,
+        "start_line": 5886,
+        "end_line": 5886,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5953,
-        "end_line": 5953,
+        "start_line": 6019,
+        "end_line": 6019,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6010,
-        "end_line": 6010,
+        "start_line": 6076,
+        "end_line": 6076,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6195,
-        "end_line": 6195,
+        "start_line": 6261,
+        "end_line": 6261,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6268,
-        "end_line": 6268,
+        "start_line": 6334,
+        "end_line": 6334,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6374,
-        "end_line": 6374,
+        "start_line": 6440,
+        "end_line": 6440,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6443,
-        "end_line": 6443,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 6545,
-        "end_line": 6545,
+        "start_line": 6509,
+        "end_line": 6509,
         "name": "\".rigger\""
       },
       {
@@ -5293,225 +5299,219 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6745,
-        "end_line": 6745,
+        "start_line": 6677,
+        "end_line": 6677,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6813,
-        "end_line": 6813,
+        "start_line": 6811,
+        "end_line": 6811,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6944,
-        "end_line": 6944,
+        "start_line": 6879,
+        "end_line": 6879,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7044,
-        "end_line": 7044,
+        "start_line": 7010,
+        "end_line": 7010,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 7110,
+        "end_line": 7110,
         "name": "\".rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7243,
-        "end_line": 7243,
+        "start_line": 7309,
+        "end_line": 7309,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7277,
-        "end_line": 7277,
+        "start_line": 7343,
+        "end_line": 7343,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7505,
-        "end_line": 7505,
+        "start_line": 7571,
+        "end_line": 7571,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7595,
-        "end_line": 7595,
+        "start_line": 7661,
+        "end_line": 7661,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7658,
-        "end_line": 7658,
+        "start_line": 7724,
+        "end_line": 7724,
         "name": "\"/.rigger/\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7659,
-        "end_line": 7659,
+        "start_line": 7725,
+        "end_line": 7725,
         "name": "\"the default marker path must never live under any .rigger; got: {marker_str:?}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7943,
-        "end_line": 7943,
+        "start_line": 8009,
+        "end_line": 8009,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8243,
-        "end_line": 8243,
+        "start_line": 8309,
+        "end_line": 8309,
         "name": "\"/.rigger/tmp/agent-live/\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8244,
-        "end_line": 8244,
+        "start_line": 8310,
+        "end_line": 8310,
         "name": "\"under RIGGER_TMPDIR the marker is not under the repo's .rigger/tmp; got: {marker_str:?}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9025,
-        "end_line": 9025,
+        "start_line": 9091,
+        "end_line": 9091,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9188,
-        "end_line": 9188,
+        "start_line": 9254,
+        "end_line": 9254,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9292,
-        "end_line": 9292,
+        "start_line": 9358,
+        "end_line": 9358,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9341,
-        "end_line": 9341,
+        "start_line": 9407,
+        "end_line": 9407,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9443,
-        "end_line": 9443,
+        "start_line": 9509,
+        "end_line": 9509,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9502,
-        "end_line": 9502,
+        "start_line": 9568,
+        "end_line": 9568,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9606,
-        "end_line": 9606,
+        "start_line": 9672,
+        "end_line": 9672,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9673,
-        "end_line": 9673,
+        "start_line": 9739,
+        "end_line": 9739,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9815,
-        "end_line": 9815,
+        "start_line": 9881,
+        "end_line": 9881,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9863,
-        "end_line": 9863,
+        "start_line": 9929,
+        "end_line": 9929,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9981,
-        "end_line": 9981,
+        "start_line": 10047,
+        "end_line": 10047,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10252,
-        "end_line": 10252,
+        "start_line": 10318,
+        "end_line": 10318,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10351,
-        "end_line": 10351,
+        "start_line": 10417,
+        "end_line": 10417,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10440,
-        "end_line": 10440,
+        "start_line": 10506,
+        "end_line": 10506,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10480,
-        "end_line": 10480,
+        "start_line": 10546,
+        "end_line": 10546,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11137,
-        "end_line": 11137,
+        "start_line": 11203,
+        "end_line": 11203,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11299,
-        "end_line": 11299,
+        "start_line": 11365,
+        "end_line": 11365,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11678,
-        "end_line": 11678,
+        "start_line": 11744,
+        "end_line": 11744,
         "name": "\".rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11678,
-        "end_line": 11678,
+        "start_line": 11744,
+        "end_line": 11744,
         "name": "\".rigger/agents\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11743,
-        "end_line": 11743,
+        "start_line": 11809,
+        "end_line": 11809,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11777,
-        "end_line": 11777,
+        "start_line": 11843,
+        "end_line": 11843,
         "name": "\".rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11777,
-        "end_line": 11777,
+        "start_line": 11843,
+        "end_line": 11843,
         "name": "\".rigger/agents\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 11780,
-        "end_line": 11780,
-        "name": "\".rigger/workflow.yml\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 11812,
-        "end_line": 11812,
-        "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
@@ -5521,692 +5521,686 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11846,
-        "end_line": 11846,
-        "name": "\".rigger/agents\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 11849,
-        "end_line": 11849,
-        "name": "\".rigger/workflow.yml\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 11884,
-        "end_line": 11884,
+        "start_line": 11878,
+        "end_line": 11878,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11923,
-        "end_line": 11923,
+        "start_line": 11912,
+        "end_line": 11912,
         "name": "\".rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11923,
-        "end_line": 11923,
+        "start_line": 11912,
+        "end_line": 11912,
         "name": "\".rigger/agents\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11926,
-        "end_line": 11926,
+        "start_line": 11915,
+        "end_line": 11915,
         "name": "\".rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11960,
-        "end_line": 11960,
+        "start_line": 11950,
+        "end_line": 11950,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11998,
-        "end_line": 11998,
+        "start_line": 11989,
+        "end_line": 11989,
         "name": "\".rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11998,
-        "end_line": 11998,
+        "start_line": 11989,
+        "end_line": 11989,
         "name": "\".rigger/agents\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12001,
-        "end_line": 12001,
+        "start_line": 11992,
+        "end_line": 11992,
         "name": "\".rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12056,
-        "end_line": 12056,
+        "start_line": 12026,
+        "end_line": 12026,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 12064,
+        "end_line": 12064,
         "name": "\".rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12056,
-        "end_line": 12056,
+        "start_line": 12064,
+        "end_line": 12064,
         "name": "\".rigger/agents\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12103,
-        "end_line": 12103,
+        "start_line": 12067,
+        "end_line": 12067,
         "name": "\".rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12103,
-        "end_line": 12103,
+        "start_line": 12122,
+        "end_line": 12122,
+        "name": "\".rigger/workflow.yml\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 12122,
+        "end_line": 12122,
         "name": "\".rigger/agents\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12116,
-        "end_line": 12116,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 12125,
-        "end_line": 12125,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 12127,
-        "end_line": 12127,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 12224,
-        "end_line": 12224,
+        "start_line": 12169,
+        "end_line": 12169,
         "name": "\".rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12225,
-        "end_line": 12225,
+        "start_line": 12169,
+        "end_line": 12169,
+        "name": "\".rigger/agents\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 12182,
+        "end_line": 12182,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 12191,
+        "end_line": 12191,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 12193,
+        "end_line": 12193,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 12290,
+        "end_line": 12290,
+        "name": "\".rigger/workflow.yml\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 12291,
+        "end_line": 12291,
         "name": "\"validate must NOT flag a clean tracked `.rigger/` tree; stderr:\\n{err}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12234,
-        "end_line": 12234,
+        "start_line": 12300,
+        "end_line": 12300,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12241,
-        "end_line": 12241,
+        "start_line": 12307,
+        "end_line": 12307,
         "name": "\"validate must still succeed (exit 0) when it only FLAGS uncommitted `.rigger/` \\\n         changes; stderr:\\n{err}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12245,
-        "end_line": 12245,
+        "start_line": 12311,
+        "end_line": 12311,
         "name": "\".rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12246,
-        "end_line": 12246,
+        "start_line": 12312,
+        "end_line": 12312,
         "name": "\"validate must flag the tracked-but-modified `.rigger/workflow.yml` on stderr; \\\n         stderr:\\n{err}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12262,
-        "end_line": 12262,
+        "start_line": 12328,
+        "end_line": 12328,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12507,
-        "end_line": 12507,
+        "start_line": 12573,
+        "end_line": 12573,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12924,
-        "end_line": 12924,
+        "start_line": 12990,
+        "end_line": 12990,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13068,
-        "end_line": 13068,
+        "start_line": 13134,
+        "end_line": 13134,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13070,
-        "end_line": 13070,
+        "start_line": 13136,
+        "end_line": 13136,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13073,
-        "end_line": 13073,
+        "start_line": 13139,
+        "end_line": 13139,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13075,
-        "end_line": 13075,
+        "start_line": 13141,
+        "end_line": 13141,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13103,
-        "end_line": 13103,
+        "start_line": 13169,
+        "end_line": 13169,
         "name": "\"probe/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13167,
-        "end_line": 13167,
+        "start_line": 13233,
+        "end_line": 13233,
         "name": "\"validate must warn about residue planted under the relocated cache-home DEFAULT \\\n         root - a regression that left its residue scan still rooted at the pre-relocation \\\n         `.rigger/tmp` would silently miss this and print nothing; stderr:\\n{err}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13197,
-        "end_line": 13197,
+        "start_line": 13263,
+        "end_line": 13263,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14117,
-        "end_line": 14117,
+        "start_line": 14183,
+        "end_line": 14183,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14214,
-        "end_line": 14214,
+        "start_line": 14280,
+        "end_line": 14280,
         "name": "\"scaffolded .rigger/workflow.yml\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14218,
-        "end_line": 14218,
+        "start_line": 14284,
+        "end_line": 14284,
         "name": "\"scaffolded .rigger/agents/\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14250,
-        "end_line": 14250,
+        "start_line": 14316,
+        "end_line": 14316,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14282,
-        "end_line": 14282,
+        "start_line": 14348,
+        "end_line": 14348,
         "name": "\".rigger/agents/researcher.md\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14283,
-        "end_line": 14283,
+        "start_line": 14349,
+        "end_line": 14349,
         "name": "\"the agent was actually imported into .rigger/agents/\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14330,
-        "end_line": 14330,
+        "start_line": 14396,
+        "end_line": 14396,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14559,
-        "end_line": 14559,
+        "start_line": 14625,
+        "end_line": 14625,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14563,
-        "end_line": 14563,
+        "start_line": 14629,
+        "end_line": 14629,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14567,
-        "end_line": 14567,
+        "start_line": 14633,
+        "end_line": 14633,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14576,
-        "end_line": 14576,
+        "start_line": 14642,
+        "end_line": 14642,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14578,
-        "end_line": 14578,
+        "start_line": 14644,
+        "end_line": 14644,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14582,
-        "end_line": 14582,
+        "start_line": 14648,
+        "end_line": 14648,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14583,
-        "end_line": 14583,
+        "start_line": 14649,
+        "end_line": 14649,
         "name": "\".rigger\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 14585,
-        "end_line": 14585,
-        "name": "\".rigger/dash.url\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 14586,
-        "end_line": 14586,
-        "name": "\".rigger/dash.marker\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 14587,
-        "end_line": 14587,
-        "name": "\".rigger/dash.attempt\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 14627,
-        "end_line": 14627,
-        "name": "\".claude/\\n.rigger/\\n\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 14643,
-        "end_line": 14643,
-        "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
         "start_line": 14651,
         "end_line": 14651,
+        "name": "\".rigger/dash.url\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 14652,
+        "end_line": 14652,
+        "name": "\".rigger/dash.marker\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 14653,
+        "end_line": 14653,
+        "name": "\".rigger/dash.attempt\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 14693,
+        "end_line": 14693,
+        "name": "\".claude/\\n.rigger/\\n\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 14709,
+        "end_line": 14709,
+        "name": "\".rigger/dash.url\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 14717,
+        "end_line": 14717,
         "name": "\"the test's global config must actually ignore .rigger/dash.url (else the regression \\\n         guard is inconclusive)\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14674,
-        "end_line": 14674,
+        "start_line": 14740,
+        "end_line": 14740,
         "name": "\".rigger/shim\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14675,
-        "end_line": 14675,
+        "start_line": 14741,
+        "end_line": 14741,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14676,
-        "end_line": 14676,
+        "start_line": 14742,
+        "end_line": 14742,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14677,
-        "end_line": 14677,
+        "start_line": 14743,
+        "end_line": 14743,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14881,
-        "end_line": 14881,
+        "start_line": 14947,
+        "end_line": 14947,
         "name": "\".rigger/project.id\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14884,
-        "end_line": 14884,
+        "start_line": 14950,
+        "end_line": 14950,
         "name": "\".rigger/project.id\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14897,
-        "end_line": 14897,
+        "start_line": 14963,
+        "end_line": 14963,
         "name": "\".rigger/project.id\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14986,
-        "end_line": 14986,
+        "start_line": 15052,
+        "end_line": 15052,
         "name": "\".rigger/project.id\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15035,
-        "end_line": 15035,
+        "start_line": 15101,
+        "end_line": 15101,
         "name": "\".rigger/project.id\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15040,
-        "end_line": 15040,
+        "start_line": 15106,
+        "end_line": 15106,
         "name": "\".rigger/project.id\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15054,
-        "end_line": 15054,
+        "start_line": 15120,
+        "end_line": 15120,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15197,
-        "end_line": 15197,
+        "start_line": 15263,
+        "end_line": 15263,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15316,
-        "end_line": 15316,
+        "start_line": 15382,
+        "end_line": 15382,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15408,
-        "end_line": 15408,
+        "start_line": 15474,
+        "end_line": 15474,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15473,
-        "end_line": 15473,
+        "start_line": 15539,
+        "end_line": 15539,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15543,
-        "end_line": 15543,
+        "start_line": 15609,
+        "end_line": 15609,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15907,
-        "end_line": 15907,
+        "start_line": 15973,
+        "end_line": 15973,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15975,
-        "end_line": 15975,
+        "start_line": 16041,
+        "end_line": 16041,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16112,
-        "end_line": 16112,
+        "start_line": 16178,
+        "end_line": 16178,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16311,
-        "end_line": 16311,
+        "start_line": 16377,
+        "end_line": 16377,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16501,
-        "end_line": 16501,
+        "start_line": 16567,
+        "end_line": 16567,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16683,
-        "end_line": 16683,
+        "start_line": 16749,
+        "end_line": 16749,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16728,
-        "end_line": 16728,
+        "start_line": 16794,
+        "end_line": 16794,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17140,
-        "end_line": 17140,
+        "start_line": 17206,
+        "end_line": 17206,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17155,
-        "end_line": 17155,
+        "start_line": 17221,
+        "end_line": 17221,
         "name": "\"the driver never recorded a dash URL in .rigger/dash.url; stderr:\\n{err}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17200,
-        "end_line": 17200,
+        "start_line": 17266,
+        "end_line": 17266,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17263,
-        "end_line": 17263,
+        "start_line": 17329,
+        "end_line": 17329,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17338,
-        "end_line": 17338,
+        "start_line": 17404,
+        "end_line": 17404,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17414,
-        "end_line": 17414,
+        "start_line": 17480,
+        "end_line": 17480,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17498,
-        "end_line": 17498,
+        "start_line": 17564,
+        "end_line": 17564,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17605,
-        "end_line": 17605,
+        "start_line": 17671,
+        "end_line": 17671,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18321,
-        "end_line": 18321,
+        "start_line": 18387,
+        "end_line": 18387,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18323,
-        "end_line": 18323,
+        "start_line": 18389,
+        "end_line": 18389,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19020,
-        "end_line": 19020,
+        "start_line": 19086,
+        "end_line": 19086,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19061,
-        "end_line": 19061,
+        "start_line": 19127,
+        "end_line": 19127,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19064,
-        "end_line": 19064,
+        "start_line": 19130,
+        "end_line": 19130,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19116,
-        "end_line": 19116,
+        "start_line": 19182,
+        "end_line": 19182,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19121,
-        "end_line": 19121,
+        "start_line": 19187,
+        "end_line": 19187,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19177,
-        "end_line": 19177,
+        "start_line": 19243,
+        "end_line": 19243,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19179,
-        "end_line": 19179,
+        "start_line": 19245,
+        "end_line": 19245,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19248,
-        "end_line": 19248,
+        "start_line": 19314,
+        "end_line": 19314,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19306,
-        "end_line": 19306,
+        "start_line": 19372,
+        "end_line": 19372,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19411,
-        "end_line": 19411,
+        "start_line": 19477,
+        "end_line": 19477,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19465,
-        "end_line": 19465,
+        "start_line": 19531,
+        "end_line": 19531,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19487,
-        "end_line": 19487,
+        "start_line": 19553,
+        "end_line": 19553,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19497,
-        "end_line": 19497,
+        "start_line": 19563,
+        "end_line": 19563,
         "name": "\"a marker that LOOKS like it predates this run's own RunStarted must still be reported \\\n         when .rigger/dash.attempt explicitly names this exact run - proving watch_poll's own \\\n         file-read-and-match wiring (not merely the pure watch::detect fallback comparison, \\\n         which alone would suppress this exact shape) is what forced the report; got:\\n{out}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19545,
-        "end_line": 19545,
+        "start_line": 19611,
+        "end_line": 19611,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19567,
-        "end_line": 19567,
+        "start_line": 19633,
+        "end_line": 19633,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20293,
-        "end_line": 20293,
+        "start_line": 20359,
+        "end_line": 20359,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21108,
-        "end_line": 21108,
+        "start_line": 21174,
+        "end_line": 21174,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21449,
-        "end_line": 21449,
+        "start_line": 21515,
+        "end_line": 21515,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21484,
-        "end_line": 21484,
+        "start_line": 21550,
+        "end_line": 21550,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21559,
-        "end_line": 21559,
+        "start_line": 21625,
+        "end_line": 21625,
         "name": "\"the first step must record a dash marker at .rigger/dash.marker; stderr:\\n{err1}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21640,
-        "end_line": 21640,
+        "start_line": 21706,
+        "end_line": 21706,
         "name": "\"the step must record a dash marker at .rigger/dash.marker; stderr:\\n{err}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21654,
-        "end_line": 21654,
+        "start_line": 21720,
+        "end_line": 21720,
         "name": "\"`rigger step` under RIGGER_DASH_PORT={dash_port} must bind its step-path dash at EXACTLY \\\n         that port and record it in .rigger/dash.marker (proving the override reaches the real \\\n         bind, not the fixed dash::DEFAULT_PORT); the marker instead recorded {marker_port}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21715,
-        "end_line": 21715,
+        "start_line": 21781,
+        "end_line": 21781,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21796,
-        "end_line": 21796,
+        "start_line": 21862,
+        "end_line": 21862,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21867,
-        "end_line": 21867,
+        "start_line": 21933,
+        "end_line": 21933,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22229,
-        "end_line": 22229,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 22241,
-        "end_line": 22241,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 22268,
-        "end_line": 22268,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 22296,
-        "end_line": 22296,
+        "start_line": 22295,
+        "end_line": 22295,
         "name": "\".rigger\""
       },
       {
@@ -6217,260 +6211,278 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22344,
-        "end_line": 22344,
+        "start_line": 22334,
+        "end_line": 22334,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22433,
-        "end_line": 22433,
+        "start_line": 22362,
+        "end_line": 22362,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 22373,
+        "end_line": 22373,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 22410,
+        "end_line": 22410,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 22499,
+        "end_line": 22499,
         "name": "\"the first step must record a dash marker at .rigger/dash.marker; stderr:\\n{err1}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22505,
-        "end_line": 22505,
+        "start_line": 22571,
+        "end_line": 22571,
         "name": "\"{root}/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22522,
-        "end_line": 22522,
+        "start_line": 22588,
+        "end_line": 22588,
         "name": "\"{root}/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23413,
-        "end_line": 23413,
+        "start_line": 23479,
+        "end_line": 23479,
         "name": "\"{other_root}/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23792,
-        "end_line": 23792,
+        "start_line": 23858,
+        "end_line": 23858,
         "name": "\"/stale/root/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23813,
-        "end_line": 23813,
+        "start_line": 23879,
+        "end_line": 23879,
         "name": "\"/live/root/.rigger/events.db\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23915,
-        "end_line": 23915,
+        "start_line": 23981,
+        "end_line": 23981,
         "name": "\"the step must record a dash marker at .rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24115,
-        "end_line": 24115,
+        "start_line": 24181,
+        "end_line": 24181,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24297,
-        "end_line": 24297,
+        "start_line": 24363,
+        "end_line": 24363,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24400,
-        "end_line": 24400,
+        "start_line": 24466,
+        "end_line": 24466,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 24525,
-        "end_line": 24525,
+        "start_line": 24591,
+        "end_line": 24591,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25167,
-        "end_line": 25167,
+        "start_line": 25233,
+        "end_line": 25233,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25186,
-        "end_line": 25186,
+        "start_line": 25252,
+        "end_line": 25252,
         "name": "\".rigger/workflow.yml must define a `checkin:` stage (spec 91): {text:?}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25190,
-        "end_line": 25190,
+        "start_line": 25256,
+        "end_line": 25256,
         "name": "\".rigger/workflow.yml must define a `mutation:` gate that invokes cargo mutants \\\n         (spec 91): {text:?}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25195,
-        "end_line": 25195,
+        "start_line": 25261,
+        "end_line": 25261,
         "name": "\".rigger/workflow.yml's checkin stage / mutation gate definition must name spec 91, \\\n         so drift in the committed workflow fails this suite instead of silently diverging \\\n         from the spec it satisfies: {text:?}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25221,
-        "end_line": 25221,
+        "start_line": 25287,
+        "end_line": 25287,
         "name": "\"this repository's own .rigger/workflow.yml and agents must load: {e}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25228,
-        "end_line": 25228,
+        "start_line": 25294,
+        "end_line": 25294,
         "name": "\".rigger/workflow.yml must define a `checkin` stage (spec 91)\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 25262,
-        "end_line": 25262,
-        "name": "\".rigger/workflow.yml must define a `mutation` gate (spec 91)\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 25283,
-        "end_line": 25283,
-        "name": "\"this repository's own committed .rigger/workflow.yml must pass Config::validate \\\n         on a correctly-provisioned machine (cargo-mutants installed)\""
       },
       {
         "file": "tests/cli.rs",
         "start_line": 25328,
         "end_line": 25328,
-        "name": "\".rigger/dash.attempt\""
+        "name": "\".rigger/workflow.yml must define a `mutation` gate (spec 91)\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25329,
-        "end_line": 25329,
-        "name": "\"a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \\\n         (record_dash_attempt); without it this test cannot exercise the round-8 fact at all\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 25386,
-        "end_line": 25386,
-        "name": "\".rigger/dash.url\""
+        "start_line": 25349,
+        "end_line": 25349,
+        "name": "\"this repository's own committed .rigger/workflow.yml must pass Config::validate \\\n         on a correctly-provisioned machine (cargo-mutants installed)\""
       },
       {
         "file": "tests/cli.rs",
         "start_line": 25394,
         "end_line": 25394,
-        "name": "\".rigger/dash.marker\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 25458,
-        "end_line": 25458,
-        "name": "\".rigger/dash.marker\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 25487,
-        "end_line": 25487,
-        "name": "\".rigger/dash.url\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 25494,
-        "end_line": 25494,
         "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25555,
-        "end_line": 25555,
-        "name": "\".rigger/dash.marker\""
+        "start_line": 25395,
+        "end_line": 25395,
+        "name": "\"a real step's own ensure_run_dashboard call must record .rigger/dash.attempt \\\n         (record_dash_attempt); without it this test cannot exercise the round-8 fact at all\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25558,
-        "end_line": 25558,
+        "start_line": 25452,
+        "end_line": 25452,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25612,
-        "end_line": 25612,
+        "start_line": 25460,
+        "end_line": 25460,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25634,
-        "end_line": 25634,
+        "start_line": 25524,
+        "end_line": 25524,
+        "name": "\".rigger/dash.marker\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 25553,
+        "end_line": 25553,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25639,
-        "end_line": 25639,
+        "start_line": 25560,
+        "end_line": 25560,
         "name": "\".rigger/dash.attempt\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 25621,
+        "end_line": 25621,
+        "name": "\".rigger/dash.marker\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 25624,
+        "end_line": 25624,
+        "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
         "start_line": 25678,
         "end_line": 25678,
-        "name": "\".rigger/dash.url\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 25689,
-        "end_line": 25689,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25725,
-        "end_line": 25725,
+        "start_line": 25700,
+        "end_line": 25700,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25733,
-        "end_line": 25733,
-        "name": "\".rigger/dash.marker\""
+        "start_line": 25705,
+        "end_line": 25705,
+        "name": "\".rigger/dash.attempt\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25785,
-        "end_line": 25785,
+        "start_line": 25744,
+        "end_line": 25744,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25790,
-        "end_line": 25790,
+        "start_line": 25755,
+        "end_line": 25755,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25852,
-        "end_line": 25852,
+        "start_line": 25791,
+        "end_line": 25791,
         "name": "\".rigger/dash.url\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25860,
-        "end_line": 25860,
+        "start_line": 25799,
+        "end_line": 25799,
         "name": "\".rigger/dash.marker\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26113,
-        "end_line": 26113,
+        "start_line": 25851,
+        "end_line": 25851,
+        "name": "\".rigger/dash.url\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 25856,
+        "end_line": 25856,
+        "name": "\".rigger/dash.marker\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 25918,
+        "end_line": 25918,
+        "name": "\".rigger/dash.url\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 25926,
+        "end_line": 25926,
+        "name": "\".rigger/dash.marker\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 26179,
+        "end_line": 26179,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26821,
-        "end_line": 26821,
+        "start_line": 26887,
+        "end_line": 26887,
         "name": "\".rigger\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26859,
-        "end_line": 26859,
+        "start_line": 26925,
+        "end_line": 26925,
         "name": "\".rigger\""
       },
       {
@@ -6946,6 +6958,90 @@
         "start_line": 460,
         "end_line": 460,
         "name": "\"the project's own .rigger/workflow.yml must load through the real loader\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 613,
+        "end_line": 613,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 829,
+        "end_line": 829,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 1067,
+        "end_line": 1067,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 1303,
+        "end_line": 1303,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 1544,
+        "end_line": 1544,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 1754,
+        "end_line": 1754,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 1946,
+        "end_line": 1946,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 2182,
+        "end_line": 2182,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 2317,
+        "end_line": 2317,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 2483,
+        "end_line": 2483,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 2692,
+        "end_line": 2692,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 2921,
+        "end_line": 2921,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 3031,
+        "end_line": 3031,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 3184,
+        "end_line": 3184,
+        "name": "\"{repo_path}/.rigger-test-scratch\""
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
@@ -7837,7 +7933,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 660 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 676 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0060",
@@ -8286,10 +8382,16 @@
         "start_line": 40,
         "end_line": 171,
         "name": "public_name_contract_predicate_error_and_resolver_agree"
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 1735,
+        "end_line": 1843,
+        "name": "a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact"
       }
     ],
     "proposed_home": "one error-shaping helper module",
-    "note": "mandatory sweep: error-shaping helper functions - 7 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: error-shaping helper functions - 8 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0079",
@@ -9413,14 +9515,14 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9989,
-        "end_line": 9989,
+        "start_line": 10055,
+        "end_line": 10055,
         "name": "Connection::open"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16123,
-        "end_line": 16123,
+        "start_line": 16189,
+        "end_line": 16189,
         "name": "Connection::open"
       },
       {
@@ -10253,116 +10355,116 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21742,
-        "end_line": 21742,
+        "start_line": 21808,
+        "end_line": 21808,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23848,
-        "end_line": 23848,
+        "start_line": 23914,
+        "end_line": 23914,
         "name": "\"/proc/{pid}/stat\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23849,
-        "end_line": 23849,
+        "start_line": 23915,
+        "end_line": 23915,
         "name": "\"read /proc/{pid}/stat: {e}\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23852,
-        "end_line": 23852,
+        "start_line": 23918,
+        "end_line": 23918,
         "name": "\"/proc stat has a parenthesised comm field\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23857,
-        "end_line": 23857,
+        "start_line": 23923,
+        "end_line": 23923,
         "name": "\"/proc stat has a pgrp field after comm\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26890,
-        "end_line": 26890,
+        "start_line": 26956,
+        "end_line": 26956,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26975,
-        "end_line": 26975,
+        "start_line": 27041,
+        "end_line": 27041,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27022,
-        "end_line": 27022,
+        "start_line": 27088,
+        "end_line": 27088,
         "name": "\"/proc/{holder_pid}/stat\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 27037,
-        "end_line": 27037,
-        "name": "\"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc\""
       },
       {
         "file": "tests/cli.rs",
         "start_line": 27103,
         "end_line": 27103,
-        "name": "\"/proc\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 27126,
-        "end_line": 27126,
-        "name": "\"/proc\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 27155,
-        "end_line": 27155,
-        "name": "\"/proc\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 27205,
-        "end_line": 27205,
-        "name": "\"/proc/{holder_pid}/stat\""
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 27220,
-        "end_line": 27220,
         "name": "\"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27294,
-        "end_line": 27294,
+        "start_line": 27169,
+        "end_line": 27169,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27320,
-        "end_line": 27320,
+        "start_line": 27192,
+        "end_line": 27192,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27418,
-        "end_line": 27418,
+        "start_line": 27221,
+        "end_line": 27221,
         "name": "\"/proc\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27456,
-        "end_line": 27456,
+        "start_line": 27271,
+        "end_line": 27271,
+        "name": "\"/proc/{holder_pid}/stat\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 27286,
+        "end_line": 27286,
+        "name": "\"the holder pid {holder_pid} never reached the STOPPED (T) state in /proc\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 27360,
+        "end_line": 27360,
+        "name": "\"/proc\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 27386,
+        "end_line": 27386,
+        "name": "\"/proc\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 27484,
+        "end_line": 27484,
+        "name": "\"/proc\""
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 27522,
+        "end_line": 27522,
         "name": "\"held_port_holder's message half and describe_held_port_if_confirmed's own return \\\n             must agree (scheduler-state letter normalized away since each call independently \\\n             re-reads /proc and can observe a state flap) - they are documented as sharing one \\\n             discovery\""
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27475,
-        "end_line": 27475,
+        "start_line": 27541,
+        "end_line": 27541,
         "name": "\"/proc\""
       },
       {
@@ -10519,20 +10621,20 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23847,
-        "end_line": 23860,
+        "start_line": 23913,
+        "end_line": 23926,
         "name": "proc_pgid_of"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26970,
-        "end_line": 27070,
+        "start_line": 27036,
+        "end_line": 27136,
         "name": "cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27149,
-        "end_line": 27264,
+        "start_line": 27215,
+        "end_line": 27330,
         "name": "step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario"
       },
       {
@@ -11333,8 +11435,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25181,
-        "end_line": 25199,
+        "start_line": 25247,
+        "end_line": 25265,
         "name": "rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91"
       }
     ],
@@ -11569,8 +11671,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2031,
-        "end_line": 2033,
+        "start_line": 2101,
+        "end_line": 2103,
         "name": "subscribe_stream"
       }
     ],
@@ -13913,8 +14015,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23847,
-        "end_line": 23860,
+        "start_line": 23913,
+        "end_line": 23926,
         "name": "proc_pgid_of"
       }
     ],
@@ -15031,8 +15133,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2028,
-        "end_line": 2030,
+        "start_line": 2098,
+        "end_line": 2100,
         "name": "subscribe_all"
       }
     ],
@@ -16471,20 +16573,20 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3283,
-        "end_line": 3288,
+        "start_line": 3349,
+        "end_line": 3354,
         "name": "main_rs_source"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3484,
-        "end_line": 3489,
+        "start_line": 3550,
+        "end_line": 3555,
         "name": "rigger_js_source"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25165,
-        "end_line": 25170,
+        "start_line": 25231,
+        "end_line": 25236,
         "name": "rigger_workflow_yml_text"
       },
       {
@@ -17915,32 +18017,32 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9928,
-        "end_line": 9966,
+        "start_line": 9994,
+        "end_line": 10032,
         "name": "stats_reports_the_latest_run_by_default_and_all_for_the_aggregate"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20955,
-        "end_line": 21014,
+        "start_line": 21021,
+        "end_line": 21080,
         "name": "release_ready_handoff_surfaces_on_status_for_a_done_run"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21224,
-        "end_line": 21265,
+        "start_line": 21290,
+        "end_line": 21331,
         "name": "release_ready_is_silent_on_status_for_an_unfinished_run"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21336,
-        "end_line": 21369,
+        "start_line": 21402,
+        "end_line": 21435,
         "name": "release_ready_pluralizes_the_unit_count_on_status_for_a_multi_unit_run"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21414,
-        "end_line": 21436,
+        "start_line": 21480,
+        "end_line": 21502,
         "name": "release_ready_is_silent_on_status_for_a_spec_defective_run"
       },
       {
@@ -18283,32 +18385,32 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7969,
-        "end_line": 8072,
+        "start_line": 8035,
+        "end_line": 8138,
         "name": "step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8097,
-        "end_line": 8160,
+        "start_line": 8163,
+        "end_line": 8226,
         "name": "step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11441,
-        "end_line": 11505,
+        "start_line": 11507,
+        "end_line": 11571,
         "name": "a_liveness_fault_on_a_review_spawn_halts_instead_of_re_parking"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14782,
-        "end_line": 14812,
+        "start_line": 14848,
+        "end_line": 14878,
         "name": "result_if_absent_records_when_the_spawn_is_unanswered"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14820,
-        "end_line": 14858,
+        "start_line": 14886,
+        "end_line": 14924,
         "name": "result_if_absent_never_clobbers_a_self_reported_success"
       }
     ],
@@ -18367,8 +18469,8 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1495,
-        "end_line": 1512,
+        "start_line": 1561,
+        "end_line": 1578,
         "name": "scratch_refuses_to_fabricate_a_store_when_none_exists"
       }
     ],
@@ -18381,14 +18483,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 1747,
-        "end_line": 1798,
+        "start_line": 1813,
+        "end_line": 1864,
         "name": "result_from_a_relocated_git_worktree_outside_the_repo_records_into_the_repo_stream"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 1811,
-        "end_line": 1853,
+        "start_line": 1877,
+        "end_line": 1919,
         "name": "result_from_a_configured_nested_git_worktree_records_into_the_repo_stream"
       }
     ],
@@ -18401,26 +18503,26 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 1916,
-        "end_line": 1939,
+        "start_line": 1982,
+        "end_line": 2005,
         "name": "result_if_absent_orphan_advisory_states_the_conditional_not_a_recording"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16205,
-        "end_line": 16225,
+        "start_line": 16271,
+        "end_line": 16291,
         "name": "canary_if_model_changed_skips_when_the_model_is_unchanged"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16232,
-        "end_line": 16254,
+        "start_line": 16298,
+        "end_line": 16320,
         "name": "canary_if_model_changed_runs_when_a_tier_resolved_model_repointed"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16263,
-        "end_line": 16297,
+        "start_line": 16329,
+        "end_line": 16363,
         "name": "canary_if_model_changed_skips_a_snapshot_only_date_suffix_bump_without_running_the_panel"
       }
     ],
@@ -18433,14 +18535,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 2004,
-        "end_line": 2075,
+        "start_line": 2070,
+        "end_line": 2141,
         "name": "a_spawns_scratch_is_reclaimed_the_moment_its_result_is_recorded_for_every_outcome"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2091,
-        "end_line": 2165,
+        "start_line": 2157,
+        "end_line": 2231,
         "name": "a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome"
       }
     ],
@@ -18453,26 +18555,26 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 2179,
-        "end_line": 2214,
+        "start_line": 2245,
+        "end_line": 2280,
         "name": "a_reviewers_result_never_reclaims_the_implementers_mutation_scratch"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2227,
-        "end_line": 2270,
+        "start_line": 2293,
+        "end_line": 2336,
         "name": "a_dotdot_spawn_id_never_escapes_the_registered_scratch_roots"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2287,
-        "end_line": 2340,
+        "start_line": 2353,
+        "end_line": 2406,
         "name": "a_dotdot_spawn_id_never_escapes_the_pre_existing_agent_scratch_root_either"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 2361,
-        "end_line": 2399,
+        "start_line": 2427,
+        "end_line": 2465,
         "name": "a_leading_slash_spawn_id_never_collapses_the_reclaim_to_its_registered_root"
       }
     ],
@@ -18485,20 +18587,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 2489,
-        "end_line": 2537,
+        "start_line": 2555,
+        "end_line": 2603,
         "name": "two_speculation_lanes_of_the_same_unit_get_distinct_mutation_scratch_dirs"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8839,
-        "end_line": 8903,
+        "start_line": 8905,
+        "end_line": 8969,
         "name": "a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_survives"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9669,
-        "end_line": 9786,
+        "start_line": 9735,
+        "end_line": 9852,
         "name": "a_resumed_run_reaps_an_escalated_and_an_on_pass_none_settled_units_registered_mutation_scratch_not_just_an_integrated_ones"
       }
     ],
@@ -18511,14 +18613,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 2545,
-        "end_line": 2556,
+        "start_line": 2611,
+        "end_line": 2622,
         "name": "write_grounder_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16500,
-        "end_line": 16515,
+        "start_line": 16566,
+        "end_line": 16581,
         "name": "write_gating_lint_project"
       }
     ],
@@ -18531,14 +18633,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 3307,
-        "end_line": 3363,
+        "start_line": 3373,
+        "end_line": 3429,
         "name": "worktree_sweep_completes_before_any_add_within_one_step"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8178,
-        "end_line": 8213,
+        "start_line": 8244,
+        "end_line": 8279,
         "name": "the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed"
       }
     ],
@@ -18551,8 +18653,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 3484,
-        "end_line": 3489,
+        "start_line": 3550,
+        "end_line": 3555,
         "name": "rigger_js_source"
       },
       {
@@ -18595,8 +18697,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 3609,
-        "end_line": 3665,
+        "start_line": 3675,
+        "end_line": 3731,
         "name": "native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_container"
       },
       {
@@ -18615,68 +18717,68 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 3745,
-        "end_line": 3769,
+        "start_line": 3811,
+        "end_line": 3835,
         "name": "write_two_stage_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3774,
-        "end_line": 3798,
+        "start_line": 3840,
+        "end_line": 3864,
         "name": "write_budget_one_two_stage_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 3884,
-        "end_line": 3904,
+        "start_line": 3950,
+        "end_line": 3970,
         "name": "write_standalone_review_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4295,
-        "end_line": 4319,
+        "start_line": 4361,
+        "end_line": 4385,
         "name": "write_reviewless_git_unit_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4326,
-        "end_line": 4351,
+        "start_line": 4392,
+        "end_line": 4417,
         "name": "write_reviewless_git_escalating_unit_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7242,
-        "end_line": 7267,
+        "start_line": 7308,
+        "end_line": 7333,
         "name": "write_failing_gate_escalating_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7276,
-        "end_line": 7301,
+        "start_line": 7342,
+        "end_line": 7367,
         "name": "write_manual_review_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7504,
-        "end_line": 7527,
+        "start_line": 7570,
+        "end_line": 7593,
         "name": "write_budget_one_dependency_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7594,
-        "end_line": 7607,
+        "start_line": 7660,
+        "end_line": 7673,
         "name": "write_liveness_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7942,
-        "end_line": 7955,
+        "start_line": 8008,
+        "end_line": 8021,
         "name": "write_unbounded_liveness_workflow"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11136,
-        "end_line": 11167,
+        "start_line": 11202,
+        "end_line": 11233,
         "name": "write_gated_reviewed_workflow"
       },
       {
@@ -18713,8 +18815,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 4295,
-        "end_line": 4319,
+        "start_line": 4361,
+        "end_line": 4385,
         "name": "write_reviewless_git_unit_workflow"
       },
       {
@@ -18733,14 +18835,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 4366,
-        "end_line": 4441,
+        "start_line": 4432,
+        "end_line": 4507,
         "name": "step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 4456,
-        "end_line": 4524,
+        "start_line": 4522,
+        "end_line": 4590,
         "name": "step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalation"
       }
     ],
@@ -18753,20 +18855,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 4677,
-        "end_line": 4691,
+        "start_line": 4743,
+        "end_line": 4757,
         "name": "resume_unit_refuses_an_unknown_unit"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10538,
-        "end_line": 10549,
+        "start_line": 10604,
+        "end_line": 10615,
         "name": "step_rejects_an_unknown_flag"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10588,
-        "end_line": 10599,
+        "start_line": 10654,
+        "end_line": 10665,
         "name": "step_rejects_base_without_a_value"
       },
       {
@@ -18785,20 +18887,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 4763,
-        "end_line": 4972,
+        "start_line": 4829,
+        "end_line": 5038,
         "name": "step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5198,
-        "end_line": 5445,
+        "start_line": 5264,
+        "end_line": 5511,
         "name": "step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 5628,
-        "end_line": 5771,
+        "start_line": 5694,
+        "end_line": 5837,
         "name": "step_stamps_a_real_failed_sha_after_a_deletion_before_the_reject_stamp"
       }
     ],
@@ -18811,32 +18913,32 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 5811,
-        "end_line": 5973,
+        "start_line": 5877,
+        "end_line": 6039,
         "name": "run_end_to_end_restores_a_worktree_a_reviewer_agent_deletes_mid_review"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6258,
-        "end_line": 6411,
+        "start_line": 6324,
+        "end_line": 6477,
         "name": "speculation_reject_worktree_sha_is_stamped_after_the_adjudicators_own_deletion_is_restored_end_to_end"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9178,
-        "end_line": 9317,
+        "start_line": 9244,
+        "end_line": 9383,
         "name": "a_speculation_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_winner_integrate_teardown"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9331,
-        "end_line": 9469,
+        "start_line": 9397,
+        "end_line": 9535,
         "name": "a_speculation_escalations_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_escalation_tail_teardown"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 9492,
-        "end_line": 9642,
+        "start_line": 9558,
+        "end_line": 9708,
         "name": "a_speculation_on_pass_none_winners_registered_mutation_scratch_across_all_lanes_is_reaped_by_the_real_on_pass_none_exit_teardown"
       }
     ],
@@ -18849,14 +18951,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 6435,
-        "end_line": 6580,
+        "start_line": 6501,
+        "end_line": 6646,
         "name": "resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_exhaustive_gates_own_deletion_is_restored"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 6603,
-        "end_line": 6780,
+        "start_line": 6669,
+        "end_line": 6846,
         "name": "resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored"
       }
     ],
@@ -18869,14 +18971,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 7088,
-        "end_line": 7149,
+        "start_line": 7154,
+        "end_line": 7215,
         "name": "run_registers_a_credential_free_shared_instance"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 7169,
-        "end_line": 7234,
+        "start_line": 7235,
+        "end_line": 7300,
         "name": "run_driver_workflow_registers_a_credential_free_shared_instance"
       }
     ],
@@ -18889,8 +18991,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 7311,
-        "end_line": 7403,
+        "start_line": 7377,
+        "end_line": 7469,
         "name": "step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit"
       },
       {
@@ -18909,8 +19011,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 7612,
-        "end_line": 7622,
+        "start_line": 7678,
+        "end_line": 7688,
         "name": "plant_stale_marker"
       },
       {
@@ -18929,8 +19031,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 7612,
-        "end_line": 7622,
+        "start_line": 7678,
+        "end_line": 7688,
         "name": "plant_stale_marker"
       },
       {
@@ -18949,14 +19051,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 8514,
-        "end_line": 8562,
+        "start_line": 8580,
+        "end_line": 8628,
         "name": "run_teardown_reclaims_run_level_scratch_at_a_definition_drift_halt"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8579,
-        "end_line": 8635,
+        "start_line": 8645,
+        "end_line": 8701,
         "name": "run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_hung_spawn_may_be_alive"
       }
     ],
@@ -18969,20 +19071,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 8658,
-        "end_line": 8685,
+        "start_line": 8724,
+        "end_line": 8751,
         "name": "run_teardown_spares_run_level_scratch_at_a_manual_review_pause"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8710,
-        "end_line": 8758,
+        "start_line": 8776,
+        "end_line": 8824,
         "name": "run_teardown_spares_run_level_scratch_at_a_drift_halt_while_a_manual_review_is_pending"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 8768,
-        "end_line": 8816,
+        "start_line": 8834,
+        "end_line": 8882,
         "name": "run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated"
       }
     ],
@@ -18995,14 +19097,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 10013,
-        "end_line": 10087,
+        "start_line": 10079,
+        "end_line": 10153,
         "name": "stats_cli_renders_exact_per_role_spawn_timing_and_unpaired_disclosure"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10161,
-        "end_line": 10212,
+        "start_line": 10227,
+        "end_line": 10278,
         "name": "stats_cli_excludes_suspect_non_positive_duration_pairs_as_unpaired_not_zero"
       }
     ],
@@ -19015,14 +19117,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 10555,
-        "end_line": 10583,
+        "start_line": 10621,
+        "end_line": 10649,
         "name": "step_accepts_base_and_anchors_the_run_branch"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10608,
-        "end_line": 10652,
+        "start_line": 10674,
+        "end_line": 10718,
         "name": "step_creates_run_branch_off_head_when_base_unresolvable"
       }
     ],
@@ -19035,20 +19137,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 10662,
-        "end_line": 10692,
+        "start_line": 10728,
+        "end_line": 10758,
         "name": "step_refuses_when_there_is_no_reachable_base"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10703,
-        "end_line": 10734,
+        "start_line": 10769,
+        "end_line": 10800,
         "name": "run_refuses_when_there_is_no_reachable_base"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 10744,
-        "end_line": 10787,
+        "start_line": 10810,
+        "end_line": 10853,
         "name": "run_workflow_refuses_when_there_is_no_reachable_base"
       }
     ],
@@ -19061,8 +19163,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 11124,
-        "end_line": 11126,
+        "start_line": 11190,
+        "end_line": 11192,
         "name": "temp_repoless_project"
       },
       {
@@ -19087,8 +19189,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 11124,
-        "end_line": 11126,
+        "start_line": 11190,
+        "end_line": 11192,
         "name": "temp_repoless_project"
       },
       {
@@ -19113,26 +19215,26 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 11741,
-        "end_line": 11758,
+        "start_line": 11807,
+        "end_line": 11824,
         "name": "write_gated_workflow_no_review"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11810,
-        "end_line": 11827,
+        "start_line": 11876,
+        "end_line": 11893,
         "name": "write_reviewed_workflow_no_gate"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11882,
-        "end_line": 11902,
+        "start_line": 11948,
+        "end_line": 11968,
         "name": "write_reviewed_workflow_added_gate"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11958,
-        "end_line": 11980,
+        "start_line": 12024,
+        "end_line": 12046,
         "name": "write_reviewed_workflow_extra_stage"
       }
     ],
@@ -19145,14 +19247,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 11767,
-        "end_line": 11803,
+        "start_line": 11833,
+        "end_line": 11869,
         "name": "replay_candidate_column_reacts_to_a_changed_config"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11836,
-        "end_line": 11876,
+        "start_line": 11902,
+        "end_line": 11942,
         "name": "replay_removing_a_gate_lowers_the_candidate_gate_runs"
       }
     ],
@@ -19165,14 +19267,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 11914,
-        "end_line": 11953,
+        "start_line": 11980,
+        "end_line": 12019,
         "name": "replay_an_added_gate_fails_safe_and_never_fabricates_a_pass"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 11989,
-        "end_line": 12021,
+        "start_line": 12055,
+        "end_line": 12087,
         "name": "replay_an_uncovered_candidate_spawn_parks_and_still_prints_a_partial_column"
       }
     ],
@@ -19185,14 +19287,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 12347,
-        "end_line": 12371,
+        "start_line": 12413,
+        "end_line": 12437,
         "name": "validate_fails_at_run_start_when_a_named_build_wrapper_is_absent_from_path"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12864,
-        "end_line": 12885,
+        "start_line": 12930,
+        "end_line": 12951,
         "name": "validate_rejects_an_explicit_build_mutation_value_naming_spec_91_end_to_end"
       }
     ],
@@ -19205,44 +19307,44 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 12378,
-        "end_line": 12396,
+        "start_line": 12444,
+        "end_line": 12462,
         "name": "validate_reports_none_when_auto_finds_no_known_wrapper_on_path"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12401,
-        "end_line": 12418,
+        "start_line": 12467,
+        "end_line": 12484,
         "name": "validate_reports_the_resolved_wrapper_when_auto_finds_a_known_wrapper_on_path"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12425,
-        "end_line": 12455,
+        "start_line": 12491,
+        "end_line": 12521,
         "name": "validate_reports_cache_dir_and_budget_alongside_the_wrapper"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12597,
-        "end_line": 12622,
+        "start_line": 12663,
+        "end_line": 12688,
         "name": "validate_reports_none_when_autos_discovered_wrapper_has_an_uncreatable_cache_dir"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12693,
-        "end_line": 12719,
+        "start_line": 12759,
+        "end_line": 12785,
         "name": "validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwritable_cache_dir"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12813,
-        "end_line": 12830,
+        "start_line": 12879,
+        "end_line": 12896,
         "name": "validate_reports_mutation_gate_declared_when_cargo_mutants_is_resolvable"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12837,
-        "end_line": 12854,
+        "start_line": 12903,
+        "end_line": 12920,
         "name": "validate_reports_mutation_gate_declared_by_default_on_a_fresh_scaffold"
       }
     ],
@@ -19255,14 +19357,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 12560,
-        "end_line": 12589,
+        "start_line": 12626,
+        "end_line": 12655,
         "name": "validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12654,
-        "end_line": 12683,
+        "start_line": 12720,
+        "end_line": 12749,
         "name": "validate_fails_at_run_start_when_a_named_wrappers_cache_dir_is_preexisting_but_unwritable"
       }
     ],
@@ -19275,14 +19377,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 12750,
-        "end_line": 12771,
+        "start_line": 12816,
+        "end_line": 12837,
         "name": "validate_fails_at_run_start_when_the_scaffolded_mutation_gate_has_no_cargo_mutants_on_path"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 12788,
-        "end_line": 12808,
+        "start_line": 12854,
+        "end_line": 12874,
         "name": "validate_fails_before_any_output_when_the_mutation_gate_has_no_cargo_mutants"
       }
     ],
@@ -19295,14 +19397,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 13276,
-        "end_line": 13318,
+        "start_line": 13342,
+        "end_line": 13384,
         "name": "validate_footprint_registered_scratch_roots_measures_the_real_mutation_scratch_root"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13694,
-        "end_line": 13804,
+        "start_line": 13760,
+        "end_line": 13870,
         "name": "validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_entries_through_the_binary"
       }
     ],
@@ -19315,14 +19417,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 13340,
-        "end_line": 13466,
+        "start_line": 13406,
+        "end_line": 13532,
         "name": "validate_flags_registered_scratch_roots_dead_share_scoped_to_real_spawn_liveness_in_the_store"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 13486,
-        "end_line": 13582,
+        "start_line": 13552,
+        "end_line": 13648,
         "name": "validate_flags_a_prior_abandoned_runs_orphan_even_when_a_later_run_reuses_the_identical_spawn_id"
       }
     ],
@@ -19335,20 +19437,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 14360,
-        "end_line": 14428,
+        "start_line": 14426,
+        "end_line": 14494,
         "name": "installed_workflow_courier_prompt_is_foreground_and_honest"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14448,
-        "end_line": 14526,
+        "start_line": 14514,
+        "end_line": 14592,
         "name": "installed_workflow_courier_waits_on_an_auto_backgrounded_step"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 14703,
-        "end_line": 14775,
+        "start_line": 14769,
+        "end_line": 14841,
         "name": "installed_workflow_driver_guards_a_null_step"
       }
     ],
@@ -19361,14 +19463,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 15065,
-        "end_line": 15132,
+        "start_line": 15131,
+        "end_line": 15198,
         "name": "step_halts_on_definition_drift_and_rebase_definition_continues"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15138,
-        "end_line": 15179,
+        "start_line": 15204,
+        "end_line": 15245,
         "name": "a_fresh_run_repins_the_current_definition_and_never_halts"
       }
     ],
@@ -19381,32 +19483,32 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 15309,
-        "end_line": 15366,
+        "start_line": 15375,
+        "end_line": 15432,
         "name": "stats_canary_reports_the_findings_raised_total_summed_across_items"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15401,
-        "end_line": 15455,
+        "start_line": 15467,
+        "end_line": 15521,
         "name": "stats_canary_renders_na_for_a_tier_with_an_unattributed_correct_reject"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15466,
-        "end_line": 15515,
+        "start_line": 15532,
+        "end_line": 15581,
         "name": "stats_canary_still_renders_a_genuine_zero_when_every_reject_has_attribution"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15536,
-        "end_line": 15591,
+        "start_line": 15602,
+        "end_line": 15657,
         "name": "stats_canary_reports_the_control_false_positive_line"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15900,
-        "end_line": 15961,
+        "start_line": 15966,
+        "end_line": 16027,
         "name": "stats_canary_reports_the_model_pinning_header_through_a_real_wire_event"
       }
     ],
@@ -19419,14 +19521,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 15683,
-        "end_line": 15716,
+        "start_line": 15749,
+        "end_line": 15782,
         "name": "rigger_help_gives_the_jobs_flag_its_own_description_line_through_the_real_binary"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 15731,
-        "end_line": 15789,
+        "start_line": 15797,
+        "end_line": 15855,
         "name": "rigger_help_gives_the_model_flag_its_own_description_line_through_the_real_binary"
       }
     ],
@@ -19439,20 +19541,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 16016,
-        "end_line": 16065,
+        "start_line": 16082,
+        "end_line": 16131,
         "name": "validate_warns_when_a_tier_resolved_model_repointed_between_runs"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16072,
-        "end_line": 16099,
+        "start_line": 16138,
+        "end_line": 16165,
         "name": "validate_advises_softly_on_a_snapshot_only_date_suffix_bump"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 16139,
-        "end_line": 16199,
+        "start_line": 16205,
+        "end_line": 16265,
         "name": "validate_detects_a_stream_whose_position_order_and_revision_order_disagree"
       },
       {
@@ -19477,8 +19579,8 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 16111,
-        "end_line": 16132,
+        "start_line": 16177,
+        "end_line": 16198,
         "name": "seed_order_signature"
       },
       {
@@ -19497,14 +19599,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 17194,
-        "end_line": 17244,
+        "start_line": 17260,
+        "end_line": 17310,
         "name": "status_reports_not_serving_when_the_recorded_marker_names_a_dead_dash"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17257,
-        "end_line": 17302,
+        "start_line": 17323,
+        "end_line": 17368,
         "name": "status_never_names_the_unattributed_pid_sentinel_as_a_dead_process"
       }
     ],
@@ -19517,20 +19619,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 17313,
-        "end_line": 17372,
+        "start_line": 17379,
+        "end_line": 17438,
         "name": "status_shows_the_url_when_the_recorded_marker_names_a_genuinely_serving_dash"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17386,
-        "end_line": 17453,
+        "start_line": 17452,
+        "end_line": 17519,
         "name": "status_trusts_a_genuinely_alive_url_even_with_a_mismatched_marker"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17469,
-        "end_line": 17547,
+        "start_line": 17535,
+        "end_line": 17613,
         "name": "status_reports_not_serving_when_a_mismatched_marker_leaves_a_dead_url_unverified"
       }
     ],
@@ -19543,14 +19645,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 17884,
-        "end_line": 17946,
+        "start_line": 17950,
+        "end_line": 18012,
         "name": "docs_ships_graph_hygiene_guidance_to_consumers"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 17961,
-        "end_line": 18004,
+        "start_line": 18027,
+        "end_line": 18070,
         "name": "docs_ships_three_verb_lookup_guidance_to_consumers"
       }
     ],
@@ -19563,20 +19665,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 18015,
-        "end_line": 18087,
+        "start_line": 18081,
+        "end_line": 18153,
         "name": "validate_fails_when_the_committed_using_rigger_docs_drift_and_passes_when_in_sync"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18101,
-        "end_line": 18154,
+        "start_line": 18167,
+        "end_line": 18220,
         "name": "validate_docs_drift_gate_covers_the_second_registry_entry"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18251,
-        "end_line": 18305,
+        "start_line": 18317,
+        "end_line": 18371,
         "name": "validate_docs_drift_gate_covers_the_planning_field_guide_page"
       }
     ],
@@ -19589,14 +19691,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 18482,
-        "end_line": 18525,
+        "start_line": 18548,
+        "end_line": 18591,
         "name": "docs_renders_every_per_operation_skill_through_the_compiled_binary"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18705,
-        "end_line": 18800,
+        "start_line": 18771,
+        "end_line": 18866,
         "name": "docs_renders_every_watching_discipline_skill_through_the_compiled_binary"
       }
     ],
@@ -19609,14 +19711,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 18539,
-        "end_line": 18598,
+        "start_line": 18605,
+        "end_line": 18664,
         "name": "validate_docs_drift_gate_covers_each_per_operation_skill"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18814,
-        "end_line": 18881,
+        "start_line": 18880,
+        "end_line": 18947,
         "name": "validate_docs_drift_gate_covers_each_watching_discipline_skill"
       }
     ],
@@ -19629,14 +19731,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 18612,
-        "end_line": 18673,
+        "start_line": 18678,
+        "end_line": 18739,
         "name": "setup_installs_every_per_operation_skill_into_the_consumer_project"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 18895,
-        "end_line": 18956,
+        "start_line": 18961,
+        "end_line": 19022,
         "name": "setup_installs_every_watching_discipline_skill_into_the_consumer_project"
       }
     ],
@@ -19649,14 +19751,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 19049,
-        "end_line": 19087,
+        "start_line": 19115,
+        "end_line": 19153,
         "name": "watch_once_never_names_the_unattributed_pid_sentinel_when_no_url_is_recorded"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25718,
-        "end_line": 25756,
+        "start_line": 25784,
+        "end_line": 25822,
         "name": "watch_once_never_names_the_unattributed_pid_sentinel_when_the_url_is_unparseable"
       }
     ],
@@ -19669,14 +19771,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 19107,
-        "end_line": 19140,
+        "start_line": 19173,
+        "end_line": 19206,
         "name": "watch_once_reports_a_dead_dash_when_only_the_url_breadcrumb_is_recorded_and_no_marker_exists"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25778,
-        "end_line": 25807,
+        "start_line": 25844,
+        "end_line": 25873,
         "name": "watch_once_parses_the_urls_port_past_a_colon_in_the_path_with_no_marker"
       }
     ],
@@ -19689,32 +19791,32 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 19220,
-        "end_line": 19262,
+        "start_line": 19286,
+        "end_line": 19328,
         "name": "watch_once_reports_no_dash_anomaly_for_a_done_run_even_with_a_dead_marker"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19279,
-        "end_line": 19339,
+        "start_line": 19345,
+        "end_line": 19405,
         "name": "watch_once_reports_no_dash_anomaly_for_a_fresh_run_that_inherits_an_earlier_runs_dead_marker"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19379,
-        "end_line": 19428,
+        "start_line": 19445,
+        "end_line": 19494,
         "name": "watch_once_reports_this_runs_own_dead_marker_when_written_after_its_run_started"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19450,
-        "end_line": 19502,
+        "start_line": 19516,
+        "end_line": 19568,
         "name": "watch_once_reports_a_dead_marker_predating_run_started_when_dash_attempt_names_this_run"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19531,
-        "end_line": 19583,
+        "start_line": 19597,
+        "end_line": 19649,
         "name": "watch_once_suppresses_a_predating_marker_when_dash_attempt_names_a_different_run"
       }
     ],
@@ -19727,20 +19829,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 19665,
-        "end_line": 19681,
+        "start_line": 19731,
+        "end_line": 19747,
         "name": "stage_rigger_shim"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20086,
-        "end_line": 20106,
+        "start_line": 20152,
+        "end_line": 20172,
         "name": "stage_failing_docs_rigger_shim"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20134,
-        "end_line": 20162,
+        "start_line": 20200,
+        "end_line": 20228,
         "name": "stage_stale_rigger_shim"
       }
     ],
@@ -19753,38 +19855,38 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 19849,
-        "end_line": 19891,
+        "start_line": 19915,
+        "end_line": 19957,
         "name": "setup_precommit_hook_passes_untouched_when_the_render_matches"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 19906,
-        "end_line": 19977,
+        "start_line": 19972,
+        "end_line": 20043,
         "name": "setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_its_scope"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20174,
-        "end_line": 20224,
+        "start_line": 20240,
+        "end_line": 20290,
         "name": "setup_precommit_hook_prefers_the_trees_own_built_binary_over_a_stale_path_rigger"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20234,
-        "end_line": 20284,
+        "start_line": 20300,
+        "end_line": 20350,
         "name": "setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rigger"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20611,
-        "end_line": 20642,
+        "start_line": 20677,
+        "end_line": 20708,
         "name": "setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20649,
-        "end_line": 20679,
+        "start_line": 20715,
+        "end_line": 20745,
         "name": "setup_precommit_hook_warns_and_proceeds_when_rigger_docs_errors"
       }
     ],
@@ -19797,14 +19899,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 20113,
-        "end_line": 20124,
+        "start_line": 20179,
+        "end_line": 20190,
         "name": "stage_tree_built_binary"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 20291,
-        "end_line": 20306,
+        "start_line": 20357,
+        "end_line": 20372,
         "name": "stage_unit_derived_binary"
       }
     ],
@@ -19817,14 +19919,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 21789,
-        "end_line": 21834,
+        "start_line": 21855,
+        "end_line": 21900,
         "name": "step_self_heals_a_stale_marker_naming_a_dead_pid"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 21859,
-        "end_line": 21905,
+        "start_line": 21925,
+        "end_line": 21971,
         "name": "step_self_heals_a_stale_marker_naming_a_live_pid_whose_port_is_unserved"
       }
     ],
@@ -19837,14 +19939,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 22499,
-        "end_line": 22510,
+        "start_line": 22565,
+        "end_line": 22576,
         "name": "write_live_instance"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22516,
-        "end_line": 22527,
+        "start_line": 22582,
+        "end_line": 22593,
         "name": "write_stale_instance"
       }
     ],
@@ -19857,44 +19959,44 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 22540,
-        "end_line": 22628,
+        "start_line": 22606,
+        "end_line": 22694,
         "name": "a_reap_on_idle_singleton_serves_while_an_instance_heartbeats_then_reaps_when_the_registry_empties"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22744,
-        "end_line": 22828,
+        "start_line": 22810,
+        "end_line": 22894,
         "name": "a_reap_on_idle_singleton_does_not_reap_before_any_instance_has_registered"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22855,
-        "end_line": 22959,
+        "start_line": 22921,
+        "end_line": 23025,
         "name": "a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_after_the_registry_ages_out"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 22977,
-        "end_line": 23082,
+        "start_line": 23043,
+        "end_line": 23148,
         "name": "a_reap_on_idle_singleton_survives_a_fresh_agent_liveness_marker_with_no_git_repo_at_launch"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23097,
-        "end_line": 23211,
+        "start_line": 23163,
+        "end_line": 23277,
         "name": "a_reap_on_idle_singleton_survives_a_second_registered_projects_fresh_agent_liveness_marker"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23234,
-        "end_line": 23357,
+        "start_line": 23300,
+        "end_line": 23423,
         "name": "a_reap_on_idle_singleton_survives_a_foreign_agent_liveness_marker_whose_own_registry_entry_was_already_stale_before_the_watchers_first_poll"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23373,
-        "end_line": 23515,
+        "start_line": 23439,
+        "end_line": 23581,
         "name": "a_landing_poll_racing_the_watchers_first_tick_does_not_erase_a_foreign_projects_only_route_into_known_roots"
       }
     ],
@@ -19907,14 +20009,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 23522,
-        "end_line": 23577,
+        "start_line": 23588,
+        "end_line": 23643,
         "name": "a_dash_without_reap_on_idle_never_self_reaps_on_a_quiet_machine"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 23592,
-        "end_line": 23656,
+        "start_line": 23658,
+        "end_line": 23722,
         "name": "a_reap_on_idle_singleton_in_a_homeless_environment_serves_without_a_watcher"
       }
     ],
@@ -19927,14 +20029,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 25370,
-        "end_line": 25412,
+        "start_line": 25436,
+        "end_line": 25478,
         "name": "watch_once_never_names_a_mismatched_markers_pid_for_the_recorded_urls_port"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 25836,
-        "end_line": 25885,
+        "start_line": 25902,
+        "end_line": 25951,
         "name": "watch_once_never_names_a_mismatched_markers_pid_when_the_urls_path_contains_a_colon"
       }
     ],
@@ -19947,26 +20049,26 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26024,
-        "end_line": 26062,
+        "start_line": 26090,
+        "end_line": 26128,
         "name": "run_given_a_spec_path_names_the_spec_lint_as_a_next_step"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26187,
-        "end_line": 26230,
+        "start_line": 26253,
+        "end_line": 26296,
         "name": "step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26504,
-        "end_line": 26539,
+        "start_line": 26570,
+        "end_line": 26605,
         "name": "step_reminder_prints_despite_env_naming_a_foreign_pid"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26583,
-        "end_line": 26617,
+        "start_line": 26649,
+        "end_line": 26683,
         "name": "run_reminder_prints_despite_env_naming_a_foreign_pid"
       }
     ],
@@ -19979,20 +20081,20 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26250,
-        "end_line": 26310,
+        "start_line": 26316,
+        "end_line": 26376,
         "name": "run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26319,
-        "end_line": 26358,
+        "start_line": 26385,
+        "end_line": 26424,
         "name": "step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26376,
-        "end_line": 26443,
+        "start_line": 26442,
+        "end_line": 26509,
         "name": "run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site"
       }
     ],
@@ -20005,14 +20107,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26463,
-        "end_line": 26499,
+        "start_line": 26529,
+        "end_line": 26565,
         "name": "step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26543,
-        "end_line": 26578,
+        "start_line": 26609,
+        "end_line": 26644,
         "name": "run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid"
       }
     ],
@@ -20025,14 +20127,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26681,
-        "end_line": 26730,
+        "start_line": 26747,
+        "end_line": 26796,
         "name": "run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26742,
-        "end_line": 26797,
+        "start_line": 26808,
+        "end_line": 26863,
         "name": "run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction"
       }
     ],
@@ -20045,14 +20147,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26813,
-        "end_line": 26847,
+        "start_line": 26879,
+        "end_line": 26913,
         "name": "run_driver_workflow_fresh_notice_never_reaches_stdout"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 26854,
-        "end_line": 26878,
+        "start_line": 26920,
+        "end_line": 26944,
         "name": "run_driver_cli_fresh_notice_still_prints_on_stdout"
       }
     ],
@@ -20065,14 +20167,14 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 26970,
-        "end_line": 27070,
+        "start_line": 27036,
+        "end_line": 27136,
         "name": "cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill"
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 27149,
-        "end_line": 27264,
+        "start_line": 27215,
+        "end_line": 27330,
         "name": "step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario"
       }
     ],
@@ -23261,8 +23363,8 @@
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1380,
-        "end_line": 1437,
+        "start_line": 1420,
+        "end_line": 1477,
         "name": "spawn"
       }
     ],
@@ -23275,14 +23377,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 982,
-        "end_line": 1018,
+        "start_line": 1002,
+        "end_line": 1038,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1193,
-        "end_line": 1239,
+        "start_line": 1223,
+        "end_line": 1269,
         "name": "spawn"
       }
     ],
@@ -23295,20 +23397,20 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 1803,
-        "end_line": 1828,
+        "start_line": 1863,
+        "end_line": 1888,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2323,
-        "end_line": 2345,
+        "start_line": 2413,
+        "end_line": 2435,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2558,
-        "end_line": 2578,
+        "start_line": 2658,
+        "end_line": 2678,
         "name": "spawn"
       }
     ],
@@ -23321,14 +23423,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2038,
-        "end_line": 2043,
+        "start_line": 2108,
+        "end_line": 2113,
         "name": "has_status_marker"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2045,
-        "end_line": 2053,
+        "start_line": 2115,
+        "end_line": 2123,
         "name": "count_status_marker"
       }
     ],
@@ -23341,14 +23443,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2070,
-        "end_line": 2093,
+        "start_line": 2140,
+        "end_line": 2163,
         "name": "spawn"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2198,
-        "end_line": 2218,
+        "start_line": 2278,
+        "end_line": 2298,
         "name": "spawn"
       }
     ],
@@ -23361,48 +23463,30 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2098,
-        "end_line": 2185,
+        "start_line": 2168,
+        "end_line": 2265,
         "name": "a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2223,
-        "end_line": 2309,
+        "start_line": 2303,
+        "end_line": 2399,
         "name": "a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2603,
-        "end_line": 2763,
-        "name": "a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3"
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2797,
-        "end_line": 2887,
+        "start_line": 2907,
+        "end_line": 3007,
         "name": "a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2897,
-        "end_line": 2985,
+        "start_line": 3017,
+        "end_line": 3115,
         "name": "a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record"
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3067,
-        "end_line": 3169,
-        "name": "a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed"
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3182,
-        "end_line": 3302,
-        "name": "a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume"
       }
     ],
-    "proposed_home": "integrate_conflict_merge_periphery::support (consolidate these 7 sites into one function in this file)",
+    "proposed_home": "integrate_conflict_merge_periphery::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -23411,14 +23495,14 @@
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 2581,
-        "end_line": 2596,
+        "start_line": 2681,
+        "end_line": 2706,
         "name": "confined_cfg"
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 3043,
-        "end_line": 3058,
+        "start_line": 3173,
+        "end_line": 3198,
         "name": "mixed_cfg"
       }
     ],
@@ -23427,6 +23511,32 @@
   },
   {
     "id": "dup-0608",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 2713,
+        "end_line": 2873,
+        "name": "a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3"
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 3207,
+        "end_line": 3309,
+        "name": "a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed"
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 3322,
+        "end_line": 3442,
+        "name": "a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume"
+      }
+    ],
+    "proposed_home": "integrate_conflict_merge_periphery::support (consolidate these 3 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0609",
     "classification": "semantic",
     "sites": [
       {
@@ -23446,7 +23556,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0609",
+    "id": "dup-0610",
     "classification": "exact",
     "sites": [
       {
@@ -23466,7 +23576,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0610",
+    "id": "dup-0611",
     "classification": "exact",
     "sites": [
       {
@@ -23486,7 +23596,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0611",
+    "id": "dup-0612",
     "classification": "semantic",
     "sites": [
       {
@@ -23506,7 +23616,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0612",
+    "id": "dup-0613",
     "classification": "exact",
     "sites": [
       {
@@ -23526,7 +23636,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0613",
+    "id": "dup-0614",
     "classification": "semantic",
     "sites": [
       {
@@ -23546,7 +23656,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0614",
+    "id": "dup-0615",
     "classification": "near",
     "sites": [
       {
@@ -23566,7 +23676,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0615",
+    "id": "dup-0616",
     "classification": "semantic",
     "sites": [
       {
@@ -23604,7 +23714,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0616",
+    "id": "dup-0617",
     "classification": "near",
     "sites": [
       {
@@ -23636,7 +23746,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0617",
+    "id": "dup-0618",
     "classification": "near",
     "sites": [
       {
@@ -23692,7 +23802,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0618",
+    "id": "dup-0619",
     "classification": "near",
     "sites": [
       {
@@ -23712,7 +23822,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0619",
+    "id": "dup-0620",
     "classification": "semantic",
     "sites": [
       {
@@ -23744,7 +23854,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0620",
+    "id": "dup-0621",
     "classification": "exact",
     "sites": [
       {
@@ -23764,7 +23874,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0621",
+    "id": "dup-0622",
     "classification": "exact",
     "sites": [
       {
@@ -23784,7 +23894,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0622",
+    "id": "dup-0623",
     "classification": "exact",
     "sites": [
       {
@@ -23804,7 +23914,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0623",
+    "id": "dup-0624",
     "classification": "exact",
     "sites": [
       {
@@ -23836,7 +23946,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0624",
+    "id": "dup-0625",
     "classification": "near",
     "sites": [
       {
@@ -23856,7 +23966,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0625",
+    "id": "dup-0626",
     "classification": "exact",
     "sites": [
       {
@@ -23876,7 +23986,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0626",
+    "id": "dup-0627",
     "classification": "near",
     "sites": [
       {
@@ -23896,7 +24006,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0627",
+    "id": "dup-0628",
     "classification": "exact",
     "sites": [
       {
@@ -23916,7 +24026,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0628",
+    "id": "dup-0629",
     "classification": "near",
     "sites": [
       {
@@ -23990,7 +24100,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0629",
+    "id": "dup-0630",
     "classification": "near",
     "sites": [
       {
@@ -24022,7 +24132,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0630",
+    "id": "dup-0631",
     "classification": "exact",
     "sites": [
       {
@@ -24042,7 +24152,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0631",
+    "id": "dup-0632",
     "classification": "exact",
     "sites": [
       {
@@ -24074,7 +24184,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0632",
+    "id": "dup-0633",
     "classification": "exact",
     "sites": [
       {
@@ -24094,7 +24204,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0633",
+    "id": "dup-0634",
     "classification": "near",
     "sites": [
       {
@@ -24114,7 +24224,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0634",
+    "id": "dup-0635",
     "classification": "near",
     "sites": [
       {
@@ -24140,7 +24250,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0635",
+    "id": "dup-0636",
     "classification": "semantic",
     "sites": [
       {
@@ -24160,7 +24270,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0636",
+    "id": "dup-0637",
     "classification": "semantic",
     "sites": [
       {
@@ -24180,7 +24290,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0637",
+    "id": "dup-0638",
     "classification": "near",
     "sites": [
       {
@@ -24200,7 +24310,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0638",
+    "id": "dup-0639",
     "classification": "near",
     "sites": [
       {
@@ -24226,7 +24336,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0639",
+    "id": "dup-0640",
     "classification": "exact",
     "sites": [
       {
@@ -24324,7 +24434,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0640",
+    "id": "dup-0641",
     "classification": "near",
     "sites": [
       {
@@ -24398,7 +24508,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0641",
+    "id": "dup-0642",
     "classification": "exact",
     "sites": [
       {
@@ -24448,7 +24558,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0642",
+    "id": "dup-0643",
     "classification": "near",
     "sites": [
       {
@@ -24486,7 +24596,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0643",
+    "id": "dup-0644",
     "classification": "near",
     "sites": [
       {
@@ -24506,7 +24616,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0644",
+    "id": "dup-0645",
     "classification": "exact",
     "sites": [
       {
@@ -24526,7 +24636,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0645",
+    "id": "dup-0646",
     "classification": "near",
     "sites": [
       {
@@ -24546,7 +24656,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0646",
+    "id": "dup-0647",
     "classification": "near",
     "sites": [
       {
@@ -24566,7 +24676,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0647",
+    "id": "dup-0648",
     "classification": "near",
     "sites": [
       {
@@ -24592,7 +24702,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0648",
+    "id": "dup-0649",
     "classification": "exact",
     "sites": [
       {
@@ -24618,7 +24728,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0649",
+    "id": "dup-0650",
     "classification": "exact",
     "sites": [
       {
@@ -24638,7 +24748,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0650",
+    "id": "dup-0651",
     "classification": "near",
     "sites": [
       {
@@ -24658,7 +24768,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0651",
+    "id": "dup-0652",
     "classification": "semantic",
     "sites": [
       {
@@ -24678,7 +24788,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0652",
+    "id": "dup-0653",
     "classification": "exact",
     "sites": [
       {
@@ -24704,7 +24814,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0653",
+    "id": "dup-0654",
     "classification": "semantic",
     "sites": [
       {
@@ -24724,7 +24834,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0654",
+    "id": "dup-0655",
     "classification": "near",
     "sites": [
       {
@@ -24750,7 +24860,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0655",
+    "id": "dup-0656",
     "classification": "near",
     "sites": [
       {
@@ -24782,7 +24892,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0656",
+    "id": "dup-0657",
     "classification": "near",
     "sites": [
       {
@@ -24802,7 +24912,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0657",
+    "id": "dup-0658",
     "classification": "near",
     "sites": [
       {
@@ -24822,7 +24932,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0658",
+    "id": "dup-0659",
     "classification": "exact",
     "sites": [
       {
@@ -24842,7 +24952,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0659",
+    "id": "dup-0660",
     "classification": "exact",
     "sites": [
       {
@@ -24868,7 +24978,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0660",
+    "id": "dup-0661",
     "classification": "exact",
     "sites": [
       {
@@ -24888,7 +24998,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0661",
+    "id": "dup-0662",
     "classification": "semantic",
     "sites": [
       {
@@ -24908,7 +25018,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0662",
+    "id": "dup-0663",
     "classification": "near",
     "sites": [
       {
@@ -24928,7 +25038,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0663",
+    "id": "dup-0664",
     "classification": "exact",
     "sites": [
       {
@@ -24948,7 +25058,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0664",
+    "id": "dup-0665",
     "classification": "exact",
     "sites": [
       {
@@ -24968,7 +25078,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0665",
+    "id": "dup-0666",
     "classification": "near",
     "sites": [
       {
@@ -24988,7 +25098,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0666",
+    "id": "dup-0667",
     "classification": "exact",
     "sites": [
       {
@@ -25008,7 +25118,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0667",
+    "id": "dup-0668",
     "classification": "near",
     "sites": [
       {
@@ -25040,7 +25150,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0668",
+    "id": "dup-0669",
     "classification": "exact",
     "sites": [
       {
@@ -25060,7 +25170,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0669",
+    "id": "dup-0670",
     "classification": "exact",
     "sites": [
       {
@@ -25086,7 +25196,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0670",
+    "id": "dup-0671",
     "classification": "near",
     "sites": [
       {
@@ -25106,7 +25216,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0671",
+    "id": "dup-0672",
     "classification": "near",
     "sites": [
       {
@@ -25138,7 +25248,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0672",
+    "id": "dup-0673",
     "classification": "near",
     "sites": [
       {
@@ -25158,7 +25268,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0673",
+    "id": "dup-0674",
     "classification": "exact",
     "sites": [
       {
@@ -25232,7 +25342,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0674",
+    "id": "dup-0675",
     "classification": "near",
     "sites": [
       {
@@ -25270,7 +25380,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0675",
+    "id": "dup-0676",
     "classification": "near",
     "sites": [
       {
@@ -25290,7 +25400,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0676",
+    "id": "dup-0677",
     "classification": "exact",
     "sites": [
       {
@@ -25316,7 +25426,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0677",
+    "id": "dup-0678",
     "classification": "near",
     "sites": [
       {
@@ -25336,7 +25446,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0678",
+    "id": "dup-0679",
     "classification": "near",
     "sites": [
       {
@@ -25362,7 +25472,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0679",
+    "id": "dup-0680",
     "classification": "near",
     "sites": [
       {
@@ -25388,7 +25498,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0680",
+    "id": "dup-0681",
     "classification": "near",
     "sites": [
       {
@@ -25414,7 +25524,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0681",
+    "id": "dup-0682",
     "classification": "exact",
     "sites": [
       {
@@ -25434,7 +25544,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0682",
+    "id": "dup-0683",
     "classification": "near",
     "sites": [
       {
@@ -25454,7 +25564,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0683",
+    "id": "dup-0684",
     "classification": "near",
     "sites": [
       {
@@ -25474,7 +25584,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0684",
+    "id": "dup-0685",
     "classification": "near",
     "sites": [
       {
@@ -25494,7 +25604,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0685",
+    "id": "dup-0686",
     "classification": "near",
     "sites": [
       {
@@ -25514,7 +25624,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0686",
+    "id": "dup-0687",
     "classification": "exact",
     "sites": [
       {
@@ -25534,7 +25644,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0687",
+    "id": "dup-0688",
     "classification": "near",
     "sites": [
       {
@@ -25560,7 +25670,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0688",
+    "id": "dup-0689",
     "classification": "exact",
     "sites": [
       {
@@ -25580,7 +25690,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0689",
+    "id": "dup-0690",
     "classification": "exact",
     "sites": [
       {
@@ -25600,7 +25710,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0690",
+    "id": "dup-0691",
     "classification": "near",
     "sites": [
       {
@@ -25626,7 +25736,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0691",
+    "id": "dup-0692",
     "classification": "near",
     "sites": [
       {
@@ -25646,7 +25756,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0692",
+    "id": "dup-0693",
     "classification": "near",
     "sites": [
       {
@@ -25684,7 +25794,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0693",
+    "id": "dup-0694",
     "classification": "near",
     "sites": [
       {
@@ -25716,7 +25826,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0694",
+    "id": "dup-0695",
     "classification": "near",
     "sites": [
       {
@@ -25832,7 +25942,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0695",
+    "id": "dup-0696",
     "classification": "near",
     "sites": [
       {
@@ -25864,7 +25974,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0696",
+    "id": "dup-0697",
     "classification": "near",
     "sites": [
       {
@@ -25920,7 +26030,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0697",
+    "id": "dup-0698",
     "classification": "near",
     "sites": [
       {
@@ -25940,7 +26050,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0698",
+    "id": "dup-0699",
     "classification": "near",
     "sites": [
       {
@@ -25960,7 +26070,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0699",
+    "id": "dup-0700",
     "classification": "near",
     "sites": [
       {
@@ -26220,7 +26330,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0700",
+    "id": "dup-0701",
     "classification": "near",
     "sites": [
       {
@@ -26246,7 +26356,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0701",
+    "id": "dup-0702",
     "classification": "near",
     "sites": [
       {
@@ -26266,7 +26376,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0702",
+    "id": "dup-0703",
     "classification": "near",
     "sites": [
       {
@@ -26286,7 +26396,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0703",
+    "id": "dup-0704",
     "classification": "exact",
     "sites": [
       {
@@ -26306,7 +26416,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0704",
+    "id": "dup-0705",
     "classification": "semantic",
     "sites": [
       {
@@ -26338,7 +26448,7 @@
     "note": "mandatory sweep: parallel constructor functions - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0705",
+    "id": "dup-0706",
     "classification": "exact",
     "sites": [
       {
@@ -26358,7 +26468,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0706",
+    "id": "dup-0707",
     "classification": "near",
     "sites": [
       {
@@ -26378,7 +26488,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0707",
+    "id": "dup-0708",
     "classification": "semantic",
     "sites": [
       {
@@ -26410,7 +26520,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0708",
+    "id": "dup-0709",
     "classification": "near",
     "sites": [
       {
@@ -26442,7 +26552,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0709",
+    "id": "dup-0710",
     "classification": "semantic",
     "sites": [
       {
@@ -26462,7 +26572,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0710",
+    "id": "dup-0711",
     "classification": "exact",
     "sites": [
       {
@@ -26482,7 +26592,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0711",
+    "id": "dup-0712",
     "classification": "semantic",
     "sites": [
       {
@@ -26508,7 +26618,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0712",
+    "id": "dup-0713",
     "classification": "semantic",
     "sites": [
       {
@@ -26528,7 +26638,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0713",
+    "id": "dup-0714",
     "classification": "near",
     "sites": [
       {
@@ -26554,7 +26664,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0714",
+    "id": "dup-0715",
     "classification": "exact",
     "sites": [
       {
@@ -26574,7 +26684,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0715",
+    "id": "dup-0716",
     "classification": "semantic",
     "sites": [
       {
@@ -26594,7 +26704,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0716",
+    "id": "dup-0717",
     "classification": "near",
     "sites": [
       {
@@ -26620,7 +26730,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0717",
+    "id": "dup-0718",
     "classification": "exact",
     "sites": [
       {
@@ -26640,7 +26750,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0718",
+    "id": "dup-0719",
     "classification": "exact",
     "sites": [
       {
@@ -26660,7 +26770,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0719",
+    "id": "dup-0720",
     "classification": "exact",
     "sites": [
       {
@@ -26686,7 +26796,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0720",
+    "id": "dup-0721",
     "classification": "exact",
     "sites": [
       {
@@ -26712,7 +26822,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0721",
+    "id": "dup-0722",
     "classification": "exact",
     "sites": [
       {
@@ -26762,7 +26872,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0722",
+    "id": "dup-0723",
     "classification": "semantic",
     "sites": [
       {
@@ -26788,7 +26898,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0723",
+    "id": "dup-0724",
     "classification": "exact",
     "sites": [
       {
@@ -26814,7 +26924,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0724",
+    "id": "dup-0725",
     "classification": "near",
     "sites": [
       {
@@ -26840,7 +26950,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0725",
+    "id": "dup-0726",
     "classification": "exact",
     "sites": [
       {
@@ -26860,7 +26970,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0726",
+    "id": "dup-0727",
     "classification": "semantic",
     "sites": [
       {
@@ -26880,7 +26990,7 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
-    "id": "dup-0727",
+    "id": "dup-0728",
     "classification": "near",
     "sites": [
       {
@@ -26900,7 +27010,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0728",
+    "id": "dup-0729",
     "classification": "near",
     "sites": [
       {
@@ -26926,7 +27036,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0729",
+    "id": "dup-0730",
     "classification": "near",
     "sites": [
       {
@@ -26946,7 +27056,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0730",
+    "id": "dup-0731",
     "classification": "near",
     "sites": [
       {
@@ -26996,7 +27106,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0731",
+    "id": "dup-0732",
     "classification": "near",
     "sites": [
       {
@@ -27016,7 +27126,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0732",
+    "id": "dup-0733",
     "classification": "near",
     "sites": [
       {
@@ -27036,7 +27146,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0733",
+    "id": "dup-0734",
     "classification": "exact",
     "sites": [
       {
@@ -27056,7 +27166,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0734",
+    "id": "dup-0735",
     "classification": "near",
     "sites": [
       {
@@ -27082,7 +27192,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0735",
+    "id": "dup-0736",
     "classification": "near",
     "sites": [
       {
@@ -27108,7 +27218,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0736",
+    "id": "dup-0737",
     "classification": "near",
     "sites": [
       {
@@ -27128,7 +27238,7 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-0737",
+    "id": "dup-0738",
     "classification": "near",
     "sites": [
       {
