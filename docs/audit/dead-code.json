@@ -209,7 +209,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 18741
+        "line": 18940
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -675,7 +675,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 8254
+        "line": 8247
       }
     ],
     "disposition": "delete",
@@ -820,15 +820,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 37649
+        "line": 37848
       },
       {
         "file": "src/conductor.rs",
-        "line": 37716
+        "line": 37915
       },
       {
         "file": "src/conductor.rs",
-        "line": 38491
+        "line": 38690
       },
       {
         "file": "src/ledger.rs",
@@ -897,35 +897,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 21056
+        "line": 21255
       },
       {
         "file": "src/conductor.rs",
-        "line": 21133
+        "line": 21332
       },
       {
         "file": "src/conductor.rs",
-        "line": 21227
+        "line": 21426
       },
       {
         "file": "src/conductor.rs",
-        "line": 21314
+        "line": 21513
       },
       {
         "file": "src/conductor.rs",
-        "line": 21409
+        "line": 21608
       },
       {
         "file": "src/conductor.rs",
-        "line": 28537
+        "line": 28736
       },
       {
         "file": "src/conductor.rs",
-        "line": 28542
+        "line": 28741
       },
       {
         "file": "src/conductor.rs",
-        "line": 28605
+        "line": 28804
       },
       {
         "file": "src/dash.rs",
@@ -1185,43 +1185,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 3826
+        "line": 4004
       },
       {
         "file": "src/worktree.rs",
-        "line": 3849
+        "line": 4027
       },
       {
         "file": "src/worktree.rs",
-        "line": 3885
+        "line": 4063
       },
       {
         "file": "src/worktree.rs",
-        "line": 3917
+        "line": 4095
       },
       {
         "file": "src/worktree.rs",
-        "line": 3952
+        "line": 4130
       },
       {
         "file": "src/worktree.rs",
-        "line": 3968
+        "line": 4146
       },
       {
         "file": "src/worktree.rs",
-        "line": 3995
+        "line": 4173
       },
       {
         "file": "src/worktree.rs",
-        "line": 4025
+        "line": 4203
       },
       {
         "file": "src/worktree.rs",
-        "line": 4032
+        "line": 4210
       },
       {
         "file": "src/worktree.rs",
-        "line": 4040
+        "line": 4218
       },
       {
         "file": "tests/cli.rs",
@@ -1557,15 +1557,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 28535
+        "line": 28734
       },
       {
         "file": "src/conductor.rs",
-        "line": 28540
+        "line": 28739
       },
       {
         "file": "src/conductor.rs",
-        "line": 28603
+        "line": 28802
       },
       {
         "file": "src/driver/replay.rs",
@@ -1682,24 +1682,28 @@
   {
     "name": "is_dirty",
     "file": "src/worktree.rs",
-    "line": 544,
+    "line": 603,
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
-        "file": "src/worktree.rs",
-        "line": 3519
+        "file": "src/conductor.rs",
+        "line": 13681
       },
       {
         "file": "src/worktree.rs",
-        "line": 3529
+        "line": 3697
       },
       {
         "file": "src/worktree.rs",
-        "line": 3595
+        "line": 3707
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 3773
       }
     ],
     "disposition": "delete",
-    "reason": "is_dirty has no production caller - one of spec 87's own two Goal-cited worked examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current tree: its 3 references (worktree.rs:3479/3489/3555) are all test-only. Line shifted again as this merge lands three units' worktree.rs insertions together: spec 88 criterion 1's `MergeOutcome` (offset by the pre-round-4 `IntegrateOutcome` enum/`expect_merged` impl's removal into `#[cfg(test)] mod tests`, both now test-scoped) and criterion 4's `CherryPickOutcome` (both already landed on the run branch as 508->515, per u88c1-audit-pin-repair/u88c4) plus this unit's (criterion 2) own `create_branch_at` and its round-4 expanded doc comment (branch_tip / pinned-sha note; previously tracked here as a separate 496->520->525 shift) - the union of both prior shifts lands the function at 544 on the merged tree, re-pinned at this integration per op-u88c2-conflict-resolution-retry-regenerate-audit-union-code (see specs/90 criterion 2, not yet landed, for the line-free fix this pin dance works around). expect_merged itself (formerly src/worktree.rs:86) is no longer a candidate at all: round 4 moved it, together with `IntegrateOutcome` and the pre-round-4 `integrate` method, into this file's own `#[cfg(test)] mod tests` (a test-only recomposition of the newly-split `merge_into_worktree`/`land`, since production - `integrate_and_emit` - now calls those two split methods directly for its own row-level durable recording and has no caller left for the combined form) - a test-scoped item is not a production dead-code candidate by this scanner's own definition, closing the finding at its root rather than re-dispositioning it in place."
+    "reason": "is_dirty has no production caller - one of spec 87's own two Goal-cited worked examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current tree: its 3 references (src/conductor.rs and worktree.rs's own `mod tests`) are all test-only. Line shifted again, this time by spec 89 criterion 1 (A HALT NEVER DISCARDS A TREE): `Worktree::commit`'s new conflict-marker guard and its `conflict_markers_present` helper insert 544->603 above `is_dirty` (the guard's own doc comments plus the `Command`-based `git grep` call). expect_merged itself (formerly src/worktree.rs:86) is no longer a candidate at all: round 4 moved it, together with `IntegrateOutcome` and the pre-round-4 `integrate` method, into this file's own `#[cfg(test)] mod tests` (a test-only recomposition of the newly-split `merge_into_worktree`/`land`, since production - `integrate_and_emit` - now calls those two split methods directly for its own row-level durable recording and has no caller left for the combined form) - a test-scoped item is not a production dead-code candidate by this scanner's own definition, closing the finding at its root rather than re-dispositioning it in place."
   }
 ]

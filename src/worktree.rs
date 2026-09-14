@@ -529,7 +529,22 @@ impl Worktree {
     /// so `cargo test` (and every other gate) runs against exactly the tree the
     /// subsequent [`Self::integrate`] merges. Without it a gate could pass on
     /// uncommitted files that never reach the base - a false green.
+    ///
+    /// This is the ONE shared authority every conductor commit into a unit worktree
+    /// runs through - the per-attempt checkpoint above [`Self::merge_into_worktree`]'s
+    /// own pre-merge commit (the "integration merge"), and the halt `wip` commit a
+    /// re-parked spawn's recovery makes - so [`Self::conflict_markers_present`]'s
+    /// refusal (spec 89, criterion 1: A CHECKPOINT NEVER COMMITS A HALF-MERGE)
+    /// protects all three from ONE place, never a second parallel check reconciled
+    /// after the fact.
     pub fn commit(&self, message: &str) -> Result<String, Error> {
+        if self.conflict_markers_present()? {
+            return Err(Error(format!(
+                "refusing to commit in {}: conflict-marker text is present in tracked \
+                 file content - resolve it before committing",
+                self.dir
+            )));
+        }
         git(&self.dir, &["add", "-A"])?;
         match run_git(&self.dir, &["commit", "-m", message]) {
             Ok(_) => {}
@@ -537,6 +552,50 @@ impl Worktree {
             Err(out) => return Err(Error(format!("commit: {out}"))),
         }
         Ok(git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string())
+    }
+
+    /// Whether any TRACKED file's current content (staged or not - `git grep`
+    /// without `--cached` reads the worktree copy of every tracked path) still
+    /// carries literal git conflict-marker lines (`<<<<<<<`, `=======`, `>>>>>>>`,
+    /// each anchored at line-start so ordinary prose mentioning the symbols in
+    /// passing cannot match). This is [`Self::commit`]'s ENTIRE guard (spec 89,
+    /// criterion 1: A CHECKPOINT NEVER COMMITS A HALF-MERGE) - deliberately a
+    /// CONTENT check, not an index-state one: `commit`'s own `git add -A` is what
+    /// clears a conflicted path's UNMERGED index flag the instant it is staged,
+    /// REGARDLESS of whether the staged content is a genuine resolution or still the
+    /// raw marker text (exactly what let the 2026-09-12 incident's checkpoint treat
+    /// a conflicted file as "resolved") - so an index-state check taken right before
+    /// that same `add` cannot tell a still-broken path from one a caller (an
+    /// implementer's edit, or [`crate::conductor`]'s `regenerate_conflicted_paths`
+    /// overwriting a registered-regenerable path) has ALREADY fixed on disk but not
+    /// yet staged; both look identically "unmerged" at that instant. Content is the
+    /// one signal that is true regardless of staging order. `git grep` exits 1 (not
+    /// an error) when nothing matches, distinct from a real invocation failure.
+    fn conflict_markers_present(&self) -> Result<bool, Error> {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&self.dir)
+            .args([
+                "grep",
+                "-I",
+                "-q",
+                "-e",
+                "^<<<<<<< ",
+                "-e",
+                "^=======$",
+                "-e",
+                "^>>>>>>> ",
+            ])
+            .output()
+            .map_err(|e| Error(format!("git grep conflict markers: {e}")))?;
+        match out.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(Error(format!(
+                "git grep conflict markers: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ))),
+        }
     }
 
     /// Whether the worktree has uncommitted changes (a dirty tree). Used to assert
@@ -2187,6 +2246,125 @@ mod tests {
             b.conflicting_paths().unwrap(),
             ["shared.txt"],
             "conflicting_paths reads the same list back from worktree state"
+        );
+    }
+
+    #[test]
+    fn commit_refuses_a_worktree_with_a_merge_left_in_progress() {
+        // Spec 89, criterion 1 (A CHECKPOINT NEVER COMMITS A HALF-MERGE): the
+        // 2026-09-12 incident this guards against - an ordinary checkpoint's `git add
+        // -A && git commit` ran over a worktree where a conflicted `integrate()` call
+        // (exactly like the one in the test just above) had left a real merge in
+        // progress, silently staging the literal conflict-marker text as "resolved"
+        // and landing a merge commit that still carried 2720 markers. `commit` itself
+        // must refuse instead: no `git add`, no commit, the merge and its markers
+        // left exactly as they were.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wa = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wb = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let a = Worktree::create(
+            &repo_path,
+            wa.to_str().unwrap(),
+            "rigger/u/a-commit-guard",
+            "",
+        )
+        .unwrap();
+        let b = Worktree::create(
+            &repo_path,
+            wb.to_str().unwrap(),
+            "rigger/u/b-commit-guard",
+            "",
+        )
+        .unwrap();
+        std::fs::write(wa.join("shared.txt"), "A version\n").unwrap();
+        a.integrate("rigger: integrate a").unwrap().expect_merged();
+        std::fs::write(wb.join("shared.txt"), "B version\n").unwrap();
+        match b.integrate("rigger: integrate b").unwrap() {
+            IntegrateOutcome::Conflict(_) => {}
+            IntegrateOutcome::Merged(_) => {
+                panic!("a divergent add/add merge must conflict, not merge")
+            }
+        }
+        assert!(
+            b.merge_in_progress(),
+            "setup must leave a genuine merge in progress"
+        );
+        let head_before = run_git(wb.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap();
+
+        let err = b
+            .commit("rigger: b's own work, unaware of the stuck merge")
+            .expect_err("commit must refuse a worktree with a merge left in progress");
+        assert!(
+            err.to_string().contains("conflict"),
+            "names the conflict-marker state: {err}"
+        );
+        assert!(
+            err.to_string().contains(wb.to_str().unwrap()),
+            "names the worktree: {err}"
+        );
+
+        // Nothing was staged or committed: HEAD unchanged, the merge still in
+        // progress, and the markers still literally in the file - never staged as
+        // "resolved".
+        let head_after = run_git(wb.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(head_before, head_after, "no commit was made");
+        assert!(
+            b.merge_in_progress(),
+            "the merge is still in progress, never finalized"
+        );
+        let content = std::fs::read_to_string(wb.join("shared.txt")).unwrap();
+        assert!(
+            content.contains("<<<<<<<"),
+            "conflict markers are untouched: {content}"
+        );
+    }
+
+    #[test]
+    fn commit_refuses_when_tracked_content_carries_conflict_marker_text() {
+        // Spec 89, criterion 1: the AFTER-THE-FACT half of the guard. `git add -A`
+        // clears a path's UNMERGED index state the instant it is staged, even when
+        // the staged CONTENT is still literal marker text - exactly what let the
+        // 2026-09-12 incident's checkpoint stage a conflicted file as "resolved".
+        // Proven directly at the content layer, independent of which git operation
+        // left the markers behind: `merge_in_progress`/`conflicting_paths` are both
+        // clean here - only the tracked file's own content carries the markers.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(
+            &repo_path,
+            wt_path.to_str().unwrap(),
+            "rigger/marker-guard",
+            "",
+        )
+        .unwrap();
+
+        std::fs::write(wt_path.join("shared.txt"), "clean\n").unwrap();
+        wt.commit("rigger: seed shared.txt").unwrap();
+        std::fs::write(
+            wt_path.join("shared.txt"),
+            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\n",
+        )
+        .unwrap();
+        assert!(!wt.merge_in_progress());
+        assert!(wt.conflicting_paths().unwrap().is_empty());
+
+        let head_before = run_git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap();
+        let err = wt
+            .commit("rigger: sweep it in")
+            .expect_err("commit must refuse tracked content that still carries conflict markers");
+        assert!(
+            err.to_string().contains("conflict"),
+            "names the conflict-marker state: {err}"
+        );
+        let head_after = run_git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(head_before, head_after, "no commit was made");
+        let status = run_git(wt_path.to_str().unwrap(), &["status", "--porcelain"]).unwrap();
+        assert!(
+            status.contains(" M shared.txt"),
+            "shared.txt must remain an UNSTAGED modification, never staged by a \
+             refused commit: {status:?}"
         );
     }
 
