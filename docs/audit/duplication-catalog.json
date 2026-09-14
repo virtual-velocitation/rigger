@@ -2001,20 +2001,20 @@
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 124,
-        "end_line": 124,
+        "start_line": 143,
+        "end_line": 143,
         "name": "Command::new"
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 203,
-        "end_line": 203,
+        "start_line": 222,
+        "end_line": 222,
         "name": "Command::new"
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 216,
-        "end_line": 216,
+        "start_line": 235,
+        "end_line": 235,
         "name": "Command::new"
       },
       {
@@ -7603,8 +7603,8 @@
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 149,
-        "end_line": 149,
+        "start_line": 168,
+        "end_line": 168,
         "name": "\".rigger\""
       },
       {
@@ -15831,8 +15831,8 @@
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 215,
-        "end_line": 222,
+        "start_line": 234,
+        "end_line": 241,
         "name": "branch_exists"
       }
     ],
@@ -15851,8 +15851,8 @@
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 202,
-        "end_line": 213,
+        "start_line": 221,
+        "end_line": 232,
         "name": "current_branch"
       }
     ],
@@ -18347,8 +18347,8 @@
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 121,
-        "end_line": 142,
+        "start_line": 140,
+        "end_line": 161,
         "name": "temp_git_project_with_commit"
       },
       {
@@ -18385,8 +18385,8 @@
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 194,
-        "end_line": 196,
+        "start_line": 213,
+        "end_line": 215,
         "name": "run_rigger"
       }
     ],
@@ -18423,8 +18423,8 @@
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 177,
-        "end_line": 192,
+        "start_line": 196,
+        "end_line": 211,
         "name": "run_rigger_envs"
       }
     ],
@@ -18455,8 +18455,8 @@
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 177,
-        "end_line": 192,
+        "start_line": 196,
+        "end_line": 211,
         "name": "run_rigger_envs"
       }
     ],
@@ -18917,8 +18917,8 @@
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 148,
-        "end_line": 172,
+        "start_line": 167,
+        "end_line": 191,
         "name": "write_reviewless_git_unit_workflow"
       },
       {
@@ -18949,8 +18949,8 @@
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
-        "start_line": 148,
-        "end_line": 172,
+        "start_line": 167,
+        "end_line": 191,
         "name": "write_reviewless_git_unit_workflow"
       },
       {
