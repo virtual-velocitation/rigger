@@ -1423,6 +1423,70 @@ fn scratch_prints_the_spawns_own_rigger_assigned_container() {
     );
 }
 
+/// Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE): `cache_scratch_root_from`'s
+/// XDG-then-`$HOME/.cache` precedence is unit-tested as a PURE function in
+/// `src/worktree.rs`, but that only proves the function is correct when called correctly -
+/// it cannot catch a wiring mistake at the one real call site (`scratch_root_path` reading
+/// the wrong env var name, or dropping the fallback rung entirely). Driven against the
+/// REAL compiled binary with `XDG_CACHE_HOME` UNSET (`env_remove`, mirroring the
+/// established homeless-environment integration-test shape rather than mutating this
+/// shared test binary's own process environment) and a controlled, throwaway `HOME`,
+/// `rigger scratch` must still resolve under the `$HOME/.cache/rigger/...` fallback rung -
+/// byte-identical to what the pure resolver itself returns for the same inputs - never
+/// silently fall back to the pre-relocation `<repo>/.rigger/tmp` default.
+#[test]
+fn scratch_falls_back_to_home_dot_cache_when_xdg_cache_home_is_unset_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let home = tempfile::tempdir().expect("create a throwaway HOME");
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+    let out = common::rigger_courier()
+        .args(["scratch", "u/implementer#0"])
+        .current_dir(root)
+        .env_remove("XDG_CACHE_HOME")
+        .env("HOME", home.path())
+        .env("RIGGER_NO_DASH", "1")
+        .env("XDG_STATE_HOME", state.path())
+        .output()
+        .expect("failed to spawn the rigger binary");
+    assert!(
+        out.status.success(),
+        "scratch must succeed for a live run even with XDG_CACHE_HOME unset; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+
+    let expected = rigger::worktree::cache_scratch_root_from(
+        root.to_str().unwrap(),
+        None,
+        Some(home.path().as_os_str().to_owned()),
+    )
+    .expect("a non-empty repo with an explicit HOME always resolves")
+    .join("agent-scratch")
+    .join("r1")
+    .join("u_2fimplementer_230");
+
+    assert_eq!(
+        stdout,
+        expected.display().to_string(),
+        "with XDG_CACHE_HOME unset, the real binary must print the SAME path the pure \
+         cache_scratch_root_from resolver returns for the fallback HOME/.cache rung; \
+         got: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("/.cache/rigger/"),
+        "must resolve under the HOME-fallback cache rung; got: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("/.rigger/"),
+        "the default must never live under any .rigger, even on the HOME-only fallback \
+         rung; got: {stdout:?}"
+    );
+}
+
 /// `rigger scratch` is a WORKER-INVOKED store-opening courier exactly like `rigger prompt`
 /// (it must read the live run's `RunStarted` to resolve `run_id`), so from a storeless cwd
 /// it must REFUSE - never fabricate a fresh empty `.rigger/events.db` and then print a
@@ -1661,26 +1725,34 @@ fn result_walks_up_to_a_parent_store_from_a_subdirectory() {
     );
 }
 
-/// The PRIMARY named threat (adv-u9-walkup-namespace-misfile-default-layout): a courier run
-/// from a REAL git-linked worktree nested INSIDE the repo - the Gap-14 default scratch root
-/// `<repo>/.rigger/tmp/...`, where the conductor actually spawns units - must record into the
-/// SAME namespaced stream the conductor reads, not misfile it under `proj-<worktree>-run`
-/// while the spawn stays parked. Walking up alone is not enough: the walked-up write lands in
-/// the real store FILE, but the stream is chosen by the identity, and `git rev-parse
-/// --show-toplevel` from inside a linked worktree returns the WORKTREE path (basename
-/// `rigger-wt-x`), so a cwd-anchored identity misfiles the append. A plain subdir shares the
-/// git top-level and hides this; only a real linked worktree exposes the divergence. Proven
-/// end-to-end: `rigger result` from inside the worktree, then `rigger reported` FROM THE REPO
-/// ROOT must see the recorded result (it reads `proj-<repo>-run`, the conductor's stream).
+/// The PRIMARY named threat (adv-u9-walkup-namespace-misfile-default-layout), re-proven for
+/// the RELOCATED shape (spec 89, criterion 2 - SCRATCH IS OUTSIDE THE STORE TREE): a real
+/// spawn's own courier calls now run from a git-linked worktree that lives OUTSIDE the
+/// repo's own directory tree entirely (the cache-home default,
+/// [`common::default_scratch_root`]) rather than nested under `<repo>/.rigger/tmp` as
+/// before this criterion - and the record must still land in the SAME namespaced stream
+/// the conductor reads, not misfile it under `proj-<worktree>-run` while the spawn stays
+/// parked. Walking up alone is not enough: the walked-up write lands in the real store
+/// FILE, but the stream is chosen by the identity, and `git rev-parse --show-toplevel` from
+/// inside a linked worktree returns the WORKTREE path (basename `rigger-wt-x`), so a
+/// cwd-anchored identity misfiles the append. A plain subdir shares the git top-level and
+/// hides this; only a real linked worktree exposes the divergence. Proven end-to-end:
+/// `rigger result` from inside the worktree, then `rigger reported` FROM THE REPO ROOT must
+/// see the recorded result (it reads `proj-<repo>-run`, the conductor's stream). The sibling
+/// test below (`result_from_a_configured_nested_git_worktree_records_into_the_repo_stream`)
+/// re-proves the SAME contract for the OTHER shape `walk_stores_from` still honors
+/// unchanged, namely a worktree that stays a filesystem descendant of the repo, still
+/// reachable for a caller that configures scratch back under it.
 #[test]
-fn result_from_a_nested_git_worktree_records_into_the_repo_stream() {
+fn result_from_a_relocated_git_worktree_outside_the_repo_records_into_the_repo_stream() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     // A prior run created the store the conductor reads (identity = the repo basename).
     seed_store(root);
 
-    // A REAL git-linked worktree nested under the repo, exactly like the conductor's
-    // Gap-14 scratch root. `git worktree add` needs a committed HEAD, which
+    // A REAL git-linked worktree living OUTSIDE the repo's own directory tree entirely -
+    // the relocated cache-home default a real spawn's own courier calls now run from
+    // (spec 89, criterion 2). `git worktree add` needs a committed HEAD, which
     // `temp_git_project_with_commit` provides.
     let wt = common::default_scratch_root(root).join("rigger-wt-x");
     std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
@@ -1693,19 +1765,20 @@ fn result_from_a_nested_git_worktree_records_into_the_repo_stream() {
         .success();
     assert!(
         ok,
-        "git worktree add must succeed for the nested-worktree test"
+        "git worktree add must succeed for the relocated-worktree test"
     );
 
-    // Record a result from INSIDE the nested worktree.
+    // Record a result from INSIDE the relocated worktree.
     let (_out, err, ok) = run_rigger(&wt, &["result", "u/implementer#0", "did the work"]);
     assert!(
         ok,
-        "result from inside a nested git worktree must succeed; stderr: {err}"
+        "result from inside a relocated git worktree (outside the repo) must succeed; \
+         stderr: {err}"
     );
     // It walked up to the repo store - it did NOT fabricate a store inside the worktree.
     assert!(
         !wt.join(".rigger").join("events.db").exists(),
-        "result must NOT fabricate a store inside the worktree; it walks up to the repo"
+        "result must NOT fabricate a store inside the worktree; it resolves the repo's own"
     );
 
     // The write landed in the stream the CONDUCTOR reads (identity = repo root, not the
@@ -1721,6 +1794,61 @@ fn result_from_a_nested_git_worktree_records_into_the_repo_stream() {
     assert!(
         out.contains("u/implementer#0") && out.contains("ok"),
         "reported from the repo root must confirm the worktree's recorded result; got: {out:?}"
+    );
+}
+
+/// Spec 89, criterion 2's `walk_stores_from` doc comment names TWO shapes reaching the
+/// boundary: the relocated (non-descendant) shape the sibling test above proves, and a
+/// worktree that stays a filesystem DESCENDANT of the repo - "the pre-relocation nested
+/// worktree... still reachable for a caller that configures scratch back under the repo" -
+/// whose original, UNCHANGED `.parent()`-climb code path this test re-proves end-to-end.
+/// Deliberately independent of `common::default_scratch_root` (which now resolves OUTSIDE
+/// the repo): a nested worktree can live anywhere under `root`'s own directory tree
+/// regardless of where the crate's own scratch-root default points, so this fixture plants
+/// one at a literal repo-relative path, exactly the shape the OTHER untouched nested-worktree
+/// periphery fixtures in this suite still use for their own (non-store) concerns.
+#[test]
+fn result_from_a_configured_nested_git_worktree_records_into_the_repo_stream() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    seed_store(root);
+
+    // A REAL git-linked worktree nested under the repo - the pre-relocation shape, still
+    // sanctioned for a caller that configures scratch back under it.
+    let wt = root.join(".rigger").join("tmp").join("rigger-wt-nested");
+    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    let ok = Command::new("git")
+        .args(["worktree", "add", "-q"])
+        .arg(&wt)
+        .current_dir(root)
+        .status()
+        .expect("git must be runnable")
+        .success();
+    assert!(
+        ok,
+        "git worktree add must succeed for the nested-worktree test"
+    );
+
+    let (_out, err, ok) = run_rigger(&wt, &["result", "u/implementer#0", "did the work"]);
+    assert!(
+        ok,
+        "result from inside a nested git worktree must succeed; stderr: {err}"
+    );
+    assert!(
+        !wt.join(".rigger").join("events.db").exists(),
+        "result must NOT fabricate a store inside the worktree; it walks up to the repo"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["reported", "u/implementer#0"]);
+    assert!(
+        ok,
+        "the nested worktree's result must be readable from the repo root (the conductor's \
+         stream); stderr: {err}, stdout: {out}"
+    );
+    assert!(
+        out.contains("u/implementer#0") && out.contains("ok"),
+        "reported from the repo root must confirm the nested worktree's recorded result; \
+         got: {out:?}"
     );
 }
 
@@ -12983,6 +13111,66 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
     assert!(
         err.contains("(4.0K)") || err.contains("(4.5K)"),
         "the leftover worktree must carry a size; stderr:\n{err}"
+    );
+}
+
+/// Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE) done-when: "the reaper and
+/// `validate` account for the new root." Every scratch-residue `validate` test in this file
+/// (the one just above included) deliberately overrides `RIGGER_TMPDIR` or a configured
+/// `defaults.workdir` "so the scan is hermetic" - which means NONE of them ever drive
+/// `validate`'s residue scan against the crate's own DEFAULT scratch root, so none could
+/// catch a regression that left `scan_residue`'s call site resolving the pre-relocation
+/// `<repo>/.rigger/tmp` while every other command (and every pure-function unit test of
+/// `scratch_root_path` itself) moved to the cache-home default. Driven with NO
+/// `RIGGER_TMPDIR` and no `defaults.workdir`, only an explicit `XDG_CACHE_HOME`, this plants
+/// residue under the exact root [`rigger::worktree::cache_scratch_root_from`] resolves for
+/// that same input and asserts `validate` finds it there.
+#[test]
+fn validate_reports_residue_under_the_relocated_cache_home_default_root() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    git_ok(root, &["add", "-A"]);
+    git_ok(root, &["commit", "-q", "-m", "scaffold"]);
+    seed_store(root); // empty store -> zero live units -> leftovers read as residue
+
+    let cache_home = tempfile::tempdir().expect("create a throwaway XDG_CACHE_HOME");
+    let scratch = rigger::worktree::cache_scratch_root_from(
+        root.to_str().unwrap(),
+        Some(cache_home.path().as_os_str().to_owned()),
+        None,
+    )
+    .expect("a non-empty repo with an explicit cache home always resolves");
+
+    // Plant an orphaned build cache under the resolved DEFAULT (cache-home) root - the exact
+    // shape the sibling test above plants under an explicit `RIGGER_TMPDIR` instead.
+    std::fs::create_dir_all(scratch.join("cargo-target")).unwrap();
+    std::fs::write(scratch.join("cargo-target").join("x.rlib"), [0u8; 2048]).unwrap();
+
+    let (out, err, ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[("XDG_CACHE_HOME", cache_home.path().to_str().unwrap())],
+    );
+    assert!(
+        ok,
+        "validate must still exit 0 when it only WARNS about residue; stderr:\n{err}"
+    );
+    assert!(
+        out.contains("config valid"),
+        "validate must still print its config summary; stdout:\n{out}"
+    );
+    assert!(
+        err.to_lowercase().contains("residue"),
+        "validate must warn about residue planted under the relocated cache-home DEFAULT \
+         root - a regression that left its residue scan still rooted at the pre-relocation \
+         `.rigger/tmp` would silently miss this and print nothing; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("cargo-target"),
+        "the orphaned build cache under the cache-home default must be named; stderr:\n{err}"
     );
 }
 
