@@ -3542,6 +3542,276 @@ fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
     );
 }
 
+/// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE): `rigger step` invoked from inside a
+/// LINKED git worktree must refuse, naming both the main tree and the linked one - never
+/// proceed and let git's own opaque "'rigger-run' is already used by worktree ..." surface deep
+/// inside branch setup instead (2026-09-11 evidence: the driver stopped after 28 waves for
+/// exactly this reason, because a linked worktree cannot itself hold `rigger-run` checked out -
+/// git already holds it there in the main tree).
+#[test]
+fn step_from_a_linked_worktree_refuses_naming_both_trees() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
+    let wt_path = wt_parent.path().join("rigger-wt-linked");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            wt_path.to_str().expect("utf8 worktree path"),
+            "-b",
+            "linked-branch",
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(&wt_path, &["step"]);
+    assert!(
+        !ok,
+        "`rigger step` invoked from inside a linked worktree must refuse, not proceed; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        !err.contains("already used by worktree"),
+        "the refusal must be rigger's OWN clear message, never git's raw opaque error; \
+         stderr: {err:?}"
+    );
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let wt_canon = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
+    assert!(
+        err.contains(root_canon.to_str().unwrap()),
+        "the refusal must name the MAIN tree ({}); stderr: {err:?}",
+        root_canon.display()
+    );
+    assert!(
+        err.contains(wt_canon.to_str().unwrap()),
+        "the refusal must name the LINKED tree it was invoked from ({}); stderr: {err:?}",
+        wt_canon.display()
+    );
+
+    // Side-effect-free: no rigger-run history was touched from the linked worktree.
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "a refused step must not have gone on to open/create the store"
+    );
+}
+
+/// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE): the identical refusal for `rigger
+/// run`, the standalone one-shot entry - each entry point calls the shared resolver at its OWN
+/// site, so this drives the built binary to prove THIS call site fires too, not only `rigger
+/// step`'s.
+#[test]
+fn run_from_a_linked_worktree_refuses_naming_both_trees() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
+    let wt_path = wt_parent.path().join("rigger-wt-linked-run");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            wt_path.to_str().expect("utf8 worktree path"),
+            "-b",
+            "linked-run-branch",
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(&wt_path, &["run"]);
+    assert!(
+        !ok,
+        "`rigger run` invoked from inside a linked worktree must refuse, not proceed; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        !err.contains("already used by worktree"),
+        "the refusal must be rigger's OWN clear message, never git's raw opaque error; \
+         stderr: {err:?}"
+    );
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let wt_canon = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
+    assert!(
+        err.contains(root_canon.to_str().unwrap()) && err.contains(wt_canon.to_str().unwrap()),
+        "the refusal must name both the main tree ({}) and the linked tree ({}); stderr: {err:?}",
+        root_canon.display(),
+        wt_canon.display()
+    );
+}
+
+/// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE): `rigger workflow`'s Rust entry point
+/// resolves the repository the same way BEFORE it ever locates or launches the Node shim, so a
+/// linked worktree is refused up front instead of (at best) failing to find a per-project shim
+/// that was only ever provisioned in the main checkout, or (at worst) driving a stray one.
+#[test]
+fn workflow_from_a_linked_worktree_refuses_naming_both_trees() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
+    let wt_path = wt_parent.path().join("rigger-wt-linked-workflow");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            wt_path.to_str().expect("utf8 worktree path"),
+            "-b",
+            "linked-workflow-branch",
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(&wt_path, &["workflow"]);
+    assert!(
+        !ok,
+        "`rigger workflow` invoked from inside a linked worktree must refuse, not proceed; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        !err.contains("the per-project JS driver is not provisioned"),
+        "the linked-worktree refusal must fire BEFORE the shim-lookup error even has a \
+         chance to; stderr: {err:?}"
+    );
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let wt_canon = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
+    assert!(
+        err.contains(root_canon.to_str().unwrap()) && err.contains(wt_canon.to_str().unwrap()),
+        "the refusal must name both the main tree ({}) and the linked tree ({}); stderr: {err:?}",
+        root_canon.display(),
+        wt_canon.display()
+    );
+}
+
+/// Spec 89, criterion 4 (STEP RESOLVES THE MAIN WORKTREE) round 2: `rigger serve` (and,
+/// identically, `rigger run --driver workflow`) is `run_workflow`'s OWN entry point - the one
+/// the shim actually spawns on the automated `/rigger` path - and, before this round, called
+/// bare `git_repo()` at every one of its four repo-reading sites with no
+/// `resolve_main_worktree_or_refuse` wiring anywhere in the function: `cmd_workflow` (the Node
+/// shim launcher) and `run_cli` (`rigger run`'s default CLI driver) were guarded, but their
+/// sibling `DriverKind::Workflow` path was not, so a `rigger serve` invoked from inside a linked
+/// worktree drove straight into `Worktree::ensure_run_branch`/`anchor_run_branch` and failed
+/// with git's own opaque "already used by worktree" error instead of this refusal - the exact
+/// failure class this criterion exists to close, just on the one entry point round 1 missed.
+#[test]
+fn serve_from_a_linked_worktree_refuses_naming_both_trees() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
+    let wt_path = wt_parent.path().join("rigger-wt-linked-serve");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            wt_path.to_str().expect("utf8 worktree path"),
+            "-b",
+            "linked-serve-branch",
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(&wt_path, &["serve"]);
+    assert!(
+        !ok,
+        "`rigger serve` invoked from inside a linked worktree must refuse, not proceed; \
+         stdout: {out:?} stderr: {err:?}"
+    );
+    assert!(
+        !err.contains("already used by worktree"),
+        "the refusal must be rigger's OWN clear message, never git's raw opaque error; \
+         stderr: {err:?}"
+    );
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let wt_canon = std::fs::canonicalize(&wt_path).unwrap_or_else(|_| wt_path.clone());
+    assert!(
+        err.contains(root_canon.to_str().unwrap()) && err.contains(wt_canon.to_str().unwrap()),
+        "the refusal must name both the main tree ({}) and the linked tree ({}); stderr: {err:?}",
+        root_canon.display(),
+        wt_canon.display()
+    );
+
+    // Side-effect-free: no rigger-run history was touched from the linked worktree, and the
+    // enclosing main tree never gained a run branch as a side effect of the refused serve.
+    assert!(
+        !wt_path.join(".rigger").join("events.db").exists(),
+        "a refused serve must not have gone on to open/create the store"
+    );
+    assert!(
+        !git_out(root, &["branch", "--list", "rigger-run"])
+            .unwrap_or_default()
+            .contains("rigger-run"),
+        "the main tree must not gain a rigger-run branch as a side effect of a refused serve"
+    );
+}
+
+/// Spec 89, criterion 4 (EXACTLY ONE ROOT): `rigger step` must refuse BEFORE any sweep when the
+/// store it would open (cwd-relative `.rigger`) and the repository `git` resolves for that same
+/// cwd disagree on their root. Reproduces the exact 2026-09-11 u87c3 incident: a git-less
+/// fixture directory nested inside a real repository's scratch root, carrying its OWN
+/// (unit-less) store - `git rev-parse` walks UP PAST the git-less fixture to the ENCLOSING real
+/// repository, so a step driven from there used to read the fixture's empty live-branches set
+/// while sweeping the REAL repository's scratch root, removing every live worktree of whatever
+/// run was actually using it. The fix must refuse before that sweep ever runs, so the real
+/// repository's live unit worktree survives untouched.
+#[test]
+fn step_refuses_before_sweeping_when_the_stores_root_and_gits_toplevel_disagree() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+
+    let scratch = root.join("scratchroot");
+    let tmp = scratch.to_str().unwrap();
+
+    // A REAL parked unit: a live worktree under the scratch root that a wrongly-scoped sweep
+    // must never remove.
+    let (out, err, ok) = run_rigger_envs(root, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(ok, "the seeding step must succeed; stderr:\n{err}");
+    assert!(
+        out.contains(r#""id":"solo/implementer#0""#),
+        "the seeding step must park the implementer; got: {out:?}"
+    );
+    let live_wt = scratch.join("rigger-wt-solo");
+    assert!(
+        live_wt.exists(),
+        "premise: the parked implementer's worktree must exist: {}",
+        live_wt.display()
+    );
+
+    // A git-less FIXTURE nested INSIDE that same scratch root (u87c3's exact shape), with its
+    // OWN store and config but no `.git` of its own.
+    let fixture = scratch.join("nested-fixture");
+    write_reviewless_git_unit_workflow(&fixture);
+
+    let (_out2, err2, ok2) = run_rigger_envs(&fixture, &["step"], &[("RIGGER_TMPDIR", tmp)]);
+    assert!(
+        !ok2,
+        "a step whose cwd has no `.git` of its own but sits inside another repository's \
+         scratch tree - so the store (cwd-relative) and the repository git resolves \
+         (walked up) disagree on the root - must refuse, never proceed to sweep that \
+         enclosing repository's real worktrees; stderr:\n{err2}"
+    );
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let fixture_canon = std::fs::canonicalize(&fixture).unwrap_or_else(|_| fixture.clone());
+    assert!(
+        err2.contains(root_canon.to_str().unwrap())
+            && err2.contains(fixture_canon.to_str().unwrap()),
+        "the refusal must name both the git toplevel ({}) and the store's own root ({}); \
+         stderr:\n{err2}",
+        root_canon.display(),
+        fixture_canon.display()
+    );
+    assert!(
+        live_wt.exists(),
+        "the refusal must land BEFORE any sweep: the real repository's live unit worktree \
+         must survive a step driven from the nested, git-less fixture; stderr:\n{err2}"
+    );
+}
+
 /// The `workflows/rigger.js` native-driver source, read at test time from the crate manifest
 /// dir. The driver is embedded into the binary via `include_str!` (not reachable through the
 /// crate API) and runs only under the workflow harness (top-level await, the injected
@@ -3552,6 +3822,139 @@ fn rigger_js_source() -> String {
         .join("workflows")
         .join("rigger.js");
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+/// Spec 89, criterion 4: the driver's step-courier command must carry the MAIN tree as an
+/// ABSOLUTE path, not the raw `A.repo || '.'` relative default. A relative `cd .` is a no-op
+/// that leaves the courier's Bash tool call wherever its OWN cwd happens to already be - which
+/// can drift into a linked unit worktree left over from an earlier, unrelated Bash call in the
+/// same agent session - so `rigger step` then runs in the wrong tree and fails with git's
+/// opaque "already used by worktree" error (2026-09-11: the driver stopped after 28 waves for
+/// exactly this reason). This script has NO filesystem/Node API access of its own (the
+/// generic Workflow harness it runs under grants none), so REPO can only be resolved through
+/// one throwaway `agent()` Bash round-trip - the very FIRST Bash command this workflow ever
+/// issues, before any later command could have drifted its cwd - whose reported `pwd` becomes
+/// REPO for every courier command built for the rest of the run.
+///
+/// The driver runs only under the workflow harness and cannot execute here (top-level await,
+/// injected `agent`/`parallel`/`log` globals), so this is a source fixture over the embedded
+/// driver, the same convention `native_driver_enforces_an_outer_wall_clock...` uses.
+#[test]
+fn native_driver_couriers_the_step_against_an_absolute_repo_path() {
+    let src = rigger_js_source();
+
+    // The caller's raw `repo` arg must no longer be used directly as REPO: it is captured
+    // under its own name and resolved through an agent() round-trip before REPO is bound.
+    assert!(
+        !src.contains("const REPO = A.repo || '.'")
+            && !src.contains("const REPO = A.repo || \".\""),
+        "the caller's raw `repo` arg must no longer be bound directly to REPO - it must be \
+         resolved to an absolute path via an agent() Bash round-trip first"
+    );
+    let repo_arg_at = src
+        .find("A.repo || '.'")
+        .or_else(|| src.find("A.repo || \".\""))
+        .expect("the driver must still capture the caller's `repo` arg (relative-default '.')");
+
+    // The resolution must run a real shell `pwd` through agent() to learn the absolute cwd,
+    // and bind its result to REPO. Anchored on the actual invocation (`cd ${REPO_ARG} && pwd`),
+    // never a bare "pwd" substring, which would also match this test's own prose comments.
+    let resolve_at = src
+        .find("&& pwd")
+        .expect("REPO's resolution must run a real `pwd` through an agent() Bash call");
+    assert!(
+        repo_arg_at < resolve_at,
+        "the raw repo arg must be captured before the pwd-resolution step that consumes it"
+    );
+    let repo_bind_at = src
+        .find("const REPO = ")
+        .expect("the driver must still bind the resolved absolute path to REPO");
+    assert!(
+        resolve_at < repo_bind_at,
+        "REPO must be bound to the RESOLVED absolute path (after the pwd round-trip), never \
+         straight to the caller's raw relative arg"
+    );
+
+    // The step-courier command template must still be built from REPO (so the absolute
+    // resolution actually reaches the `cd` the courier runs), and it must run `rigger step`,
+    // AFTER REPO is bound to the resolved value.
+    let cd_at = src
+        .find("cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step")
+        .expect(
+            "the step-courier command must still `cd ${REPO} && ... rigger step` - the exact \
+             template the resolved, absolute REPO must reach",
+        );
+    assert!(
+        repo_bind_at < cd_at,
+        "REPO must be resolved to an absolute path before the step-courier command template \
+         that uses it is ever built"
+    );
+}
+
+/// Spec 89, criterion 4, round 2: the resolve-repo `agent()` call's structured-output schema
+/// must constrain `path` to LOOK absolute (a leading `/`), and - because nothing enforces a
+/// JSON schema against a model relay at the wire level - a runtime check must ALSO refuse a
+/// non-absolute REPO before any courier command is ever built from it. Neither existed before
+/// this round: the schema had no `pattern` at all, and the only post-call guard was
+/// `if (!REPO) throw`, which never catches a non-empty, non-absolute value (e.g. a relay that
+/// misbehaves and relays a bare unit-worktree basename) - silently reintroducing the exact
+/// wrong-cwd-drift failure class this whole resolution exists to close, with the sole covering
+/// test (`native_driver_couriers_the_step_against_an_absolute_repo_path`, above) never
+/// executing or inspecting the resolved value, only the source shape around it.
+///
+/// The driver runs only under the workflow harness and cannot execute here, so - like every
+/// other driver-shaped proof in this file - this is a source fixture over the embedded script.
+#[test]
+fn native_driver_schema_and_runtime_both_reject_a_non_absolute_resolved_repo() {
+    let src = rigger_js_source();
+
+    // The schema constrains `path` at the source: a leading-slash pattern, not a bare
+    // `{ type: 'string' }` with no shape constraint at all.
+    let schema_at = src
+        .find("properties: { path: { type: 'string', pattern: '^/' } }")
+        .expect(
+            "the resolve-repo schema's `path` property must carry a leading-slash pattern \
+             constraint, not an unconstrained string",
+        );
+
+    // The runtime check must exist, must test for a leading '/', and must fire between REPO
+    // being bound and the first courier command template that consumes it - so a non-absolute
+    // REPO is refused before it can ever reach a `cd ${REPO} && ...`.
+    let repo_bind_at = src
+        .find("const REPO = ")
+        .expect("the driver must still bind the resolved value to REPO");
+    let runtime_check_at = src
+        .find("REPO.startsWith('/')")
+        .expect("a runtime check must test whether the resolved REPO looks absolute");
+    let cd_at = src
+        .find("cd ${REPO} && CARGO_TARGET_DIR=${REPO}/.rigger/tmp/cargo-target rigger step")
+        .expect("the step-courier command template must still exist");
+
+    assert!(
+        schema_at < repo_bind_at,
+        "the schema constraint is declared as part of the agent() call, which must precede \
+         REPO being bound to its result"
+    );
+    assert!(
+        repo_bind_at < runtime_check_at,
+        "the runtime absolute-path check must run AFTER REPO is bound (it inspects the bound \
+         value), not before"
+    );
+    assert!(
+        runtime_check_at < cd_at,
+        "the runtime absolute-path check must fire BEFORE the first courier command template \
+         is built from REPO, so a non-absolute value is refused before it can ever reach a \
+         `cd ${{REPO}} && ...` shell command"
+    );
+
+    // The runtime check must actually THROW - refuse loudly - not merely observe.
+    let runtime_block = &src[runtime_check_at..cd_at];
+    assert!(
+        runtime_block.contains("throw new Error"),
+        "the runtime absolute-path check must throw, refusing to build a courier command from \
+         a non-absolute REPO, exactly like the pre-existing `if (!REPO) throw` empty-check it \
+         sits alongside; checked region:\n{runtime_block}"
+    );
 }
 
 /// Spec 19c, Unit 2 (a): the native driver must enforce an OUTER per-agent wall-clock so even an

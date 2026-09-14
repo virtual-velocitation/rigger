@@ -755,6 +755,7 @@ fn sweep_terminal_scoped_to_the_current_run_reclaims_a_dead_runs_abandoned_slug_
         &root,
         "rigger-run",
         &std::collections::HashSet::new(),
+        &std::collections::HashSet::new(),
         &scoped,
     )
     .unwrap();
@@ -772,6 +773,7 @@ fn sweep_terminal_scoped_to_the_current_run_reclaims_a_dead_runs_abandoned_slug_
         &repo_path,
         &root,
         "rigger-run",
+        &std::collections::HashSet::new(),
         &std::collections::HashSet::new(),
         &all_events,
     )

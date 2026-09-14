@@ -26,6 +26,12 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   `cargo clippy --all-targets -- -D warnings` must be clean. Keep rustfmt and
   clippy clean as you go, not as a final cleanup. CI is confirmation, never
   discovery.
+- Checkpoint before long work (spec 89). Before a mutation sweep or any full
+  lane suite, commit your current tree as `wip(<unit>): checkpoint before
+  <mutation sweep | lane suite>` - naming whichever applies - then squash that
+  checkpoint into your round's own commit when you report. A halt never
+  discards a tree: if you are interrupted mid-run, only the committed
+  checkpoint survives, so commit it before the long-running step, not after.
 - Process lifecycle is handle-bound. A process is ended ONLY through the
   `std::process::Child` handle that spawned it (`kill()` + `wait()`), or through
   the two sanctioned internal helpers: `reap::send_signal` in production and

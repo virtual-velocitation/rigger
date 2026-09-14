@@ -1786,6 +1786,130 @@ fn main_repo_root(start: &Path) -> Option<PathBuf> {
     abs.parent().map(|p| p.to_path_buf())
 }
 
+/// STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger step`, `rigger run`
+/// (both the default CLI driver and `--driver workflow`, i.e. `run_cli` and `run_workflow` -
+/// the latter also `rigger serve`'s sole implementation) and `rigger workflow` each call this
+/// at their own entry so a LINKED git worktree is refused up front, naming both trees, instead
+/// of silently proceeding on the linked tree's own toplevel
+/// and later failing deep inside branch setup with git's own opaque "'rigger-run' is already
+/// used by worktree ..." (a linked worktree cannot itself hold the run branch checked out - git
+/// already holds it there in the main tree). Evidence (2026-09-11): the driver stopped after 28
+/// waves for exactly this reason, when a courier's `rigger step` ran with its cwd drifted into
+/// a unit worktree.
+///
+/// Compares [`main_repo_root`] (the git-common-dir-derived main checkout, correct even from
+/// inside a linked worktree) against `cwd`'s own `git rev-parse --show-toplevel` (which returns
+/// the LINKED tree when run from inside one): equal - `cwd` already IS the main tree, return it
+/// unchanged; a real repo where they differ - refuse; no repo reachable at all -
+/// `Ok(String::new())`, preserving the existing repo-less unit-test path every caller already
+/// guards its own repo-only logic on.
+fn resolve_main_worktree_or_refuse(cwd: &Path, command: &str) -> Result<String, String> {
+    let toplevel = git_repo_at(cwd);
+    if toplevel.is_empty() {
+        return Ok(String::new());
+    }
+    let Some(main_root) = main_repo_root(cwd) else {
+        return Ok(toplevel);
+    };
+    let main_canon = std::fs::canonicalize(&main_root).unwrap_or_else(|_| main_root.clone());
+    let top_canon =
+        std::fs::canonicalize(Path::new(&toplevel)).unwrap_or_else(|_| PathBuf::from(&toplevel));
+    if main_canon == top_canon {
+        return Ok(toplevel);
+    }
+    Err(format!(
+        "{command}: refusing to run from inside a linked worktree ({linked}) - the main \
+         worktree is {main}. A linked worktree cannot itself hold the run branch checked out \
+         (git already holds it there in the main tree), so continuing here would fail deep \
+         inside branch setup with a raw git error instead of this one; re-run `{command}` from \
+         the main worktree ({main}).",
+        linked = top_canon.display(),
+        main = main_canon.display(),
+    ))
+}
+
+/// EXACTLY ONE ROOT (spec 89, criterion 4), `rigger step` only: refuses BEFORE any terminal
+/// sweep when the store this step is about to open, the repository `git` resolved for the
+/// same `cwd`, and the scratch root this step is about to sweep disagree on their owning
+/// root - a three-way check, not two.
+///
+/// LEG ONE (`cwd` vs `repo`): `RIGGER_DIR` is opened cwd-relative (never walked up), while
+/// `repo` can walk PAST a `.git`-less `cwd` to an ENCLOSING repository - the two diverge
+/// exactly when `cwd` has no `.git` of its own, e.g. a test fixture nested under a scratch
+/// root (u87c3, 2026-09-11): the fixture's own store held none of the real run's events,
+/// `git` resolved the REAL enclosing repository, and `sweep_terminal` went on to remove every
+/// live worktree of the run actually using that scratch root.
+///
+/// LEG TWO (`scratch_root` vs `repo`, round 2 adjudication
+/// `adv-u89c4-r2-one-root-check-is-two-of-three-scratch-root-never-compared`): leg one alone
+/// still lets a scratch root aimed at an unrelated real repository through unrefused.
+/// `RIGGER_TMPDIR` (read unconditionally by `worktree::scratch_root_from_env`, ahead of any
+/// repo-derived default) can point `scratch_root` anywhere; run from the real repository root
+/// (so leg one passes) with `RIGGER_TMPDIR` aimed at some OTHER real project's own scratch
+/// tree, this step's sweep would act on THAT project's real worktrees using this run's
+/// events - the same hazard leg one guards against, reached from the opposite direction.
+/// Resolved with the SAME "which repository does this path belong to" primitive leg one
+/// already trusts (`git_repo_at`, not raw path containment): a scratch root with NO
+/// enclosing git repository of its own - the common case for an arbitrary external tmp
+/// directory, e.g. `tests/cli.rs`'s
+/// `the_liveness_marker_path_follows_a_non_default_scratch_root` - is vacuously safe (there
+/// is no OTHER repository's worktrees to endanger, and the default `<repo>/.rigger/tmp`
+/// naturally resolves back to `repo` itself); only a scratch root whose OWN git toplevel
+/// resolves to a DIFFERENT repository than the one leg one just verified trips the refusal.
+///
+/// A repo-less `cwd` (`repo` empty) has nothing to cross-check, matching every other
+/// repo-gated branch in `cmd_step`.
+fn refuse_unless_one_root(
+    cwd: &Path,
+    repo: &str,
+    scratch_root: Option<&str>,
+) -> Result<(), String> {
+    if repo.is_empty() {
+        return Ok(());
+    }
+    let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let repo_canon = std::fs::canonicalize(Path::new(repo)).unwrap_or_else(|_| PathBuf::from(repo));
+    if cwd_canon != repo_canon {
+        return Err(format!(
+            "rigger step: refusing - the store this step would open and the repository git \
+             resolved for this directory disagree on their root: git toplevel (and the scratch \
+             root it sweeps, {scratch}) is {repo}, but the store under {RIGGER_DIR} would be \
+             opened relative to the current directory {cwd} instead - a DIFFERENT root. This \
+             shape arises when the current directory has no `.git` of its own (e.g. a test \
+             fixture nested under a scratch root): `git rev-parse` then walks UP past it to an \
+             ENCLOSING repository while the store stays right here, so this step's sweep would \
+             act on that enclosing repository's real worktrees using THIS directory's own \
+             (unrelated) events. Re-run from the repository root.",
+            scratch = scratch_root.unwrap_or("(none)"),
+            cwd = cwd_canon.display(),
+        ));
+    }
+    if let Some(scratch) = scratch_root.map(str::trim).filter(|s| !s.is_empty()) {
+        let scratch_repo = git_repo_at(Path::new(scratch));
+        if !scratch_repo.is_empty() {
+            let scratch_repo_canon = std::fs::canonicalize(Path::new(&scratch_repo))
+                .unwrap_or_else(|_| PathBuf::from(&scratch_repo));
+            if scratch_repo_canon != repo_canon {
+                return Err(format!(
+                    "rigger step: refusing - the scratch root this step would sweep belongs to \
+                     a DIFFERENT repository than the one this step resolved: git toplevel (and \
+                     the store under {RIGGER_DIR}, opened relative to the current directory \
+                     {cwd}) is {repo}, but the scratch root {scratch} resolves to the \
+                     repository {scratch_repo} instead - a DIFFERENT root. This shape arises \
+                     when `RIGGER_TMPDIR` (or `defaults.workdir`) is pointed at another \
+                     project's own scratch tree: this step's sweep would then act on THAT \
+                     project's real worktrees using this run's events. Point the scratch root \
+                     back under {repo}, or re-run from the repository the scratch root belongs \
+                     to.",
+                    cwd = cwd_canon.display(),
+                    scratch_repo = scratch_repo_canon.display(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`/
 /// `reported`) must see it: the `.rigger` directory that actually holds the store (found
 /// by walking UP from the cwd, never fabricated), together with the identity that scopes
@@ -2057,7 +2181,7 @@ fn cmd_run(args: &[String]) -> Res {
     // `--driver workflow` is the equivalent of `rigger serve`: the in-Claude-Code
     // MCP-server path. `cli` (the default) keeps the standalone subprocess path.
     match parsed.driver {
-        DriverKind::Workflow => run_workflow(&parsed),
+        DriverKind::Workflow => run_workflow(&parsed, "rigger run --driver workflow"),
         DriverKind::Cli => run_cli(&parsed),
     }
 }
@@ -2267,12 +2391,54 @@ fn cmd_step(args: &[String]) -> Res {
             eprintln!("{}", spec_lint_next_step(spec));
         }
     }
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
+    // FIRST, before any config load, store touch or worktree mutation - a linked worktree
+    // gets a clear refusal naming both trees instead of wasting a config/criteria load only
+    // to fail deep inside branch setup with git's own opaque error.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger step")?;
     // Refuse a doomed run up front: a gating persona that never puts its verdict on the result
     // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
     // the run's config-load seam, before any unit is parked.
     let cfg = load_run_config(".")?;
     let criteria = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+
+    // Captured here (moved up from the pre-round-2 placement just before the terminal sweep) so
+    // `refuse_unless_one_root` immediately below can name it: the value is pure (only `repo` and
+    // `cfg.workflow.defaults.workdir`, both already resolved above), so hoisting the computation
+    // changes no answer it was ever going to give, only how early that answer is available. Kept
+    // alive for the rest of the function - the fixpoint/terminal teardown and the definition-pin
+    // HALT's own reclaim both still need it (spec 34, criterion 3).
+    let scratch_root = if repo.is_empty() {
+        None
+    } else {
+        Some(rigger::worktree::scratch_root_from_env(
+            &repo,
+            &cfg.workflow.defaults.workdir,
+        ))
+    };
+
+    // EXACTLY ONE ROOT (spec 89, criterion 4, round 2): refuse BEFORE any GIT/worktree
+    // mutation - not merely before the terminal sweep - when the store this step is about to
+    // open, the repository `git` resolved for this cwd, and the scratch root this step is
+    // about to sweep disagree on their root (three-way as of round 2's own adjudication; see
+    // `refuse_unless_one_root`'s doc comment for the added leg). "Any GIT/worktree mutation",
+    // precisely: the `std::fs::create_dir_all(RIGGER_DIR)` two lines above this comment still
+    // precedes this refusal, but it only ever creates an empty local `.rigger/` under THIS
+    // process's own cwd - never the enclosing repository the hazard below is about - so it is
+    // not the mutation this ordering guards against. Round 1 placed this call
+    // just before the sweep, AFTER the run-branch anchor block below (`ensure_run_branch`
+    // creates and checks out `RUN_BRANCH` in whatever `repo` resolved to - a real mutation of
+    // that repository); a nested git-less fixture whose `repo` resolves to an ENCLOSING real
+    // repository would have that repository's branch switched to `rigger-run` before this
+    // refusal ever fired (u87c3-adjacent regression, confirmed live via `tests/
+    // step_root_resolution_periphery.rs`'s
+    // `step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_enclosing_repos_
+    // checked_out_branch`). Moved here, before `acquire_step_lock` and the anchor block, so a
+    // step that is going to refuse never mutates any repository first - see
+    // `refuse_unless_one_root`'s own doc comment for the full u87c3 incident this closes.
+    refuse_unless_one_root(&cwd, &repo, scratch_root.as_deref())?;
 
     // Serialize concurrent `rigger step` invocations so the run advances ONE step at a time
     // (spec 51 relies on that invariant). A step checks out the run branch and branches unit
@@ -2288,7 +2454,6 @@ fn cmd_step(args: &[String]) -> Res {
     // off HEAD. Guarded on a real repo so the repo-less unit-test path is untouched. A
     // failure here aborts the step (with a clear, actionable error) rather than driving
     // the conductor on the wrong branch - isolation is a precondition, not best-effort.
-    let repo = git_repo();
     // The run branch's tip commit sha AT THIS STEP'S ANCHOR (spec 91): resolved right after
     // `ensure_run_branch` below, BEFORE the conductor ever branches a unit worktree off it or
     // advances it - so a mint further down (a `--fresh` boundary, or a new campaign inside
@@ -2361,17 +2526,22 @@ fn cmd_step(args: &[String]) -> Res {
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
     }
 
-    // Captured before `repo` moves into Deps: the fixpoint/terminal teardown below needs it, and
-    // computed BEFORE the definition-pin check so a definition-drift HALT can reclaim run-level
-    // scratch on its way out (spec 34, criterion 3).
-    let scratch_root = if repo.is_empty() {
-        None
-    } else {
-        Some(rigger::worktree::scratch_root_from_env(
-            &repo,
-            &cfg.workflow.defaults.workdir,
-        ))
-    };
+    // The currently loaded workflow's own declared unit branches (spec 89, criterion 1, round
+    // 2 fix): config, never the event log, so it stays populated even at this project's very
+    // first step, before a single event has ever been recorded. Both step-start worktree
+    // sweeps below narrow their own "spare a dirty candidate" exception to a unit THIS run's
+    // definition actually declares - see `sweep_terminal`'s and `reclaim_orphan_scratch`'s own
+    // doc comments - so a genuinely dead, unrelated branch that happens to also be dirty is
+    // still reclaimed exactly as before this criterion. (`scratch_root` itself is NOT
+    // recomputed here - u89c4 round 2 already hoisted that single binding above, before
+    // `refuse_unless_one_root`; see its doc comment there. Both step-start sweeps below use
+    // that one binding.)
+    let declared_units: std::collections::HashSet<String> = cfg
+        .workflow
+        .stages
+        .keys()
+        .map(|slug| conductor::unit_branch(slug))
+        .collect();
 
     // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every step
     // starts by sweeping the scratch root's terminal worktrees (integrated units, review
@@ -2418,6 +2588,7 @@ fn cmd_step(args: &[String]) -> Res {
                 root,
                 RUN_BRANCH,
                 &live_branches,
+                &declared_units,
                 &fence_events,
             ) {
                 Ok(0) => {}
@@ -2555,7 +2726,7 @@ fn cmd_step(args: &[String]) -> Res {
         match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
             Ok(events) => {
                 let run_units = current_run_units(&events);
-                let removed = reclaim_orphan_scratch(&repo, root, &run_units);
+                let removed = reclaim_orphan_scratch(&repo, root, &run_units, &declared_units);
                 if removed > 0 {
                     eprintln!(
                         "rigger step: reclaimed {removed} orphaned scratch entr{} under {root}",
@@ -3402,6 +3573,11 @@ fn run_cli(parsed: &RunArgs) -> Res {
             println!("{}", spec_lint_next_step(spec));
         }
     }
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
+    // FIRST, mirroring `cmd_step`'s own placement - see `resolve_main_worktree_or_refuse`'s
+    // doc comment.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger run")?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -3413,7 +3589,6 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // for `rigger step`; the effective base is the flag, then the `RIGGER_BASE` env override
     // (how `rigger workflow` threads its `--base` through the shim), then `origin/main`.
     // Guarded on a real repo, so the repo-less path is untouched.
-    let repo = git_repo();
     // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
     // `anchor_run_branch` below, before the conductor branches any unit worktree off it -
     // threaded to `fresh_run_if_requested` so a mint persists the tip the run genuinely
@@ -3585,7 +3760,14 @@ fn fresh_run_if_requested(
 /// serves the MCP bridge over stdio. The store is selected by flag and wrapped in
 /// the per-project namespace decorator before it is injected into BOTH the
 /// conductor and the side-car (§5.1.1, R9).
-fn run_workflow(parsed: &RunArgs) -> Res {
+///
+/// `command` is the ACTUALLY-INVOKED command line (`"rigger serve"` from [`cmd_serve`],
+/// `"rigger run --driver workflow"` from [`cmd_run`]) - threaded through rather than a
+/// literal `"rigger serve"` here, so [`resolve_main_worktree_or_refuse`]'s refusal names
+/// the command the operator actually typed instead of always naming `rigger serve` even
+/// when reached via `rigger run --driver workflow` (spec 89 criterion 4, round 2
+/// adjudication `adv-u89c4-r2-serve-command-name-hardcoded-for-both-entry-points`).
+fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger serve <spec>` / the shim-driven
     // workflow path is a REAL pre-launch surface holding the spec path - the one the
     // /rigger workflow itself runs through, and the omission this unit was rejected for
@@ -3600,6 +3782,23 @@ fn run_workflow(parsed: &RunArgs) -> Res {
             eprintln!("{}", spec_lint_next_step(spec));
         }
     }
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4, round 2): resolved and
+    // refused-or-not FIRST, before any config load, store touch or worktree mutation -
+    // mirroring `run_cli`'s and `cmd_step`'s own placement. `run_workflow` is `run_cli`'s
+    // sibling `DriverKind` dispatched from the same `cmd_run` (and is `rigger serve`'s sole
+    // implementation, via `cmd_serve` below) - round 1 of this criterion guarded `run_cli`
+    // and the Node-shim-launching `cmd_workflow` but missed THIS entry point, which every
+    // one of its repo-reading call sites called bare `git_repo()` with no refusal wired in
+    // at all: a `rigger serve` (the shape the shim's driver actually spawns on the
+    // automated `/rigger` path) invoked from a linked worktree drove straight into
+    // `anchor_run_branch` and failed with git's own opaque "already used by worktree"
+    // error, never this refusal. `repo` is resolved ONCE here and reused for the rest of
+    // this function (the branch anchor, instance registration, scratch root and the
+    // conductor's `Deps`) instead of a `git_repo()` re-read at each site, so there is one
+    // resolution authority for the whole call, never several that could in principle
+    // disagree with each other or with this guard.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -3613,29 +3812,24 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // on a real repo, so the repo-less path is untouched.
     // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
     // `anchor_run_branch` below, threaded to `fresh_run_if_requested` so a mint persists the
-    // tip the run genuinely started at. `""` on the repo-less path. Declared outside the
-    // scoped block below (whose own `repo` goes out of scope at its end) so it survives to
-    // this fn's later `fresh_run_if_requested` call.
+    // tip the run genuinely started at. `""` on the repo-less path.
     let mut base_tip = String::new();
-    {
-        let repo = git_repo();
-        if !repo.is_empty() {
-            let (base, base_explicit) = resolve_run_base(
-                parsed.base.as_deref(),
-                std::env::var("RIGGER_BASE").ok().as_deref(),
-            );
-            // Refuse an obviously-wrong base BEFORE anchoring (spec 18, criterion 7), gating on
-            // the side-effect-free planned anchor so no wrong-base run branch is ever created and
-            // the corrected `--base` retry re-anchors fresh.
-            let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
-            // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base
-            // (an unresolvable base AND no HEAD to fall back to) loudly rather than minting a run
-            // branch that branches from nowhere.
-            refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
-            refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
-            anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
-            base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
-        }
+    if !repo.is_empty() {
+        let (base, base_explicit) = resolve_run_base(
+            parsed.base.as_deref(),
+            std::env::var("RIGGER_BASE").ok().as_deref(),
+        );
+        // Refuse an obviously-wrong base BEFORE anchoring (spec 18, criterion 7), gating on
+        // the side-effect-free planned anchor so no wrong-base run branch is ever created and
+        // the corrected `--base` retry re-anchors fresh.
+        let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
+        // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base
+        // (an unresolvable base AND no HEAD to fall back to) loudly rather than minting a run
+        // branch that branches from nowhere.
+        refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
+        refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
+        anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
+        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
     // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
     let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
@@ -3645,9 +3839,10 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2). Like
     // `rigger run`, the served conductor drives the whole run in-process (on the background thread
     // in the scope below), so the held guard's heartbeat thread keeps the entry live for the whole
-    // MCP session; it is dropped when `run_workflow` returns. `repo` was resolved in a scoped block
-    // above, so read it once more here for the registration root. Best-effort - it never blocks.
-    let _registration = register_run_instance(&git_repo(), &selection);
+    // MCP session; it is dropped when `run_workflow` returns. Reuses the `repo` this function
+    // resolved once above - see that resolution's own comment for why a second `git_repo()`
+    // re-read is never taken here any more. Best-effort - it never blocks.
+    let _registration = register_run_instance(&repo, &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
@@ -3667,13 +3862,12 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // the run store, regardless of the run store's backend.
     let prog_backend = Store::open(&db_path("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &project_identity());
-    let scratch_root = {
-        let repo = git_repo();
-        if repo.is_empty() {
-            String::new()
-        } else {
-            rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
-        }
+    // Reuses the `repo` resolved once at this function's entry (see its own comment) rather
+    // than a second `git_repo()` re-read.
+    let scratch_root = if repo.is_empty() {
+        String::new()
+    } else {
+        rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
     };
 
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run for the
@@ -3691,7 +3885,9 @@ fn run_workflow(parsed: &RunArgs) -> Res {
                 store: &store,
                 driver: &driver,
                 gates: &ExecRunner,
-                repo: git_repo(),
+                // Reuses the `repo` this function resolved once at entry via
+                // `resolve_main_worktree_or_refuse`, rather than a second `git_repo()` re-read.
+                repo: repo.clone(),
                 grounder: Some(grounder.as_ref()),
                 graph: Some(&graph),
                 criteria,
@@ -3723,7 +3919,7 @@ fn cmd_serve(args: &[String]) -> Res {
     // the same composition path - it just forces the workflow driver.
     let mut parsed = parse_run_args(args)?;
     parsed.driver = DriverKind::Workflow;
-    run_workflow(&parsed)
+    run_workflow(&parsed, "rigger serve")
 }
 
 /// Parse `rigger workflow`'s arguments: an optional positional spec path and an optional
@@ -3784,7 +3980,20 @@ fn cmd_workflow(args: &[String]) -> Res {
             println!("{}", spec_lint_next_step(spec));
         }
     }
-    let shim = locate_shim(Path::new("."))?;
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
+    // BEFORE locating or launching the Node shim - a linked worktree is refused up front
+    // instead of (at best) failing to find a per-project shim only ever provisioned in the
+    // main checkout, or (at worst) driving a stray one. See
+    // `resolve_main_worktree_or_refuse`'s doc comment. Empty (repo-less) resolves to "." -
+    // the existing behavior every prior caller of `locate_shim` already relied on.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger workflow")?;
+    let shim_root = if repo.is_empty() {
+        PathBuf::from(".")
+    } else {
+        PathBuf::from(&repo)
+    };
+    let shim = locate_shim(&shim_root)?;
     // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
     // and the served conductor are always the same build (no PATH ambiguity).
     let rigger_bin = std::env::current_exe()
@@ -10181,9 +10390,21 @@ fn live_slugs(
 /// `CARGO_TARGET_DIR`). Those are run-level scratch reclaimed by the run's fixpoint/teardown
 /// once no spawn is live, never by this per-step backstop, so it can never delete a target a
 /// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
+///
+/// `declared_units` (spec 89, criterion 1, round 2 fix) is the CURRENTLY loaded workflow's own
+/// `rigger/u/<slug>` stages - config, never the event log, the SAME set `cmd_step` also hands
+/// `sweep_terminal` - narrowing this backstop's own dirty-spare exception (see the worktree arm
+/// below) to a unit this run's definition actually declares.
+///
 /// Returns how many entries were reclaimed.
-fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize {
+fn reclaim_orphan_scratch(
+    repo: &str,
+    root: &str,
+    run_units: &RunUnits,
+    declared_units: &std::collections::HashSet<String>,
+) -> usize {
     let live = live_slugs(&run_units.live_branches);
+    let declared_slugs = live_slugs(declared_units);
     let root_path = std::path::Path::new(root);
     let mut removed = 0;
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -10200,7 +10421,42 @@ fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize
             // A leftover unit worktree no live unit owns. Reap any process still rooted in it
             // (a leaked build) BEFORE removing it, and deregister it from git if a killed step
             // left it registered.
-            if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) {
+            //
+            // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), round 2 fix
+            // (sdet-u89c1-sweep-terminal-discards-halted-tree, generalized): this backstop is a
+            // SECOND worktree-disposition authority alongside `sweep_terminal` - both run from
+            // `cmd_step`, strictly before `conductor::run` ever gets a chance to capture a
+            // halted spawn's abandoned edit as its own `wip` commit - and `reap_then_remove_
+            // worktree`'s own `git worktree remove --force` "also tolerates a dirty tree" (its
+            // doc comment), i.e. force-discards one. "Not live-owned" alone is exactly the
+            // shape a store/worktree desync (a restored snapshot, or this project's very first
+            // step) leaves a genuine, not-yet-recorded unit in, so a STILL-DIRTY candidate whose
+            // slug this workflow DECLARES is spared here too, regardless of liveness - mirroring
+            // `sweep_terminal_logged`'s identical guard. Gated on `declared_slugs`: dirtiness
+            // alone is not evidence of a halted spawn - a genuinely dead, undeclared branch that
+            // happens to also carry untracked content is still reclaimed exactly as before this
+            // criterion. The status read is scoped to a REAL linked worktree only
+            // (`path.join(".git")` present) - a bare directory git never tracked has no `.git`
+            // of its own, and running `git status` from inside one climbs to whatever repo
+            // happens to enclose `root` (the "act on the enclosing repository" hazard spec 89's
+            // own STEP-RESOLVES-ONE-ROOT criterion names), reading unrelated content as "dirty" -
+            // falling back, for that shape, to the ORIGINAL unconditional reclaim, unchanged.
+            //
+            // The status read itself now goes through [`rigger::worktree::path_is_dirty`]
+            // (round 3 fix, `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`)
+            // instead of a second, independently-hardcoded `Command::new("git")` call: round 2's
+            // own inline version collapsed ANY spawn failure or non-zero git exit to `dirty =
+            // false` (fail OPEN, reclaim/discard), the exact opposite of `sweep_terminal_logged`'s
+            // `unwrap_or(false)` (which, negated into this same `dirty` polarity, fails CLOSED -
+            // spare) on the identical unreadable-status error, despite this comment already
+            // claiming the two mirror each other. Sharing the one primitive - and picking the
+            // same `unwrap_or(true)` fail-closed direction the sibling call site now also picks
+            // explicitly - makes that divergence structurally impossible to reintroduce.
+            let slug = name.trim_start_matches(rigger::worktree::UNIT_WORKTREE_PREFIX);
+            let dirty = declared_slugs.contains(slug)
+                && path.join(".git").exists()
+                && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
+            if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
                 reap_then_remove_worktree(repo, &path, root_path);
                 removed += 1;
             }
@@ -17138,7 +17394,12 @@ mod tests {
         };
         // Empty repo -> the git-aware worktree deregister is skipped and a plain removal runs,
         // which is all the synthetic (non-registered) worktree dirs here need.
-        let removed = reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units);
+        let removed = reclaim_orphan_scratch(
+            "",
+            scratch.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(
             removed, 4,
             "exactly the four non-live-owned entries are reclaimed"
@@ -17186,9 +17447,124 @@ mod tests {
 
         // Idempotent: a re-run over the now-clean root reclaims nothing and errors on nothing.
         assert_eq!(
-            reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units),
+            reclaim_orphan_scratch(
+                "",
+                scratch.to_str().unwrap(),
+                &run_units,
+                &std::collections::HashSet::new(),
+            ),
             0,
             "the sweep is idempotent - a clean root reclaims nothing"
+        );
+    }
+
+    #[test]
+    fn reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty() {
+        // Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE), round 2 fix: this backstop is a
+        // SECOND, independent worktree-disposition authority alongside `sweep_terminal` (both
+        // run from `cmd_step`, before `conductor::run` ever gets a chance to capture a halted
+        // spawn's abandoned edit as its own `wip` commit) - so the SAME "never force-remove a
+        // dirty candidate" guard `sweep_terminal_logged` now carries must apply here too, or a
+        // unit's tree can still be discarded through this door alone. `reap_then_remove_worktree`
+        // itself runs `git worktree remove --force`, which "also tolerates a dirty tree" (its
+        // own doc comment) - i.e. force-discards it. Not-yet-live is exactly the "no spawn
+        // recorded yet" shape (a store/worktree desync, or this project's very first step): the
+        // worktree here is real, dirty, and NOT in `live_branches` at all.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+
+        let wt_dir = root.join("rigger-wt-halted-unit");
+        Worktree::create(repo, wt_dir.to_str().unwrap(), "rigger/u/halted-unit", "").unwrap();
+        write_file(&wt_dir.join("halted-work.txt"), b"abandoned mid-edit\n");
+
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs([]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        // Declared (round 3 fix): this workflow's own current definition still names
+        // "halted-unit" as one of its units - the signal that distinguishes it from
+        // `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree` below's genuinely
+        // dead, undeclared one.
+        let declared_units = slugs(["rigger/u/halted-unit"]);
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 0,
+            "a dirty, non-live-owned, but DECLARED worktree is spared, never force-removed"
+        );
+        assert!(
+            wt_dir.join("halted-work.txt").exists(),
+            "the abandoned edit must survive the sweep untouched"
+        );
+
+        // The paired negative-space case: once the SAME worktree is clean (its work
+        // committed - exactly what the halt-recovery wip commit, or an ordinary landed unit,
+        // leaves behind) it is reclaimed exactly as before this fix - dirtiness, not mere
+        // non-liveness, is what changed.
+        Command::new("git")
+            .arg("-C")
+            .arg(&wt_dir)
+            .args(["add", "-A"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(&wt_dir)
+            .args(["commit", "-q", "-m", "resolved"])
+            .status()
+            .unwrap();
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 1,
+            "a CLEAN non-live-owned worktree is still reclaimed as before"
+        );
+        assert!(!wt_dir.exists(), "the clean worktree is gone");
+    }
+
+    #[test]
+    fn reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree() {
+        // Spec 89, criterion 1, round 3 fix: the negative-space twin of the test above.
+        // Dirtiness ALONE is not proof of a halted spawn - a genuinely dead, UNDECLARED branch
+        // (a prior run's leftover, a hand-made fixture) that happens to also carry untracked
+        // content is still reclaimed exactly as it was before this criterion, matching
+        // `sweep_terminal`'s own identical `declared_units` gate.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+
+        let wt_dir = root.join("rigger-wt-undeclared-orphan");
+        Worktree::create(
+            repo,
+            wt_dir.to_str().unwrap(),
+            "rigger/u/undeclared-orphan",
+            "",
+        )
+        .unwrap();
+        write_file(&wt_dir.join("stray.txt"), b"unrelated debris\n");
+
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs([]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        // Declares an UNRELATED unit only - never "undeclared-orphan".
+        let declared_units = slugs(["rigger/u/halted-unit"]);
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 1,
+            "a dirty, non-live-owned, and UNDECLARED worktree is still reclaimed"
+        );
+        assert!(
+            !wt_dir.exists(),
+            "the undeclared, unrelated worktree is gone"
         );
     }
 
@@ -17211,7 +17587,12 @@ mod tests {
         write_file(&scratch.join("cargo-target").join("live.rlib"), &[0u8; 8]);
 
         let run_units = RunUnits::default();
-        let removed = reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units);
+        let removed = reclaim_orphan_scratch(
+            "",
+            scratch.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(removed, 1, "exactly the one stray tombstone is reclaimed");
         assert!(!tombstone.exists(), "the stray tombstone must be reaped");
         assert!(
@@ -24676,6 +25057,56 @@ mod tests {
             normalized.contains("the `mutation` gate itself owns running cargo-mutants"),
             "the persona must name the mutation gate as the sole cargo-mutants invoker, so \
              the agent never re-runs it by hand; got:\n{normalized}"
+        );
+    }
+
+    /// Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): CHECKPOINT BEFORE LONG WORK.
+    /// The persona must carry the checkpoint rule literally, using the design's own
+    /// commit-message vocabulary ("mutation sweep", never the banned two-word invocation
+    /// phrase "cargo mutants" - see `no_persona_under_rigger_agents_invokes_cargo_mutants`
+    /// below, which spec 91 landed first and which this persona edit must not regress).
+    #[test]
+    fn implementer_persona_pins_the_checkpoint_before_long_work_contract() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(RIGGER_DIR)
+            .join("agents")
+            .join("rust-engineer.md");
+        let persona = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+        let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        // The trigger and the action as ONE contiguous clause - a decomposed persona
+        // that keeps "mutation sweep" and "commit" as unrelated bare words (dropping
+        // the "before long work, commit first" relation) must fail this test.
+        assert!(
+            normalized.contains(
+                "Before a mutation sweep or any full lane suite, commit your current \
+                 tree"
+            ),
+            "the checkpoint rule must fire on EITHER a mutation sweep or a full lane \
+             suite, as one contiguous clause; got:\n{normalized}"
+        );
+        // The exact commit-message template spec 89 Design specifies, verbatim.
+        assert!(
+            normalized.contains("`wip(<unit>): checkpoint before <mutation sweep | lane suite>`"),
+            "the checkpoint commit message template must be pinned verbatim; \
+             got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains(
+                "squash that checkpoint into your round's own commit \
+                 when you report"
+            ),
+            "the checkpoint must be squashed into the round commit on report, never \
+             left standing as a separate commit; got:\n{normalized}"
+        );
+        // Never the banned invocation phrase (spec 91): this persona edit must not
+        // regress the already-landed no-cargo-mutants-invocation drift guard.
+        assert!(
+            !normalized.contains("cargo mutants"),
+            "the checkpoint rule must use the design's own vocabulary (\"mutation \
+             sweep\"), never the literal invocation phrase \"cargo mutants\"; \
+             got:\n{normalized}"
         );
     }
 
