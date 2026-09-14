@@ -6781,20 +6781,8 @@
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 513,
-        "end_line": 513,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 514,
-        "end_line": 514,
-        "name": "\".rigger\""
-      },
-      {
-        "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 527,
-        "end_line": 527,
+        "start_line": 529,
+        "end_line": 529,
         "name": "\".rigger\""
       },
       {
@@ -6805,20 +6793,20 @@
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 600,
-        "end_line": 600,
+        "start_line": 543,
+        "end_line": 543,
         "name": "\".rigger\""
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 601,
-        "end_line": 601,
+        "start_line": 546,
+        "end_line": 546,
         "name": "\".rigger\""
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 618,
-        "end_line": 618,
+        "start_line": 619,
+        "end_line": 619,
         "name": "\".rigger\""
       },
       {
@@ -6829,38 +6817,50 @@
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 699,
-        "end_line": 699,
+        "start_line": 637,
+        "end_line": 637,
         "name": "\".rigger\""
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 700,
-        "end_line": 700,
+        "start_line": 639,
+        "end_line": 639,
         "name": "\".rigger\""
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 710,
-        "end_line": 710,
+        "start_line": 720,
+        "end_line": 720,
         "name": "\".rigger\""
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 712,
-        "end_line": 712,
+        "start_line": 721,
+        "end_line": 721,
         "name": "\".rigger\""
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 814,
-        "end_line": 814,
+        "start_line": 731,
+        "end_line": 731,
         "name": "\".rigger\""
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 815,
-        "end_line": 815,
+        "start_line": 733,
+        "end_line": 733,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/gate_store_fence_periphery.rs",
+        "start_line": 835,
+        "end_line": 835,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/gate_store_fence_periphery.rs",
+        "start_line": 836,
+        "end_line": 836,
         "name": "\".rigger\""
       },
       {
@@ -21699,8 +21699,8 @@
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 781,
-        "end_line": 792,
+        "start_line": 802,
+        "end_line": 813,
         "name": "spawn"
       },
       {
@@ -22715,14 +22715,14 @@
     "sites": [
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 510,
-        "end_line": 581,
+        "start_line": 526,
+        "end_line": 597,
         "name": "a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed"
       },
       {
         "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 584,
-        "end_line": 681,
+        "start_line": 603,
+        "end_line": 700,
         "name": "a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too"
       }
     ],
