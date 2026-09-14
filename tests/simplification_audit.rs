@@ -3474,7 +3474,7 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/spawn.rs", 368) => 7,
         ("src/spawn.rs", 374) => 5,
         ("src/spawn.rs", 399) => 14,
-        ("src/worktree.rs", 544) => 5,
+        ("src/worktree.rs", 603) => 5,
         (other_file, other_line) => panic!(
             "dead-code candidate {other_file}:{other_line} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
@@ -5819,30 +5819,23 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              references, not reachability, so park_in_run reads alive even though its only OTHER \
              caller (park) is itself dead.",
         ),
-        ("src/worktree.rs", 544) => (
+        ("src/worktree.rs", 603) => (
             Delete,
             "is_dirty has no production caller - one of spec 87's own two Goal-cited worked \
              examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current \
-             tree: its 3 references (worktree.rs:3479/3489/3555) are all test-only. Line shifted \
-             again as this merge lands three units' worktree.rs insertions together: spec 88 \
-             criterion 1's `MergeOutcome` (offset by the pre-round-4 `IntegrateOutcome` \
-             enum/`expect_merged` impl's removal into `#[cfg(test)] mod tests`, both now \
-             test-scoped) and criterion 4's `CherryPickOutcome` (both already landed on the run \
-             branch as 508->515, per u88c1-audit-pin-repair/u88c4) plus this unit's (criterion 2) \
-             own `create_branch_at` and its round-4 expanded doc comment (branch_tip / \
-             pinned-sha note; previously tracked here as a separate 496->520->525 shift) - the \
-             union of both prior shifts lands the function at 544 on the merged tree, re-pinned \
-             at this integration per op-u88c2-conflict-resolution-retry-regenerate-audit-union-code \
-             (see specs/90 criterion 2, not yet landed, for the line-free fix this pin dance \
-             works around). expect_merged itself (formerly src/worktree.rs:86) is no longer a \
-             candidate at all: round 4 moved it, together with `IntegrateOutcome` and the \
-             pre-round-4 `integrate` method, into this file's own `#[cfg(test)] mod tests` (a \
-             test-only recomposition of the newly-split `merge_into_worktree`/`land`, since \
-             production - `integrate_and_emit` - now calls those two split methods directly for \
-             its own row-level durable recording and has no caller left for the combined form) - \
-             a test-scoped item is not a production dead-code candidate by this scanner's own \
-             definition, closing the finding at its root rather than re-dispositioning it in \
-             place.",
+             tree: its 3 references (src/conductor.rs and worktree.rs's own `mod tests`) are all \
+             test-only. Line shifted again, this time by spec 89 criterion 1 (A HALT NEVER \
+             DISCARDS A TREE): `Worktree::commit`'s new conflict-marker guard and its \
+             `conflict_markers_present` helper insert 544->603 above `is_dirty` (the guard's own \
+             doc comments plus the `Command`-based `git grep` call). expect_merged itself \
+             (formerly src/worktree.rs:86) is no longer a candidate at all: round 4 moved it, \
+             together with `IntegrateOutcome` and the pre-round-4 `integrate` method, into this \
+             file's own `#[cfg(test)] mod tests` (a test-only recomposition of the newly-split \
+             `merge_into_worktree`/`land`, since production - `integrate_and_emit` - now calls \
+             those two split methods directly for its own row-level durable recording and has no \
+             caller left for the combined form) - a test-scoped item is not a production \
+             dead-code candidate by this scanner's own definition, closing the finding at its \
+             root rather than re-dispositioning it in place.",
         ),
         (other_file, other_line) => panic!(
             "dead-code candidate {other_file}:{other_line} has no assigned disposition - this is \

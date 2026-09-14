@@ -24521,6 +24521,56 @@ mod tests {
         );
     }
 
+    /// Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): CHECKPOINT BEFORE LONG WORK.
+    /// The persona must carry the checkpoint rule literally, using the design's own
+    /// commit-message vocabulary ("mutation sweep", never the banned two-word invocation
+    /// phrase "cargo mutants" - see `no_persona_under_rigger_agents_invokes_cargo_mutants`
+    /// below, which spec 91 landed first and which this persona edit must not regress).
+    #[test]
+    fn implementer_persona_pins_the_checkpoint_before_long_work_contract() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(RIGGER_DIR)
+            .join("agents")
+            .join("rust-engineer.md");
+        let persona = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+        let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        // The trigger and the action as ONE contiguous clause - a decomposed persona
+        // that keeps "mutation sweep" and "commit" as unrelated bare words (dropping
+        // the "before long work, commit first" relation) must fail this test.
+        assert!(
+            normalized.contains(
+                "Before a mutation sweep or any full lane suite, commit your current \
+                 tree"
+            ),
+            "the checkpoint rule must fire on EITHER a mutation sweep or a full lane \
+             suite, as one contiguous clause; got:\n{normalized}"
+        );
+        // The exact commit-message template spec 89 Design specifies, verbatim.
+        assert!(
+            normalized.contains("`wip(<unit>): checkpoint before <mutation sweep | lane suite>`"),
+            "the checkpoint commit message template must be pinned verbatim; \
+             got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains(
+                "squash that checkpoint into your round's own commit \
+                 when you report"
+            ),
+            "the checkpoint must be squashed into the round commit on report, never \
+             left standing as a separate commit; got:\n{normalized}"
+        );
+        // Never the banned invocation phrase (spec 91): this persona edit must not
+        // regress the already-landed no-cargo-mutants-invocation drift guard.
+        assert!(
+            !normalized.contains("cargo mutants"),
+            "the checkpoint rule must use the design's own vocabulary (\"mutation \
+             sweep\"), never the literal invocation phrase \"cargo mutants\"; \
+             got:\n{normalized}"
+        );
+    }
+
     /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). The structural counterpart of
     /// `implementer_persona_pins_the_checkin_stage_kill_or_justify_contract` above: no persona
     /// under `.rigger/agents/` - implementer, reviewer, or the SDET author - may INVOKE
