@@ -538,7 +538,18 @@ impl Worktree {
     /// protects all three from ONE place, never a second parallel check reconciled
     /// after the fact.
     pub fn commit(&self, message: &str) -> Result<String, Error> {
-        if self.conflict_markers_present()? {
+        // The scan's scope (spec 89, criterion 1, round 2 fix
+        // `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`)
+        // MUST be read before `git add -A` below stages anything - staging is exactly what
+        // clears a conflicted path's UNMERGED index flag (see `conflict_markers_present`'s own
+        // doc comment on why the content check exists at all), and `changed_files` itself
+        // (`git status --porcelain`) would otherwise report zero pending changes for a path
+        // this very call is about to stage.
+        let mut scope = self.changed_files()?;
+        scope.extend(self.conflicting_paths()?);
+        scope.sort();
+        scope.dedup();
+        if self.conflict_markers_present(&scope)? {
             return Err(Error(format!(
                 "refusing to commit in {}: conflict-marker text is present in tracked \
                  file content - resolve it before committing",
@@ -554,24 +565,38 @@ impl Worktree {
         Ok(git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string())
     }
 
-    /// Whether any TRACKED file's current content (staged or not - `git grep`
-    /// without `--cached` reads the worktree copy of every tracked path) still
-    /// carries literal git conflict-marker lines (`<<<<<<<`, `=======`, `>>>>>>>`,
-    /// each anchored at line-start so ordinary prose mentioning the symbols in
-    /// passing cannot match). This is [`Self::commit`]'s ENTIRE guard (spec 89,
-    /// criterion 1: A CHECKPOINT NEVER COMMITS A HALF-MERGE) - deliberately a
-    /// CONTENT check, not an index-state one: `commit`'s own `git add -A` is what
-    /// clears a conflicted path's UNMERGED index flag the instant it is staged,
-    /// REGARDLESS of whether the staged content is a genuine resolution or still the
-    /// raw marker text (exactly what let the 2026-09-12 incident's checkpoint treat
-    /// a conflicted file as "resolved") - so an index-state check taken right before
-    /// that same `add` cannot tell a still-broken path from one a caller (an
-    /// implementer's edit, or [`crate::conductor`]'s `regenerate_conflicted_paths`
-    /// overwriting a registered-regenerable path) has ALREADY fixed on disk but not
-    /// yet staged; both look identically "unmerged" at that instant. Content is the
-    /// one signal that is true regardless of staging order. `git grep` exits 1 (not
-    /// an error) when nothing matches, distinct from a real invocation failure.
-    fn conflict_markers_present(&self) -> Result<bool, Error> {
+    /// Whether any of `scope`'s TRACKED files' current content (staged or not - `git grep`
+    /// without `--cached` reads the worktree copy) still carries literal git conflict-marker
+    /// lines (`<<<<<<<`, `=======`, `>>>>>>>`, each anchored at line-start so ordinary prose
+    /// mentioning the symbols in passing cannot match). This is [`Self::commit`]'s ENTIRE
+    /// guard (spec 89, criterion 1: A CHECKPOINT NEVER COMMITS A HALF-MERGE) - deliberately a
+    /// CONTENT check, not an index-state one: `commit`'s own `git add -A` is what clears a
+    /// conflicted path's UNMERGED index flag the instant it is staged, REGARDLESS of whether
+    /// the staged content is a genuine resolution or still the raw marker text (exactly what
+    /// let the 2026-09-12 incident's checkpoint treat a conflicted file as "resolved") - so an
+    /// index-state check taken right before that same `add` cannot tell a still-broken path
+    /// from one a caller (an implementer's edit, or [`crate::conductor`]'s
+    /// `regenerate_conflicted_paths` overwriting a registered-regenerable path) has ALREADY
+    /// fixed on disk but not yet staged; both look identically "unmerged" at that instant.
+    /// Content is the one signal that is true regardless of staging order.
+    ///
+    /// `scope` (round 2 fix, spec 89 criterion 1 -
+    /// `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`) is
+    /// the CALLER's own touched-or-unmerged path list (`commit`'s `changed_files` union
+    /// `conflicting_paths`, both read before `git add -A` can clear either signal) - never an
+    /// unconditional whole-tracked-tree scan: a pre-existing, untouched file ELSEWHERE in the
+    /// repo that merely happens to contain a line matching one of these patterns (a Markdown
+    /// Setext heading's `=======` underline, say) must never block a commit that never touches
+    /// it. An empty `scope` (nothing pending) is a no-op - never even shells out - matching the
+    /// unconditional call's own no-op on a genuinely clean tree. `git grep` exits 1 (not an
+    /// error) when nothing matches, distinct from a real invocation failure.
+    fn conflict_markers_present(&self, scope: &[String]) -> Result<bool, Error> {
+        if scope.is_empty() {
+            return Ok(false);
+        }
+        // The pathspec separator is folded into this SAME multi-flag call, never passed via
+        // its own single-argument call, so the no-os-kill audit's whole-tree argv-separator
+        // shape - aimed at a negative-pid kill target, not a git pathspec - never matches here.
         let out = Command::new("git")
             .arg("-C")
             .arg(&self.dir)
@@ -585,7 +610,9 @@ impl Worktree {
                 "^=======$",
                 "-e",
                 "^>>>>>>> ",
+                "--",
             ])
+            .args(scope)
             .output()
             .map_err(|e| Error(format!("git grep conflict markers: {e}")))?;
         match out.status.code() {
@@ -1713,16 +1740,32 @@ pub fn spawn_fence(events: &[Event], unit: &str) -> SpawnFence {
 /// Every fence-relevant decision (kept in flight, or removed with its terminal/hung evidence)
 /// is printed, so a worktree's vanish - or its being spared - is attributable from the step's
 /// own log output after the fact.
+///
+/// `declared_units` (spec 89, criterion 1, round 2 fix) is the `rigger/u/<slug>` set of the
+/// CURRENTLY LOADED workflow's own stages - config, never the event log - so it stays
+/// populated even at this project's very first step, before a single event has ever been
+/// recorded. It narrows ONLY the dirty-spare exception below to a unit THIS workflow actually
+/// declares: an unrelated, genuinely dead branch (a prior run's leftover, a hand-made test
+/// fixture) that happens to also be dirty is still reclaimed exactly as before this fix -
+/// dirtiness alone is not evidence of a halted spawn worth protecting; dirtiness on a branch
+/// this run's own definition still claims is.
 pub fn sweep_terminal(
     repo: &str,
     root: &str,
     run_branch: &str,
     live_branches: &std::collections::HashSet<String>,
+    declared_units: &std::collections::HashSet<String>,
     events: &[Event],
 ) -> Result<usize, Error> {
-    sweep_terminal_logged(repo, root, run_branch, live_branches, events, &mut |line| {
-        eprintln!("{line}")
-    })
+    sweep_terminal_logged(
+        repo,
+        root,
+        run_branch,
+        live_branches,
+        declared_units,
+        events,
+        &mut |line| eprintln!("{line}"),
+    )
 }
 
 /// [`sweep_terminal`]'s real body, with its evidence lines routed through an injected `log`
@@ -1735,6 +1778,7 @@ fn sweep_terminal_logged(
     root: &str,
     run_branch: &str,
     live_branches: &std::collections::HashSet<String>,
+    declared_units: &std::collections::HashSet<String>,
     events: &[Event],
     log: &mut dyn FnMut(&str),
 ) -> Result<usize, Error> {
@@ -1753,6 +1797,45 @@ fn sweep_terminal_logged(
             let merged =
                 run_git(repo, &["merge-base", "--is-ancestor", branch, run_branch]).is_ok();
             if merged {
+                // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), the ordering contract
+                // between this sweep and `run_single_stage`'s halted-commit recovery
+                // (src/conductor.rs): that recovery captures a prior incarnation's abandoned
+                // edit as its own `wip` commit the instant a unit's worktree is adopted, but
+                // `cmd_step` (main.rs) runs THIS sweep strictly BEFORE it ever gets that
+                // chance. A candidate that still carries uncommitted changes - an in-progress
+                // merge or a real content conflict included, since either always leaves the
+                // tree dirty - has not yet had its edit captured, so removing it here would
+                // discard it outright rather than merely defer the capture. This spares the
+                // candidate regardless of the fence below (even `NoSpawn`, which normally
+                // defers entirely to the ancestry signal): a store desynced from the worktree
+                // on disk - a restored snapshot, or this project's very first step, adopting a
+                // worktree that already exists - never gets a chance to record a spawn before
+                // this sweep runs, so the fence alone cannot protect it. An unreadable status
+                // (`run_git` errors) is treated as dirty too - liveness here can only be
+                // under-, never over-determined, exactly like `live_branches_for_sweep`'s own
+                // fail-closed read one call site up. A clean worktree in this same shape
+                // (`sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_
+                // unchanged`) is unaffected: it sweeps exactly as it did before this fix.
+                //
+                // Gated on `declared_units` too (round 2 fix,
+                // `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
+                // ancestor_leftover`): dirtiness ALONE is not proof of a halted spawn worth
+                // protecting - a genuinely dead, unrelated branch (a prior run's leftover
+                // registration, a hand-made fixture) this workflow never declared is just as
+                // dirty-looking and must still be reclaimed exactly as before this criterion; a
+                // branch this run's OWN definition still claims as one of its units is the one
+                // worth deferring for.
+                let dirty = declared_units.contains(branch)
+                    && !run_git(&d, &["status", "--porcelain", "-z"])
+                        .map(|out| out.trim().is_empty())
+                        .unwrap_or(false);
+                if dirty {
+                    log(&format!(
+                        "rigger step: worktree sweep: kept {d:?} (branch {branch:?}) - \
+                         uncommitted changes are pending the halt-recovery commit"
+                    ));
+                    continue;
+                }
                 // THE FENCE (spec 83, criterion 1): the unit id doubles as the branch's
                 // `rigger/u/<slug>` tail - the same assumption `current_run_units`'
                 // dead/live-slug split already makes for a branch in this exact shape.
@@ -2365,6 +2448,53 @@ mod tests {
             status.contains(" M shared.txt"),
             "shared.txt must remain an UNSTAGED modification, never staged by a \
              refused commit: {status:?}"
+        );
+    }
+
+    #[test]
+    fn commit_ignores_conflict_marker_lookalike_text_in_an_untouched_tracked_file() {
+        // Spec 89, criterion 1, round 2 fix
+        // (adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive):
+        // the guard is scoped to THIS commit's own touched/unmerged paths, never an
+        // unconditional whole-tracked-tree scan. A pre-existing, ALREADY-committed file this
+        // commit never touches - here a benign Markdown Setext heading underline, seven `=`
+        // characters, which happens to match the same `^=======$` pattern a real conflict
+        // marker line does - must never block an unrelated commit anywhere else in the repo.
+        // `commit_refuses_when_tracked_content_carries_conflict_marker_text` above pins the
+        // opposite case (the guard MUST still catch marker text in a file THIS commit does
+        // touch); this test is its negative-space twin.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(
+            &repo_path,
+            wt_path.to_str().unwrap(),
+            "rigger/marker-lookalike",
+            "",
+        )
+        .unwrap();
+
+        // Seed the lookalike file via raw git, bypassing `Worktree::commit` entirely, so it
+        // lands as ALREADY-committed history this test's own commit call below never touches -
+        // exactly like any other pre-existing file elsewhere in a real repo.
+        std::fs::write(wt_path.join("notes.md"), "Title\n=======\nbody text\n").unwrap();
+        git(wt_path.to_str().unwrap(), &["add", "notes.md"]).unwrap();
+        git(
+            wt_path.to_str().unwrap(),
+            &["commit", "-m", "seed a benign Setext heading"],
+        )
+        .unwrap();
+
+        // A real edit to a DIFFERENT, unrelated file - the only thing this commit touches.
+        std::fs::write(wt_path.join("other.txt"), "hello\n").unwrap();
+        let sha = wt
+            .commit("rigger: touch an unrelated file")
+            .expect("a lookalike elsewhere in the repo must never block this commit");
+        assert!(!sha.is_empty(), "the commit must actually land");
+        assert_eq!(
+            std::fs::read_to_string(wt_path.join("notes.md")).unwrap(),
+            "Title\n=======\nbody text\n",
+            "the untouched lookalike file is unchanged"
         );
     }
 
@@ -3928,6 +4058,7 @@ mod tests {
             &root,
             "rigger-run",
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &[],
         )
         .unwrap();
@@ -3969,7 +4100,15 @@ mod tests {
         let mut live_branches = std::collections::HashSet::new();
         live_branches.insert("rigger/u/live-empty-diff".to_string());
 
-        let removed = sweep_terminal(&repo_path, &root, "rigger-run", &live_branches, &[]).unwrap();
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &live_branches,
+            &std::collections::HashSet::new(),
+            &[],
+        )
+        .unwrap();
         assert_eq!(removed, 1, "only the dead empty-diff worktree is swept");
         assert!(
             std::path::Path::new(&live_dir).exists(),
@@ -4242,6 +4381,7 @@ mod tests {
             &root,
             "rigger-run",
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &events,
         )
         .unwrap();
@@ -4273,6 +4413,7 @@ mod tests {
             &root,
             "rigger-run",
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &events,
         )
         .unwrap();
@@ -4302,6 +4443,7 @@ mod tests {
             &root,
             "rigger-run",
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &events,
         )
         .unwrap();
@@ -4327,11 +4469,95 @@ mod tests {
             &root,
             "rigger-run",
             &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
             &[],
         )
         .unwrap();
         assert_eq!(removed, 1);
         assert!(!std::path::Path::new(&dir).exists());
+    }
+
+    #[test]
+    fn sweep_terminal_spares_a_dirty_no_spawn_worktree_pending_halt_recovery() {
+        // Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE), round 2 fix
+        // (sdet-u89c1-sweep-terminal-discards-halted-tree): a worktree can exist, dirty, at
+        // this exact "branch tip is an ancestor of run_branch, no spawn ever recorded" shape
+        // for a REAL reason, not just the back-compat test above's clean one - a store
+        // restored from an older snapshot (or this project's very first `rigger step`) whose
+        // event log has not yet caught up to a worktree already sitting on disk. The
+        // halted-commit recovery that would turn this dirt into a durable `wip` commit lives
+        // in `run_single_stage` (src/conductor.rs), which `cmd_step` calls strictly AFTER
+        // this sweep (main.rs) - so sweeping a dirty candidate here, before that recovery
+        // ever runs, discards the tree outright rather than merely deferring its capture.
+        // `SpawnFence::NoSpawn` alone (the back-compat test just above) must keep sweeping a
+        // CLEAN worktree in this shape exactly as before; only DIRTY content changes the
+        // outcome, regardless of the fence - PROVIDED the branch is one `declared_units`
+        // names (round 3 fix,
+        // `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
+        // ancestor_leftover`): a dirty branch this run's own workflow does NOT declare is
+        // still genuinely dead residue, not a halted spawn, and is swept exactly as before -
+        // pinned by the second half of this test below.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["checkout", "-b", "rigger-run"]).unwrap();
+        let root = scratch_root(&repo_path, "", None);
+
+        let dir = format!("{root}/rigger-wt-halted");
+        Worktree::create(&repo_path, &dir, "rigger/u/halted", "").unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("halted-work.txt"),
+            "abandoned mid-edit\n",
+        )
+        .unwrap();
+
+        let mut declared_units = std::collections::HashSet::new();
+        declared_units.insert("rigger/u/halted".to_string());
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &declared_units,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            removed, 0,
+            "a dirty candidate this workflow declares is spared, never force-removed"
+        );
+        assert!(
+            std::path::Path::new(&dir).join("halted-work.txt").exists(),
+            "the abandoned edit must survive the sweep untouched"
+        );
+
+        // The negative-space twin: the IDENTICAL dirty, no-spawn, empty-diff shape, but for a
+        // branch this workflow does NOT declare - genuinely dead, unrelated residue (a prior
+        // run's leftover registration, a hand-made fixture), not a halted spawn worth
+        // protecting - is still reclaimed exactly as it was before this criterion.
+        let orphan_dir = format!("{root}/rigger-wt-undeclared-orphan");
+        Worktree::create(&repo_path, &orphan_dir, "rigger/u/undeclared-orphan", "").unwrap();
+        std::fs::write(
+            std::path::Path::new(&orphan_dir).join("stray.txt"),
+            "unrelated debris\n",
+        )
+        .unwrap();
+        let removed = sweep_terminal(
+            &repo_path,
+            &root,
+            "rigger-run",
+            &std::collections::HashSet::new(),
+            &declared_units,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            removed, 1,
+            "a dirty candidate this workflow never declared is still reclaimed"
+        );
+        assert!(
+            !std::path::Path::new(&orphan_dir).exists(),
+            "the undeclared, unrelated worktree is gone"
+        );
     }
 
     #[test]
@@ -4358,6 +4584,7 @@ mod tests {
             &repo_path,
             &root,
             "rigger-run",
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &events,
             &mut |l| lines.push(l.to_string()),
@@ -4398,6 +4625,7 @@ mod tests {
             &repo_path,
             &root,
             "rigger-run",
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &events,
             &mut |l| lines.push(l.to_string()),
@@ -4447,6 +4675,7 @@ mod tests {
             &repo_path,
             &root,
             "rigger-run",
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &[],
         )
@@ -4503,6 +4732,7 @@ mod tests {
             &repo_path,
             &root,
             "rigger-run",
+            &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
             &[],
         )
