@@ -98,6 +98,18 @@
 //! (`src/worktree.rs`'s `ensure_run_branch_reuses_and_never_resets_an_existing_run_branch`) -
 //! this file only proves WHETHER that function runs at all before the guard, not what it
 //! does once invoked.
+//!
+//! ROUND 3 ADDITION: `refuse_unless_one_root` gained a third leg (`scratch_root` compared
+//! against `repo` by git identity, not merely named in the leg-one error text) closing the
+//! round-2 adjudication's blocking finding
+//! `adv-u89c4-r2-one-root-check-is-two-of-three-scratch-root-never-compared`. TESTED below,
+//! `step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_even_though_cwd_
+//! matches_repo` - a genuinely NEW shape (`cwd == repo` throughout, unlike every fixture above,
+//! which all hinge on `cwd != repo`). See `refuse_unless_one_root`'s own doc comment (`src/
+//! main.rs`) for why the comparison is by git-repository-identity (`git_repo_at`) rather than
+//! raw path containment: a strict containment/equality reading would refuse the legitimate,
+//! pre-existing `tests/cli.rs::the_liveness_marker_path_follows_a_non_default_scratch_root`
+//! shape (an arbitrary external, non-repo tempdir as the scratch root), which must stay green.
 
 mod common;
 
@@ -312,6 +324,89 @@ fn step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_encl
 /// returns a symlinked path on this platform (verified: `/tmp` here is a real directory, not
 /// a symlink), so every other fixture in this crate's suites has both sides of the
 /// comparison already identical without canonicalize doing any real work.
+/// Spec 89, criterion 4 (EXACTLY ONE ROOT) - round 3, closing the round-2 adjudication's
+/// blocking finding `adv-u89c4-r2-one-root-check-is-two-of-three-scratch-root-never-compared`:
+/// `refuse_unless_one_root` took a `scratch_root` parameter but never actually compared it to
+/// anything - it was used only inside the error TEXT of the (unrelated) leg-one refusal.
+/// `RIGGER_TMPDIR` is read unconditionally, ahead of any repo-derived default
+/// (`worktree::scratch_root_from_env`), so a step run from the real repository root itself
+/// (passing leg one - `cwd == repo`, no linked-worktree/fixture-nesting funny business at all)
+/// with `RIGGER_TMPDIR` pointed at some OTHER real project's own directory tree proceeded with
+/// exit 0 and zero refusal at round 2, even though that OTHER project is a completely
+/// different repository the operator never pointed this invocation at.
+///
+/// This reproduces exactly that shape: `other_repo` stands in for "some other real project on
+/// this machine" (its own real git repository, entirely unrelated to `root`), and `RIGGER_TMPDIR`
+/// is pointed at a directory inside it. `root` itself is a perfectly ordinary, non-nested repo -
+/// this is NOT the u87c3 nested-fixture shape `step_refuses_the_one_root_mismatch_but_must_not_
+/// have_already_mutated_the_enclosing_repos_checked_out_branch` above covers (that one has `cwd
+/// != repo`; this one has `cwd == repo` throughout - leg one never fires here, only the new leg
+/// two).
+///
+/// Also proves the refusal lands before the run-branch anchor mutates EITHER repository -
+/// mirroring the rigor of the sibling regression above, since the third leg is checked inside
+/// the very same `refuse_unless_one_root` call, at the very same pre-anchor placement.
+#[test]
+fn step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_even_though_cwd_matches_repo(
+) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+    let before_root_branch = current_branch(root);
+
+    let other_dir = temp_git_project_with_commit();
+    let other_repo = other_dir.path();
+    let before_other_branch = current_branch(other_repo);
+    assert!(
+        !branch_exists(other_repo, "rigger-run"),
+        "premise: the other repository must not already have a rigger-run branch"
+    );
+
+    let scratch = other_repo.join("scratch-elsewhere");
+
+    let (_out, err, ok) = run_rigger_envs(
+        root,
+        &["step"],
+        &[("RIGGER_TMPDIR", scratch.to_str().unwrap())],
+    );
+    assert!(
+        !ok,
+        "a step run from the real repository root itself (cwd == repo, no fixture nesting) \
+         must still refuse when RIGGER_TMPDIR points the scratch root at a DIFFERENT real \
+         repository's own tree; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("scratch root") && err.contains("DIFFERENT repository"),
+        "the refusal must be the new leg-two (scratch-root-vs-repo) refusal, not the pre-existing \
+         leg-one (cwd-vs-repo) refusal - this fixture never trips leg one; stderr:\n{err}"
+    );
+    assert!(
+        err.contains(root.to_str().unwrap()) || err.to_lowercase().contains("repository"),
+        "the refusal must name the repository this step actually resolved; stderr:\n{err}"
+    );
+
+    assert_eq!(
+        current_branch(root),
+        before_root_branch,
+        "the step's OWN repository must be untouched by a step that refuses on the scratch-root \
+         mismatch - the refusal lands before the run-branch anchor, same placement as leg one"
+    );
+    assert!(
+        !branch_exists(root, "rigger-run"),
+        "the step's own repository must not gain a rigger-run branch from a step that refuses"
+    );
+    assert_eq!(
+        current_branch(other_repo),
+        before_other_branch,
+        "the OTHER (scratch-owning) repository must be untouched too - this check only ever \
+         reads its git toplevel, never mutates it"
+    );
+    assert!(
+        !branch_exists(other_repo, "rigger-run"),
+        "the other repository must not gain a rigger-run branch either"
+    );
+}
+
 #[test]
 fn step_run_and_workflow_via_a_symlinked_main_tree_are_not_refused() {
     let dir = temp_git_project_with_commit();
