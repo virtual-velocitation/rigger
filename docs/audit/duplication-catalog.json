@@ -4677,14 +4677,14 @@
       },
       {
         "file": "src/reap.rs",
-        "start_line": 423,
-        "end_line": 423,
+        "start_line": 514,
+        "end_line": 514,
         "name": "\".rigger\""
       },
       {
         "file": "src/reap.rs",
-        "start_line": 695,
-        "end_line": 695,
+        "start_line": 871,
+        "end_line": 871,
         "name": "\"a relocated/cache-home-style authorized_root with no .rigger/tmp relationship \\\n             must still authorize the reap\""
       },
       {
@@ -7652,6 +7652,18 @@
         "name": "\".rigger\""
       },
       {
+        "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
+        "start_line": 418,
+        "end_line": 418,
+        "name": "\".rigger\""
+      },
+      {
+        "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
+        "start_line": 490,
+        "end_line": 490,
+        "name": "\".rigger\""
+      },
+      {
         "file": "tests/step_attention_periphery.rs",
         "start_line": 161,
         "end_line": 161,
@@ -8061,7 +8073,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 690 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 692 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0061",
@@ -10453,26 +10465,26 @@
       },
       {
         "file": "src/reap.rs",
-        "start_line": 109,
-        "end_line": 109,
+        "start_line": 133,
+        "end_line": 133,
         "name": "\"/proc\""
       },
       {
         "file": "src/reap.rs",
-        "start_line": 191,
-        "end_line": 191,
+        "start_line": 215,
+        "end_line": 215,
         "name": "\"/proc/{pid}/stat\""
       },
       {
         "file": "src/reap.rs",
-        "start_line": 202,
-        "end_line": 202,
+        "start_line": 226,
+        "end_line": 226,
         "name": "\"/proc/{pid}/status\""
       },
       {
         "file": "src/reap.rs",
-        "start_line": 252,
-        "end_line": 252,
+        "start_line": 276,
+        "end_line": 276,
         "name": "\"/proc/{}/cwd\""
       },
       {
@@ -10731,14 +10743,14 @@
       },
       {
         "file": "src/reap.rs",
-        "start_line": 190,
-        "end_line": 197,
+        "start_line": 214,
+        "end_line": 221,
         "name": "pid_starttime"
       },
       {
         "file": "src/reap.rs",
-        "start_line": 201,
-        "end_line": 207,
+        "start_line": 225,
+        "end_line": 231,
         "name": "read_ppid"
       },
       {
@@ -12445,8 +12457,8 @@
       },
       {
         "file": "src/reap.rs",
-        "start_line": 467,
-        "end_line": 475,
+        "start_line": 558,
+        "end_line": 566,
         "name": "wait_until"
       },
       {
@@ -13775,8 +13787,8 @@
       },
       {
         "file": "src/reap.rs",
-        "start_line": 539,
-        "end_line": 546,
+        "start_line": 630,
+        "end_line": 637,
         "name": "processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent"
       }
     ],
@@ -14613,14 +14625,14 @@
     "sites": [
       {
         "file": "src/reap.rs",
-        "start_line": 441,
-        "end_line": 447,
+        "start_line": 532,
+        "end_line": 538,
         "name": "sleeper_in"
       },
       {
         "file": "src/reap.rs",
-        "start_line": 451,
-        "end_line": 458,
+        "start_line": 542,
+        "end_line": 549,
         "name": "sigterm_ignorer_in"
       },
       {
@@ -14657,8 +14669,8 @@
     "sites": [
       {
         "file": "src/reap.rs",
-        "start_line": 479,
-        "end_line": 482,
+        "start_line": 570,
+        "end_line": 573,
         "name": "cleanup"
       },
       {
@@ -14689,14 +14701,14 @@
     "sites": [
       {
         "file": "src/reap.rs",
-        "start_line": 585,
-        "end_line": 590,
+        "start_line": 715,
+        "end_line": 720,
         "name": "is_reapable_base_refuses_a_dir_that_is_not_under_the_given_authorized_root"
       },
       {
         "file": "src/reap.rs",
-        "start_line": 593,
-        "end_line": 596,
+        "start_line": 723,
+        "end_line": 726,
         "name": "is_reapable_base_refuses_the_authorized_root_itself"
       }
     ],
@@ -14709,14 +14721,14 @@
     "sites": [
       {
         "file": "src/reap.rs",
-        "start_line": 863,
-        "end_line": 889,
+        "start_line": 1071,
+        "end_line": 1097,
         "name": "signal_if_unchanged_skips_a_starttime_mismatch"
       },
       {
         "file": "src/reap.rs",
-        "start_line": 892,
-        "end_line": 919,
+        "start_line": 1100,
+        "end_line": 1127,
         "name": "signal_if_unchanged_skips_when_cwd_is_outside_the_given_base"
       }
     ],
@@ -26232,9 +26244,15 @@
         "start_line": 225,
         "end_line": 273,
         "name": "rigger_result_reaps_a_live_process_in_the_spawns_registered_mutation_scratch_dir"
+      },
+      {
+        "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
+        "start_line": 406,
+        "end_line": 470,
+        "name": "rigger_result_reaps_a_live_process_whose_registered_mutation_scratch_dir_was_already_removed_before_the_call"
       }
     ],
-    "proposed_home": "spawn_scratch_reap_authorized_root_periphery::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "spawn_scratch_reap_authorized_root_periphery::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
