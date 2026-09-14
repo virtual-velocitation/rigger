@@ -193,6 +193,19 @@ gates:                      # the project's verification library, referenced by 
   # that fails fast, so no test can make the whole suite finish early. Two green units
   # escalated on that treadmill. The budget stays at 3x (two suites run at once); the
   # sweep's own missed.txt is the verdict, and the accounting names every timeout.
+  #
+  # `GateSelection::PostMerge` (spec 12, unit 5) re-runs this same gate against
+  # `self.deps.repo` after the checkin unit merges - a dir with no per-unit worktree of
+  # its own. This command's `$MUTANTS` is never left empty there: `RunCtx::run_gates`
+  # (conductor.rs) derives the postmerge root from the unit's own worktree name when the
+  # sibling-of-`dir` derivation every other selection uses comes back empty, so the
+  # re-sweep always runs on a real root - never `mkdir -p ""`. That re-sweep is not mere
+  # redundant cost: it certifies the ACTUAL merged tree, which a batch-mate's own
+  # pre-merge gate can miss entirely (the second of two units merging into a tree its
+  # own gate never saw). An earlier fix instead skipped the sweep whenever `$MUTANTS`
+  # came back empty - trading that real gap away for a crash workaround, when the
+  # crash's true cause (an ungenerated root) had a real fix available in-conductor;
+  # retired here in favor of that fix.
   mutation:
     run: >-
       test -n "$RIGGER_RUN_BASE" &&
