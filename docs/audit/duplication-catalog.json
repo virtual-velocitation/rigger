@@ -1169,6 +1169,11 @@
         "content_hash": "583982587bb6b9ca"
       },
       {
+        "file": "tests/graph_fresh_on_integration_periphery.rs",
+        "name": "Command::new",
+        "content_hash": "7266da144e21471d"
+      },
+      {
         "file": "tests/graph_show_periphery.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
@@ -2025,7 +2030,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 376 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 377 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -7894,6 +7899,11 @@
         "content_hash": "36af9655a631663c"
       },
       {
+        "file": "tests/graph_fresh_on_integration_periphery.rs",
+        "name": "init_repo",
+        "content_hash": "0c92e7675c5f7b1f"
+      },
+      {
         "file": "tests/integrate_conflict_merge_periphery.rs",
         "name": "init_repo",
         "content_hash": "af15fd8e785159f3"
@@ -7914,7 +7924,7 @@
         "content_hash": "201765243bc3ea9e"
       }
     ],
-    "proposed_home": "a new shared module (sites span 6 files: src/conductor.rs, tests/gate_store_fence_periphery.rs, tests/integrate_conflict_merge_periphery.rs, tests/scratch_workdir_isolation_leak_guard_periphery.rs, tests/spawn_target_dir_periphery.rs, tests/unified_traversal_grounding.rs)",
+    "proposed_home": "a new shared module (sites span 7 files: src/conductor.rs, tests/gate_store_fence_periphery.rs, tests/graph_fresh_on_integration_periphery.rs, tests/integrate_conflict_merge_periphery.rs, tests/scratch_workdir_isolation_leak_guard_periphery.rs, tests/spawn_target_dir_periphery.rs, tests/unified_traversal_grounding.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

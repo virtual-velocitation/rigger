@@ -1153,6 +1153,11 @@
         "end_line": 114
       },
       {
+        "file": "tests/graph_fresh_on_integration_periphery.rs",
+        "start_line": 65,
+        "end_line": 65
+      },
+      {
         "file": "tests/graph_show_periphery.rs",
         "start_line": 57,
         "end_line": 57
@@ -7576,6 +7581,11 @@
         "file": "tests/gate_store_fence_periphery.rs",
         "start_line": 491,
         "end_line": 507
+      },
+      {
+        "file": "tests/graph_fresh_on_integration_periphery.rs",
+        "start_line": 56,
+        "end_line": 73
       },
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
