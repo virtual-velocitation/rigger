@@ -11283,6 +11283,33 @@ fn render_capped_section<'a>(
 /// shared; the decisions and findings sections pass `false`, making relevance uniformly 0,
 /// which collapses the order back to (recency, id) BYTE-IDENTICALLY to before (spec exclusion:
 /// only the lessons slice gains relevance ranking).
+/// The recency-dating core shared by every recency-ranked graph reader (spec 92 u92c6):
+/// a node's recency is the max `source` position of its OWN edges whose `rel` equals
+/// `recency_rel`, keyed on the `from` (node) side ONLY - never an edge that merely touches
+/// the node as `to`. A decision's `GOVERNS` edge and a lesson/finding's `ABOUT` edge both
+/// point node -> file, so `from` is always the narrative node itself; a `SUPERSEDES` edge
+/// runs superseder -> superseded (`from` = the NEW decision), so keying on `from` alone
+/// means a superseded decision is dated off its own (invalidated) `GOVERNS` edge, never off
+/// the inbound `SUPERSEDES` edge carrying its superseder's fresh position. Dating off any
+/// edge touching the node as EITHER endpoint would let a stale/superseded node inherit its
+/// superseder's recency and crowd a genuinely live node out of a newest-N cap - the exact
+/// bug this core exists to make impossible in more than one place. Shared by
+/// [`write_capped_section`]'s budgeted prompt sections and `main`'s `rigger graph --around`
+/// governance cap, so every reader of a subgraph dates "newest" the same one way (this is
+/// `pub`, not `pub(crate)`, because the binary crate that calls it - `src/main.rs` - links
+/// against this library crate as an external consumer, same as [`is_parked`]).
+pub fn recency_by_own_edge<'a>(g: &'a Graph, recency_rel: &str) -> BTreeMap<&'a str, u64> {
+    let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
+    for e in &g.edges {
+        if e.rel != recency_rel {
+            continue;
+        }
+        let slot = recency.entry(e.from.as_str()).or_insert(0);
+        *slot = (*slot).max(e.source);
+    }
+    recency
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_capped_section<'g>(
     b: &mut String,
@@ -11297,25 +11324,25 @@ fn write_capped_section<'g>(
     by_relevance: bool,
     line: impl Fn(&contextgraph::Node) -> String,
 ) {
-    // Recency per node id: the max source position of its own `recency_rel` edges. Those
-    // edges point node -> file, so key on the `from` (node) side only; a SUPERSEDES edge
-    // (from = superseder) never dates the superseded node. When `by_relevance`, the SAME
-    // edge walk also tallies how many DISTINCT seed files each node is `recency_rel` to -
-    // its blast-radius relevance (0 for every node when the flag is off).
+    // Recency per node id: the max source position of its own `recency_rel` edges, via the
+    // shared core above. When `by_relevance`, a second walk over the SAME edges tallies how
+    // many DISTINCT seed files each node is `recency_rel` to - its blast-radius relevance (0
+    // for every node when the flag is off); kept as its own pass so the recency core stays
+    // one thing, reused as-is rather than parameterized for a second, unrelated tally.
     let seed_set: BTreeSet<&str> = seed.iter().map(String::as_str).collect();
-    let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
+    let recency = recency_by_own_edge(g, recency_rel);
     let mut relevance: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for e in &g.edges {
-        if e.rel != recency_rel {
-            continue;
-        }
-        let slot = recency.entry(e.from.as_str()).or_insert(0);
-        *slot = (*slot).max(e.source);
-        if by_relevance && seed_set.contains(e.to.as_str()) {
-            relevance
-                .entry(e.from.as_str())
-                .or_default()
-                .insert(e.to.as_str());
+    if by_relevance {
+        for e in &g.edges {
+            if e.rel != recency_rel {
+                continue;
+            }
+            if seed_set.contains(e.to.as_str()) {
+                relevance
+                    .entry(e.from.as_str())
+                    .or_default()
+                    .insert(e.to.as_str());
+            }
         }
     }
     let relevance_of = |id: &str| relevance.get(id).map(BTreeSet::len).unwrap_or(0);

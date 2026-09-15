@@ -1164,6 +1164,21 @@
         "content_hash": "3fbb1ded373a1202"
       },
       {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "Command::new",
+        "content_hash": "583982587bb6b9ca"
+      },
+      {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "Command::new",
+        "content_hash": "583982587bb6b9ca"
+      },
+      {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "Command::new",
+        "content_hash": "3fbb1ded373a1202"
+      },
+      {
         "file": "tests/graph_collision_body_and_tiebreak.rs",
         "name": "Command::new",
         "content_hash": "7266da144e21471d"
@@ -2040,7 +2055,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 379 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 382 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -5961,6 +5976,36 @@
         "content_hash": "3a7ca62e5e628ddc"
       },
       {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "\".rigger\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "\".rigger\"",
+        "content_hash": "3a7ca62e5e628ddc"
+      },
+      {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "\".rigger\"",
+        "content_hash": "3a7ca62e5e628ddc"
+      },
+      {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "\".rigger\"",
+        "content_hash": "3a7ca62e5e628ddc"
+      },
+      {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "\".rigger\"",
+        "content_hash": "3a7ca62e5e628ddc"
+      },
+      {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "\".rigger\"",
+        "content_hash": "3a7ca62e5e628ddc"
+      },
+      {
         "file": "tests/graph_show_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
@@ -6957,7 +7002,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 696 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 702 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0061",
@@ -15268,6 +15313,11 @@
         "content_hash": "978c8d8e25e7dad4"
       },
       {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "temp_project",
+        "content_hash": "978c8d8e25e7dad4"
+      },
+      {
         "file": "tests/graph_show_periphery.rs",
         "name": "temp_project",
         "content_hash": "978c8d8e25e7dad4"
@@ -15318,7 +15368,7 @@
         "content_hash": "5d1bf3d7ac2d7c7c"
       }
     ],
-    "proposed_home": "a new shared module (sites span 15 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs, tests/graph_around_code_first.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/reset_build_cache_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/spec_lint.rs, tests/validate_footprint_default_scratch_root_periphery.rs, tests/watchdog_cli_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 16 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs, tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/reset_build_cache_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/spec_lint.rs, tests/validate_footprint_default_scratch_root_periphery.rs, tests/watchdog_cli_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -15347,6 +15397,11 @@
       },
       {
         "file": "tests/graph_around_code_first.rs",
+        "name": "temp_project",
+        "content_hash": "978c8d8e25e7dad4"
+      },
+      {
+        "file": "tests/graph_around_governance_boundaries.rs",
         "name": "temp_project",
         "content_hash": "978c8d8e25e7dad4"
       },
@@ -15437,7 +15492,7 @@
       }
     ],
     "proposed_home": "one shared `temp_project` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 22 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 23 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0401",
@@ -15583,6 +15638,11 @@
         "content_hash": "2c45c61de3d547c7"
       },
       {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "seed_store",
+        "content_hash": "2c45c61de3d547c7"
+      },
+      {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
         "name": "seed_store",
         "content_hash": "2c45c61de3d547c7"
@@ -15598,7 +15658,7 @@
         "content_hash": "2c45c61de3d547c7"
       }
     ],
-    "proposed_home": "a new shared module (sites span 7 files: tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs, tests/graph_around_code_first.rs, tests/heartbeat_write_read_agree_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/watchdog_cli_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 8 files: tests/cause_wire_periphery.rs, tests/cli.rs, tests/escalation_resume_periphery.rs, tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs, tests/heartbeat_write_read_agree_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/watchdog_cli_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -15744,6 +15804,11 @@
         "content_hash": "a5193497844b9700"
       },
       {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "run_stream_identity",
+        "content_hash": "a5193497844b9700"
+      },
+      {
         "file": "tests/graph_show_periphery.rs",
         "name": "run_stream_identity",
         "content_hash": "a5193497844b9700"
@@ -15820,7 +15885,7 @@
       }
     ],
     "proposed_home": "one shared `run_stream_identity` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 22 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 23 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0407",
@@ -20367,6 +20432,11 @@
         "content_hash": "a5193497844b9700"
       },
       {
+        "file": "tests/graph_around_governance_boundaries.rs",
+        "name": "run_stream_identity",
+        "content_hash": "a5193497844b9700"
+      },
+      {
         "file": "tests/graph_show_periphery.rs",
         "name": "run_stream_identity",
         "content_hash": "a5193497844b9700"
@@ -20382,7 +20452,7 @@
         "content_hash": "a5193497844b9700"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: tests/graph_around_code_first.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -20391,6 +20461,11 @@
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
+        "name": "run_rigger",
+        "content_hash": "267b45a7793e2f59"
+      },
+      {
+        "file": "tests/graph_around_governance_boundaries.rs",
         "name": "run_rigger",
         "content_hash": "267b45a7793e2f59"
       },
@@ -20420,7 +20495,7 @@
         "content_hash": "f55b412f06bc7c85"
       }
     ],
-    "proposed_home": "a new shared module (sites span 6 files: tests/graph_around_code_first.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/relocated_worktree_store_resolution_periphery.rs, tests/validate_footprint_default_scratch_root_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 7 files: tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/relocated_worktree_store_resolution_periphery.rs, tests/validate_footprint_default_scratch_root_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -20429,6 +20504,11 @@
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
+        "name": "seed_def",
+        "content_hash": "933560a1be17be6a"
+      },
+      {
+        "file": "tests/graph_around_governance_boundaries.rs",
         "name": "seed_def",
         "content_hash": "933560a1be17be6a"
       },
@@ -20448,7 +20528,7 @@
         "content_hash": "933560a1be17be6a"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: tests/graph_around_code_first.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

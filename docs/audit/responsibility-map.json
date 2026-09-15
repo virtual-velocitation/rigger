@@ -1521,11 +1521,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "recency_by_own_edge",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "ba0dd890c0791f32"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "write_capped_section",
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "c9d1f16f0eeb46ca"
+    "content_hash": "9516da1d0d508172"
   },
   {
     "file": "src/conductor.rs",
@@ -6509,7 +6517,7 @@
     "is_test": false,
     "proposed_module": "main::render",
     "reason": "name contains \"print_\" (human-readable output); grouped under `main::render`.",
-    "content_hash": "37836de65ccf64a6"
+    "content_hash": "fdb2b38e2394d2a1"
   },
   {
     "file": "src/main.rs",

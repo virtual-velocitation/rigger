@@ -16,6 +16,13 @@
 //!   a GOVERNS/ABOUT line interleaved with the file's real structural edges. The test proves the
 //!   edge is actually present upstream (so a passing assertion means the CLI filters it, not that
 //!   it was never there to filter).
+//! - a SUPERSEDED decision never inherits its superseder's fresh recency and crowds a genuinely
+//!   live decision out of the newest-ten cap (round 2 regression: adv-u92c6-stale-supersede-
+//!   inherits-freshness-crowds-out-live). A superseded decision's OWN `GOVERNS` edge is
+//!   invalidated by the fold, so it reaches the subgraph only via the still-valid `SUPERSEDES`
+//!   edge its superseder emitted - an edge stamped with the SUPERSEDER's (fresh) event position.
+//!   Dating a node off ANY edge touching it as either endpoint (rather than only its own
+//!   `GOVERNS`/`ABOUT` edge) lets that inherited freshness rank the stale decision as if newest.
 
 use std::path::Path;
 use std::process::Command;
@@ -275,5 +282,87 @@ fn around_never_prints_a_governs_or_about_edge_even_though_subgraph_returns_it()
         node_ids(&out).contains(&"d1".to_string()) && node_ids(&out).contains(&"f1".to_string()),
         "the decision and finding must still print as NODES in the governing section - only \
          their edges are filtered; got:\n{out}"
+    );
+}
+
+#[test]
+fn around_never_lets_a_superseded_decision_inherit_its_superseders_recency_and_crowd_out_a_live_one(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let file = "supersede_recency.rs";
+
+    {
+        let id = run_stream_identity(root);
+        let p =
+            Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id).unwrap();
+        seed_def(&p, 100_001, file, "solo", "function", 1);
+    }
+
+    // d1: the OLDEST decision, governing `file` - about to be superseded.
+    let payload = format!(
+        r#"{{"id":"d1","summary":"old decision, will be superseded","governs":["{file}"]}}"#
+    );
+    let (_o, err, ok) = run_rigger(root, &["emit", "DecisionMade", &payload]);
+    assert!(ok, "emit DecisionMade d1 must succeed; stderr: {err}");
+
+    // l1..l10: TEN genuinely live decisions, all newer than d1, all governing `file` - exactly
+    // AROUND_GOVERNANCE_CAP (10) worth, so with d1 and d2 (below) also present, the newest-ten
+    // cap must drop exactly two: d1 (correctly, being stale/oldest) and l1 (the oldest of the
+    // ten live ones) - never a genuinely live one further up the list.
+    for i in 1..=10 {
+        let nid = format!("l{i}");
+        let payload =
+            format!(r#"{{"id":"{nid}","summary":"live decision {i}","governs":["{file}"]}}"#);
+        let (_o, err, ok) = run_rigger(root, &["emit", "DecisionMade", &payload]);
+        assert!(ok, "emit DecisionMade {nid} must succeed; stderr: {err}");
+    }
+
+    // d2: the NEWEST decision - supersedes d1 and also governs `file`. Its SUPERSEDES edge (d2
+    // -> d1) and its own GOVERNS edge are both stamped with this SAME (freshest) event position.
+    // A buggy either-endpoint recency scan lets d1 inherit that freshness through the inbound
+    // SUPERSEDES edge and rank as if newest; the fix dates d1 off only its own (invalidated,
+    // hence absent) GOVERNS edge, so d1 ranks as recency 0 - the oldest, not the newest.
+    let payload = format!(
+        r#"{{"id":"d2","summary":"supersedes d1, still governs the file","governs":["{file}"],"supersedes":"d1"}}"#
+    );
+    let (_o, err, ok) = run_rigger(root, &["emit", "DecisionMade", &payload]);
+    assert!(ok, "emit DecisionMade d2 must succeed; stderr: {err}");
+
+    let (out, err, ok) = run_rigger(root, &["graph", "--around", file, "--depth", "2"]);
+    assert!(ok, "graph --around must succeed; stderr: {err}");
+
+    let ids = node_ids(&out);
+
+    // d1 is stale (superseded) and must be capped out - never shown as if current.
+    assert!(
+        !ids.contains(&"d1".to_string()),
+        "a superseded decision must never inherit its superseder's fresh recency and print as \
+         if current; got:\n{out}"
+    );
+    // l1, the oldest of the ten live decisions, is correctly the other one capped out.
+    assert!(
+        !ids.contains(&"l1".to_string()),
+        "l1 is the oldest live decision and is correctly the second one capped out; got:\n{out}"
+    );
+    // l2..l10 and d2 - the nine newer live decisions plus the superseding decision itself - are
+    // the genuinely newest ten and must ALL be shown; a stale d1 crowding any of these out is
+    // the exact regression under test.
+    for i in 2..=10 {
+        let nid = format!("l{i}");
+        assert!(
+            ids.contains(&nid),
+            "{nid} is genuinely among the newest ten and must not be crowded out by a stale \
+             superseded decision's inherited recency; got:\n{out}"
+        );
+    }
+    assert!(
+        ids.contains(&"d2".to_string()),
+        "d2, the newest decision, must be shown; got:\n{out}"
+    );
+    assert!(
+        out.contains("+2") && out.contains("more"),
+        "exactly two governing items (d1 and l1) must be capped out; got:\n{out}"
     );
 }
