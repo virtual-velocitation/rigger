@@ -56,15 +56,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 13318
+        "line": 13409
       },
       {
         "file": "src/main.rs",
-        "line": 13339
+        "line": 13430
       },
       {
         "file": "src/main.rs",
-        "line": 13854
+        "line": 13945
       },
       {
         "file": "tests/cli.rs",
@@ -183,7 +183,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 19112
+        "line": 19139
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -766,15 +766,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 38314
+        "line": 38341
       },
       {
         "file": "src/conductor.rs",
-        "line": 38381
+        "line": 38408
       },
       {
         "file": "src/conductor.rs",
-        "line": 39156
+        "line": 39183
       },
       {
         "file": "src/ledger.rs",
@@ -835,35 +835,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 21427
+        "line": 21454
       },
       {
         "file": "src/conductor.rs",
-        "line": 21504
+        "line": 21531
       },
       {
         "file": "src/conductor.rs",
-        "line": 21598
+        "line": 21625
       },
       {
         "file": "src/conductor.rs",
-        "line": 21685
+        "line": 21712
       },
       {
         "file": "src/conductor.rs",
-        "line": 21780
+        "line": 21807
       },
       {
         "file": "src/conductor.rs",
-        "line": 28908
+        "line": 28935
       },
       {
         "file": "src/conductor.rs",
-        "line": 28913
+        "line": 28940
       },
       {
         "file": "src/conductor.rs",
-        "line": 28976
+        "line": 29003
       },
       {
         "file": "src/dash.rs",
@@ -947,47 +947,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 16511
+        "line": 16602
       },
       {
         "file": "src/main.rs",
-        "line": 16544
+        "line": 16635
       },
       {
         "file": "src/main.rs",
-        "line": 16563
+        "line": 16654
       },
       {
         "file": "src/main.rs",
-        "line": 16566
+        "line": 16657
       },
       {
         "file": "src/main.rs",
-        "line": 16569
+        "line": 16660
       },
       {
         "file": "src/main.rs",
-        "line": 18439
+        "line": 18530
       },
       {
         "file": "src/main.rs",
-        "line": 18452
+        "line": 18543
       },
       {
         "file": "src/main.rs",
-        "line": 18467
+        "line": 18558
       },
       {
         "file": "src/main.rs",
-        "line": 23888
+        "line": 23979
       },
       {
         "file": "src/main.rs",
-        "line": 23889
+        "line": 23980
       },
       {
         "file": "src/main.rs",
-        "line": 23890
+        "line": 23981
       },
       {
         "file": "src/mcpserver.rs",
@@ -1463,15 +1463,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 28906
+        "line": 28933
       },
       {
         "file": "src/conductor.rs",
-        "line": 28911
+        "line": 28938
       },
       {
         "file": "src/conductor.rs",
-        "line": 28974
+        "line": 29001
       },
       {
         "file": "src/driver/replay.rs",
@@ -1590,7 +1590,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 13763
+        "line": 13790
       },
       {
         "file": "src/worktree.rs",
