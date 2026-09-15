@@ -28817,6 +28817,64 @@ fn grep_guard_bounces_a_shell_metacharacter_fused_grep_end_to_end() {
     );
 }
 
+/// SDET periphery gap closed (round-3 accounting): `shell_command_words` splits on six
+/// metacharacters - `|` `;` `&` `(` `)` `` ` `` `$` - but the round-3 fix's own end-to-end
+/// test above pins only three of them (pipe, semicolon, `$( )`). The other three - a
+/// backgrounded `&`, a chained `&&`, and a backtick command substitution - are proven only
+/// at the pure-function level (`grep_guard_decision_bounces_a_shell_metacharacter_fused_grep`
+/// in `src/main.rs`), never through the actual compiled binary reading real stdin JSON. This
+/// test drives the remaining three shapes through `rigger grep-guard` itself, so every
+/// character the tokenizer's doc comment claims to split on is proven at the periphery, not
+/// only in-process.
+#[test]
+fn grep_guard_bounces_the_remaining_shell_metacharacter_fusions_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in [
+        "grep pattern src/main.rs&",
+        "echo hi&&grep pattern src/main.rs",
+        "echo `grep pattern src/main.rs`",
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a grep fused via `&`, `&&`, or a backtick must be denied through the compiled \
+             binary, matching the round-3 fix's pure-function coverage: {command:?}; got:\n{out}"
+        );
+    }
+}
+
+/// SDET periphery gap closed: the round-3 fix's own end-to-end test proves a FUSED grep is
+/// denied, but never that `--literal` still escapes a fused command through the compiled
+/// binary - only `grep_guard_decision_still_allows_literal_on_a_shell_metacharacter_fused_grep`
+/// (a pure-function unit test in `src/main.rs`) does. Without this, a regression that broke
+/// `--literal` specifically for a fused command - while leaving the spaced escape hatch and
+/// the fused denial both intact - would pass every currently-committed periphery test.
+#[test]
+fn grep_guard_still_allows_literal_on_a_shell_metacharacter_fused_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"true;grep --literal pattern src/main.rs"}}"#,
+    );
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "--literal must still pass a shell-metacharacter-fused command through end to end; \
+         got:\n{out}"
+    );
+}
+
 /// `rigger mcp`'s API edges: an unknown tool name, and the required-argument checks
 /// `rigger_ground`/`rigger_graph` state in their own error strings - none of which the
 /// happy-path test above (which only ever sends well-formed calls) sends. Each must answer a
