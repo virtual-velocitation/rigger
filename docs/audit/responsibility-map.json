@@ -7069,7 +7069,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "d9d7786f71eb8154"
+    "content_hash": "bbb494e4f5242f44"
   },
   {
     "file": "src/main.rs",

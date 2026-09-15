@@ -2668,6 +2668,81 @@ fn ground_returns_references_from_the_repo() {
     );
 }
 
+/// Spec 92 criterion 3 (RANKED BY INTENT), end to end through the REAL `rigger ground` CLI for
+/// the LITERAL grep grounder: `Grounder::ground_ranked` and `Grounder::has_strong_match` are
+/// trait DEFAULT methods, and grep never overrides either, but a unit test that calls them
+/// in-process cannot see whether `cmd_ground` actually WIRES them into the printed page - only
+/// the compiled binary's stdout can. Grep has no commonness concept, so its default
+/// `has_strong_match` is unconditionally true (never the honest no-match line, even for a token
+/// that would read as tree-wide-common under the `symbols` grounder), and its default
+/// `ground_ranked` is `ground`'s own rows wrapped with degree 0, undeduplicated.
+#[test]
+fn ground_via_grep_backend_prints_the_degree_suffix_and_never_suppresses_a_match() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "5"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert_eq!(
+        out.trim(),
+        "combat.rs:1: fn apply_damage() {} (degree 0)",
+        "the grep backend's default ground_ranked must print the trait default's degree-0 \
+         suffix on the exact matched line, undeduplicated; got {out:?}"
+    );
+
+    // Six occurrences of one token - the shape that reads as tree-wide-common under the
+    // symbols grounder's commonness concept. Grep has no such concept: it must still print
+    // every match, never the "no entity matches strongly" honest line.
+    for i in 0..6 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn run() {}\n").unwrap();
+    }
+    let (out, err, ok) = run_rigger(root, &["ground", "run", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "grep has no commonness concept, so has_strong_match's default must never suppress a \
+         real match, even one that would read as tree-wide-common under symbols; got {out:?}"
+    );
+    assert_eq!(
+        out.lines().filter(|l| l.contains("(degree 0)")).count(),
+        6,
+        "grep's default ground_ranked never dedupes - one row per matching line; got {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 (RANKED BY INTENT), end to end through the REAL `rigger ground` CLI for
+/// the `nop` backend - a second real, CLI-selectable `Grounder` (alongside grep) that never
+/// overrides `ground_ranked` or `has_strong_match`, riding the exact same trait-default code
+/// path `cmd_ground` now gates EVERY backend through before printing. `Nop::ground` is always
+/// empty and `Nop::has_strong_match` is the unconditionally-true default, so `rigger ground`
+/// with `nop` configured must stay silent - neither a `(degree N)` row nor the new "no entity
+/// matches strongly" line - exactly as before this unit's change. A wiring defect in
+/// `cmd_ground`'s new `k > 0 && !has_strong_match` gate (e.g. treating an empty match set as
+/// weak for every backend, not only ones with a real commonness concept) would surface ONLY as
+/// `nop` suddenly printing that line where it used to print nothing at all.
+#[test]
+fn ground_via_nop_backend_stays_silent_and_never_prints_the_weak_match_line() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "nop");
+    std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "5"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        out.trim().is_empty(),
+        "nop grounds nothing; it must print neither a row nor the honest no-match line; \
+         got {out:?}"
+    );
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "nop's has_strong_match default is unconditionally true, so the honest line must \
+         never appear for it, even though it also never grounds anything; got {out:?}"
+    );
+}
+
 /// `rigger reindex <file>` requires at least one file and is a clear error otherwise:
 /// a workflow agent calling it with no files must get a non-zero exit, not a silent
 /// no-op. (This holds for every grounder, so it needs no model and runs in both lanes.)
@@ -3115,6 +3190,119 @@ fn ground_via_symbols_grounder_ranks_a_definition_first() {
     assert!(
         !out.contains("notes.rs"),
         "an incidental prose mention must not be grounded as a symbol; stdout: {out}"
+    );
+}
+
+/// Spec 92 criterion 3 (RANKED BY INTENT), end to end through the REAL `rigger ground` CLI:
+/// the audit's own failure shape (docs/audit/2026-09-graph-vs-grep.md question 3 - six `run`
+/// definitions drowning a rare, specific match) is fixed; every call site of one function
+/// collapses to a single line carrying its degree; and a query whose only match is
+/// tree-wide-common prints the honest line instead of noise.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranks_by_intent_dedupes_by_entity_and_admits_a_weak_query() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    for i in 0..6 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn run() {}\n").unwrap();
+    }
+    std::fs::write(root.join("zzz_dash.rs"), "fn dash() {}\n").unwrap();
+    std::fs::write(root.join("def.rs"), "fn apply_damage() {}\n").unwrap();
+    for i in 0..3 {
+        std::fs::write(
+            root.join(format!("caller{i}.rs")),
+            "fn go() { apply_damage(); }\n",
+        )
+        .unwrap();
+    }
+
+    // The rare token outranks the six tree-wide `run` definitions - the audit's own shape.
+    let (out, err, ok) = run_rigger(root, &["ground", "dash run", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    let first = out.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with("zzz_dash.rs:") && first.contains("dash"),
+        "the rare token must rank first, not the six tree-wide `run` hits; stdout: {out}"
+    );
+
+    // apply_damage's definition and its three call sites collapse into one displayed row,
+    // annotated with its real degree.
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    let apply_damage_lines: Vec<&str> =
+        out.lines().filter(|l| l.contains("apply_damage")).collect();
+    assert_eq!(
+        apply_damage_lines.len(),
+        1,
+        "the definition and its three call sites must dedupe to one row; stdout: {out}"
+    );
+    assert!(
+        apply_damage_lines[0].contains("degree 3"),
+        "the row must carry its real degree; stdout: {out}"
+    );
+
+    // A query whose only match is a tree-wide-common token prints the honest line, never noise.
+    let (out, err, ok) = run_rigger(root, &["ground", "run", "10"]);
+    assert!(
+        ok,
+        "ground must succeed even on a weak query; stderr: {err}"
+    );
+    assert!(
+        out.to_lowercase().contains("no entity matches strongly"),
+        "a weak query (only a tree-wide-common token) must print the honest line, not noise; \
+         stdout: {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3's `cmd_ground` orchestration - NOT the `Grounder` trait itself: an
+/// explicit `k = 0` is the caller asking for NOTHING, so `cmd_ground` must stay silent even for
+/// a query that would otherwise trip the weak-match honest line (the very query that prints
+/// "no entity matches strongly" at k=10 in the test above). The `k > 0` gate lives ONLY in
+/// `cmd_ground`'s own `if` (main.rs), not in `has_strong_match` or `ground_ranked` - a unit
+/// test of either trait method in isolation cannot see this seam; only driving the real CLI
+/// with an explicit k=0 can.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_with_explicit_k_zero_stays_silent_even_for_a_weak_query() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+    // The whole fixture is written BEFORE the first `ground` call, so the cold index build
+    // (the persisted index is not auto-refreshed by a later call - it needs an explicit
+    // `reindex`) sees it all at once: six tree-wide `run` definitions (weak) plus a rare
+    // `apply_damage` definition with three call sites (strong) - the same shape the test
+    // above proves is weak-for-`run`, strong-for-`apply_damage` at k=10.
+    for i in 0..6 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn run() {}\n").unwrap();
+    }
+    std::fs::write(root.join("def.rs"), "fn apply_damage() {}\n").unwrap();
+    for i in 0..3 {
+        std::fs::write(
+            root.join(format!("caller{i}.rs")),
+            "fn go() { apply_damage(); }\n",
+        )
+        .unwrap();
+    }
+
+    // k=0 on a query that is weak at k>0 (proven above) must print nothing at all - neither
+    // rows nor the honest no-match line.
+    let (out, err, ok) = run_rigger(root, &["ground", "run", "0"]);
+    assert!(ok, "ground with k=0 must still succeed; stderr: {err}");
+    assert!(
+        out.trim().is_empty(),
+        "k=0 asks for nothing; it must print neither rows nor the honest no-match line; \
+         got {out:?}"
+    );
+
+    // k=0 on a query that is STRONG at k>0 is silent for the same reason - k=0 bypasses the
+    // strength check entirely, it does not merely happen to pass it.
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "0"]);
+    assert!(ok, "ground with k=0 must still succeed; stderr: {err}");
+    assert!(
+        out.trim().is_empty(),
+        "k=0 asks for nothing regardless of query strength; got {out:?}"
     );
 }
 

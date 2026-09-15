@@ -270,24 +270,32 @@ impl SymbolIndex {
             return false;
         }
         let mut degrees: Vec<usize> = counts.into_values().collect();
-        degrees.sort_unstable();
-        // Nearest-rank percentile over the distinct-name degree distribution, drawn as the degree
-        // at 0-based rank `floor((N - 1) * percentile)` - always in bounds (the index never exceeds
-        // `N - 1`), so no clamp is needed. This lands the cutoff on a TYPICAL degree the outliers
-        // rise above rather than on the top element itself: with a two-name distribution [1, 20] at
-        // the 90th percentile it picks 1, and the STRICT `>` below then flags only `20` as a hub,
-        // never the degree-1 name. On a long tail dominated by degree-1 names the cutoff is 1 and
-        // `>` flags only the names that genuinely rise above the tail; on a FLAT distribution the
-        // cutoff equals the shared degree and `>` flags nothing (no meaningful spread, no hub). A
-        // `floor(N * percentile)` index with `>=` would instead sit ON the tail value and flag
-        // every referenced name - the degeneration this outlier definition exists to prevent.
-        let cutoff_idx = (((degrees.len() - 1) as f64) * percentile).floor() as usize;
-        let cutoff = degrees[cutoff_idx];
+        let cutoff = percentile_cutoff(&mut degrees, percentile);
         // STRICTLY above the cutoff: the name must be a genuine high-degree outlier, not merely
         // reach the typical degree. Every counted degree is >= 1, so `cutoff >= 1` and a hub needs
         // degree >= 2 at minimum - a lone or flat reference set can never manufacture a hub.
         self.reference_degree(name, lang) > cutoff
     }
+}
+
+/// The nearest-rank percentile cutoff over a distribution of per-name counts (spec 92 criterion
+/// 3 remediation, adj-u92c3-verdict-reject / arch-u92c3-cutoff-formula-duplicated-not-shared):
+/// the ONE cutoff formula [`SymbolIndex::is_hub`] (per-language reference-degree, the fan-out
+/// hub signal) and the `symbols` grounder's tree-wide-ambiguity gate BOTH draw their cutoff
+/// from - so the two thresholds can be retuned only in one place and can never silently drift
+/// apart from re-deriving the same nearest-rank formula twice. Sorts `counts` in place and
+/// returns the value at 0-based rank `floor((counts.len() - 1) * percentile)` - always in
+/// bounds for a non-empty slice, so no clamp is needed. Every caller here already special-cases
+/// an empty distribution (there IS no cutoff over zero names), so this panics on an empty
+/// `counts` rather than silently returning a meaningless default.
+pub fn percentile_cutoff(counts: &mut [usize], percentile: f64) -> usize {
+    assert!(
+        !counts.is_empty(),
+        "percentile_cutoff requires a non-empty distribution; callers must special-case empty"
+    );
+    counts.sort_unstable();
+    let idx = (((counts.len() - 1) as f64) * percentile).floor() as usize;
+    counts[idx]
 }
 
 #[cfg(test)]
