@@ -56,15 +56,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 13292
+        "line": 13796
       },
       {
         "file": "src/main.rs",
-        "line": 13313
+        "line": 13817
       },
       {
         "file": "src/main.rs",
-        "line": 13828
+        "line": 14332
       },
       {
         "file": "tests/cli.rs",
@@ -142,11 +142,11 @@
     "test_only_references": [
       {
         "file": "src/mcpserver.rs",
-        "line": 749
+        "line": 757
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 790
+        "line": 798
       }
     ]
   },
@@ -303,7 +303,7 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "line": 2175
+        "line": 2177
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -947,51 +947,51 @@
       },
       {
         "file": "src/main.rs",
-        "line": 16394
+        "line": 16919
       },
       {
         "file": "src/main.rs",
-        "line": 16427
+        "line": 16952
       },
       {
         "file": "src/main.rs",
-        "line": 16446
+        "line": 16971
       },
       {
         "file": "src/main.rs",
-        "line": 16449
+        "line": 16974
       },
       {
         "file": "src/main.rs",
-        "line": 16452
+        "line": 16977
       },
       {
         "file": "src/main.rs",
-        "line": 18322
+        "line": 18847
       },
       {
         "file": "src/main.rs",
-        "line": 18335
+        "line": 18860
       },
       {
         "file": "src/main.rs",
-        "line": 18350
+        "line": 18875
       },
       {
         "file": "src/main.rs",
-        "line": 23771
+        "line": 24296
       },
       {
         "file": "src/main.rs",
-        "line": 23772
+        "line": 24297
       },
       {
         "file": "src/main.rs",
-        "line": 23773
+        "line": 24298
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 902
+        "line": 910
       },
       {
         "file": "src/metrics.rs",

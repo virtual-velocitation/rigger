@@ -652,11 +652,19 @@ fn tool_list() -> Value {
     ])
 }
 
-fn ok(id: Value, result: Value) -> String {
+/// The JSON-RPC 2.0 success envelope. `pub` (not private): `rigger mcp` (spec 92,
+/// criterion 4's operator server - a SEPARATE small stdio loop from this `Server`, since it
+/// answers rigger_ground/rigger_graph through main.rs's own binary-side grounder/graph
+/// composition rather than an injected port) lives in the SEPARATE `rigger` binary crate,
+/// not this library, so it needs full `pub` (not `pub(crate)`, which stops at the crate
+/// boundary) to reuse the exact same wire envelope from there, without a second
+/// implementation of the format.
+pub fn ok(id: Value, result: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()
 }
 
-fn err(id: Value, code: i64, message: &str) -> String {
+/// The JSON-RPC 2.0 error envelope; see [`ok`]'s doc comment for why this is `pub`.
+pub fn err(id: Value, code: i64, message: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
 }
 

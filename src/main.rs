@@ -1408,6 +1408,8 @@ const SUBCOMMANDS: &[&str] = &[
     "setup",
     "docs",
     "prime",
+    "mcp",
+    "grep-guard",
     "version",
     "help",
 ];
@@ -1448,6 +1450,8 @@ fn main() {
         "setup" => cmd_setup(&args[2..]),
         "docs" => cmd_docs(&args[2..]),
         "prime" => cmd_prime(&args[2..]),
+        "mcp" => cmd_mcp(&args[2..]),
+        "grep-guard" => cmd_grep_guard(&args[2..]),
         "version" | "--version" | "-V" => cmd_version(),
         "help" | "-h" | "--help" => {
             usage();
@@ -12321,6 +12325,13 @@ fn cmd_setup(args: &[String]) -> Res {
     // nothing, and any pre-existing pre-commit hook is chained, never clobbered.
     let hook = install_precommit_hook(root)?;
     let provisioned = provision_shim(root)?;
+    // Register the operator's own MCP lookup surface (spec 92, criterion 4: IN EVERY
+    // SESSION'S HAND) - `.mcp.json` gains a `rigger` entry (`rigger mcp`) exposing
+    // rigger_peers/rigger_ground/rigger_graph to THIS session - and the PreToolUse hook
+    // that bounces a bare source grep toward those tools. Both drift-aware like every
+    // install above.
+    let mcp_registered = install_operator_mcp(root)?;
+    let lookup_hook = install_lookup_hook(root)?;
 
     // The --agents import (units 4 + 8 woven) is itself a REQUESTED change: it runs
     // before the silent-no-op check and always reports its outcome, so an import onto
@@ -12348,12 +12359,16 @@ fn cmd_setup(args: &[String]) -> Res {
         .iter()
         .any(|(_, outcome)| *outcome != InstallOutcome::AlreadyCurrent);
     let hook_changed = hook != InstallOutcome::AlreadyCurrent;
+    let mcp_changed = mcp_registered != InstallOutcome::AlreadyCurrent;
+    let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
     if !scaffold.changed()
         && !workflow_changed
         && !skill_changed
         && !hook_changed
         && !provisioned
         && !imported
+        && !mcp_changed
+        && !lookup_hook_changed
     {
         // A silent no-op: nothing drifted, so there is nothing to report.
         return Ok(());
@@ -12409,6 +12424,29 @@ fn cmd_setup(args: &[String]) -> Res {
         }
         InstallOutcome::AlreadyCurrent => {}
     }
+    match mcp_registered {
+        InstallOutcome::Installed => println!(
+            "registered the rigger MCP server (.mcp.json: rigger mcp) - this session now has \
+             rigger_peers/rigger_ground/rigger_graph tools, the same lookups a loop agent gets"
+        ),
+        InstallOutcome::Refreshed => {
+            println!("refreshed the drifted rigger MCP server entry (.mcp.json) to match this rigger build")
+        }
+        InstallOutcome::AlreadyCurrent => {}
+    }
+    match lookup_hook {
+        InstallOutcome::Installed => println!(
+            "installed the graph-first lookup hook - a Grep tool call or `grep` command over \
+             src/, tests/, or workflows/ now bounces toward rigger_ground/rigger_graph (add \
+             --literal to a `grep` command to proceed anyway)"
+        ),
+        InstallOutcome::Refreshed => println!(
+            "installed the graph-first lookup hook into the existing settings.json - a Grep \
+             tool call or `grep` command over src/, tests/, or workflows/ now bounces toward \
+             rigger_ground/rigger_graph (add --literal to a `grep` command to proceed anyway)"
+        ),
+        InstallOutcome::AlreadyCurrent => {}
+    }
     // The starter-fleet pointer fires exactly when default agents were NEWLY
     // scaffolded (spec 05 line 57 clause 2): the per-artifact report's `new_agents`
     // is the scaffolded-new signal.
@@ -12420,6 +12458,70 @@ fn cmd_setup(args: &[String]) -> Res {
     // quiet and never re-prints it (spec 05 crit 4: a rerun prints nothing surprising).
     print_orientation();
     Ok(())
+}
+
+/// The matcher and command the graph-first lookup hook installs under `PreToolUse` (spec
+/// 92, criterion 4: IN EVERY SESSION'S HAND). Fires on the built-in `Grep` tool and on
+/// `Bash` (a `grep` command may be buried inside an arbitrary shell command) - the real
+/// narrowing (is this actually a grep? does it target src/, tests/, or workflows/? was
+/// `--literal` given?) happens in [`grep_guard_decision`], which `rigger grep-guard` (the
+/// installed command) runs, so a Bash call that is not a grep at all is a silent allow,
+/// never a false bounce.
+const GREP_GUARD_MATCHER: &str = "Grep|Bash";
+const GREP_GUARD_COMMAND: &str = "rigger grep-guard";
+
+/// Install the graph-first lookup hook (spec 92, criterion 4): merges the PreToolUse
+/// hook that runs `rigger grep-guard` into `.claude/settings.json`. Drift-aware and
+/// non-destructive like every other `rigger setup` install (see
+/// [`hooks::install_pretooluse_hook`]): idempotent, and any pre-existing PreToolUse hook
+/// (for a different matcher, a different tool, something a person or another tool
+/// installed) is preserved untouched.
+///
+/// The same three-state contract every other `rigger setup` install artifact has:
+/// absent settings.json -> `Installed` (a fresh file, our block its first content),
+/// an existing settings.json gaining the block (fresh OR foreign content already
+/// there) -> `Refreshed` (the FILE existed even though our own array entry did not,
+/// mirroring [`install_operator_mcp`]'s `existed` distinction), already carrying the
+/// block -> `AlreadyCurrent` (a silent no-op).
+fn install_lookup_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    let claude_dir = root.join(".claude");
+    std::fs::create_dir_all(&claude_dir)?;
+    let settings_path = claude_dir.join("settings.json");
+    let existed = settings_path.exists();
+    let existing = std::fs::read(&settings_path).unwrap_or_default();
+    let merged = hooks::install_pretooluse_hook(&existing, GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)?;
+    if merged == existing {
+        return Ok(InstallOutcome::AlreadyCurrent);
+    }
+    std::fs::write(&settings_path, &merged)?;
+    Ok(if existed {
+        InstallOutcome::Refreshed
+    } else {
+        InstallOutcome::Installed
+    })
+}
+
+/// Install the operator's own MCP lookup surface (spec 92, criterion 4): merges a
+/// `rigger` entry (`rigger mcp`, see [`cmd_mcp`]) into `.mcp.json`'s `mcpServers`, so the
+/// interactive session gets `rigger_peers`/`rigger_ground`/`rigger_graph` as tools -  the
+/// same three lookups a loop agent has - instead of a shell. Drift-aware like every other
+/// install (see [`hooks::install_mcp_server`]): a stale entry from an older build
+/// self-heals, every OTHER server entry and top-level key in `.mcp.json` survives
+/// untouched.
+fn install_operator_mcp(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    let mcp_path = root.join(".mcp.json");
+    let existed = mcp_path.exists();
+    let existing = std::fs::read(&mcp_path).unwrap_or_default();
+    let merged = hooks::install_mcp_server(&existing, "rigger", "rigger", &["mcp"])?;
+    if merged == existing {
+        return Ok(InstallOutcome::AlreadyCurrent);
+    }
+    std::fs::write(&mcp_path, &merged)?;
+    Ok(if existed {
+        InstallOutcome::Refreshed
+    } else {
+        InstallOutcome::Installed
+    })
 }
 
 /// Parsed `rigger setup` options. Setup takes no positional arguments; the only
@@ -12657,6 +12759,13 @@ fn docs_context() -> rigger::docs::DocsContext {
         }),
         watch_poll_interval_secs: watch::DEFAULT_INTERVAL_SECS,
         reject_recurrence_diagnose_threshold: watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
+        // Spec 92, criterion 4 (IN EVERY SESSION'S HAND): the discipline docs' "Looking
+        // things up" section states the graph-first rule for a human reader by
+        // interpolating the SAME message and guarded trees `rigger grep-guard` (the
+        // installed hook's command) decides against - never a hand-copy that could drift
+        // from what the hook actually enforces.
+        grep_guard_message: GREP_GUARD_MESSAGE.to_string(),
+        grep_guarded_trees: GREP_GUARDED_TREES.iter().map(|t| t.to_string()).collect(),
     }
 }
 
@@ -12935,6 +13044,401 @@ fn git_repo_at(root: &Path) -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
+}
+
+/// `rigger mcp` (spec 92, criterion 4: IN EVERY SESSION'S HAND): the operator's own
+/// read-only MCP surface, the one `rigger setup` registers into `.mcp.json` for the
+/// interactive Claude Code session. Unlike `rigger serve`/`cmd_serve` (the
+/// workflow-driver bridge a loop run spawns, which anchors a run branch and creates unit
+/// worktrees the moment it starts), this command has no run to drive and touches
+/// NOTHING on disk beyond opening the existing event store, side-car, grounder, and
+/// context graph read-only: it answers `rigger_peers`, `rigger_ground`, and
+/// `rigger_graph` over stdio, the same three lookups a loop agent has (`rigger_peers`
+/// through the shim's proxy to `rigger serve`; `ground`/`graph --show`/`graph --around`
+/// as the CLI commands its persona names) - given to an interactive session as tools
+/// instead of a shell.
+fn cmd_mcp(_args: &[String]) -> Res {
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let peers = Sidecar::start(&store, 0, Filter::default())?;
+    run_operator_mcp(std::io::stdin().lock(), std::io::stdout().lock(), &peers)?;
+    Ok(())
+}
+
+/// The operator MCP surface's newline-delimited JSON-RPC read loop - structurally the
+/// same shape as [`mcpserver::Server::run`] (and reuses its `ok`/`err` envelope helpers,
+/// [`mcpserver::ok`]/[`mcpserver::err`]) but answering a DIFFERENT, narrower tool
+/// surface: `rigger_next`/`rigger_result`/`rigger_activity` do not apply outside a
+/// workflow run, so only the three lookups this criterion promises are advertised. A
+/// SEPARATE loop from `Server`'s rather than an extension of it: `rigger_ground` and
+/// `rigger_graph` are answered through main.rs's own binary-side composition
+/// (`select_grounder`, `Projector::open` - the exact calls `cmd_ground`/`cmd_graph`
+/// already make), which `mcpserver.rs` (a library module) cannot reach without crossing
+/// the crate boundary.
+fn run_operator_mcp(
+    input: impl std::io::BufRead,
+    mut output: impl std::io::Write,
+    peers: &Sidecar,
+) -> std::io::Result<()> {
+    for line in input.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(msg) => operator_mcp_handle(&msg, peers),
+            Err(_) => Some(mcpserver::err(
+                serde_json::Value::Null,
+                -32700,
+                "parse error",
+            )),
+        };
+        if let Some(response) = response {
+            writeln!(output, "{response}")?;
+            output.flush()?;
+        }
+    }
+    Ok(())
+}
+
+fn operator_mcp_handle(msg: &serde_json::Value, peers: &Sidecar) -> Option<String> {
+    let id = msg.get("id").cloned();
+    let method = match msg.get("method").and_then(serde_json::Value::as_str) {
+        Some(m) => m,
+        None => {
+            return Some(mcpserver::err(
+                id.unwrap_or(serde_json::Value::Null),
+                -32600,
+                "invalid request: missing method",
+            ));
+        }
+    };
+    match method {
+        "initialize" => id.map(|id| {
+            mcpserver::ok(
+                id,
+                serde_json::json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "rigger", "version": "0.1.0"},
+                }),
+            )
+        }),
+        "tools/list" => {
+            id.map(|id| mcpserver::ok(id, serde_json::json!({"tools": operator_tool_list()})))
+        }
+        "tools/call" => {
+            let id = id?;
+            let name = match msg
+                .get("params")
+                .and_then(|p| p.get("name"))
+                .and_then(serde_json::Value::as_str)
+            {
+                Some(n) => n,
+                None => {
+                    return Some(mcpserver::err(
+                        id,
+                        -32602,
+                        "invalid params: tools/call requires params.name",
+                    ));
+                }
+            };
+            let args = msg
+                .get("params")
+                .and_then(|p| p.get("arguments"))
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            Some(operator_call_tool(id, name, &args, peers))
+        }
+        _ => id.map(|id| mcpserver::err(id, -32601, &format!("method not found: {method}"))),
+    }
+}
+
+fn operator_tool_list() -> serde_json::Value {
+    serde_json::json!([
+        {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far this run, so you do not work blind to them. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+        {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
+        {"name": "rigger_graph", "description": "The STRUCTURE and TEXT lookups: pass `show` <entity> for its definition site and body (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
+    ])
+}
+
+fn operator_call_tool(
+    id: serde_json::Value,
+    name: &str,
+    args: &serde_json::Value,
+    peers: &Sidecar,
+) -> String {
+    let result: Result<serde_json::Value, String> = match name {
+        "rigger_peers" => Ok(operator_tool_peers(args, peers)),
+        "rigger_ground" => operator_tool_ground(args),
+        "rigger_graph" => operator_tool_graph(args),
+        _ => return mcpserver::err(id, -32602, &format!("unknown tool {name}")),
+    };
+    match result {
+        Ok(structured) => mcpserver::ok(
+            id,
+            serde_json::json!({
+                "content": [{"type": "text", "text": structured.to_string()}],
+                "structuredContent": structured,
+            }),
+        ),
+        Err(e) => mcpserver::err(id, -32603, &e),
+    }
+}
+
+fn operator_tool_peers(args: &serde_json::Value, peers: &Sidecar) -> serde_json::Value {
+    let files: Vec<String> = args
+        .get("files")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    mcpserver::peers_json(peers, &files)
+}
+
+/// The `rigger_ground` tool's core: the EXACT same lookup `cmd_ground` runs
+/// (`select_grounder` then `Grounder::ground`), formatted as JSON instead of println'd -
+/// so `ground`'s ranking (spec 92 criterion 3's territory) is inherited automatically,
+/// never re-implemented here.
+fn operator_tool_ground(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let query = args
+        .get("query")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("rigger_ground: missing query")?;
+    let k = args
+        .get("k")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(8) as usize;
+    let name = config::load(".")
+        .map(|cfg| cfg.workflow.defaults.grounder)
+        .unwrap_or_default();
+    let grounder = select_grounder(&name).map_err(|e| e.to_string())?;
+    let results: Vec<serde_json::Value> = grounder
+        .ground(query, k)
+        .into_iter()
+        .map(|r| serde_json::json!({"file": r.file, "line": r.line, "text": r.text}))
+        .collect();
+    Ok(serde_json::json!({"results": results}))
+}
+
+/// The `rigger_graph` tool's core: the EXACT same lookups `cmd_graph_show`/`cmd_graph`
+/// run (`Projector::open` then `.locate()`/`.subgraph()`), formatted as JSON instead of
+/// println'd - so a live-line resolution or a rendering fix in either (spec 92
+/// criterion 1's/`u92c6`'s territory) is inherited automatically, never re-implemented
+/// here.
+fn operator_tool_graph(args: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let show = args
+        .get("show")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let around = args
+        .get("around")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let depth = args
+        .get("depth")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(2);
+    if show.is_empty() && around.is_empty() {
+        return Err("rigger_graph: pass `show` <entity> or `around` <file|entity>".into());
+    }
+    let gp =
+        Projector::open(&db_path("graph.db"), &project_identity()).map_err(|e| e.to_string())?;
+    if !show.is_empty() {
+        let located = gp.locate(show).map_err(|e| e.to_string())?;
+        return Ok(match located {
+            Located::None => serde_json::json!({"status": "none"}),
+            Located::Many(cands) => serde_json::json!({
+                "status": "many",
+                "candidates": cands.iter().map(|c| serde_json::json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
+            }),
+            Located::One(site) => {
+                serde_json::json!({"status": "one", "site": entity_site_json(&site)})
+            }
+        });
+    }
+    let g = gp
+        .subgraph(&[around.to_string()], depth)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "nodes": g.nodes.iter().map(|n| serde_json::json!({"id": n.id, "kind": n.kind})).collect::<Vec<_>>(),
+        "edges": g.edges.iter().map(|e| serde_json::json!({"from": e.from, "rel": e.rel, "to": e.to})).collect::<Vec<_>>(),
+    }))
+}
+
+/// Render one [`contextgraph::sqlite::EntitySite`] as JSON, reusing [`definition_body`]
+/// (the SAME body-window lookup [`print_entity_site`] prints) so the MCP `show` result
+/// and the CLI `graph --show` text can never drift apart on what body a site carries.
+fn entity_site_json(site: &contextgraph::sqlite::EntitySite) -> serde_json::Value {
+    let kind = if site.kind.is_empty() {
+        "?"
+    } else {
+        site.kind.as_str()
+    };
+    let name = site
+        .id
+        .split_once("::")
+        .map(|(_, n)| n)
+        .unwrap_or(site.id.as_str());
+    let body = match definition_body(&site.file, site.line, name) {
+        ShowBody::Lines {
+            lines,
+            omitted,
+            extent_end,
+        } => serde_json::json!({
+            "lines": lines.iter().map(|(n, t)| serde_json::json!({"line": n, "text": t})).collect::<Vec<_>>(),
+            "omitted": omitted,
+            "extent_end": extent_end,
+        }),
+        ShowBody::Note(reason) => serde_json::json!({"note": reason}),
+    };
+    serde_json::json!({
+        "id": site.id, "file": site.file, "line": site.line, "kind": kind,
+        "degree": site.degree, "body": body,
+    })
+}
+
+/// A `rigger grep-guard` decision: pass the tool call through untouched, or block it
+/// with the reason shown to the agent (spec 92, criterion 4: the graph-first lookup
+/// hook's stated message).
+#[derive(Debug, PartialEq, Eq)]
+enum GuardDecision {
+    Allow,
+    Deny(String),
+}
+
+/// The graph-first lookup hook's stated bounce message (spec 92, criterion 4's Design
+/// text, quoted verbatim so the installed hook and this decision never drift apart).
+const GREP_GUARD_MESSAGE: &str =
+    "use rigger_ground / rigger_graph for code lookups; grep is for literal text - add \
+     `--literal` to proceed";
+
+/// The three guarded top-level trees (spec 92, criterion 4's Design text): a lookup
+/// outside all three - `docs/`, a single unrelated file, anything else - is never
+/// bounced, so the hook narrows to exactly what the spec names, not every grep anywhere.
+const GREP_GUARDED_TREES: [&str; 3] = ["src/", "tests/", "workflows/"];
+
+/// The pure decision core of `rigger grep-guard` (spec 92, criterion 4): given the
+/// PreToolUse tool name and its raw `tool_input`, decide whether this is a bare-text
+/// lookup over src/, tests/, or workflows/ that should bounce toward
+/// `rigger_ground`/`rigger_graph`, or whether it should pass through untouched. Pure (no
+/// I/O), so the decision is unit-testable against synthesized hook payloads without
+/// spawning a real hook process. `--literal` on a `Bash` `grep` command is the
+/// deliberate escape hatch (Design's CONSTRAINTS WALK: "a literal-text lookup - \
+/// `--literal` passes the hook"); the built-in `Grep` tool carries no such flag slot, so
+/// a genuinely literal search through it is `grep --literal` via `Bash` instead - "grep
+/// is for literal text - add `--literal` to proceed" names exactly that path.
+fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> GuardDecision {
+    match tool_name {
+        "Grep" => {
+            let path = tool_input
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if guarded_path(path) {
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
+            } else {
+                GuardDecision::Allow
+            }
+        }
+        "Bash" => {
+            let command = tool_input
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if !command_invokes_grep(command) {
+                return GuardDecision::Allow;
+            }
+            if command.split_whitespace().any(|w| w == "--literal") {
+                return GuardDecision::Allow;
+            }
+            if guarded_command(command) {
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
+            } else {
+                GuardDecision::Allow
+            }
+        }
+        _ => GuardDecision::Allow,
+    }
+}
+
+/// True when the `Grep` tool's `path` argument targets a guarded tree - empty or `.`
+/// (the default: the current working directory, which for a rigger project IS the
+/// project root the three guarded trees live under) or an explicit path under one of
+/// [`GREP_GUARDED_TREES`] (with or without a leading `./`).
+fn guarded_path(path: &str) -> bool {
+    if path.is_empty() || path == "." || path == "./" {
+        return true;
+    }
+    let path = path.strip_prefix("./").unwrap_or(path);
+    GREP_GUARDED_TREES.iter().any(|t| path.starts_with(t))
+}
+
+/// True when a Bash command line contains `grep` as a whole word (not a substring of a
+/// longer word like `zgrep` or `--grep-something`) - the literal command name the
+/// Design text names ("a Grep or a `grep`"), never `rg`/`egrep`/`fgrep` or any other
+/// tool this criterion's stated scope does not cover.
+fn command_invokes_grep(command: &str) -> bool {
+    command.split_whitespace().any(|w| w == "grep")
+}
+
+/// True when a `grep`-invoking Bash command line targets a guarded tree: it names one of
+/// [`GREP_GUARDED_TREES`] as a substring (covers `grep -rn pattern src/`, `grep pattern
+/// src/main.rs`, a mid-pipeline `... | grep -r pattern tests/`, ...), or its last
+/// whitespace-separated token is bare `.` (the common "search the whole project"
+/// invocation, `grep -rn pattern .`, which from a project root reaches every guarded
+/// tree). Anything else (a target outside all three trees, e.g. `grep pattern
+/// README.md`) is not guarded.
+fn guarded_command(command: &str) -> bool {
+    if GREP_GUARDED_TREES.iter().any(|t| command.contains(t)) {
+        return true;
+    }
+    command.split_whitespace().next_back() == Some(".")
+}
+
+/// `rigger grep-guard`: the command the installed PreToolUse hook runs (see
+/// [`install_lookup_hook`]). Reads ONE Claude Code PreToolUse payload as JSON on stdin
+/// (`{"tool_name", "tool_input"}`), writes a `hookSpecificOutput.permissionDecision`
+/// verdict to stdout, and always exits 0 - a hook's own exit code is a SEPARATE failure
+/// channel from its JSON decision, so this command reports "deny" through the JSON body
+/// alone, never a nonzero exit (a transport hiccup stays tellable apart from a
+/// deliberate block). Inert outside a rigger project (no [`RIGGER_DIR`] in the current
+/// tree) - malformed or unreadable stdin degrades to an allow rather than erroring, so
+/// the hook never blocks a tool call it failed to understand.
+fn cmd_grep_guard(_args: &[String]) -> Res {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    let decision = if !Path::new(RIGGER_DIR).is_dir() {
+        GuardDecision::Allow
+    } else {
+        let payload: serde_json::Value =
+            serde_json::from_str(input.trim()).unwrap_or_else(|_| serde_json::json!({}));
+        let tool_name = payload
+            .get("tool_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let tool_input = payload
+            .get("tool_input")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        grep_guard_decision(tool_name, &tool_input)
+    };
+    let out = match decision {
+        GuardDecision::Allow => serde_json::json!({}),
+        GuardDecision::Deny(reason) => serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }),
+    };
+    println!("{out}");
+    Ok(())
 }
 
 fn print_run_state(rs: &RunState, base: &str) {
@@ -14909,6 +15413,16 @@ mod tests {
             ctx.reject_recurrence_diagnose_threshold,
             watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
         );
+        // Spec 92, criterion 4: the discipline docs' lookup-hook facts are read from the
+        // SAME consts `rigger grep-guard` decides against, not a hand copy.
+        assert_eq!(ctx.grep_guard_message, GREP_GUARD_MESSAGE);
+        assert_eq!(
+            ctx.grep_guarded_trees,
+            GREP_GUARDED_TREES
+                .iter()
+                .map(|t| t.to_string())
+                .collect::<Vec<_>>()
+        );
     }
 
     /// Spec 20, unit 1 (the golden fact test): known code facts appear VERBATIM in BOTH
@@ -14940,6 +15454,17 @@ mod tests {
             assert!(
                 out.contains(spec::ShapeRule::MultiBehavior.name()),
                 "spec-shape rule not verbatim in render"
+            );
+            // Spec 92, criterion 4: the graph-first lookup hook's stated bounce message
+            // appears verbatim - the skill's lookup section can never drift from what
+            // `rigger grep-guard` actually enforces.
+            assert!(
+                out.contains(GREP_GUARD_MESSAGE),
+                "grep-guard message not verbatim in render"
+            );
+            assert!(
+                out.contains("rigger_ground") && out.contains("rigger_graph"),
+                "the operator's own MCP lookup tool names not named in render"
             );
         }
         // The two outputs render from the ONE context: the skill also carries its loadable
@@ -25195,5 +25720,260 @@ mod tests {
              others); checked {checked}",
             agents_dir.display()
         );
+    }
+
+    // =======================================================================================
+    // Spec 92, criterion 4 (IN EVERY SESSION'S HAND): `rigger setup` registers the operator's
+    // own MCP lookup surface and the graph-first PreToolUse hook, and `rigger grep-guard`
+    // bounces a bare source grep.
+    // =======================================================================================
+
+    /// `install_operator_mcp` is drift-aware and re-runnable, the same three-state contract
+    /// every other `rigger setup` install artifact has: absent -> Installed (fresh write),
+    /// drifted (an older build's entry, or a hand edit) -> Refreshed, already matching ->
+    /// AlreadyCurrent (a silent no-op, not even an mtime bump).
+    #[test]
+    fn install_operator_mcp_installs_refreshes_and_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mcp_path = root.join(".mcp.json");
+
+        assert_eq!(
+            install_operator_mcp(root).unwrap(),
+            InstallOutcome::Installed,
+            "the first install reports a fresh install"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["rigger"]["command"], "rigger");
+        assert_eq!(v["mcpServers"]["rigger"]["args"][0], "mcp");
+
+        assert_eq!(
+            install_operator_mcp(root).unwrap(),
+            InstallOutcome::AlreadyCurrent,
+            "a rerun on an up-to-date .mcp.json changes nothing"
+        );
+
+        // Simulate drift: an older build (or a hand edit) wrote a different command.
+        std::fs::write(
+            &mcp_path,
+            r#"{"mcpServers":{"rigger":{"command":"/old/stale/path","args":[]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            install_operator_mcp(root).unwrap(),
+            InstallOutcome::Refreshed,
+            "a drifted entry self-heals"
+        );
+        let v2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        assert_eq!(v2["mcpServers"]["rigger"]["command"], "rigger");
+    }
+
+    /// `install_lookup_hook` has the same three-state contract, and (unlike the SessionStart
+    /// merge, whose event only ever holds rigger's own entry) must preserve an UNRELATED
+    /// PreToolUse hook a machine already carries under a different matcher/command.
+    #[test]
+    fn install_lookup_hook_installs_refreshes_and_is_a_noop_and_preserves_foreign_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let settings_path = root.join(".claude").join("settings.json");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings_path,
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"prettier --write"}]}]}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            install_lookup_hook(root).unwrap(),
+            InstallOutcome::Refreshed,
+            "the settings file already existed, so adding our hook to it is a refresh"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let blocks = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert!(
+            blocks
+                .iter()
+                .any(|b| b["hooks"][0]["command"] == "prettier --write"),
+            "the pre-existing foreign hook must survive"
+        );
+        assert!(
+            blocks
+                .iter()
+                .any(|b| b["hooks"][0]["command"] == GREP_GUARD_COMMAND
+                    && b["matcher"] == GREP_GUARD_MATCHER),
+            "our lookup hook must be installed"
+        );
+
+        assert_eq!(
+            install_lookup_hook(root).unwrap(),
+            InstallOutcome::AlreadyCurrent,
+            "a rerun changes nothing"
+        );
+    }
+
+    /// The pure decision core: a `Bash` `grep` over the guarded trees is denied with the
+    /// stated message; the SAME command with `--literal` passes.
+    #[test]
+    fn grep_guard_decision_bounces_bash_grep_over_guarded_trees_and_passes_literal() {
+        for target in ["src/", "tests/", "workflows/"] {
+            let command = format!("grep -rn foo {target}");
+            let decision = grep_guard_decision("Bash", &serde_json::json!({"command": command}));
+            match decision {
+                GuardDecision::Deny(msg) => assert_eq!(msg, GREP_GUARD_MESSAGE),
+                other => panic!("grep over {target} must be denied, got {other:?}"),
+            }
+
+            let literal_command = format!("grep --literal -rn foo {target}");
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({"command": literal_command})),
+                GuardDecision::Allow,
+                "--literal must pass the hook for {target}"
+            );
+        }
+    }
+
+    /// A `grep` with no target that reaches for `.` (the whole project from its root, the
+    /// common "search everywhere" invocation) is guarded too, since it reaches every one of
+    /// the three trees; a grep outside all three - a single unrelated file - is not.
+    #[test]
+    fn grep_guard_decision_covers_whole_project_grep_and_ignores_unrelated_targets() {
+        assert_eq!(
+            grep_guard_decision("Bash", &serde_json::json!({"command": "grep -rn foo ."})),
+            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
+        );
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "grep foo README.md"})
+            ),
+            GuardDecision::Allow,
+            "a target outside src/, tests/, workflows/ is not guarded"
+        );
+    }
+
+    /// A `Bash` command that is not a `grep` invocation at all - even one that merely
+    /// mentions "grep" inside another word, like `zgrep` - is never bounced: the guard
+    /// matches the literal command name only, per its own stated scope.
+    #[test]
+    fn grep_guard_decision_allows_non_grep_bash_commands() {
+        assert_eq!(
+            grep_guard_decision("Bash", &serde_json::json!({"command": "ls src/"})),
+            GuardDecision::Allow
+        );
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "zgrep foo src/a.gz"})
+            ),
+            GuardDecision::Allow,
+            "zgrep is a different tool than the literal `grep` this hook names"
+        );
+    }
+
+    /// The built-in `Grep` tool call is bounced when its `path` targets a guarded tree, or is
+    /// omitted (defaults to the current working directory, which for a rigger project IS the
+    /// guarded root) - and left alone when the path is explicitly elsewhere.
+    #[test]
+    fn grep_guard_decision_bounces_the_grep_tool_over_guarded_trees() {
+        assert_eq!(
+            grep_guard_decision("Grep", &serde_json::json!({"path": "src/"})),
+            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
+        );
+        assert_eq!(
+            grep_guard_decision("Grep", &serde_json::json!({})),
+            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+            "an omitted path defaults to the guarded project root"
+        );
+        assert_eq!(
+            grep_guard_decision("Grep", &serde_json::json!({"path": "docs/"})),
+            GuardDecision::Allow
+        );
+    }
+
+    /// A tool other than `Grep`/`Bash` is never touched by this hook.
+    #[test]
+    fn grep_guard_decision_ignores_other_tools() {
+        assert_eq!(
+            grep_guard_decision("Read", &serde_json::json!({"file_path": "src/main.rs"})),
+            GuardDecision::Allow
+        );
+    }
+
+    /// The operator MCP surface advertises exactly the three lookups this criterion promises
+    /// (`rigger_peers`, `rigger_ground`, `rigger_graph`), never the workflow-lifecycle tools
+    /// (`rigger_next`/`rigger_result`/`rigger_activity`) `rigger serve` also carries, which do
+    /// not apply outside a run.
+    #[test]
+    fn operator_tool_list_carries_exactly_peers_ground_and_graph() {
+        let names: Vec<String> = operator_tool_list()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["rigger_peers", "rigger_ground", "rigger_graph"],
+            "the operator server must expose exactly these three tools, in this order"
+        );
+    }
+
+    /// The operator MCP loop answers `tools/list` and `tools/call rigger_peers` over the
+    /// SAME newline-delimited JSON-RPC wire shape `mcpserver::Server` uses (reusing its
+    /// `ok`/`err` envelope), driven end-to-end through `run_operator_mcp` against a real
+    /// `Sidecar` over an in-memory store - no subprocess needed for this seam.
+    #[test]
+    fn run_operator_mcp_answers_tools_list_and_peers() {
+        use rigger::eventstore::sqlite::Store;
+        use rigger::eventstore::{Event, EventStore, ExpectedRevision, Filter};
+        use std::io::Cursor;
+
+        let store = Store::open(":memory:").unwrap();
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[Event::new(
+                    "DecisionMade",
+                    br#"{"id":"d1","summary":"x","governs":["a.rs"]}"#.to_vec(),
+                )],
+            )
+            .unwrap();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while peers.decisions().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "side-car never caught up"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n\
+                     {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"rigger_peers\",\"arguments\":{}}}\n";
+        let mut output = Vec::new();
+        run_operator_mcp(Cursor::new(input), &mut output, &peers).unwrap();
+        let out = String::from_utf8(output).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2);
+
+        let list: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        let tool_names: Vec<&str> = list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            tool_names,
+            vec!["rigger_peers", "rigger_ground", "rigger_graph"]
+        );
+
+        let call: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        let decisions = &call["result"]["structuredContent"]["decisions"];
+        assert_eq!(decisions[0]["id"], "d1");
     }
 }

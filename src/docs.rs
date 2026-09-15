@@ -67,6 +67,14 @@ pub struct DocsContext {
     /// The reject-recurrence diagnose threshold `rigger-diagnose-churn` pins its own
     /// procedure text against (`crate::watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD`).
     pub reject_recurrence_diagnose_threshold: u32,
+    /// The graph-first lookup hook's stated bounce message (spec 92, criterion 4: IN
+    /// EVERY SESSION'S HAND), read from the SAME constant `rigger grep-guard` denies
+    /// with, so the skill's lookup section can never describe a different rule than the
+    /// installed hook actually enforces.
+    pub grep_guard_message: String,
+    /// The trees the graph-first lookup hook guards (spec 92, criterion 4), in the
+    /// order the hook itself checks them.
+    pub grep_guarded_trees: Vec<String>,
 }
 
 /// One `rigger watch` signal's canonical name and response (spec 69), carried on
@@ -179,6 +187,18 @@ fn discipline_body(ctx: &DocsContext) -> String {
          'grep-fallback: <what the graph did not answer>'` - one line before moving on - so the gap \
          lands in the event log where it can be measured and closed. Filtering your own build or \
          gate output is not a fallback and is not reported.\n"
+    );
+    let _ = writeln!(
+        s,
+        "`rigger setup` puts these same lookups directly in THIS session's hands too: it \
+         registers a `rigger` MCP server (`.mcp.json`) exposing `rigger_peers`, `rigger_ground`, \
+         and `rigger_graph` as tools here - the same three lookups a loop agent has, instead of a \
+         shell - and installs a PreToolUse hook that intercepts a `Grep` tool call or a `grep` \
+         command over {trees} with the message \"{message}\". The graph stays the path of least \
+         resistance in this very session, and a literal-text grep is the deliberate act \
+         `--literal` names, not a habit.\n",
+        trees = ctx.grep_guarded_trees.join(", "),
+        message = ctx.grep_guard_message,
     );
 
     let _ = writeln!(s, "## Graph hygiene before a large run\n");
@@ -1285,6 +1305,8 @@ mod tests {
             ],
             watch_poll_interval_secs: 424_242,
             reject_recurrence_diagnose_threshold: 909_090,
+            grep_guard_message: "sentinel grep-guard message".to_string(),
+            grep_guarded_trees: vec!["sentinel-src/".to_string(), "sentinel-tests/".to_string()],
         }
     }
 
@@ -1333,6 +1355,14 @@ mod tests {
             "spec_shape_recommendation not rendered"
         );
         assert!(out.contains("sentinelcmd-a"), "subcommand not rendered");
+        assert!(
+            out.contains("sentinel grep-guard message"),
+            "grep_guard_message not rendered"
+        );
+        assert!(
+            out.contains("sentinel-src/"),
+            "grep_guarded_trees not rendered"
+        );
     }
 
     #[test]
@@ -1351,6 +1381,14 @@ mod tests {
             "spec_shape_rule not rendered"
         );
         assert!(out.contains("sentinelcmd-a"), "subcommand not rendered");
+        assert!(
+            out.contains("sentinel grep-guard message"),
+            "grep_guard_message not rendered"
+        );
+        assert!(
+            out.contains("sentinel-src/"),
+            "grep_guarded_trees not rendered"
+        );
     }
 
     #[test]
@@ -1360,6 +1398,43 @@ mod tests {
         let ctx = sentinel_ctx();
         assert!(render_using_rigger_skill(&ctx).contains("SENTINEL/base-ref"));
         assert!(render_handbook_discipline(&ctx).contains("SENTINEL/base-ref"));
+    }
+
+    /// Spec 92, criterion 4 (IN EVERY SESSION'S HAND): "the shipped skill's lookup section
+    /// states the same rule for a human reader" - the "Looking things up" section (shared by
+    /// both outputs) names the operator's own MCP tools, `.mcp.json`, and the PreToolUse hook,
+    /// not just the loop-agent CLI verbs the section already covered.
+    #[test]
+    fn looking_things_up_section_states_the_operator_session_rule() {
+        let ctx = sentinel_ctx();
+        for out in [
+            render_using_rigger_skill(&ctx),
+            render_handbook_discipline(&ctx),
+        ] {
+            assert!(
+                out.contains("## Looking things up"),
+                "the lookup section must exist"
+            );
+            assert!(
+                out.contains("rigger_peers")
+                    && out.contains("rigger_ground")
+                    && out.contains("rigger_graph"),
+                "the operator's own MCP tool names must be stated; got:\n{out}"
+            );
+            assert!(
+                out.contains(".mcp.json"),
+                "the file the operator's MCP server is registered into must be named; got:\n{out}"
+            );
+            assert!(
+                out.contains("PreToolUse"),
+                "the hook event the lookup hook installs under must be named; got:\n{out}"
+            );
+            assert!(
+                out.contains("sentinel grep-guard message") && out.contains("sentinel-src/"),
+                "the hook's real bounce message and guarded trees must be interpolated, not \
+                 hand-copied; got:\n{out}"
+            );
+        }
     }
 
     #[test]

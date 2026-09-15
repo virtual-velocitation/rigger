@@ -6149,7 +6149,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "dce44ee9b6368515"
+    "content_hash": "16b719532fc57c9f"
   },
   {
     "file": "src/main.rs",
@@ -7997,7 +7997,23 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "6e9c0832b5590d1a"
+    "content_hash": "7bf9349160268913"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "install_lookup_hook",
+    "is_test": false,
+    "proposed_module": "main::setup",
+    "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
+    "content_hash": "eb8dfeab21f6d8d2"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "install_operator_mcp",
+    "is_test": false,
+    "proposed_module": "main::setup",
+    "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
+    "content_hash": "7fe88f756e7a4596"
   },
   {
     "file": "src/main.rs",
@@ -8037,7 +8053,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"docs_\" (docs overlay); grouped under `main::provenance`.",
-    "content_hash": "f384360a5fe7191a"
+    "content_hash": "bb97d0d1f7a0cf28"
   },
   {
     "file": "src/main.rs",
@@ -8134,6 +8150,118 @@
     "proposed_module": "main::provenance",
     "reason": "name contains \"git_\" (git/version provenance); grouped under `main::provenance`.",
     "content_hash": "ea38b2e361278a90"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "cmd_mcp",
+    "is_test": false,
+    "proposed_module": "main::commands",
+    "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
+    "content_hash": "a483d4601bf6ff13"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "run_operator_mcp",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "51f6c70efbba5b0b"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "operator_mcp_handle",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "fc794afed69c8b6b"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "operator_tool_list",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "67c0595f27a3f192"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "operator_call_tool",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "e8f1beaef28574d0"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "operator_tool_peers",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "b89c80c5e24bdef9"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "operator_tool_ground",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "85d27873d8a155d8"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "operator_tool_graph",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "c82c43c08ecb3d7d"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "entity_site_json",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "5ee2d7261e2c9602"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "d2164dc2b0a6c210"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guarded_path",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "7d336bb68475b2ae"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "command_invokes_grep",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "e9bb8e7e651e283e"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guarded_command",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "1eb802ae045968ba"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "cmd_grep_guard",
+    "is_test": false,
+    "proposed_module": "main::commands",
+    "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
+    "content_hash": "7de3beeeee6d015a"
   },
   {
     "file": "src/main.rs",
@@ -8485,7 +8613,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2794c33f0fe693ee"
+    "content_hash": "3a3307b39f22a8bc"
   },
   {
     "file": "src/main.rs",
@@ -8493,7 +8621,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4689c5fbb239dd37"
+    "content_hash": "329cacc52e49a9e8"
   },
   {
     "file": "src/main.rs",
@@ -10878,6 +11006,78 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "49846e33e0a39f2a"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "install_operator_mcp_installs_refreshes_and_is_a_noop",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "053e20b800560813"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "install_lookup_hook_installs_refreshes_and_is_a_noop_and_preserves_foreign_hooks",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "74165a6b45ce61f8"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_bounces_bash_grep_over_guarded_trees_and_passes_literal",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8c3f6f0e4d4cf419"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_covers_whole_project_grep_and_ignores_unrelated_targets",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "f8383b72e3fe252b"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_allows_non_grep_bash_commands",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "12a2e6a1f0f0206e"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_bounces_the_grep_tool_over_guarded_trees",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "01e4647b9a1b5b19"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_ignores_other_tools",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "c57e1eca2f351ded"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "operator_tool_list_carries_exactly_peers_ground_and_graph",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "6afde82819d6552f"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "run_operator_mcp_answers_tools_list_and_peers",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "7bdd8c7cfae8a941"
   },
   {
     "file": "src/dash.rs",
