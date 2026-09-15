@@ -28708,6 +28708,73 @@ fn grep_guard_bounces_a_bare_tree_name_and_an_absolute_path_end_to_end() {
     );
 }
 
+/// The three false-positive EXEMPTIONS `path_has_guarded_segment` / `command_invokes_grep`
+/// state in their own doc comments, proven only at the pure-function unit level (main.rs's
+/// own tests) before this - never at the boundary `rigger grep-guard` actually reads and
+/// writes JSON over. A over-eager guard here is exactly as much a boundary bug as a
+/// missed one: it would silently degrade every agent's tool call on the affected paths.
+/// `zgrep` (the literal word "grep" only as a substring of a longer tool name) must never
+/// be bounced; neither must a merely-prefixed or differently-named tree (`src-old/`,
+/// `mysrc/`) that happens to share `src`'s first few characters but not the whole path
+/// segment.
+#[test]
+fn grep_guard_never_bounces_a_substring_grep_or_a_merely_prefixed_tree_name_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let zgrep = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"zgrep TODO src/a.gz"}}"#,
+    );
+    assert_eq!(
+        zgrep,
+        serde_json::json!({}),
+        "zgrep is a different tool than the literal `grep` this hook names; got:\n{zgrep}"
+    );
+
+    let src_old = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO src-old/"}}"#,
+    );
+    assert_eq!(
+        src_old,
+        serde_json::json!({}),
+        "src-old/ is a differently-named tree, not the src segment; got:\n{src_old}"
+    );
+
+    let mysrc = run_grep_guard(
+        root,
+        r#"{"tool_name":"Grep","tool_input":{"path":"mysrc/foo.rs"}}"#,
+    );
+    assert_eq!(
+        mysrc,
+        serde_json::json!({}),
+        "mysrc/ merely shares a prefix with src, not the whole path segment; got:\n{mysrc}"
+    );
+}
+
+/// `guarded_command`'s stated whole-project-search case: a Bash `grep` command whose LAST
+/// token is bare `.` (`grep -rn pattern .`, searching from the project root) reaches every
+/// guarded tree and so is bounced exactly like naming one of them directly - proven only at
+/// the pure-function unit level before this.
+#[test]
+fn grep_guard_bounces_a_bare_dot_whole_project_search_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO ."}}"#,
+    );
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a bare `.` whole-project search reaches every guarded tree and must be denied; \
+         got:\n{out}"
+    );
+}
+
 /// `rigger mcp`'s API edges: an unknown tool name, and the required-argument checks
 /// `rigger_ground`/`rigger_graph` state in their own error strings - none of which the
 /// happy-path test above (which only ever sends well-formed calls) sends. Each must answer a
