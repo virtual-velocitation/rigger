@@ -8165,7 +8165,15 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "d2164dc2b0a6c210"
+    "content_hash": "a76874776b0d2f98"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "shell_command_words",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "0e98e92a0499d2dc"
   },
   {
     "file": "src/main.rs",
@@ -8189,7 +8197,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "af95ffa23e40592a"
+    "content_hash": "0d75eae0a742c2ba"
   },
   {
     "file": "src/main.rs",
@@ -8197,7 +8205,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "e9bb8e7e651e283e"
+    "content_hash": "7f4800a386b401ae"
   },
   {
     "file": "src/main.rs",
@@ -11030,6 +11038,22 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "73b34597bf4ce37e"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_bounces_a_shell_metacharacter_fused_grep",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "7df6cf161a059a30"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_still_allows_literal_on_a_shell_metacharacter_fused_grep",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1815f23662fb00b9"
   },
   {
     "file": "src/dash.rs",

@@ -28775,6 +28775,48 @@ fn grep_guard_bounces_a_bare_dot_whole_project_search_end_to_end() {
     );
 }
 
+/// Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-bypass), end to end through the
+/// compiled binary: a `grep` invocation fused to an adjacent command with NO surrounding
+/// whitespace - a pipe, a semicolon, or a `$( )` command substitution - is bounced exactly
+/// like the spaced form. These are the round-2 reject's own three empirical probes, pinned
+/// here verbatim so this exact bypass can never silently return - before the fix each one
+/// prints `{}` (Allow) although the spaced control (`grep pattern src/main.rs`) already
+/// denies.
+#[test]
+fn grep_guard_bounces_a_shell_metacharacter_fused_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in [
+        "cat src/main.rs|grep pattern",
+        "true;grep pattern src/main.rs",
+        "if $(grep -q pattern src/main.rs); then echo yes; fi",
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a grep fused to an adjacent command via a shell metacharacter must be denied: \
+             {command:?}; got:\n{out}"
+        );
+    }
+
+    // The unfused control from the reject's own report stays denied too (no regression).
+    let control = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn pattern src/main.rs"}}"#,
+    );
+    assert_eq!(
+        control["hookSpecificOutput"]["permissionDecision"], "deny",
+        "the spaced control must remain denied; got:\n{control}"
+    );
+}
+
 /// `rigger mcp`'s API edges: an unknown tool name, and the required-argument checks
 /// `rigger_ground`/`rigger_graph` state in their own error strings - none of which the
 /// happy-path test above (which only ever sends well-formed calls) sends. Each must answer a
