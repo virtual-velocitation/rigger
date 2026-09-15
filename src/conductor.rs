@@ -4674,7 +4674,7 @@ impl RunCtx<'_> {
         // turns a resumable state into a hard, no-attempt-charged error instead of ever
         // reaching the idempotent path built to handle exactly this.
         let halted_commit = match wt {
-            Some(w) if !w.merge_in_progress() => w.commit(&format!(
+            Some(w) if !w.merge_in_progress() => w.commit_checkpoint(&format!(
                 "wip({}): tree of halted spawn {}",
                 st.name,
                 spawn_id(

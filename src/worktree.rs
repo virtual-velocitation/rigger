@@ -538,6 +538,23 @@ impl Worktree {
     /// protects all three from ONE place, never a second parallel check reconciled
     /// after the fact.
     pub fn commit(&self, message: &str) -> Result<String, Error> {
+        self.commit_with(message, false)
+    }
+
+    /// A CHECKPOINT commit: the conductor preserving whatever a halted or superseded spawn
+    /// left in its worktree so no tree is ever lost (spec 89, criterion 1). It runs the
+    /// half-merge guard like [`Self::commit`] but bypasses the repository's git hooks
+    /// (`--no-verify`): a hook enforces content policy on a commit an agent or a person
+    /// MEANS to make, and a checkpoint is machine bookkeeping of a tree mid-work - a hook
+    /// refusing it (the docs-drift hook did, when a unit's rendered docs were ahead of the
+    /// binary on PATH) turned "never lose a tree" into a dead step. The policy still holds
+    /// where it belongs: the agent's own commits run the hooks, and the gates and
+    /// `rigger validate` check the drift the hook checks.
+    pub fn commit_checkpoint(&self, message: &str) -> Result<String, Error> {
+        self.commit_with(message, true)
+    }
+
+    fn commit_with(&self, message: &str, no_verify: bool) -> Result<String, Error> {
         // The scan's scope (spec 89, criterion 1, round 2 fix
         // `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`)
         // MUST be read before `git add -A` below stages anything - staging is exactly what
@@ -557,7 +574,12 @@ impl Worktree {
             )));
         }
         git(&self.dir, &["add", "-A"])?;
-        match run_git(&self.dir, &["commit", "-m", message]) {
+        let args: &[&str] = if no_verify {
+            &["commit", "--no-verify", "-m", message]
+        } else {
+            &["commit", "-m", message]
+        };
+        match run_git(&self.dir, args) {
             Ok(_) => {}
             Err(out) if out.contains("nothing to commit") => return Ok(String::new()),
             Err(out) => return Err(Error(format!("commit: {out}"))),
@@ -2536,6 +2558,60 @@ mod tests {
             status.contains(" M shared.txt"),
             "shared.txt must remain an UNSTAGED modification, never staged by a \
              refused commit: {status:?}"
+        );
+    }
+
+    #[test]
+    fn commit_checkpoint_commits_through_a_refusing_hook_while_commit_is_refused() {
+        // A checkpoint preserves a halted spawn's tree; a content hook (the docs-drift
+        // pre-commit hook, in the incident) must not be able to turn that into a lost tree
+        // and a dead step. The agent's own commit path keeps running hooks.
+        use std::os::unix::fs::PermissionsExt;
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let hooks = repo.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho 'hook: refusing' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(
+            &repo_path,
+            wt_path.to_str().unwrap(),
+            "rigger/checkpoint-hook",
+            "",
+        )
+        .unwrap();
+        let head_before = run_git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap();
+
+        std::fs::write(wt_path.join("work.txt"), "half-done\n").unwrap();
+        let err = wt
+            .commit("rigger: an agent's own commit")
+            .expect_err("the hook refuses an ordinary commit");
+        assert!(
+            err.to_string().contains("hook: refusing"),
+            "the refusal is the hook's, surfaced verbatim: {err}"
+        );
+        let head_mid = run_git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(head_before, head_mid, "the ordinary commit made nothing");
+
+        let sha = wt
+            .commit_checkpoint("wip(unit): tree of halted spawn unit/implementer#1")
+            .expect("a checkpoint commits through the refusing hook");
+        let head_after = run_git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(sha, head_after.trim(), "the checkpoint sha is HEAD");
+        assert_ne!(
+            head_before, head_after,
+            "the tree was preserved in a commit"
+        );
+        let shown = run_git(
+            wt_path.to_str().unwrap(),
+            &["show", "--stat", "--oneline", "HEAD"],
+        )
+        .unwrap();
+        assert!(
+            shown.contains("work.txt"),
+            "the checkpoint carries the tree: {shown}"
         );
     }
 
