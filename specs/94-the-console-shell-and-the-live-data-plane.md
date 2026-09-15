@@ -28,9 +28,17 @@ outside its own origin.
 
 THE SNAPSHOT, decided: `GET /api/console/snapshot` returns the current run's identity (run id,
 spec path and title, base), the run's console events in position order, its progress lines
-with times, the liveness ages by spawn id, the definition's stage and gate names and liveness
-bound, the head position and a per-serve action token. Console events are the run-lifecycle
-types listed in the addendum; graph-extraction types never appear.
+with times, each spawn's usage totals and turn count, the liveness ages by spawn id, the
+definition's stage and gate names and liveness bound, the head position and a per-serve
+action token. Console events are the run-lifecycle types listed in the addendum;
+graph-extraction types never appear. Transcript turns are not in the snapshot; spec 99's
+transcript route and `follow=` frames carry them on demand.
+
+THE STATUSLINE COMMAND, decided: `rigger status --line` prints the one-line statusline the
+core's `statusline` function produces (unit focus, review round, units landed, health word,
+step age, live), and `rigger setup` registers that command as the editor's status line in the
+editor's settings, so the line under the person's conversation and the console's bottom line
+are one text.
 
 THE STREAM, decided: `GET /api/console/stream?since=N` is `text/event-stream` carrying four
 frame kinds: `event` (one console event as it is appended, from the store's subscription),
@@ -106,4 +114,8 @@ DecisionMade the adjudicator reads as evidence.
   every agent, jump to live and replay from start for a recorded stream, and the served page
   opens it on `Ctrl-K` and `Cmd-K`, filters as typed, runs on `Enter` and closes on `Escape`.
   This criterion OWNS the palette only.
+- [ ] a test proves THE STATUSLINE COMMAND: `rigger status --line` prints the core's
+  statusline for a recorded stream, identical to the console's bottom line for the same
+  position, and `rigger setup` registers it as the editor's status line command in the
+  editor's settings file. This criterion OWNS the command and its registration only.
 - [ ] both feature lanes and the core lane green (fmt, clippy, test).
