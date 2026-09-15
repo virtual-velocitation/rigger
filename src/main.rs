@@ -7352,9 +7352,18 @@ fn dash_attach_graph(inst: &rigger::registry::Instance) -> contextgraph::Graph {
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
 /// same one the `run`/`serve` paths build from `defaults.grounder` via
 /// [`select_grounder`]) over the repo and print up to `k` (default 8) relevant
-/// references, one per line as `file:line: <text>`. Empty output when nothing is
-/// relevant. This is the CLI surface a native-workflow agent (which has Bash, not
-/// the MCP grounding tool) uses to ground.
+/// entities, one per line as `file:line: <text> (degree N)`. This is the CLI surface a
+/// native-workflow agent (which has Bash, not the MCP grounding tool) uses to ground.
+///
+/// The page (spec 92 criterion 3, RANKED BY INTENT) is `Grounder::ground_ranked` - ranked
+/// exact-name-match first, then by the matched token's tree-wide commonness, then the
+/// existing definition-over-reference tier, DEDUPLICATED so every call site of one function
+/// occupies a single line carrying its degree. Before printing it, `Grounder::has_strong_match`
+/// gates a WEAK query (`k > 0` and every match is tree-wide-common, or there is no match at
+/// all) to the honest "no entity matches strongly" line instead of noise; `k == 0` is the
+/// caller explicitly asking for nothing, so it stays silent rather than printing that line. A
+/// non-structural grounder (grep / nop) has no commonness concept, so it is always "strong" and
+/// prints its usual (undeduplicated, degree-0) rows - byte-for-byte the prior behavior.
 fn cmd_ground(args: &[String]) -> Res {
     let query = args
         .first()
@@ -7380,8 +7389,15 @@ fn cmd_ground(args: &[String]) -> Res {
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     let grounder = select_grounder(&name)?;
-    for r in grounder.ground(query, k) {
-        println!("{}:{}: {}", r.file, r.line, r.text);
+    if k > 0 && !grounder.has_strong_match(query, k) {
+        println!("no entity matches strongly for {query:?}");
+        return Ok(());
+    }
+    for r in grounder.ground_ranked(query, k) {
+        println!(
+            "{}:{}: {} (degree {})",
+            r.loc.file, r.loc.line, r.loc.text, r.degree
+        );
     }
     Ok(())
 }
