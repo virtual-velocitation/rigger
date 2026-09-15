@@ -56,15 +56,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 13796
+        "line": 13612
       },
       {
         "file": "src/main.rs",
-        "line": 13817
+        "line": 13633
       },
       {
         "file": "src/main.rs",
-        "line": 14332
+        "line": 14148
       },
       {
         "file": "tests/cli.rs",
@@ -142,11 +142,11 @@
     "test_only_references": [
       {
         "file": "src/mcpserver.rs",
-        "line": 757
+        "line": 911
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 798
+        "line": 952
       }
     ]
   },
@@ -829,7 +829,7 @@
       "src/eventstore/namespace.rs:28",
       "src/failure.rs:218",
       "src/ledger.rs:441",
-      "src/mcpserver.rs:94",
+      "src/mcpserver.rs:117",
       "src/watch.rs:577"
     ],
     "test_only_references": [
@@ -947,51 +947,51 @@
       },
       {
         "file": "src/main.rs",
-        "line": 16919
+        "line": 16735
       },
       {
         "file": "src/main.rs",
-        "line": 16952
+        "line": 16768
       },
       {
         "file": "src/main.rs",
-        "line": 16971
+        "line": 16787
       },
       {
         "file": "src/main.rs",
-        "line": 16974
+        "line": 16790
       },
       {
         "file": "src/main.rs",
-        "line": 16977
+        "line": 16793
       },
       {
         "file": "src/main.rs",
-        "line": 18847
+        "line": 18663
       },
       {
         "file": "src/main.rs",
-        "line": 18860
+        "line": 18676
       },
       {
         "file": "src/main.rs",
-        "line": 18875
+        "line": 18691
       },
       {
         "file": "src/main.rs",
-        "line": 24296
+        "line": 24112
       },
       {
         "file": "src/main.rs",
-        "line": 24297
+        "line": 24113
       },
       {
         "file": "src/main.rs",
-        "line": 24298
+        "line": 24114
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 910
+        "line": 1064
       },
       {
         "file": "src/metrics.rs",

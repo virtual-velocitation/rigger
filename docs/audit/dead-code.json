@@ -891,7 +891,7 @@
       "src/eventstore/namespace.rs#b5bc38330f1d09de",
       "src/failure.rs#d85d31c3f71923f5",
       "src/ledger.rs#8018493a7c1d87a8",
-      "src/mcpserver.rs#fe8a4012cd9e457c",
+      "src/mcpserver.rs#515636b1a6edbb8c",
       "src/watch.rs#f24517a3c13a6746"
     ],
     "test_only_references": [

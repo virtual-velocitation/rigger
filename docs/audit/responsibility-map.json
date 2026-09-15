@@ -8157,71 +8157,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "a483d4601bf6ff13"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "run_operator_mcp",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "51f6c70efbba5b0b"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "operator_mcp_handle",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "fc794afed69c8b6b"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "operator_tool_list",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "67c0595f27a3f192"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "operator_call_tool",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "e8f1beaef28574d0"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "operator_tool_peers",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "b89c80c5e24bdef9"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "operator_tool_ground",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "85d27873d8a155d8"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "operator_tool_graph",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "c82c43c08ecb3d7d"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "entity_site_json",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "5ee2d7261e2c9602"
+    "content_hash": "0d86326e6babf993"
   },
   {
     "file": "src/main.rs",
@@ -8233,11 +8169,27 @@
   },
   {
     "file": "src/main.rs",
+    "name": "path_has_guarded_segment",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "7d02fc1f8b5a681e"
+  },
+  {
+    "file": "src/main.rs",
     "name": "guarded_path",
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "7d336bb68475b2ae"
+    "content_hash": "9fccddc2a8d8158b"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guarded_command",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "af95ffa23e40592a"
   },
   {
     "file": "src/main.rs",
@@ -8246,14 +8198,6 @@
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
     "content_hash": "e9bb8e7e651e283e"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "guarded_command",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "1eb802ae045968ba"
   },
   {
     "file": "src/main.rs",
@@ -11065,19 +11009,27 @@
   },
   {
     "file": "src/main.rs",
-    "name": "operator_tool_list_carries_exactly_peers_ground_and_graph",
+    "name": "grep_guard_decision_bounces_a_bare_tree_name_with_no_trailing_slash",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6afde82819d6552f"
+    "content_hash": "cbe38ea49e140cf3"
   },
   {
     "file": "src/main.rs",
-    "name": "run_operator_mcp_answers_tools_list_and_peers",
+    "name": "grep_guard_decision_bounces_an_absolute_path_under_a_guarded_tree",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7bdd8c7cfae8a941"
+    "content_hash": "001d744b58ef078e"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_ignores_a_merely_prefixed_or_unrelated_segment",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "73b34597bf4ce37e"
   },
   {
     "file": "src/dash.rs",

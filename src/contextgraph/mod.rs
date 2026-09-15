@@ -680,6 +680,21 @@ pub trait Projection: Send + Sync {
 
     /// Map a mention to a canonical node id, falling back to a direct id match.
     fn resolve(&self, mention: &str) -> Result<Option<String>, Error>;
+
+    /// Resolve `entity` by name/id in the CURRENT tree (spec 92, criterion 4's fix round): the
+    /// `graph --show <entity>` / `rigger_graph`'s `show` selector lookup, put on the trait so a
+    /// caller holding only `&dyn Projection` (`mcpserver::Server`, wired via
+    /// [`with_graph`](crate::mcpserver::Server::with_graph) exactly like [`subgraph`] already is)
+    /// can serve it without reaching for the concrete [`sqlite::Projector`] across the crate
+    /// boundary - the DI extension that retired the operator MCP surface's second read loop
+    /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<name>` id
+    /// resolves directly, a bare name matches by the pinned name-suffix expression, and the three
+    /// outcomes ([`sqlite::Located`]) are never a guess among candidates. The default returns
+    /// `Located::None`, so a projection with no locate support (a test double) degrades honestly
+    /// rather than erroring - the sqlite `Projector` OVERRIDES it with the real lookup.
+    fn locate(&self, _entity: &str) -> Result<sqlite::Located, Error> {
+        Ok(sqlite::Located::None)
+    }
 }
 
 /// Periphery layer (spec 37 criterion 2): the round-trip + back-compat CONTRACT of the
@@ -764,5 +779,39 @@ mod caller_wire_contract {
         // key either) folds as a non-evidence reference at line 0, never erroring or panicking.
         assert_eq!(edge.line, 0);
         assert!(!edge.is_test);
+    }
+}
+
+/// spec 92, criterion 4's fix round: [`Projection::locate`]'s DEFAULT (the sqlite `Projector`
+/// is the only implementor that overrides it) - proven against a minimal double that
+/// implements only the trait's REQUIRED methods, so it inherits the default rather than
+/// re-declaring it.
+#[cfg(test)]
+mod locate_default {
+    use super::{Error, Graph, Projection};
+    use crate::contextgraph::sqlite::Located;
+    use crate::eventstore::Event;
+
+    struct NoLocate;
+
+    impl Projection for NoLocate {
+        fn apply(&self, _e: &Event) -> Result<(), Error> {
+            Ok(())
+        }
+        fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, Error> {
+            Ok(Graph::default())
+        }
+        fn resolve(&self, _mention: &str) -> Result<Option<String>, Error> {
+            Ok(None)
+        }
+    }
+
+    /// A projection with no locate support degrades HONESTLY to `Located::None` rather than
+    /// erroring or panicking - the same honesty the [`crate::contextgraph::sqlite::Projector`]
+    /// override promises for a genuinely unmatched query, just for every query on a projection
+    /// that never indexed definitions at all.
+    #[test]
+    fn a_projection_with_no_override_reports_none_never_errors() {
+        assert_eq!(NoLocate.locate("anything").unwrap(), Located::None);
     }
 }
