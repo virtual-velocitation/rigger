@@ -28270,3 +28270,261 @@ fn step_leaves_a_non_addrinuse_bind_error_unenriched() {
         "a bind failure of any kind must still announce the headless degrade; stderr:\n{err}"
     );
 }
+
+// ===========================================================================================
+// Spec 92, criterion 4 (IN EVERY SESSION'S HAND): `rigger setup` registers the operator's own
+// MCP lookup surface (`rigger_peers`/`rigger_ground`/`rigger_graph`) and the graph-first
+// PreToolUse hook; `rigger mcp` serves those tools over stdio; `rigger grep-guard` bounces a
+// bare source grep.
+// ===========================================================================================
+
+/// `rigger setup` writes `.mcp.json` (the `rigger` server, `rigger mcp`) and merges the
+/// PreToolUse lookup hook into `.claude/settings.json`, reporting both - end to end through
+/// the compiled binary, not just the unit-level install helpers.
+#[test]
+fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("registered the rigger MCP server"),
+        "setup must report registering the MCP server; got:\n{out}"
+    );
+    // `.claude/settings.json` already exists by this point in the SAME setup run (the
+    // SessionStart hook install, earlier in `cmd_setup`, creates it first). Either way -
+    // Installed (a fresh file) or Refreshed (an existing one gaining our block) - the report
+    // names installing the hook; the true fresh-vs-existing distinction is covered at the
+    // unit level in main.rs's own `install_lookup_hook` tests.
+    assert!(
+        out.contains("installed the graph-first lookup hook"),
+        "setup must report the lookup hook install; got:\n{out}"
+    );
+
+    let mcp_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join(".mcp.json"))
+            .expect(".mcp.json must be written by setup"),
+    )
+    .unwrap();
+    assert_eq!(mcp_json["mcpServers"]["rigger"]["command"], "rigger");
+    assert_eq!(mcp_json["mcpServers"]["rigger"]["args"][0], "mcp");
+
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join(".claude").join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    let pretool = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert!(
+        pretool
+            .iter()
+            .any(|b| b["hooks"][0]["command"] == "rigger grep-guard"
+                && b["matcher"] == "Grep|Bash"),
+        "the lookup hook must be installed under PreToolUse; got:\n{settings}"
+    );
+    // The pre-existing SessionStart hook (installed by the same setup run) must survive
+    // untouched - the two merges share one settings.json and must not clobber each other.
+    assert_eq!(
+        settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "rigger prime"
+    );
+
+    // A rerun on an up-to-date repo is a silent no-op for both new artifacts.
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "the rerun must succeed; stderr:\n{err2}");
+    assert!(
+        !out2.contains("registered the rigger MCP server")
+            && !out2.contains("installed the graph-first lookup hook")
+            && !out2.contains("refreshed"),
+        "a rerun on an up-to-date repo must not re-report either artifact; got:\n{out2}"
+    );
+}
+
+/// `rigger mcp` (the command `.mcp.json` registers) answers `tools/list` with exactly
+/// `rigger_peers`/`rigger_ground`/`rigger_graph`, and each tool round-trips over real stdio
+/// against a real project: `rigger_peers` returns a decision seeded into the store,
+/// `rigger_ground` and `rigger_graph` reach the same underlying calls `rigger ground` /
+/// `rigger graph --around` make (an empty result on a fresh, unindexed project is the
+/// correct honest answer - the plumbing, not the ranking or the index, is this test's
+/// subject).
+#[test]
+fn mcp_serves_peers_ground_and_graph_over_stdio() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let dir = temp_project();
+    let root = dir.path();
+    // Pin the literal grep grounder (same helper `ground_returns_references_from_the_repo`
+    // uses): the default `symbols` grounder is unavailable in a `--no-default-features`
+    // build, and this test's subject is the MCP plumbing, not which grounder answers - so
+    // pinning `grep` keeps the assertion below true in EITHER feature lane.
+    write_grounder_workflow(root, "grep");
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[(
+            "DecisionMade",
+            r#"{"id":"d1","summary":"x","governs":["a.rs"]}"#,
+        )],
+    );
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    // One request in, one JSON-RPC response line out - a live round trip through the real
+    // subprocess, not a batch of requests read back after the process exits.
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    let list = call("tools/list", serde_json::json!({}));
+    let tool_names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tool_names,
+        vec!["rigger_peers", "rigger_ground", "rigger_graph"]
+    );
+
+    // `Sidecar::start` (spec 92, criterion 4's `cmd_mcp`) collects the store's backlog on a
+    // background thread polling every 50ms (src/sidecar.rs); a `rigger_peers` call issued
+    // before that thread's first poll fires sees an empty backlog. Poll (bounded, never a
+    // fixed sleep - the same discipline the recently-landed store-resolution deflake used)
+    // instead of asserting on the very first call.
+    let peers_args = serde_json::json!({"name": "rigger_peers", "arguments": {}});
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut peers = call("tools/call", peers_args.clone());
+    while peers["result"]["structuredContent"]["decisions"]
+        .as_array()
+        .is_none_or(Vec::is_empty)
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(20));
+        peers = call("tools/call", peers_args.clone());
+    }
+    assert_eq!(
+        peers["result"]["structuredContent"]["decisions"][0]["id"], "d1",
+        "rigger_peers must reflect the real store; got:\n{peers}"
+    );
+
+    let ground = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_ground", "arguments": {"query": "nothing indexed yet"}}),
+    );
+    assert!(
+        ground["result"]["structuredContent"]["results"].is_array(),
+        "rigger_ground must answer with a results array; got:\n{ground}"
+    );
+
+    let graph = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": {"around": "does-not-exist.rs"}}),
+    );
+    assert_eq!(
+        graph["result"]["structuredContent"]["nodes"],
+        serde_json::json!([]),
+        "rigger_graph around an unknown entity must answer honestly empty, never error; \
+         got:\n{graph}"
+    );
+
+    // Closing stdin (dropping the handle) is the EOF that lets `run_operator_mcp`'s read
+    // loop finish and the process exit, exactly like the shim closing its side of the pipe.
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// `rigger grep-guard` (the command the installed PreToolUse hook runs) bounces a bare
+/// `grep` over `src/` with the stated message, and passes the SAME command through when
+/// `--literal` is added - end to end through the compiled binary reading real PreToolUse
+/// JSON from stdin.
+#[test]
+fn grep_guard_bounces_a_bare_source_grep_and_passes_literal() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let run_guard = |payload: &str| -> serde_json::Value {
+        let mut cmd = common::rigger_courier();
+        cmd.args(["grep-guard"])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().expect("spawn rigger grep-guard");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.as_bytes())
+            .unwrap();
+        let out = child
+            .wait_with_output()
+            .expect("rigger grep-guard must exit");
+        assert!(
+            out.status.success(),
+            "rigger grep-guard must always exit 0 (the decision rides in the JSON body); \
+             stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).expect("grep-guard must print one JSON object")
+    };
+
+    let blocked =
+        run_guard(r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO src/"}}"#);
+    assert_eq!(
+        blocked["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a bare source grep must be denied; got:\n{blocked}"
+    );
+    let reason = blocked["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .unwrap();
+    assert!(
+        reason.contains("rigger_ground")
+            && reason.contains("rigger_graph")
+            && reason.contains("--literal"),
+        "the denial must carry the stated message; got: {reason:?}"
+    );
+
+    let allowed = run_guard(
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal -rn TODO src/"}}"#,
+    );
+    assert_eq!(
+        allowed,
+        serde_json::json!({}),
+        "--literal must pass the hook through untouched; got:\n{allowed}"
+    );
+
+    let unrelated = run_guard(r#"{"tool_name":"Bash","tool_input":{"command":"ls src/"}}"#);
+    assert_eq!(
+        unrelated,
+        serde_json::json!({}),
+        "a non-grep command must never be touched; got:\n{unrelated}"
+    );
+}
