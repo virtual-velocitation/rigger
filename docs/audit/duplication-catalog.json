@@ -1239,6 +1239,21 @@
         "content_hash": "7266da144e21471d"
       },
       {
+        "file": "tests/hermetic_test_git_audit.rs",
+        "name": "Command::new",
+        "content_hash": "1f01b7aba566e9fb"
+      },
+      {
+        "file": "tests/hermetic_test_git_audit.rs",
+        "name": "Command::new",
+        "content_hash": "d89e0fac03d16933"
+      },
+      {
+        "file": "tests/hermetic_test_git_audit.rs",
+        "name": "Command::new",
+        "content_hash": "583982587bb6b9ca"
+      },
+      {
         "file": "tests/integrate_conflict_merge_periphery.rs",
         "name": "Command::new",
         "content_hash": "7266da144e21471d"
@@ -2010,7 +2025,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 373 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 376 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -14620,6 +14635,11 @@
         "content_hash": "d27fd840f6ec3cc6"
       },
       {
+        "file": "tests/hermetic_test_git_audit.rs",
+        "name": "runner_script_text",
+        "content_hash": "d27fd840f6ec3cc6"
+      },
+      {
         "file": "tests/meta_phases_declaration_periphery.rs",
         "name": "rigger_js_source",
         "content_hash": "d27fd840f6ec3cc6"
@@ -14645,7 +14665,7 @@
         "content_hash": "d27fd840f6ec3cc6"
       }
     ],
-    "proposed_home": "a new shared module (sites span 7 files: tests/architecture_current_surface.rs, tests/cli.rs, tests/meta_phases_declaration_periphery.rs, tests/phase_of_role_mapping_periphery.rs, tests/review_tier_roster_periphery.rs, tests/step_attention_periphery.rs, tests/worker_persona_label_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 8 files: tests/architecture_current_surface.rs, tests/cli.rs, tests/hermetic_test_git_audit.rs, tests/meta_phases_declaration_periphery.rs, tests/phase_of_role_mapping_periphery.rs, tests/review_tier_roster_periphery.rs, tests/step_attention_periphery.rs, tests/worker_persona_label_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -20192,12 +20212,17 @@
   },
   {
     "id": "dup-0588",
-    "classification": "exact",
+    "classification": "near",
     "sites": [
       {
         "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
         "name": "collect_rs_files",
         "content_hash": "5ce03d66e11e14fb"
+      },
+      {
+        "file": "tests/hermetic_test_git_audit.rs",
+        "name": "collect_rs_files",
+        "content_hash": "52c971eacf8ad4a0"
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -20215,7 +20240,7 @@
         "content_hash": "5ce03d66e11e14fb"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: tests/gitsemver_path_inclusion_accounting_periphery.rs, tests/no_os_kill_audit.rs, tests/reap_before_removal_audit.rs, tests/simplification_audit.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: tests/gitsemver_path_inclusion_accounting_periphery.rs, tests/hermetic_test_git_audit.rs, tests/no_os_kill_audit.rs, tests/reap_before_removal_audit.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -20226,6 +20251,11 @@
         "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
         "name": "collect_rs_files",
         "content_hash": "5ce03d66e11e14fb"
+      },
+      {
+        "file": "tests/hermetic_test_git_audit.rs",
+        "name": "collect_rs_files",
+        "content_hash": "52c971eacf8ad4a0"
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -20244,7 +20274,7 @@
       }
     ],
     "proposed_home": "one shared `collect_rs_files` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 4 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 5 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0590",
