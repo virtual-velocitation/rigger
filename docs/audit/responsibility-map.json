@@ -8361,6 +8361,14 @@
   },
   {
     "file": "src/main.rs",
+    "name": "shipped_workflow_driver_tells_a_worker_its_units_build_location",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a500f4db04df664d"
+  },
+  {
+    "file": "src/main.rs",
     "name": "precommit_block_resolves_a_tree_built_binary_before_path",
     "is_test": true,
     "proposed_module": "main::tests",

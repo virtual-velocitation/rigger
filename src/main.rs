@@ -14220,6 +14220,30 @@ mod tests {
     }
 
     #[test]
+    fn shipped_workflow_driver_tells_a_worker_its_units_build_location() {
+        // Spec 77 criterion 1 through the editor's workflow driver: the shipped driver reads
+        // the wave's `cargo_target_dir` and makes exporting it a hard rule for every cargo
+        // command inside the worktree, so a worker never builds a `target/` in its tree.
+        assert!(
+            RIGGER_WORKFLOW.contains("req.cargo_target_dir"),
+            "the driver reads the build location off the wave item"
+        );
+        assert!(
+            RIGGER_WORKFLOW.contains("BUILD LOCATION (hard rule)")
+                && RIGGER_WORKFLOW.contains("export CARGO_TARGET_DIR='${req.cargo_target_dir}'"),
+            "the worker prompt names the export as a hard rule"
+        );
+        let rule = RIGGER_WORKFLOW.find("BUILD LOCATION (hard rule)").unwrap();
+        let heartbeat = RIGGER_WORKFLOW
+            .find("buildLocation +\n    heartbeat +")
+            .unwrap();
+        assert!(
+            rule < heartbeat,
+            "the rule is composed into the prompt ahead of the heartbeat and progress notes"
+        );
+    }
+
+    #[test]
     fn precommit_block_resolves_a_tree_built_binary_before_path() {
         let hook = compose_precommit(None);
 
