@@ -28667,6 +28667,47 @@ fn grep_guard_bounces_the_built_in_grep_tool_call_end_to_end() {
     );
 }
 
+/// Reject-fix (adj-u92c4-guard-keys-on-literal-trailing-slash-not-path-membership),
+/// end to end through the compiled binary: a bare tree name with NO trailing slash - the
+/// `Grep` tool's own natural spelling of `path`, and a Bash `grep`'s natural target
+/// spelling - is denied exactly like the trailing-slash form already is, for both call
+/// shapes; an absolute path landing inside a guarded tree is denied too.
+#[test]
+fn grep_guard_bounces_a_bare_tree_name_and_an_absolute_path_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let grep_tool_bare =
+        run_grep_guard(root, r#"{"tool_name":"Grep","tool_input":{"path":"src"}}"#);
+    assert_eq!(
+        grep_tool_bare["hookSpecificOutput"]["permissionDecision"], "deny",
+        "Grep path=\"src\" (no trailing slash) must be denied; got:\n{grep_tool_bare}"
+    );
+
+    let bash_bare = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO src"}}"#,
+    );
+    assert_eq!(
+        bash_bare["hookSpecificOutput"]["permissionDecision"], "deny",
+        "`grep -rn TODO src` (no trailing slash) must be denied; got:\n{bash_bare}"
+    );
+
+    let absolute = run_grep_guard(
+        root,
+        &serde_json::json!({
+            "tool_name": "Grep",
+            "tool_input": {"path": root.join("src").to_string_lossy()}
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        absolute["hookSpecificOutput"]["permissionDecision"], "deny",
+        "an absolute path under src must be denied; got:\n{absolute}"
+    );
+}
+
 /// `rigger mcp`'s API edges: an unknown tool name, and the required-argument checks
 /// `rigger_ground`/`rigger_graph` state in their own error strings - none of which the
 /// happy-path test above (which only ever sends well-formed calls) sends. Each must answer a
@@ -28755,6 +28796,123 @@ fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_argum
     assert!(
         out.status.success(),
         "rigger mcp must exit 0 after an error-only session; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Reject-fix regression: a grounder that fails to RESOLVE (here, an unset/misconfigured
+/// name - `turbovec`, retired regardless of feature flags, is a feature-independent way to
+/// force the same failure `--no-default-features` with no `defaults.grounder` pinned hits)
+/// must never take the WHOLE `rigger mcp` server down. `rigger_peers` and `rigger_graph` have
+/// nothing to do with grounding and must keep answering; only `rigger_ground` itself reports
+/// the resolution failure, lazily, as its own tool-call error - exactly as the pre-fix
+/// operator surface did, and the process still exits 0. Before this fix, `cmd_mcp` resolved
+/// the grounder EAGERLY with `?`, so this exact misconfiguration aborted the process before
+/// it ever answered a single request.
+#[test]
+fn mcp_survives_a_grounder_resolution_failure_and_still_serves_peers_and_graph() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "turbovec");
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[(
+            "DecisionMade",
+            r#"{"id":"d1","summary":"x","governs":["a.rs"]}"#,
+        )],
+    );
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    // The lookup surface is still exactly the three tools - unchanged by the grounder failure.
+    let list = call("tools/list", serde_json::json!({}));
+    let tool_names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tool_names,
+        vec!["rigger_peers", "rigger_ground", "rigger_graph"],
+        "a grounder resolution failure must not change which tools are advertised"
+    );
+
+    // rigger_peers, unrelated to grounding, still answers from the real store.
+    let peers_args = serde_json::json!({"name": "rigger_peers", "arguments": {}});
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut peers = call("tools/call", peers_args.clone());
+    while peers["result"]["structuredContent"]["decisions"]
+        .as_array()
+        .is_none_or(Vec::is_empty)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        peers = call("tools/call", peers_args.clone());
+    }
+    assert_eq!(
+        peers["result"]["structuredContent"]["decisions"][0]["id"], "d1",
+        "rigger_peers must keep answering even though the grounder failed to resolve; got:\n{peers}"
+    );
+
+    // rigger_graph, also unrelated to grounding, still answers honestly.
+    let graph = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": {"around": "does-not-exist.rs"}}),
+    );
+    assert_eq!(
+        graph["result"]["structuredContent"]["nodes"],
+        serde_json::json!([]),
+        "rigger_graph must keep answering even though the grounder failed to resolve; got:\n{graph}"
+    );
+
+    // rigger_ground alone reports the resolution failure - lazily, as its own tool-call error,
+    // never a silently-empty results array (spec 57's never-silently-degrade contract).
+    let ground = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_ground", "arguments": {"query": "anything"}}),
+    );
+    assert!(
+        ground.get("error").is_some(),
+        "rigger_ground must report the grounder resolution failure as an error, not silently \
+         empty results; got:\n{ground}"
+    );
+    assert!(
+        ground["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("retired"),
+        "the error must carry the real resolution failure reason; got:\n{ground}"
+    );
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp must still exit 0 despite the grounder resolution failure; stderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
 }

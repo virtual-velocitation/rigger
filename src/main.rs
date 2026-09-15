@@ -13057,249 +13057,42 @@ fn git_repo_at(root: &Path) -> String {
 /// through the shim's proxy to `rigger serve`; `ground`/`graph --show`/`graph --around`
 /// as the CLI commands its persona names) - given to an interactive session as tools
 /// instead of a shell.
+///
+/// Served through the SAME [`mcpserver::Server`] the workflow-driver bridge (`cmd_serve`
+/// above) uses, wired with [`Server::with_grounder`](mcpserver::Server::with_grounder) and
+/// [`Server::with_graph`](mcpserver::Server::with_graph) exactly like that call site already
+/// wires `with_graph`/`with_progress` - ONE read loop, JSON-RPC dispatch, and ok/err envelope
+/// answering both tool surfaces, rather than a second small stdio loop reaching for the
+/// concrete grounder/`Projector` across the crate boundary. `rigger_next`/`rigger_result`
+/// need a live `Driver`, but this surface never calls them (wiring a grounder is what marks a
+/// `Server` as the lookup-only surface - see [`mcpserver::Server`]'s own doc comment) - a
+/// freshly constructed, never-`spawn`ed one satisfies the constructor with no side effects.
+///
+/// Grounder resolution is NEVER propagated with `?`: a misconfigured/unavailable grounder
+/// (no `defaults.grounder` pinned on a `--no-default-features` build with no `symbols`
+/// feature, spec 57's own loud-refusal contract) must not take the WHOLE server down -
+/// `rigger_peers`/`rigger_graph` have nothing to do with grounding and must keep answering.
+/// A resolution failure is instead recorded via `with_grounder_unavailable`, so only
+/// `rigger_ground` itself reports it, lazily, exactly as the pre-fix operator surface did.
 fn cmd_mcp(_args: &[String]) -> Res {
     let (loc, selection) = require_store_dir()?;
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let peers = Sidecar::start(&store, 0, Filter::default())?;
-    run_operator_mcp(std::io::stdin().lock(), std::io::stdout().lock(), &peers)?;
-    Ok(())
-}
-
-/// The operator MCP surface's newline-delimited JSON-RPC read loop - structurally the
-/// same shape as [`mcpserver::Server::run`] (and reuses its `ok`/`err` envelope helpers,
-/// [`mcpserver::ok`]/[`mcpserver::err`]) but answering a DIFFERENT, narrower tool
-/// surface: `rigger_next`/`rigger_result`/`rigger_activity` do not apply outside a
-/// workflow run, so only the three lookups this criterion promises are advertised. A
-/// SEPARATE loop from `Server`'s rather than an extension of it: `rigger_ground` and
-/// `rigger_graph` are answered through main.rs's own binary-side composition
-/// (`select_grounder`, `Projector::open` - the exact calls `cmd_ground`/`cmd_graph`
-/// already make), which `mcpserver.rs` (a library module) cannot reach without crossing
-/// the crate boundary.
-fn run_operator_mcp(
-    input: impl std::io::BufRead,
-    mut output: impl std::io::Write,
-    peers: &Sidecar,
-) -> std::io::Result<()> {
-    for line in input.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let response = match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(msg) => operator_mcp_handle(&msg, peers),
-            Err(_) => Some(mcpserver::err(
-                serde_json::Value::Null,
-                -32700,
-                "parse error",
-            )),
-        };
-        if let Some(response) = response {
-            writeln!(output, "{response}")?;
-            output.flush()?;
-        }
-    }
-    Ok(())
-}
-
-fn operator_mcp_handle(msg: &serde_json::Value, peers: &Sidecar) -> Option<String> {
-    let id = msg.get("id").cloned();
-    let method = match msg.get("method").and_then(serde_json::Value::as_str) {
-        Some(m) => m,
-        None => {
-            return Some(mcpserver::err(
-                id.unwrap_or(serde_json::Value::Null),
-                -32600,
-                "invalid request: missing method",
-            ));
-        }
-    };
-    match method {
-        "initialize" => id.map(|id| {
-            mcpserver::ok(
-                id,
-                serde_json::json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "rigger", "version": "0.1.0"},
-                }),
-            )
-        }),
-        "tools/list" => {
-            id.map(|id| mcpserver::ok(id, serde_json::json!({"tools": operator_tool_list()})))
-        }
-        "tools/call" => {
-            let id = id?;
-            let name = match msg
-                .get("params")
-                .and_then(|p| p.get("name"))
-                .and_then(serde_json::Value::as_str)
-            {
-                Some(n) => n,
-                None => {
-                    return Some(mcpserver::err(
-                        id,
-                        -32602,
-                        "invalid params: tools/call requires params.name",
-                    ));
-                }
-            };
-            let args = msg
-                .get("params")
-                .and_then(|p| p.get("arguments"))
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-            Some(operator_call_tool(id, name, &args, peers))
-        }
-        _ => id.map(|id| mcpserver::err(id, -32601, &format!("method not found: {method}"))),
-    }
-}
-
-fn operator_tool_list() -> serde_json::Value {
-    serde_json::json!([
-        {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far this run, so you do not work blind to them. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
-        {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
-        {"name": "rigger_graph", "description": "The STRUCTURE and TEXT lookups: pass `show` <entity> for its definition site and body (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
-    ])
-}
-
-fn operator_call_tool(
-    id: serde_json::Value,
-    name: &str,
-    args: &serde_json::Value,
-    peers: &Sidecar,
-) -> String {
-    let result: Result<serde_json::Value, String> = match name {
-        "rigger_peers" => Ok(operator_tool_peers(args, peers)),
-        "rigger_ground" => operator_tool_ground(args),
-        "rigger_graph" => operator_tool_graph(args),
-        _ => return mcpserver::err(id, -32602, &format!("unknown tool {name}")),
-    };
-    match result {
-        Ok(structured) => mcpserver::ok(
-            id,
-            serde_json::json!({
-                "content": [{"type": "text", "text": structured.to_string()}],
-                "structuredContent": structured,
-            }),
-        ),
-        Err(e) => mcpserver::err(id, -32603, &e),
-    }
-}
-
-fn operator_tool_peers(args: &serde_json::Value, peers: &Sidecar) -> serde_json::Value {
-    let files: Vec<String> = args
-        .get("files")
-        .and_then(serde_json::Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    mcpserver::peers_json(peers, &files)
-}
-
-/// The `rigger_ground` tool's core: the EXACT same lookup `cmd_ground` runs
-/// (`select_grounder` then `Grounder::ground`), formatted as JSON instead of println'd -
-/// so `ground`'s ranking (spec 92 criterion 3's territory) is inherited automatically,
-/// never re-implemented here.
-fn operator_tool_ground(args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let query = args
-        .get("query")
-        .and_then(serde_json::Value::as_str)
-        .ok_or("rigger_ground: missing query")?;
-    let k = args
-        .get("k")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(8) as usize;
-    let name = config::load(".")
+    let grounder_name = config::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
-    let grounder = select_grounder(&name).map_err(|e| e.to_string())?;
-    let results: Vec<serde_json::Value> = grounder
-        .ground(query, k)
-        .into_iter()
-        .map(|r| serde_json::json!({"file": r.file, "line": r.line, "text": r.text}))
-        .collect();
-    Ok(serde_json::json!({"results": results}))
-}
-
-/// The `rigger_graph` tool's core: the EXACT same lookups `cmd_graph_show`/`cmd_graph`
-/// run (`Projector::open` then `.locate()`/`.subgraph()`), formatted as JSON instead of
-/// println'd - so a live-line resolution or a rendering fix in either (spec 92
-/// criterion 1's/`u92c6`'s territory) is inherited automatically, never re-implemented
-/// here.
-fn operator_tool_graph(args: &serde_json::Value) -> Result<serde_json::Value, String> {
-    let show = args
-        .get("show")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let around = args
-        .get("around")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let depth = args
-        .get("depth")
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(2);
-    if show.is_empty() && around.is_empty() {
-        return Err("rigger_graph: pass `show` <entity> or `around` <file|entity>".into());
-    }
-    let gp =
-        Projector::open(&db_path("graph.db"), &project_identity()).map_err(|e| e.to_string())?;
-    if !show.is_empty() {
-        let located = gp.locate(show).map_err(|e| e.to_string())?;
-        return Ok(match located {
-            Located::None => serde_json::json!({"status": "none"}),
-            Located::Many(cands) => serde_json::json!({
-                "status": "many",
-                "candidates": cands.iter().map(|c| serde_json::json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
-            }),
-            Located::One(site) => {
-                serde_json::json!({"status": "one", "site": entity_site_json(&site)})
-            }
-        });
-    }
-    let g = gp
-        .subgraph(&[around.to_string()], depth)
-        .map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({
-        "nodes": g.nodes.iter().map(|n| serde_json::json!({"id": n.id, "kind": n.kind})).collect::<Vec<_>>(),
-        "edges": g.edges.iter().map(|e| serde_json::json!({"from": e.from, "rel": e.rel, "to": e.to})).collect::<Vec<_>>(),
-    }))
-}
-
-/// Render one [`contextgraph::sqlite::EntitySite`] as JSON, reusing [`definition_body`]
-/// (the SAME body-window lookup [`print_entity_site`] prints) so the MCP `show` result
-/// and the CLI `graph --show` text can never drift apart on what body a site carries.
-fn entity_site_json(site: &contextgraph::sqlite::EntitySite) -> serde_json::Value {
-    let kind = if site.kind.is_empty() {
-        "?"
-    } else {
-        site.kind.as_str()
+    let grounder = select_grounder(&grounder_name);
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+    let driver = rigger::driver::workflow::Driver::new();
+    let mut server =
+        mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers).with_graph(&graph);
+    server = match &grounder {
+        Ok(g) => server.with_grounder(g.as_ref()),
+        Err(e) => server.with_grounder_unavailable(e.to_string()),
     };
-    let name = site
-        .id
-        .split_once("::")
-        .map(|(_, n)| n)
-        .unwrap_or(site.id.as_str());
-    let body = match definition_body(&site.file, site.line, name) {
-        ShowBody::Lines {
-            lines,
-            omitted,
-            extent_end,
-        } => serde_json::json!({
-            "lines": lines.iter().map(|(n, t)| serde_json::json!({"line": n, "text": t})).collect::<Vec<_>>(),
-            "omitted": omitted,
-            "extent_end": extent_end,
-        }),
-        ShowBody::Note(reason) => serde_json::json!({"note": reason}),
-    };
-    serde_json::json!({
-        "id": site.id, "file": site.file, "line": site.line, "kind": kind,
-        "degree": site.degree, "body": body,
-    })
+    server.run(std::io::stdin().lock(), std::io::stdout().lock())?;
+    Ok(())
 }
 
 /// A `rigger grep-guard` decision: pass the tool call through untouched, or block it
@@ -13366,16 +13159,53 @@ fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> Guard
     }
 }
 
-/// True when the `Grep` tool's `path` argument targets a guarded tree - empty or `.`
-/// (the default: the current working directory, which for a rigger project IS the
-/// project root the three guarded trees live under) or an explicit path under one of
-/// [`GREP_GUARDED_TREES`] (with or without a leading `./`).
+/// True when `path` (a `Grep`-tool `path` argument, or one whitespace-separated token of a
+/// Bash command line) has one of [`GREP_GUARDED_TREES`]'s bare names (the trailing `/`
+/// stripped) as a WHOLE `/`-separated segment, anywhere in `path` - path MEMBERSHIP, not a
+/// literal trailing-slash substring (adj-u92c4 reject-fix): `src` matches (a bare segment,
+/// with or without a trailing slash or a leading `./`), `src/main.rs` matches (the `src`
+/// segment ahead of the rest), and so does an ABSOLUTE path landing inside it
+/// (`/repo/src`, `/repo/src/main.rs` - `src` is still a segment, the leading `/` just
+/// produces one leading empty segment `split('/')` skips). `docs/`, `mysrc/`, and
+/// `src-old/` do NOT match (a differently-named or merely `src`-prefixed segment is not the
+/// `src` segment). The shared predicate [`guarded_path`] and [`guarded_command`] both build
+/// on, so the two callers can never diverge on what "under a guarded tree" means.
+fn path_has_guarded_segment(path: &str) -> bool {
+    path.split('/').any(|seg| {
+        !seg.is_empty()
+            && GREP_GUARDED_TREES
+                .iter()
+                .any(|t| t.trim_end_matches('/') == seg)
+    })
+}
+
+/// True when the `Grep` tool's `path` argument targets a guarded tree - empty, `.`, or
+/// `./` (the default: the current working directory, which for a rigger project IS the
+/// project root the three guarded trees live under), or a path with a guarded tree as a
+/// path segment (see [`path_has_guarded_segment`]).
 fn guarded_path(path: &str) -> bool {
     if path.is_empty() || path == "." || path == "./" {
         return true;
     }
-    let path = path.strip_prefix("./").unwrap_or(path);
-    GREP_GUARDED_TREES.iter().any(|t| path.starts_with(t))
+    path_has_guarded_segment(path)
+}
+
+/// True when a `grep`-invoking Bash command line targets a guarded tree: one of its
+/// whitespace-separated tokens has a guarded tree as a path segment (see
+/// [`path_has_guarded_segment`] - covers `grep -rn pattern src`, `grep -rn pattern src/`,
+/// `grep pattern src/main.rs`, a mid-pipeline `... | grep -r pattern tests/`, and an
+/// absolute path under a guarded tree), or its last whitespace-separated token is bare `.`
+/// (the common "search the whole project" invocation, `grep -rn pattern .`, which from a
+/// project root reaches every guarded tree). Anything else (a target outside all three
+/// trees, e.g. `grep pattern README.md`) is not guarded. Coarse by the same design the
+/// existing substring check already accepted (this scans every token, the search PATTERN
+/// included, not only the trailing path argument) - a pattern that happens to spell a
+/// guarded tree's name is the rare false-positive `--literal` exists to pass through.
+fn guarded_command(command: &str) -> bool {
+    if command.split_whitespace().any(path_has_guarded_segment) {
+        return true;
+    }
+    command.split_whitespace().next_back() == Some(".")
 }
 
 /// True when a Bash command line contains `grep` as a whole word (not a substring of a
@@ -13384,20 +13214,6 @@ fn guarded_path(path: &str) -> bool {
 /// tool this criterion's stated scope does not cover.
 fn command_invokes_grep(command: &str) -> bool {
     command.split_whitespace().any(|w| w == "grep")
-}
-
-/// True when a `grep`-invoking Bash command line targets a guarded tree: it names one of
-/// [`GREP_GUARDED_TREES`] as a substring (covers `grep -rn pattern src/`, `grep pattern
-/// src/main.rs`, a mid-pipeline `... | grep -r pattern tests/`, ...), or its last
-/// whitespace-separated token is bare `.` (the common "search the whole project"
-/// invocation, `grep -rn pattern .`, which from a project root reaches every guarded
-/// tree). Anything else (a target outside all three trees, e.g. `grep pattern
-/// README.md`) is not guarded.
-fn guarded_command(command: &str) -> bool {
-    if GREP_GUARDED_TREES.iter().any(|t| command.contains(t)) {
-        return true;
-    }
-    command.split_whitespace().next_back() == Some(".")
 }
 
 /// `rigger grep-guard`: the command the installed PreToolUse hook runs (see
@@ -25902,78 +25718,69 @@ mod tests {
         );
     }
 
-    /// The operator MCP surface advertises exactly the three lookups this criterion promises
-    /// (`rigger_peers`, `rigger_ground`, `rigger_graph`), never the workflow-lifecycle tools
-    /// (`rigger_next`/`rigger_result`/`rigger_activity`) `rigger serve` also carries, which do
-    /// not apply outside a run.
+    /// Reject-fix (adj-u92c4-guard-keys-on-literal-trailing-slash-not-path-membership): a
+    /// bare `src` (no trailing slash - the Grep tool's own natural spelling, and the exact
+    /// operator instinct this whole spec exists to intercept) must be denied exactly like
+    /// `src/` already is, for BOTH the `Grep` tool's `path` and a `Bash` `grep`'s target
+    /// token. Before this fix, `guarded_path`/`guarded_command` matched on a literal
+    /// trailing-slash SUBSTRING, so this exact natural invocation bypassed the hook.
     #[test]
-    fn operator_tool_list_carries_exactly_peers_ground_and_graph() {
-        let names: Vec<String> = operator_tool_list()
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap().to_string())
-            .collect();
+    fn grep_guard_decision_bounces_a_bare_tree_name_with_no_trailing_slash() {
+        for tree in ["src", "tests", "workflows"] {
+            assert_eq!(
+                grep_guard_decision("Grep", &serde_json::json!({"path": tree})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "Grep path={tree:?} (no trailing slash) must be denied"
+            );
+            let command = format!("grep -rn TODO {tree}");
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "`grep -rn TODO {tree}` (no trailing slash) must be denied"
+            );
+        }
+    }
+
+    /// Reject-fix: an ABSOLUTE path landing inside a guarded tree is denied too - `src` is
+    /// still a path SEGMENT, matched by membership rather than a prefix string a leading
+    /// `/` would defeat. Before this fix `guarded_path` used `path.starts_with("src/")`,
+    /// which no absolute path could ever satisfy.
+    #[test]
+    fn grep_guard_decision_bounces_an_absolute_path_under_a_guarded_tree() {
         assert_eq!(
-            names,
-            vec!["rigger_peers", "rigger_ground", "rigger_graph"],
-            "the operator server must expose exactly these three tools, in this order"
+            grep_guard_decision("Grep", &serde_json::json!({"path": "/home/dev/rigger/src"})),
+            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+            "an absolute path AT a guarded tree must be denied"
+        );
+        assert_eq!(
+            grep_guard_decision(
+                "Grep",
+                &serde_json::json!({"path": "/home/dev/rigger/src/main.rs"})
+            ),
+            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+            "an absolute path UNDER a guarded tree must be denied"
+        );
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "grep -rn TODO /home/dev/rigger/src"})
+            ),
+            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+            "a Bash grep over an absolute path under a guarded tree must be denied"
         );
     }
 
-    /// The operator MCP loop answers `tools/list` and `tools/call rigger_peers` over the
-    /// SAME newline-delimited JSON-RPC wire shape `mcpserver::Server` uses (reusing its
-    /// `ok`/`err` envelope), driven end-to-end through `run_operator_mcp` against a real
-    /// `Sidecar` over an in-memory store - no subprocess needed for this seam.
+    /// A path/command that merely shares a PREFIX with a guarded tree name - never a whole
+    /// path segment equal to it - must stay allowed: `src-old/`, `mysrc/`, and a plain
+    /// `docs/` target are all outside the three guarded trees.
     #[test]
-    fn run_operator_mcp_answers_tools_list_and_peers() {
-        use rigger::eventstore::sqlite::Store;
-        use rigger::eventstore::{Event, EventStore, ExpectedRevision, Filter};
-        use std::io::Cursor;
-
-        let store = Store::open(":memory:").unwrap();
-        store
-            .append(
-                "run",
-                ExpectedRevision::Any,
-                &[Event::new(
-                    "DecisionMade",
-                    br#"{"id":"d1","summary":"x","governs":["a.rs"]}"#.to_vec(),
-                )],
-            )
-            .unwrap();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while peers.decisions().is_empty() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "side-car never caught up"
+    fn grep_guard_decision_ignores_a_merely_prefixed_or_unrelated_segment() {
+        for path in ["src-old/", "src-old", "mysrc/foo.rs", "docs/"] {
+            assert_eq!(
+                grep_guard_decision("Grep", &serde_json::json!({"path": path})),
+                GuardDecision::Allow,
+                "{path:?} shares no WHOLE segment with a guarded tree; must be allowed"
             );
-            std::thread::sleep(std::time::Duration::from_millis(5));
         }
-
-        let input = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n\
-                     {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"rigger_peers\",\"arguments\":{}}}\n";
-        let mut output = Vec::new();
-        run_operator_mcp(Cursor::new(input), &mut output, &peers).unwrap();
-        let out = String::from_utf8(output).unwrap();
-        let lines: Vec<&str> = out.lines().collect();
-        assert_eq!(lines.len(), 2);
-
-        let list: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        let tool_names: Vec<&str> = list["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            tool_names,
-            vec!["rigger_peers", "rigger_ground", "rigger_graph"]
-        );
-
-        let call: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-        let decisions = &call["result"]["structuredContent"]["decisions"];
-        assert_eq!(decisions[0]["id"], "d1");
     }
 }

@@ -1076,6 +1076,13 @@ impl Projection for Projector {
         .optional()
         .map_err(be)
     }
+
+    /// Overrides the trait default with the real lookup: the inherent [`Projector::locate`]
+    /// already implements the exact resolution this trait method promises, so this is a
+    /// pass-through, never a second implementation.
+    fn locate(&self, entity: &str) -> Result<Located, Error> {
+        Projector::locate(self, entity)
+    }
 }
 
 fn row_to_node(r: &rusqlite::Row) -> rusqlite::Result<Node> {
