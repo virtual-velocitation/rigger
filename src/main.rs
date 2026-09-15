@@ -4181,9 +4181,12 @@ const AROUND_GOVERNANCE_CAP: usize = 10;
 /// - GOVERNING DECISIONS/FINDINGS, separately and capped: every [`contextgraph::KIND_DECISION`] /
 ///   [`contextgraph::KIND_FINDING`] node, ranked NEWEST first and capped to
 ///   [`AROUND_GOVERNANCE_CAP`], with a trailing count of however many more this subgraph held.
-///   "Newest" is the highest edge `source` (the event log POSITION whose fold most recently
-///   touched the node, among THIS subgraph's own edges) - the log's own order, never a wall
-///   clock, which no node carries.
+///   "Newest" is the event log POSITION of the node's OWN `GOVERNS` (decision) / `ABOUT`
+///   (finding) edge - via [`conductor::recency_by_own_edge`], the SAME from-side-only core
+///   `conductor::write_capped_section` dates the prompt's decisions/lessons/findings sections
+///   with - never an edge that merely touches the node as `to` (a superseded decision's
+///   inbound `SUPERSEDES` edge carries its superseder's fresh position, which would let the
+///   stale decision crowd a live one out of the cap if it counted).
 fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -4204,15 +4207,21 @@ fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
         }
     }
 
-    // Recency per node: the highest edge `source` position among this subgraph's OWN edges
-    // touching it (as either endpoint) - a decision reached only through a `GOVERNS` edge still
-    // carries its fold position this way, with no separate timestamp lookup.
-    let mut recency: BTreeMap<&str, Position> = BTreeMap::new();
-    for e in &g.edges {
-        for id in [e.from.as_str(), e.to.as_str()] {
-            let slot = recency.entry(id).or_insert(0);
-            *slot = (*slot).max(e.source);
-        }
+    // Recency per node: the SAME from-side-only core `write_capped_section` uses for the
+    // prompt's decisions/lessons/findings sections (`conductor::recency_by_own_edge`), never a
+    // scan of every edge touching a node as either endpoint. A decision is dated off its own
+    // `GOVERNS` edge, a finding off its own `ABOUT` edge - both point node -> file, so `from`
+    // is always the narrative node itself. Keying on either endpoint (as an earlier version of
+    // this function did) let a superseded decision inherit its superseder's fresh position
+    // through the inbound `SUPERSEDES` edge (`from` = the new decision, `to` = the superseded
+    // one) and crowd a genuinely live decision out of the newest-`AROUND_GOVERNANCE_CAP` slice
+    // while printing the stale one as if current - the exact bug class `write_capped_section`'s
+    // own doc comment already fixed once; this reuses that fix rather than re-deriving it.
+    let mut recency: BTreeMap<&str, Position> =
+        conductor::recency_by_own_edge(g, contextgraph::REL_GOVERNS);
+    for (id, pos) in conductor::recency_by_own_edge(g, contextgraph::REL_ABOUT) {
+        let slot = recency.entry(id).or_insert(0);
+        *slot = (*slot).max(pos);
     }
 
     let mut narrative_nodes: Vec<&contextgraph::Node> =
