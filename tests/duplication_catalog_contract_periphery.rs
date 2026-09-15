@@ -31,6 +31,28 @@
 //! This unit does NOT own the responsibility map, report sections 1/3-6, or any production code
 //! (spec 85: "no production code changes"), so this file drives no binary and spawns no
 //! process - the whole surface to prove is the persisted data contract itself.
+//!
+//! SPEC 90 CRITERION 2 ACCOUNTING (decision `sdet-u90c2-surface-accounting`, correction
+//! `sdet-u90c2-claim1-subsumed-by-roundtrip`): CLAIM 1 ("the guarded catalog carries no line
+//! numbers") needs no new test - the pre-existing
+//! `deserializing_then_reserializing_the_committed_catalog_reproduces_the_committed_bytes_exactly`
+//! below already proves it strictly (any stray key breaks byte-exact re-encoding through a
+//! struct that lacks it). Two genuine gaps closed here: (1) `docs/audit/duplication-
+//! catalog.lines.json`, spec 90's new unguarded sibling, had ZERO test coverage anywhere -
+//! `ConsumedDupClusterLines`/`deserialize_committed_catalog_lines` plus
+//! `the_committed_catalog_and_its_lines_sibling_are_position_joined_by_id_and_site_count` close
+//! it, joined by cluster id (never bare position - a future edit that reorders clusters should
+//! fail loudly by id mismatch, not silently compare the wrong pair). (2) CLAIM 4 ("the report
+//! still cites file:line from the unguarded lines file") had only an in-memory, unit-level proof
+//! (`report_section_2_cites_file_line_exactly_as_the_lines_sibling_records_them` in
+//! `tests/simplification_audit.rs`, against `render_section_2`'s freshly-computed output, never
+//! the persisted report) -
+//! `the_committed_report_section_2_cites_file_line_exactly_as_the_lines_sibling_records_them_in_order`
+//! below closes the periphery half, reading the COMMITTED report and the COMMITTED lines sibling
+//! directly. Extraction is bounded to the "### Clusters" span and stops before "### Adversarial
+//! sample" - that subsection's own bullets share the identical `` `file:start-end` `name` ``
+//! citation shape (same real sites, a different purpose) and would otherwise be misread as
+//! belonging to whichever cluster happens to render last.
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -301,4 +323,182 @@ fn deserializing_then_reserializing_the_committed_catalog_reproduces_the_committ
          shape - a downstream consumer decoding and re-encoding this file would silently \
          diverge from the committed artifact"
     );
+}
+
+// -----------------------------------------------------------------------------------------
+// Spec 90 criterion 2, THE DRIFT GUARD IS LINE-FREE: the unguarded `.lines.json` sibling
+// (zero prior coverage) and CLAIM 4 at the true periphery level (the committed report against
+// the committed sidecar, never a regenerated value).
+// -----------------------------------------------------------------------------------------
+
+/// Spec 90 criterion 2: the UNGUARDED sibling carrying [`CATALOG_PATH`]'s line spans, joined to
+/// it by cluster `id` (both are lists of clusters in the SAME id-ascending order, but joining by
+/// id rather than bare position fails loudly, naming the id, if that ever changes) - never
+/// drift-guarded, so not itself a "documented contract" a downstream reader pins against.
+const CATALOG_LINES_PATH: &str = "docs/audit/duplication-catalog.lines.json";
+
+/// Mirrors `tests/simplification_audit.rs`'s private `DupSiteLines` shape field-for-field - no
+/// `name` field (spec 90 Design: the sidecar carries line data only; a site's identity lives in
+/// the guarded file, joined by array position within the cluster).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct ConsumedDupSiteLines {
+    file: String,
+    start_line: usize,
+    end_line: usize,
+}
+
+/// Mirrors `tests/simplification_audit.rs`'s private `DupClusterLines` shape field-for-field.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct ConsumedDupClusterLines {
+    id: String,
+    sites: Vec<ConsumedDupSiteLines>,
+}
+
+fn deserialize_committed_catalog_lines() -> Vec<ConsumedDupClusterLines> {
+    let path = repo_root().join(CATALOG_LINES_PATH);
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{CATALOG_LINES_PATH} is missing or unreadable ({e})"));
+    serde_json::from_str(&raw).unwrap_or_else(|e| {
+        panic!("{CATALOG_LINES_PATH} does not deserialize as the documented lines contract: {e}")
+    })
+}
+
+/// Spec 90 criterion 2: the join holds - every cluster `id` in [`CATALOG_PATH`] has a
+/// same-`id` cluster in [`CATALOG_LINES_PATH`] carrying exactly as many sites, in the same
+/// per-cluster order (both come from the SAME `Vec<DupCluster>` in the same pass, per the
+/// producer's own doc comment - never independently re-sorted).
+#[test]
+fn the_committed_catalog_and_its_lines_sibling_are_position_joined_by_id_and_site_count() {
+    let clusters = deserialize_committed_catalog();
+    let lines = deserialize_committed_catalog_lines();
+    assert_eq!(
+        clusters.len(),
+        lines.len(),
+        "{CATALOG_PATH} has {} clusters but {CATALOG_LINES_PATH} has {} - they are joined by \
+         cluster id and must list the same clusters",
+        clusters.len(),
+        lines.len()
+    );
+    for (c, l) in clusters.iter().zip(lines.iter()) {
+        assert_eq!(
+            c.id, l.id,
+            "{CATALOG_PATH} and {CATALOG_LINES_PATH} disagree on cluster order at this \
+             position - expected the same id in both"
+        );
+        assert_eq!(
+            c.sites.len(),
+            l.sites.len(),
+            "cluster {}'s site count disagrees between {CATALOG_PATH} ({}) and \
+             {CATALOG_LINES_PATH} ({})",
+            c.id,
+            c.sites.len(),
+            l.sites.len()
+        );
+        for (i, (cs, ls)) in c.sites.iter().zip(l.sites.iter()).enumerate() {
+            assert_eq!(
+                &cs.file, &ls.file,
+                "cluster {} site {i} disagrees on file between {CATALOG_PATH} and \
+                 {CATALOG_LINES_PATH}",
+                c.id
+            );
+        }
+    }
+}
+
+const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+
+/// Section 2's per-cluster site citations (`render_section_2`'s own template:
+/// `` - `{file}:{start}-{end}` `{name}` ``), grouped by `#### \`dup-NNNN\`` cluster header, in
+/// report order. Bounded to the "### Clusters" span and cut off before "### Adversarial sample" -
+/// that subsection's own bullets share the identical citation shape (the same real sites, read
+/// for a different purpose) and would otherwise be misattributed to whichever cluster renders
+/// last.
+fn section_2_cluster_site_citations(report: &str) -> Vec<(String, Vec<(String, usize, usize)>)> {
+    let start = report
+        .find("### Clusters (")
+        .expect("report has a ### Clusters heading");
+    let rest = &report[start..];
+    let end = rest.find("### Adversarial sample").unwrap_or(rest.len());
+    let clusters_text = &rest[..end];
+    let header_re = regex::Regex::new(r"(?m)^#### `(dup-\d+)`").expect("valid regex");
+    let site_re = regex::Regex::new(r"(?m)^- `([^`]+):(\d+)-(\d+)` `[^`]+`").expect("valid regex");
+    let headers: Vec<(usize, String)> = header_re
+        .captures_iter(clusters_text)
+        .map(|c| (c.get(0).unwrap().start(), c[1].to_string()))
+        .collect();
+    headers
+        .iter()
+        .enumerate()
+        .map(|(i, (pos, id))| {
+            let block_end = headers
+                .get(i + 1)
+                .map(|(p, _)| *p)
+                .unwrap_or(clusters_text.len());
+            let block = &clusters_text[*pos..block_end];
+            let sites = site_re
+                .captures_iter(block)
+                .map(|c| {
+                    (
+                        c[1].to_string(),
+                        c[2].parse().expect("digits"),
+                        c[3].parse().expect("digits"),
+                    )
+                })
+                .collect();
+            (id.clone(), sites)
+        })
+        .collect()
+}
+
+/// CLAIM 4: "the report still cites `file:line` from the unguarded lines file." Every cluster's
+/// per-site `(file, start, end)` citation in section 2 of the COMMITTED report matches, in order,
+/// the same cluster's sites in the COMMITTED `CATALOG_LINES_PATH` - joined by `id`, never bare
+/// position, so a future reordering fails loudly naming the id rather than silently comparing
+/// the wrong pair.
+#[test]
+fn the_committed_report_section_2_cites_file_line_exactly_as_the_lines_sibling_records_them_in_order(
+) {
+    let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
+        .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
+    let cited = section_2_cluster_site_citations(&report);
+    assert!(
+        !cited.is_empty(),
+        "found zero section 2 cluster citations in {REPORT_PATH} - the extraction regex or the \
+         section boundary is broken"
+    );
+    let lines = deserialize_committed_catalog_lines();
+    assert_eq!(
+        cited.len(),
+        lines.len(),
+        "section 2 of {REPORT_PATH} renders {} cluster(s) but {CATALOG_LINES_PATH} records {}",
+        cited.len(),
+        lines.len()
+    );
+    for (cited_id, sites) in &cited {
+        let entry = lines.iter().find(|l| &l.id == cited_id).unwrap_or_else(|| {
+            panic!(
+                "report section 2 renders cluster {cited_id}, but no cluster with that id \
+                     exists in {CATALOG_LINES_PATH}"
+            )
+        });
+        assert_eq!(
+            sites.len(),
+            entry.sites.len(),
+            "cluster {cited_id} renders {} site citation(s) in {REPORT_PATH} but \
+             {CATALOG_LINES_PATH} records {}",
+            sites.len(),
+            entry.sites.len()
+        );
+        for (i, ((file, start, end), ls)) in sites.iter().zip(entry.sites.iter()).enumerate() {
+            assert_eq!(
+                (file.as_str(), *start, *end),
+                (ls.file.as_str(), ls.start_line, ls.end_line),
+                "cluster {cited_id} site {i}: {REPORT_PATH} cites `{file}:{start}-{end}`, but \
+                 {CATALOG_LINES_PATH} records `{}:{}-{}`",
+                ls.file,
+                ls.start_line,
+                ls.end_line
+            );
+        }
+    }
 }

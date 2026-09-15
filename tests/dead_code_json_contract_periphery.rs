@@ -154,6 +154,25 @@
 //! real Method-category-UFCS instances (mechanism A's generality); the 3 field/local-collision
 //! instances (mechanism B's precision trade, made visible in the persisted artifact rather than
 //! resting on the fix's own prose).
+//!
+//! SPEC 90 CRITERION 2 ACCOUNTING (decision `sdet-u90c2-surface-accounting`): CLAIM 1 ("the
+//! guarded catalog carries no line numbers") needs no new test - the pre-existing
+//! `deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_
+//! bytes_exactly` below already proves it strictly (any stray key, `"line"` included, breaks
+//! byte-exact re-encoding through a struct that lacks it). CLAIM 4 ("the report still cites
+//! file:line from the unguarded lines file") had NO test anywhere before this unit, unit-level
+//! or periphery - `the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_
+//! records_them` below closes it, reading the PERSISTED report and the PERSISTED
+//! `DEAD_CODE_LINES_PATH` directly, joined by array position (never a `(file, name)` lookup -
+//! `src/ingest.rs`'s own `ingest_project` is ambiguous, two distinct candidates sharing one bare
+//! name in one file, so a lookup would silently resolve every citation to whichever entry comes
+//! first). EXEMPT (out of periphery reach): CLAIM 2 (pin-bump byte-identical) and CLAIM 3
+//! (merge-friendly) both require regenerating over a synthetic fixture tree via
+//! `build_dead_code_candidates`/`scan_tree`, private to `tests/simplification_audit.rs`'s own
+//! `mod tests` - this layer never authors or edits the unit's inside-out unit tests. Both claims
+//! are proven there for the responsibility map and (all four claims) the duplication catalog, but
+//! absent for dead-code - a real Done-when gap this file cannot close from outside, flagged for
+//! the `sdet` review lens against the implementer, not silently worked around here.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -811,6 +830,97 @@ fn every_keep_pending_reason_cites_a_real_spec_number() {
             c.name,
             c.file,
             c.reason
+        );
+    }
+}
+
+// -----------------------------------------------------------------------------------------
+// Spec 90 criterion 2, THE DRIFT GUARD IS LINE-FREE: CLAIM 4 ("the report still cites
+// file:line from the unguarded lines file"), proven against the PERSISTED report and the
+// PERSISTED lines sibling - never a regenerated in-memory value. CLAIM 1 ("the guarded
+// catalog carries no line numbers") needs no separate test here: the pre-existing
+// `deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_committed_
+// bytes_exactly` below already proves it, strictly - `ConsumedDeadCodeCandidate`/
+// `ConsumedTestOnlyRef` have no `#[serde(deny_unknown_fields)]`, so a stray `"line"` key would
+// deserialize-and-silently-drop, but re-serializing without it would then produce BYTES
+// SHORTER than the committed file by that key, failing byte-exact equality - a strictly
+// stronger, already-covered check than a raw-key scan would add on its own.
+// -----------------------------------------------------------------------------------------
+
+const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+
+/// Section 4.3's per-candidate citation shape (`render_dead_code_full_list`'s own template:
+/// `` - **{name}** (`{file}:{line}`, ... ``), extracted from the section between its own "### 4.3"
+/// heading and the next top-level "## " heading so a `src/some.rs:N` appearing in some OTHER
+/// section's free prose is never mistaken for one of this section's mechanically-rendered
+/// citations.
+fn section_4_3_citations(report: &str) -> Vec<(String, String, usize)> {
+    let start = report
+        .find("### 4.3 The full list, dispositioned")
+        .expect("report has a 4.3 heading");
+    let rest = &report[start..];
+    let end = rest
+        .find("\n## ")
+        .map(|i| i + start)
+        .unwrap_or(report.len());
+    let section = &report[start..end];
+    let re = regex::Regex::new(r"\*\*([^*]+)\*\* \(`([^`:]+):(\d+)`").expect("valid regex");
+    re.captures_iter(section)
+        .map(|c| {
+            (
+                c[1].to_string(),
+                c[2].to_string(),
+                c[3].parse().expect("digits"),
+            )
+        })
+        .collect()
+}
+
+/// CLAIM 4: "the report still cites `file:line` from the unguarded lines file." Every
+/// mechanically-rendered `(name, file, line)` citation in section 4.3 of the COMMITTED report
+/// (never `render_dead_code_full_list`'s own in-memory rendering - nothing above or in the
+/// implementer's own suite reads the persisted report file at all for this artifact) matches, in
+/// ORDER, the PERSISTED `DEAD_CODE_LINES_PATH` - both are rendered from the SAME underlying
+/// candidate sequence with no re-sorting (`render_dead_code_full_list` iterates
+/// `real_dead_code_candidates()` untouched), so a position-wise zip is the correct join, not a
+/// `(file, name)` lookup: `src/ingest.rs`'s own `ingest_project` is ambiguous (two distinct
+/// candidates share one bare name in one file, ROUND 1's own `ambiguous_with` shape), so a lookup
+/// would silently resolve every citation to whichever entry happens to come first.
+#[test]
+fn the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_records_them() {
+    let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
+        .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
+    let citations = section_4_3_citations(&report);
+    let lines = deserialize_committed_dead_code_lines();
+    assert_eq!(
+        citations.len(),
+        lines.len(),
+        "section 4.3 of {REPORT_PATH} cites {} candidates but {DEAD_CODE_LINES_PATH} records {} \
+         - they must list the same candidates in the same order (both come from the same \
+         underlying sequence, untouched)",
+        citations.len(),
+        lines.len()
+    );
+    assert!(
+        !citations.is_empty(),
+        "found zero section 4.3 citations in {REPORT_PATH} - the extraction regex or the \
+         section boundary is broken"
+    );
+    for (i, ((name, file, line), entry)) in citations.iter().zip(lines.iter()).enumerate() {
+        assert_eq!(
+            (file.as_str(), name.as_str()),
+            (entry.file.as_str(), entry.name.as_str()),
+            "citation {i} in section 4.3 of {REPORT_PATH} is {name} ({file}), but \
+             {DEAD_CODE_LINES_PATH} entry {i} is {} ({}) - report order and lines-sibling order \
+             have diverged",
+            entry.name,
+            entry.file
+        );
+        assert_eq!(
+            entry.line, *line,
+            "report section 4.3 cites {name} ({file}:{line}), but {DEAD_CODE_LINES_PATH} records \
+             line {} for that same candidate",
+            entry.line
         );
     }
 }
