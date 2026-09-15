@@ -774,14 +774,19 @@ pub struct WaveItem {
     pub model: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    // `dir`, `max_wall_clock`, `marker_path` and `cargo_target_dir` are ALWAYS on the wire
+    // (empty or null when absent), never skipped: the wave reaches the driver through a
+    // courier agent's structured return, and a key the driver's schema cannot REQUIRE is a
+    // key the courier can drop while retyping - it dropped `marker_path` and
+    // `cargo_target_dir` on 2026-09-15, costing a worker its heartbeat and its build location.
+    #[serde(default)]
     pub dir: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blast_radius: Vec<String>,
     /// The per-spawn wall-clock bound in SECONDS (spec 10, unit 3), carried to the thin
     /// driver so it can frame the worker's heartbeat and watchdog a hung agent. Omitted
     /// from the wire when the spawn is unbounded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub max_wall_clock: Option<u64>,
     /// The RESOLVED absolute path of this spawn's liveness marker (spec 10, unit 3), stamped
     /// by `rigger step` from the SINGLE authority [`crate::liveness::marker_path`] over the
@@ -792,7 +797,7 @@ pub struct WaveItem {
     /// root of its own. Present only for a bounded spawn (a marker exists only when
     /// `max_wall_clock` is set); [`WaveItem::from`] leaves it `None` because the scratch root
     /// and run id are not known to a pure fold - `rigger step` fills it in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub marker_path: Option<String>,
     /// The unit's ONE build location (spec 77, criterion 1): the `cargo-target-<unit>`
     /// sibling of the worktree, the same directory the unit's gates build into. The SDK
@@ -802,7 +807,7 @@ pub struct WaveItem {
     /// `cargo test` the worker runs lands in `<worktree>/target` - three such trees filled
     /// the disk on 2026-09-15. Absent when the spawn has no unit worktree (a review or
     /// plan spawn inherits the shared cache).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub cargo_target_dir: Option<String>,
     /// The spawn's LIVE WORK-LINE (spec 19a, c4): the unit's criterion, copied from the
     /// [`SpawnRequest::title`] so it rides the SLIM manifest the thin driver actually reads.
@@ -1810,16 +1815,15 @@ mod tests {
             item.cargo_target_dir.is_none(),
             "no unit worktree, no per-unit location"
         );
+        let json = serde_json::to_value(&item).unwrap();
         assert!(
-            !serde_json::to_string(&item)
-                .unwrap()
-                .contains("cargo_target_dir"),
-            "omitted, not null, when absent"
+            json.get("cargo_target_dir").is_some_and(|v| v.is_null()),
+            "an explicit null when absent, so the courier schema can require the key: {json}"
         );
     }
 
     #[test]
-    fn wave_item_marker_path_is_absent_from_a_pure_fold_and_omitted_when_unset() {
+    fn wave_item_marker_path_is_absent_from_a_pure_fold_and_null_on_the_wire_when_unset() {
         // `WaveItem::from` cannot know the scratch root or run id, so it leaves the resolved
         // marker path absent; `rigger step` stamps it. An absent marker path is omitted from
         // the wire (like an unbounded spawn's), so a slim manifest stays slim.
@@ -1828,8 +1832,9 @@ mod tests {
         assert_eq!(item.marker_path, None, "a pure fold leaves the path unset");
         let json = serde_json::to_value(&item).unwrap();
         assert!(
-            !json.as_object().unwrap().contains_key("marker_path"),
-            "an unstamped marker path is omitted from the wire"
+            json.get("marker_path").is_some_and(|v| v.is_null()),
+            "an unstamped marker path is an explicit null on the wire, so the courier schema \
+             can require the key: {json}"
         );
 
         // Once stamped (as cmd_step does from liveness::marker_path), it rides the wire so the
