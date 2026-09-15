@@ -162,17 +162,27 @@
 //! byte-exact re-encoding through a struct that lacks it). CLAIM 4 ("the report still cites
 //! file:line from the unguarded lines file") had NO test anywhere before this unit, unit-level
 //! or periphery - `the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_
-//! records_them` below closes it, reading the PERSISTED report and the PERSISTED
+//! records_them` below closes it for section 4.3, reading the PERSISTED report and the PERSISTED
 //! `DEAD_CODE_LINES_PATH` directly, joined by array position (never a `(file, name)` lookup -
 //! `src/ingest.rs`'s own `ingest_project` is ambiguous, two distinct candidates sharing one bare
 //! name in one file, so a lookup would silently resolve every citation to whichever entry comes
-//! first). EXEMPT (out of periphery reach): CLAIM 2 (pin-bump byte-identical) and CLAIM 3
-//! (merge-friendly) both require regenerating over a synthetic fixture tree via
-//! `build_dead_code_candidates`/`scan_tree`, private to `tests/simplification_audit.rs`'s own
-//! `mod tests` - this layer never authors or edits the unit's inside-out unit tests. Both claims
-//! are proven there for the responsibility map and (all four claims) the duplication catalog, but
-//! absent for dead-code - a real Done-when gap this file cannot close from outside, flagged for
-//! the `sdet` review lens against the implementer, not silently worked around here.
+//! first). ROUND 4 (`adj-u90c2-r3-verdict-reject` named section 6 item 0, the dead-code deletion
+//! list, alongside sections 1/4.3 as needing the identical sidecar-sourcing fix - the producer
+//! delivered it, `render_dead_code_deletion_list` now takes an explicit `lines:
+//! &[DeadCodeCandidateLines]` param, but no periphery test closed CLAIM 4 for that site):
+//! `the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactly_as_the_lines_
+//! sibling_records_them` below closes it the same way, filtered to `disposition == "delete"` (the
+//! deletion list's own scope) and joined by the SAME array position as section 4.3's test, not
+//! re-sorted. CLAIM 2 (pin-bump byte-identical) and CLAIM 3 (merge-friendly) both require
+//! regenerating over a synthetic fixture tree via `build_dead_code_candidates`/`scan_tree`,
+//! private to `tests/simplification_audit.rs`'s own `mod tests` - this layer never authors or
+//! edits the unit's inside-out unit tests. Both claims are proven there for dead-code.json too as
+//! of round 2 (`u90c2-r2-complete`; independently reconfirmed by the round-3 adjudicator,
+//! `sdet-u90c2-r3-deadcode-map-claim-gap-confirmed-closed` inside `adj-u90c2-r3-verdict-reject` -
+//! CLAIM markers 1/2/3 at tests/simplification_audit.rs:10428/10482/10520 on the current, round-4
+//! tree; the adjudicator's own citation was against the pre-round-4 line count) - EXEMPT here, not
+//! a gap: still out of periphery reach by the same white-box-only reasoning, now genuinely closed
+//! rather than merely claimed.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -921,6 +931,104 @@ fn the_committed_report_cites_dead_code_file_line_exactly_as_the_lines_sibling_r
             "report section 4.3 cites {name} ({file}:{line}), but {DEAD_CODE_LINES_PATH} records \
              line {} for that same candidate",
             entry.line
+        );
+    }
+}
+
+/// Section 6 item 0's own per-file deletion list (`render_dead_code_deletion_list`'s own
+/// template: `` - `{file}`: `{name}` (line {N}), ... ``, one line per file, entries within a file
+/// comma-joined on the SAME line), extracted from the section between its own
+/// "#### 0. Delete the dead-code set" heading and the next "#### " heading so a `src/some.rs:N`
+/// appearing in some OTHER plan item's free prose is never mistaken for one of this list's
+/// mechanically-rendered citations. Each per-file line is captured whole first (`line_re`), then
+/// its own comma-joined entries are pulled out in order (`entry_re`) - a single combined regex
+/// cannot distinguish "which file does this entry belong to" once more than one file groups onto
+/// the report, since entries never repeat their file inline.
+fn section_6_deletion_list_citations(report: &str) -> Vec<(String, String, usize)> {
+    let start = report
+        .find("#### 0. Delete the dead-code set")
+        .expect("report has a '#### 0. Delete the dead-code set' heading");
+    let rest = &report[start..];
+    let end = rest
+        .find("\n#### ")
+        .map(|i| i + start)
+        .unwrap_or(report.len());
+    let section = &report[start..end];
+    let line_re = regex::Regex::new(r"(?m)^  - `([^`]+)`: (.+)$").expect("valid regex");
+    let entry_re = regex::Regex::new(r"`([^`]+)` \(line (\d+)\)").expect("valid regex");
+    let mut out = Vec::new();
+    for line_cap in line_re.captures_iter(section) {
+        let file = line_cap[1].to_string();
+        for entry_cap in entry_re.captures_iter(&line_cap[2]) {
+            out.push((
+                file.clone(),
+                entry_cap[1].to_string(),
+                entry_cap[2].parse().expect("digits"),
+            ));
+        }
+    }
+    out
+}
+
+/// CLAIM 4, section 6 item 0 (round 4's own extent - `adj-u90c2-r3-verdict-reject` named this
+/// site alongside sections 1/4.3): every mechanically-rendered `(name, file, line)` citation in
+/// the COMMITTED report's dead-code deletion list matches, in order, the PERSISTED
+/// `DEAD_CODE_LINES_PATH` filtered to `disposition == "delete"` in
+/// [`deserialize_committed_dead_code`]. `render_dead_code_deletion_list` filters
+/// `real_dead_code_candidates()`/`real_dead_code_lines()` to `Disposition::Delete` with no
+/// re-sort, so the same filter-in-place over the two ALREADY position-joined and (file,
+/// line)-ascending committed files (proven by
+/// `the_committed_dead_code_json_and_its_lines_sibling_are_position_joined_and_ascending_by_file_
+/// then_line` above) reproduces the identical sequence. A `(file, name)` lookup would be wrong for
+/// the same reason section 4.3's test avoids one: `src/ingest.rs`'s `ingest_project` is ambiguous.
+#[test]
+fn the_committed_report_section_6_deletion_list_cites_dead_code_file_line_exactly_as_the_lines_sibling_records_them(
+) {
+    let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
+        .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
+    let citations = section_6_deletion_list_citations(&report);
+    let candidates = deserialize_committed_dead_code();
+    let lines = deserialize_committed_dead_code_lines();
+    assert_eq!(
+        candidates.len(),
+        lines.len(),
+        "{DEAD_CODE_PATH} and {DEAD_CODE_LINES_PATH} must be position-joined (same length) for \
+         this filter-in-place comparison to be valid"
+    );
+    let expected: Vec<(String, String, usize)> = candidates
+        .iter()
+        .zip(lines.iter())
+        .filter(|(c, _)| c.disposition == "delete")
+        .map(|(_, l)| (l.file.clone(), l.name.clone(), l.line))
+        .collect();
+    assert!(
+        !expected.is_empty(),
+        "zero delete-dispositioned entries in {DEAD_CODE_PATH} - the disposition filter or the \
+         committed data is broken"
+    );
+    assert_eq!(
+        citations.len(),
+        expected.len(),
+        "the report's section 6 deletion list cites {} candidate(s) but {DEAD_CODE_PATH} \
+         records {} delete-dispositioned entries - they must list the same candidates in the \
+         same order (both come from the same underlying position-joined, filtered sequence)",
+        citations.len(),
+        expected.len()
+    );
+    for (i, ((file, name, line), (efile, ename, eline))) in
+        citations.iter().zip(expected.iter()).enumerate()
+    {
+        assert_eq!(
+            (file.as_str(), name.as_str()),
+            (efile.as_str(), ename.as_str()),
+            "deletion-list citation {i} in {REPORT_PATH} is {name} ({file}), but the same-index \
+             delete-dispositioned entry in {DEAD_CODE_LINES_PATH} is {ename} ({efile}) - report \
+             order and the filtered lines-sibling order have diverged",
+        );
+        assert_eq!(
+            line, eline,
+            "report section 6 deletion list cites {name} ({file}:{line}), but \
+             {DEAD_CODE_LINES_PATH} records line {eline} for that same candidate",
         );
     }
 }
