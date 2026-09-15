@@ -160,8 +160,12 @@ const OUTER_WALL_CLOCK_SEC = Number(A.outer_wall_clock) > 0 ? Number(A.outer_wal
 
 // The JSON shape `rigger step` prints (see spawn::Step / spawn::SpawnRequest): the wave it
 // newly parked and a `done` fixpoint flag. The wave items carry everything the driver needs
-// to spawn each agent. Optional SpawnRequest fields are omitted from the wire when empty, so
-// only id/unit/stage/prompt are required; extra fields are tolerated (additionalProperties).
+// to spawn each agent. The fields the driver builds a worker's instructions from - `dir`,
+// `max_wall_clock`, `marker_path`, `cargo_target_dir` - are ALWAYS on the wire (null when
+// absent) and REQUIRED here: the wave arrives through a courier agent's structured return,
+// and a key this schema does not require is a key the courier can drop while retyping (it
+// dropped `marker_path` and `cargo_target_dir` on 2026-09-15, costing a worker its heartbeat
+// and its build location). Other optional fields are omitted when empty and tolerated.
 // `halted` is the spawn-budget HALT reason (Gap 13): present (distinct from a clean `done`)
 // when the breaker stopped the run with work undone, so the driver stops LOUDLY on it.
 // `error` is the courier's own out-of-band channel: if `rigger step` itself fails, the
@@ -184,11 +188,15 @@ const STEP = {
       items: {
         type: 'object',
         additionalProperties: true,
-        required: ['id', 'unit', 'stage'],
+        required: ['id', 'unit', 'stage', 'dir', 'max_wall_clock', 'marker_path', 'cargo_target_dir'],
         properties: {
           id: { type: 'string' },
           unit: { type: 'string' },
           stage: { type: 'string' },
+          // Always present on the wire (see the note above); null when the spawn has none.
+          max_wall_clock: { type: ['integer', 'null'] },
+          marker_path: { type: ['string', 'null'] },
+          cargo_target_dir: { type: ['string', 'null'] },
           // The live work-line (spec 19a, c4): the unit's criterion, carried on the wave item
           // so the driver narrates the actual WORK, not just `${unit}:${stage}`. Omitted from
           // the wire for an untitled spawn; wave items stay open (additionalProperties: true).
