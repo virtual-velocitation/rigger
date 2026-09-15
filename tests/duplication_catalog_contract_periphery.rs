@@ -407,13 +407,16 @@ fn the_committed_catalog_and_its_lines_sibling_are_position_joined_by_id_and_sit
 
 const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
 
+/// One cited site's `(file, start_line, end_line)`.
+type CitedSite = (String, usize, usize);
+
 /// Section 2's per-cluster site citations (`render_section_2`'s own template:
 /// `` - `{file}:{start}-{end}` `{name}` ``), grouped by `#### \`dup-NNNN\`` cluster header, in
 /// report order. Bounded to the "### Clusters" span and cut off before "### Adversarial sample" -
 /// that subsection's own bullets share the identical citation shape (the same real sites, read
 /// for a different purpose) and would otherwise be misattributed to whichever cluster renders
 /// last.
-fn section_2_cluster_site_citations(report: &str) -> Vec<(String, Vec<(String, usize, usize)>)> {
+fn section_2_cluster_site_citations(report: &str) -> Vec<(String, Vec<CitedSite>)> {
     let start = report
         .find("### Clusters (")
         .expect("report has a ### Clusters heading");
