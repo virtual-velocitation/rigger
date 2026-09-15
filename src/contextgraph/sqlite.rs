@@ -9,16 +9,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::{
-    CallEdge, CallGraph, CallNode, Direction, Edge, Error, Graph, Node, Projection,
+    CallEdge, CallGraph, CallNode, Direction, Edge, Error, Graph, Node, Projection, KIND_AGENT,
     KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
-    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE, KIND_LESSON,
-    KIND_RATIONALE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
-    REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_RAISED, REL_REALIZES, REL_REFERENCES,
-    REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
-    TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
-    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
-    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
+    KIND_LESSON, KIND_RATIONALE, KIND_STAGE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
+    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED,
+    REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES,
+    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
+    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
+    TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
+    TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
+    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{Event, Position};
 use crate::spawn::{SpawnResult, TYPE_SPAWN_RESULT};
@@ -1459,26 +1460,30 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             }
         }
         TYPE_DOC_CONCEPT_EXTRACTED => {
-            // Spec 29b criterion 1: one design-intent concept the doc extraction pass emitted. Fold
-            // it into a design-doc / arch-decision / handbook-rule / rationale node, so the
-            // design-intent layer lives in the event-sourced projection alongside the code half -
-            // the reference architecture becomes a set of queryable nodes in the very graph it
-            // specifies. ALWAYS compiled: the light lane folds a design-intent log with the
-            // extraction pass absent, which is why the node kinds and this arm live outside the
-            // feature that gates the extraction, mirroring the 29a CodeEntityExtracted arm.
+            // Spec 29b criterion 1 (plus spec 92 criterion 2's SAME arm, never a second one): one
+            // entity a definition-extraction pass emitted - the design-intent pass's design-doc /
+            // arch-decision / handbook-rule / rationale, or the workflow-definition pass's
+            // stage / gate / agent role read off `.rigger/workflow.yml` - folded into a node of that
+            // kind, so both layers live in the event-sourced projection alongside the code half.
+            // ALWAYS compiled: the light lane folds either log with its extraction pass absent,
+            // which is why the node kinds and this arm live outside the feature that gates
+            // extraction, mirroring the 29a CodeEntityExtracted arm.
             //
-            // The four kinds are matched exactly; a payload carrying any other kind string folds
-            // nothing (defensive - the emit only ever produces these four). Project-scoped like
-            // every arm (spec 28). The id is alias-resolved exactly as the artifact-producing arms
-            // resolve their paths, so a design-doc whose id is a doc path is the SAME one-graph node
-            // that a decision GOVERNS or a lesson is ABOUT (addendum 6.1 single id space) - the
-            // `ensure_node` promotion below settles which kind wins.
+            // The seven kinds are matched exactly; a payload carrying any other kind string folds
+            // nothing (defensive - the two passes only ever produce these seven). Project-scoped
+            // like every arm (spec 28). The id is alias-resolved exactly as the artifact-producing
+            // arms resolve their paths, so a design-doc (or a `stage:<name>` workflow node) is the
+            // SAME one-graph node that a decision GOVERNS or a lesson is ABOUT (addendum 6.1 single
+            // id space) - the `ensure_node` promotion below settles which kind wins.
             let c: super::DocConceptExtracted = serde_json::from_slice(&e.data).map_err(be)?;
             let kind = match c.kind.as_str() {
                 KIND_DESIGN_DOC => KIND_DESIGN_DOC,
                 KIND_ARCH_DECISION => KIND_ARCH_DECISION,
                 KIND_HANDBOOK_RULE => KIND_HANDBOOK_RULE,
                 KIND_RATIONALE => KIND_RATIONALE,
+                KIND_STAGE => KIND_STAGE,
+                KIND_GATE => KIND_GATE,
+                KIND_AGENT => KIND_AGENT,
                 _ => return Ok(()),
             };
             let id = resolve_in_tx(tx, &c.id);
@@ -1491,31 +1496,34 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             )?;
         }
         TYPE_DOC_LINK_EXTRACTED => {
-            // Spec 29b criterion 2: one design-intent link the doc extraction pass emitted. Fold it
-            // into a typed design-intent edge - design-doc --SPECIFIES--> code, arch-decision
-            // --CONSTRAINS--> code, handbook-rule --GOVERNS--> code (REUSING REL_GOVERNS, never a
-            // second governs relation), rationale --explains--> code, and design-doc --references-->
-            // doc - so the design-intent layer's links live in the event-sourced projection
+            // Spec 29b criterion 2 (plus spec 92 criterion 2's SAME arm, never a second one): one
+            // link a definition-extraction pass emitted. Fold it into a typed edge - the
+            // design-intent pass's design-doc --SPECIFIES--> code, arch-decision --CONSTRAINS-->
+            // code, handbook-rule --GOVERNS--> code (REUSING REL_GOVERNS, never a second governs
+            // relation), rationale --explains--> code, design-doc --references--> doc; or the
+            // workflow-definition pass's stage --NEEDS--> stage, stage --RUNS--> gate/agent, and
+            // agent --REVIEWS--> stage - so both layers' links live in the event-sourced projection
             // alongside the code half; a subgraph traversal from a touched file then reaches the RA
-            // section that designed it and the decision that constrains it. ALWAYS compiled: the
-            // light lane folds a design-intent log with the extraction pass absent, which is why the
-            // edge relations and this arm live outside the feature that gates the extraction,
-            // mirroring the 29a EdgeInferred arm.
+            // section that designed it, the decision that constrains it, or the stage that owns it.
+            // ALWAYS compiled: the light lane folds either log with its extraction pass absent,
+            // which is why the edge relations and this arm live outside the feature that gates
+            // extraction, mirroring the 29a EdgeInferred arm.
             //
-            // The five relations are matched exactly; a payload carrying any other relation string
-            // folds nothing (defensive - the emit only ever produces these five), mirroring the
-            // concept arm's kind guard. Every design-intent link is an explicit design fact recorded
-            // on the log, so it folds at TIER_EXTRACTED (addendum 6.2 - the precise seed). Both
+            // The eight relations are matched exactly; a payload carrying any other relation string
+            // folds nothing (defensive - the two passes only ever produce these eight), mirroring
+            // the concept arm's kind guard. Every such link is an explicit fact recorded on the log,
+            // so it folds at TIER_EXTRACTED (addendum 6.2 - the precise seed) for both passes. Both
             // endpoints are alias-resolved and ensured exactly as the artifact-producing arms
             // resolve their paths, so the edge lands on the SAME one-graph nodes a decision GOVERNS,
-            // a lesson is ABOUT, code was extracted from (spec 29a), or design intent was ingested
-            // into (criterion 1, addendum 6.1 single id space) - never a parallel node that only
-            // coincidentally shares a literal string. The endpoints are ensured as the generic
-            // KIND_ARTIFACT role: a design-doc from-node folded by criterion 1 keeps its specific
-            // kind (ensure_node never demotes), a bare target promotes to a file / design-doc when
-            // its own extraction folds, and the edge never dangles when it folds before its
-            // endpoints. This is the single edge-fold authority for design-intent links; c2 owns the
-            // edge relations, criterion 1 owns the node kinds.
+            // a lesson is ABOUT, code was extracted from (spec 29a), or design/definition intent was
+            // ingested into (criterion 1, addendum 6.1 single id space) - never a parallel node that
+            // only coincidentally shares a literal string. The endpoints are ensured as the generic
+            // KIND_ARTIFACT role: a design-doc (or `stage:<name>` / `gate:<name>` / `agent:<name>`)
+            // from-node folded by criterion 1 keeps its specific kind (ensure_node never demotes), a
+            // bare target promotes to its specific kind when its own extraction folds, and the edge
+            // never dangles when it folds before its endpoints. This is the single edge-fold
+            // authority for both passes' links; c2 owns the edge relations, criterion 1 owns the
+            // node kinds.
             let l: super::DocLinkExtracted = serde_json::from_slice(&e.data).map_err(be)?;
             let rel = match l.rel.as_str() {
                 REL_SPECIFIES => REL_SPECIFIES,
@@ -1523,6 +1531,9 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 REL_GOVERNS => REL_GOVERNS,
                 REL_EXPLAINS => REL_EXPLAINS,
                 REL_DOC_REFERENCES => REL_DOC_REFERENCES,
+                REL_NEEDS => REL_NEEDS,
+                REL_RUNS => REL_RUNS,
+                REL_REVIEWS => REL_REVIEWS,
                 _ => return Ok(()),
             };
             let from = resolve_in_tx(tx, &l.from);
@@ -4393,6 +4404,127 @@ mod tests {
                 "docs/addendum.md"
             ),
             "a design-doc references the doc it cites; got {:?}",
+            g.edges
+        );
+    }
+
+    #[test]
+    fn workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges() {
+        // Spec 92 criterion 2 (THE WHOLE PRODUCT IS COVERED): the workflow-definition
+        // extraction pass reuses this SAME DocConceptExtracted/DocLinkExtracted fold (never a
+        // second entity/edge-fold authority) to turn `.rigger/workflow.yml`'s stages, gates and
+        // agents into graph entities with needs/runs/reviews relations - the Design text's own
+        // `stage:implement` / `gate:mutation` / `agent:rust-engineer` example. Built by hand here
+        // (no extraction dependency) so the fold is proven in BOTH feature lanes, exactly like
+        // the design-intent tests above.
+        let p = Projector::open(":memory:", "test").unwrap();
+        apply_doc_concept(
+            &p,
+            1,
+            KIND_STAGE,
+            "stage:implement",
+            "implement",
+            ".rigger/workflow.yml",
+        );
+        apply_doc_concept(
+            &p,
+            2,
+            KIND_GATE,
+            "gate:mutation",
+            "mutation",
+            ".rigger/workflow.yml",
+        );
+        apply_doc_concept(
+            &p,
+            3,
+            KIND_AGENT,
+            "agent:rust-engineer",
+            "rust-engineer",
+            ".rigger/workflow.yml",
+        );
+        apply_doc_concept(
+            &p,
+            4,
+            KIND_STAGE,
+            "stage:plan-critique",
+            "plan-critique",
+            ".rigger/workflow.yml",
+        );
+        apply_doc_concept(
+            &p,
+            5,
+            KIND_AGENT,
+            "agent:adjudicator",
+            "adjudicator",
+            ".rigger/workflow.yml",
+        );
+
+        apply_doc_link(&p, 6, "stage:implement", REL_NEEDS, "stage:plan-critique");
+        apply_doc_link(&p, 7, "stage:implement", REL_RUNS, "gate:mutation");
+        apply_doc_link(&p, 8, "stage:implement", REL_RUNS, "agent:rust-engineer");
+        apply_doc_link(
+            &p,
+            9,
+            "agent:adjudicator",
+            REL_REVIEWS,
+            "stage:plan-critique",
+        );
+
+        let g = p
+            .subgraph(
+                &[
+                    "stage:implement".to_string(),
+                    "stage:plan-critique".to_string(),
+                    "gate:mutation".to_string(),
+                    "agent:rust-engineer".to_string(),
+                    "agent:adjudicator".to_string(),
+                ],
+                1,
+            )
+            .unwrap();
+        let kind_of = |id: &str| g.nodes.iter().find(|n| n.id == id).map(|n| n.kind.as_str());
+        assert_eq!(
+            kind_of("stage:implement"),
+            Some(KIND_STAGE),
+            "a workflow stage folds into a stage node; got {:?}",
+            g.nodes
+        );
+        assert_eq!(
+            kind_of("gate:mutation"),
+            Some(KIND_GATE),
+            "a workflow gate folds into a gate node; got {:?}",
+            g.nodes
+        );
+        assert_eq!(
+            kind_of("agent:rust-engineer"),
+            Some(KIND_AGENT),
+            "a workflow agent role folds into an agent node; got {:?}",
+            g.nodes
+        );
+
+        let has_edge = |from: &str, rel: &str, to: &str| {
+            g.edges
+                .iter()
+                .any(|e| e.from == from && e.rel == rel && e.to == to && e.tier == TIER_EXTRACTED)
+        };
+        assert!(
+            has_edge("stage:implement", REL_NEEDS, "stage:plan-critique"),
+            "a stage NEEDS the stage its needs: list names; got {:?}",
+            g.edges
+        );
+        assert!(
+            has_edge("stage:implement", REL_RUNS, "gate:mutation"),
+            "a stage RUNS the gates its gates: list names; got {:?}",
+            g.edges
+        );
+        assert!(
+            has_edge("stage:implement", REL_RUNS, "agent:rust-engineer"),
+            "a stage RUNS its assigned implementer agent; got {:?}",
+            g.edges
+        );
+        assert!(
+            has_edge("agent:adjudicator", REL_REVIEWS, "stage:plan-critique"),
+            "a reviewer agent REVIEWS the stage its verdict gates; got {:?}",
             g.edges
         );
     }

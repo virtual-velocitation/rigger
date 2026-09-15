@@ -87,9 +87,10 @@ pub fn append_and_fold_batch(
 }
 
 /// What a walk did, reported back to the caller. `batches_emitted` counts the file batches the walk
-/// handed to `emit` (code and design). `workers_engaged` is how many parse-worker threads actually
-/// ran the code half: `> 1` proves the parse fanned across cores, and it is an HONEST count (the
-/// distinct threads that ran), so a serial walk (width 1) reports exactly 1.
+/// handed to `emit` (code, design, and the workflow definition). `workers_engaged` is how many
+/// parse-worker threads actually ran the code half: `> 1` proves the parse fanned across cores, and
+/// it is an HONEST count (the distinct threads that ran), so a serial walk (width 1) reports
+/// exactly 1.
 #[cfg(feature = "symbols")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IngestStats {
@@ -97,9 +98,10 @@ pub struct IngestStats {
     pub workers_engaged: usize,
 }
 
-/// Walk the project tree at `root` and, for every extraction event the code (spec 29a) and
-/// design (spec 29b) passes emit, call `emit(key, event)` with the event's deterministic content
-/// key `<prefix>/<file>@<hash>#<i>` (`gc` for code, `gd` for design). The key is a pure function
+/// Walk the project tree at `root` and, for every extraction event the code (spec 29a), design
+/// (spec 29b), and workflow-definition (spec 92 criterion 2) passes emit, call `emit(key, event)`
+/// with the event's deterministic content key `<prefix>/<file>@<hash>#<i>` (`gc` for code, `gd`
+/// for design, `gw` for the workflow definition). The key is a pure function
 /// of the batch's bytes ALONE, so the same content always yields the same keys and different
 /// content always yields different ones. A key is therefore a CONTENT GENERATION of a file, not a
 /// mark that the file has been seen: whether a given key is redundant is a question about the
@@ -179,10 +181,10 @@ pub fn ingest_project_batched_paced(
 }
 
 /// The ONE walk both public views share: parse/lower the project at `root` and hand each file's
-/// WHOLE keyed batch to `on_batch`, in sorted file-path order (the code half first, then the design
-/// half), each batch in `#i` order. The per-event [`ingest_project_paced`] and the per-batch
-/// [`ingest_project_batched_paced`] are both thin views over this, so there is no forked walk to
-/// drift - the emit order is defined once, here.
+/// WHOLE keyed batch to `on_batch`, in sorted file-path order (the code half first, then the
+/// design half, then the workflow-definition half), each batch in `#i` order. The per-event
+/// [`ingest_project_paced`] and the per-batch [`ingest_project_batched_paced`] are both thin views
+/// over this, so there is no forked walk to drift - the emit order is defined once, here.
 #[cfg(feature = "symbols")]
 fn walk_batches(
     root: &str,
@@ -203,6 +205,17 @@ fn walk_batches(
     let design_batches = crate::grounder::design::events::project_batches(root);
     for (file, batch) in &design_batches {
         key_batch("gd", file, batch, &mut on_batch);
+        batches_emitted += 1;
+    }
+    // The workflow-DEFINITION half (spec 92 criterion 2): `.rigger/workflow.yml`'s stages, gates
+    // and agent roles, its own `gw` identity so this ONE file's generation can never collide with
+    // (or retire) a same-named code/design batch - a project could, in principle, have a source
+    // file at that same relative path under a different prefix. One batch at most (the file is
+    // either fully readable and parseable, or it contributes nothing - see
+    // `workflowdef::project_batches`'s own doc), so this loop runs at most once.
+    let workflowdef_batches = crate::grounder::workflowdef::project_batches(root);
+    for (file, batch) in &workflowdef_batches {
+        key_batch("gw", file, batch, &mut on_batch);
         batches_emitted += 1;
     }
     IngestStats {
@@ -712,6 +725,38 @@ mod tests {
             parallel_stats.batches_emitted >= 6,
             "each of the six source files contributes a code batch; got {}",
             parallel_stats.batches_emitted
+        );
+    }
+
+    /// Spec 92 criterion 2: the workflow-definition pass rides this SAME shared walk as the code
+    /// and design halves, under its own `gw` prefix, so a live run's ingest and a cold `rigger
+    /// graph build` both pick up `.rigger/workflow.yml` with no separate wiring at either call
+    /// site - proving the pipeline WIRING, not just `workflowdef`'s own standalone extraction.
+    #[test]
+    fn the_walk_ingests_the_workflow_definition_alongside_code_and_design() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn kept() {}\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".rigger")).unwrap();
+        std::fs::write(
+            dir.path().join(".rigger").join("workflow.yml"),
+            "stages:\n  implement:\n    agent: rust-engineer\n    gates: [fmt]\n\ngates:\n  fmt: { run: \"cargo fmt --check\" }\n",
+        )
+        .unwrap();
+        let root = dir.path().to_str().unwrap();
+
+        let (seq, _stats) = walk(root, 1);
+        assert!(
+            seq.iter()
+                .any(|(k, _, _)| k.starts_with("gw/.rigger/workflow.yml@")),
+            "the workflow-definition batch must ride the shared walk under its own gw prefix, \
+             got keys {:?}",
+            seq.iter().map(|(k, _, _)| k).collect::<Vec<_>>()
+        );
+        assert!(
+            seq.iter().any(|(k, t, _)| k.starts_with("gc/")
+                && t == crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED),
+            "the code half must still ingest alongside it, got {:?}",
+            seq.iter().map(|(k, t, _)| (k, t)).collect::<Vec<_>>()
         );
     }
 

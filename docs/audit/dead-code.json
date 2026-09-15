@@ -775,7 +775,7 @@
       }
     ],
     "disposition": "delete",
-    "reason": "ingest_project (the #[cfg(feature = \"symbols\")] single-event lane) has no production caller. Production calls ingest_project_batched (conductor.rs:8050/15473, main.rs:4067) exclusively - the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession. Ambiguous with its #[cfg(not(feature = \"symbols\"))] sibling at ingest.rs:468 (the textual scanner sees two same-named definitions where rustc, feature-gated, sees one); both carry the identical finding and disposition."
+    "reason": "ingest_project (the #[cfg(feature = \"symbols\")] single-event lane) has no production caller. Production calls ingest_project_batched (conductor.rs:8050/15473, main.rs:4067) exclusively - the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession. Ambiguous with its #[cfg(not(feature = \"symbols\"))] sibling at ingest.rs:481 (the textual scanner sees two same-named definitions where rustc, feature-gated, sees one); both carry the identical finding and disposition. (Line shifted 124 -> 126: spec 92 criterion 2 grew two doc-comment lines directly above this fn - one added clause each in the ingest_project_batched_paced doc block and the shared-walk doc block immediately above it - naming the new workflow- definition ('gw') batch this file's walk now also emits.)"
   },
   {
     "name": "ingest_project",
@@ -809,7 +809,7 @@
       }
     ],
     "disposition": "delete",
-    "reason": "ingest_project (the #[cfg(not(feature = \"symbols\"))] light-lane no-op) has no production caller, for the identical reason as its #[cfg(feature = \"symbols\")] sibling at ingest.rs:124: production calls ingest_project_batched exclusively on both lanes."
+    "reason": "ingest_project (the #[cfg(not(feature = \"symbols\"))] light-lane no-op) has no production caller, for the identical reason as its #[cfg(feature = \"symbols\")] sibling at ingest.rs:126: production calls ingest_project_batched exclusively on both lanes. (Line shifted 468 -> 481: the same two-line doc-comment growth above, plus the workflow-definition batch loop spec 92 criterion 2 inserted into walk_batches (11 lines, folding `workflowdef::project_batches` into the shared walk under its own `gw` key) sitting between this fn and its symbols-feature sibling.)"
   },
   {
     "name": "fully_done",
