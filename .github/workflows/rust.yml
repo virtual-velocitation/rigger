@@ -11,8 +11,24 @@ on:
 # unprivileged user namespaces there, so opt out explicitly - at the workflow level, so
 # EVERY job that runs a test binary inherits it (the kurrentdb job failed exactly this
 # way when the opt-out lived only in build-test). Never set this on a workstation.
+#
+# The git-hermeticity block below (spec 90) mirrors .cargo/pidns-runner.sh's own exported
+# set verbatim - tests/hermetic_test_git_audit.rs cross-checks the two never drift apart -
+# at workflow level for the identical reason RIGGER_PIDNS is here: EVERY job that runs a
+# test binary inherits it, same fixed identity and no-signing/no-prompt guarantee CI gets
+# whether or not a given job's cargo invocation happens to reach the runner script itself.
 env:
   RIGGER_PIDNS: "off"
+  GIT_CONFIG_COUNT: "2"
+  GIT_CONFIG_KEY_0: "commit.gpgsign"
+  GIT_CONFIG_VALUE_0: "false"
+  GIT_CONFIG_KEY_1: "tag.gpgsign"
+  GIT_CONFIG_VALUE_1: "false"
+  GIT_AUTHOR_NAME: "rigger-test"
+  GIT_AUTHOR_EMAIL: "rigger-test@localhost"
+  GIT_COMMITTER_NAME: "rigger-test"
+  GIT_COMMITTER_EMAIL: "rigger-test@localhost"
+  GIT_TERMINAL_PROMPT: "0"
 
 jobs:
   # The default build now INCLUDES turbovec (it is a default cargo feature), so this
