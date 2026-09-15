@@ -4209,10 +4209,14 @@ fn cmd_graph_show(entity: &str) -> Res {
     Ok(())
 }
 
-/// Print one located entity for `rigger graph --show` (spec 58): the site/kind/degree header, then
-/// the line-numbered body bounded through the shared multi-grammar symbols authority - or an
-/// explicit note (a drifted location, or a build without the extraction grammar) in place of the
-/// body, so the surface is never silently wrong (a graceful degrade, never an error).
+/// Print one located entity for `rigger graph --show` (spec 58; spec 92 criterion 1, FRESH ON EVERY
+/// INTEGRATION, for the header): the site/kind/degree header, then the line-numbered body bounded
+/// through the shared multi-grammar symbols authority - or an explicit note (a drifted location this
+/// tree cannot resolve even by name, or a build without the extraction grammar) in place of the body,
+/// so the surface is never silently wrong (a graceful degrade, never an error). When
+/// [`definition_body`] HEALS a drifted recorded line to the entity's live one, the header prints the
+/// LIVE site with the recorded one noted alongside it (`"recorded line N, now M"`) rather than
+/// silently swapping one location for the other with no trace of the drift.
 fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
     let kind = if site.kind.is_empty() {
         "?"
@@ -4227,16 +4231,14 @@ fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
         .map(|(_, n)| n)
         .unwrap_or(site.id.as_str());
     println!("show {}", site.id);
-    println!(
-        "  site: {}:{}   kind {}   degree {}",
-        site.file, site.line, kind, site.degree
-    );
     match definition_body(&site.file, site.line, name) {
         ShowBody::Lines {
+            start,
             lines,
             omitted,
             extent_end,
         } => {
+            print_site_header(site, kind, start);
             for (n, text) in lines {
                 println!("  {n:>6} | {text}");
             }
@@ -4248,47 +4250,91 @@ fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
                 );
             }
         }
-        ShowBody::Note(reason) => println!("  ({reason})"),
+        ShowBody::Note(reason) => {
+            print_site_header(site, kind, site.line);
+            println!("  ({reason})");
+        }
     }
 }
 
-/// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58).
+/// The site/kind/degree header line (spec 92 criterion 1): `live_line` is where the body actually
+/// came from (or, for a [`ShowBody::Note`], simply the recorded line - nothing was located). When it
+/// agrees with the entity's RECORDED line (`site.line`) - the overwhelmingly common case, and every
+/// case before spec 92 - the header is exactly the spec-58 shape. When a name-only fallback healed a
+/// drifted recorded line to a different live one, the header shows the LIVE line as the site (it is
+/// what the body below is FROM) and notes the recorded line beside it, so the drift is visible rather
+/// than silently resolved.
+fn print_site_header(site: &contextgraph::sqlite::EntitySite, kind: &str, live_line: u32) {
+    if live_line != site.line {
+        println!(
+            "  site: {}:{}   kind {}   degree {}   (recorded line {}, now {})",
+            site.file, live_line, kind, site.degree, site.line, live_line
+        );
+    } else {
+        println!(
+            "  site: {}:{}   kind {}   degree {}",
+            site.file, site.line, kind, site.degree
+        );
+    }
+}
+
+/// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58; spec 92
+/// criterion 1).
 enum ShowBody {
-    /// The line-numbered body window `[start, end]`: `omitted` is how many lines were dropped past
-    /// the [`SHOW_MAX_BODY_LINES`] clamp (`0` when the whole extent fit), and `extent_end` is the
-    /// extent's true last line, so the caller can print an honest clamp note when `omitted > 0`.
+    /// The line-numbered body window `[start, end]`: `start` is where the body actually begins - the
+    /// entity's RECORDED line when it still holds the definition, or the LIVE line a name-only
+    /// fallback healed a drift to (spec 92) - so the caller always knows which line the printed body
+    /// is from. `omitted` is how many lines were dropped past the [`SHOW_MAX_BODY_LINES`] clamp (`0`
+    /// when the whole extent fit), and `extent_end` is the extent's true last line, so the caller can
+    /// print an honest clamp note when `omitted > 0`.
     Lines {
+        start: u32,
         lines: Vec<(u32, String)>,
         omitted: u32,
         extent_end: u32,
     },
-    /// No body could be shown; the string is the human reason (a drifted working-tree location, or
-    /// a build compiled without the extraction grammar). Printed in place of the body so the show
-    /// surface degrades honestly, never guessing or silently truncating.
+    /// No body could be shown; the string is the human reason (a drifted working-tree location this
+    /// tree cannot resolve even by name, or a build compiled without the extraction grammar).
+    /// Printed in place of the body so the show surface degrades honestly, never guessing or
+    /// silently truncating.
     Note(String),
 }
 
 /// Bound and read a located definition's body from the WORKING TREE for `rigger graph --show`
-/// (spec 58). The file is read relative to the git top-level (so a `--show` launched from a
-/// subdirectory still finds it), falling back to the cwd outside a git context.
+/// (spec 58; spec 92 criterion 1, FRESH ON EVERY INTEGRATION). The file is read relative to the git
+/// top-level (so a `--show` launched from a subdirectory still finds it), falling back to the cwd
+/// outside a git context.
 ///
 /// The extent is derived through the SHARED multi-grammar symbols authority, not a hand-rolled
-/// per-language lexer: [`derive_extent_end`] resolves the file's grammar via the symbols registry
-/// and reads the definition's END line from the grammar's OWN tree-sitter node boundary. So a
-/// braced language's closing brace, a Python block's dedent, a Go backtick raw string, and a JS
+/// per-language lexer: [`locate_definition_extent`] resolves the file's grammar via the symbols
+/// registry and reads the definition's line range from the grammar's OWN tree-sitter node boundary.
+/// So a braced language's closing brace, a Python block's dedent, a Go backtick raw string, and a JS
 /// single-quote string carrying a lone `{` are all bounded correctly by the parser - including a
 /// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
 /// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
-/// it). The window is `[start, extent]`, clamped by [`SHOW_MAX_BODY_LINES`]; a clamp reports its
-/// omitted-line count so a bounded body is never read as whole.
+/// it). The window is `[start, extent]` (the RESOLVED `start` - see below), clamped by
+/// [`SHOW_MAX_BODY_LINES`]; a clamp reports its omitted-line count so a bounded body is never read
+/// as whole.
+///
+/// The recorded `start` no longer holding the definition (the graph has not been reindexed since the
+/// code moved) is not, by itself, a reason to refuse: [`locate_definition_extent`] falls back to
+/// locating `name` by a name-only search of the SAME file, healing to the live line when that name is
+/// UNAMBIGUOUS there. [`ShowBody::Lines::start`] then carries that LIVE line rather than the recorded
+/// one, so the caller's header can show the drift instead of hiding it.
 ///
 /// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
-/// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file, the file
-/// cannot be read (a drifted or unknown location), the current tree no longer holds a definition of
-/// that name at that line (a stale location), or this build has no extraction grammar (the light,
-/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound.
+/// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file (a location
+/// that never named a real source line, or one that has drifted past what a within-file name search
+/// can safely resolve - see [`locate_definition_extent`]'s own doc for why these stay hard refusals),
+/// the file cannot be read (a drifted or unknown location), the current tree holds no definition of
+/// that name ANYWHERE in the file (deleted, not merely moved), the name is ambiguous in the file (more
+/// than one live candidate - never guessed), or this build has no extraction grammar (the light,
+/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound or
+/// from an ambiguous candidate.
 fn definition_body(file: &str, start: u32, name: &str) -> ShowBody {
-    // A recorded line of 0 never named a real source line: degrade before any read.
+    // A recorded line of 0 never named a real source line: degrade before any read. (Also covers a
+    // reference-only graph entity with no definition site of its own to search from - see
+    // `locate_definition_extent`'s doc for why this stays a hard, un-healed refusal.)
     if start == 0 {
         return ShowBody::Note(format!(
             "source unavailable at {file}:{start}; the recorded location may be stale"
@@ -4308,45 +4354,69 @@ fn definition_body(file: &str, start: u32, name: &str) -> ShowBody {
     let all: Vec<&str> = text.lines().collect();
     let total = all.len() as u32;
     if start > total {
-        // The recorded line is past end-of-file: the location drifted.
+        // The recorded line is past end-of-file: the location drifted further than a within-file
+        // name search is asked to reach (see locate_definition_extent's doc) - a hard refusal.
         return ShowBody::Note(format!(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    // Derive the extent's end line through the ONE multi-grammar authority. A miss (a drifted
-    // location, or a light-lane build with no grammar) is an explicit note, never a guessed body.
-    let extent_end = match derive_extent_end(file, &text, start, name) {
-        Ok(end) => end.min(total),
+    // Resolve WHERE the body starts (the recorded line, or - spec 92 - a healed live line) and its
+    // extent's end, through the ONE multi-grammar authority. A miss (deleted, ambiguous, or a
+    // light-lane build with no grammar) is an explicit note, never a guessed body.
+    let (live_start, extent_end) = match locate_definition_extent(file, &text, start, name) {
+        Ok((s, e)) => (s, e.min(total)),
         Err(why) => return ShowBody::Note(why),
     };
     // The max window: never dump an unbounded body. A clamp keeps the extent's true end so the
-    // caller can announce the omitted lines.
-    let window_cap = start.saturating_add(SHOW_MAX_BODY_LINES).saturating_sub(1);
-    let printed_end = extent_end.max(start).min(window_cap);
+    // caller can announce the omitted lines. The window is anchored at the RESOLVED start, so a
+    // healed drift is bounded exactly like an unmoved definition would be.
+    let window_cap = live_start
+        .saturating_add(SHOW_MAX_BODY_LINES)
+        .saturating_sub(1);
+    let printed_end = extent_end.max(live_start).min(window_cap);
     let omitted = extent_end.saturating_sub(printed_end);
-    let lines = (start..=printed_end)
+    let lines = (live_start..=printed_end)
         .map(|n| (n, all[(n - 1) as usize].to_string()))
         .collect();
     ShowBody::Lines {
+        start: live_start,
         lines,
         omitted,
         extent_end,
     }
 }
 
-/// The 1-based, inclusive END line of the definition named `name` at site line `start` in `source`,
-/// derived through the shared multi-grammar symbols authority (spec 58). It resolves the file's
-/// grammar via the symbols registry and reads the extent from [`definition_extents`], the SAME
-/// tree-sitter tag mechanism the code graph is extracted with - so ONE extent authority generalizes
-/// across every ingested grammar rather than a Rust-only brace lexer in this composition root.
+/// The 1-based, inclusive `(start, end)` line range of the definition named `name`, derived through
+/// the shared multi-grammar symbols authority (spec 58; spec 92 criterion 1, FRESH ON EVERY
+/// INTEGRATION). It resolves the file's grammar via the symbols registry and reads every candidate
+/// extent from [`definition_extents`], the SAME tree-sitter tag mechanism the code graph is extracted
+/// with - so ONE extent authority generalizes across every ingested grammar rather than a Rust-only
+/// brace lexer in this composition root.
 ///
-/// Matches on BOTH name and site line (a definition that has moved off `start` no longer matches, so
-/// a drifted location degrades to a note rather than a wrong body); when several definitions share
-/// the name and line, the widest extent (the outermost construct) wins. Returns `Err` with a human
-/// reason - the caller degrades to a note - when no grammar is registered for the file's extension,
-/// the grammar cannot tag it, or the current tree holds no such definition at that line.
+/// Two tiers, in order:
+///
+/// 1. **Exact match** at the RECORDED `start` line: the graph's location is still current, so the
+///    resolved start is `start` itself (no drift) - when several definitions share the name and
+///    line, the widest extent (the outermost construct) wins, exactly as before spec 92.
+/// 2. **Name-only fallback** (spec 92: the recorded line no longer holds the definition - the code
+///    moved since the graph was last indexed): every candidate named `name`, AT ANY LINE in this
+///    file, is collected. Healing is safe ONLY when that leaves exactly ONE live line - with more
+///    than one candidate the surface cannot tell which the caller meant, so it degrades exactly as
+///    every drift did before spec 92 (never guess a body under the wrong name or line - the spec-58
+///    invariant this filter exists to hold). The fallback NEVER crosses files and NEVER matches a
+///    different name: only the identity `graph --show` was asked to resolve is ever searched for.
+///
+/// Returns `Err` with a human reason - the caller degrades to a note - when no grammar is registered
+/// for the file's extension, the grammar cannot tag the source, no definition named `name` exists
+/// anywhere in the file (deleted, not moved), or the name is ambiguous (tier 2 found more than one
+/// live candidate).
 #[cfg(feature = "symbols")]
-fn derive_extent_end(file: &str, source: &str, start: u32, name: &str) -> Result<u32, String> {
+fn locate_definition_extent(
+    file: &str,
+    source: &str,
+    start: u32,
+    name: &str,
+) -> Result<(u32, u32), String> {
     use rigger::grounder::symbols::{extract, registry};
     let Some(entry) = registry::for_path(file, None) else {
         return Err(format!(
@@ -4354,24 +4424,51 @@ fn derive_extent_end(file: &str, source: &str, start: u32, name: &str) -> Result
         ));
     };
     let extents = extract::definition_extents(source, &entry.language, entry.tags_query)?;
-    extents
-        .into_iter()
+    // Tier 1: exact (name, recorded line) match - the graph's location is current. Widest extent
+    // wins when several definitions share the name and line (unchanged spec-58 rule).
+    if let Some(end) = extents
+        .iter()
         .filter(|d| d.name == name && d.start_line == start)
         .map(|d| d.end_line)
         .max()
-        .ok_or_else(|| {
-            format!(
-                "no definition named {name:?} at line {start} in the current working tree; the recorded location may be stale"
-            )
-        })
+    {
+        return Ok((start, end));
+    }
+    // Tier 2 (spec 92): the recorded line drifted - re-locate `name` by a name-only search of this
+    // SAME file. `by_line` groups candidate lines (never two rows for one line: the widest extent
+    // per line wins, matching tier 1's own rule), so its length is the count of DISTINCT live lines
+    // this name occupies - the ambiguity measure healing must stay safe against.
+    let mut by_line: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    for d in extents.iter().filter(|d| d.name == name) {
+        by_line
+            .entry(d.start_line)
+            .and_modify(|end| *end = (*end).max(d.end_line))
+            .or_insert(d.end_line);
+    }
+    match by_line.len() {
+        0 => Err(format!(
+            "no definition named {name:?} at line {start} in the current working tree; the recorded location may be stale"
+        )),
+        1 => Ok(by_line.into_iter().next().expect("len == 1")),
+        n => Err(format!(
+            "{n} definitions named {name:?} exist in {file} and none starts at the recorded line \
+             {start}; the recorded location may be stale (cannot resolve which one moved)"
+        )),
+    }
 }
 
-/// Light-lane [`derive_extent_end`]: a build WITHOUT the `symbols` feature links no grammar, so the
-/// extent cannot be derived. It returns an explicit reason the caller prints as a note - the show
-/// surface stays honest ("the body needs the extraction grammar this build omits") rather than
-/// falling back to a hand-rolled lexer that would mis-read the very grammars the graph ingests.
+/// Light-lane [`locate_definition_extent`]: a build WITHOUT the `symbols` feature links no grammar,
+/// so no extent - recorded or healed - can be derived. It returns an explicit reason the caller
+/// prints as a note - the show surface stays honest ("the body needs the extraction grammar this
+/// build omits") rather than falling back to a hand-rolled lexer that would mis-read the very
+/// grammars the graph ingests.
 #[cfg(not(feature = "symbols"))]
-fn derive_extent_end(_file: &str, _source: &str, _start: u32, _name: &str) -> Result<u32, String> {
+fn locate_definition_extent(
+    _file: &str,
+    _source: &str,
+    _start: u32,
+    _name: &str,
+) -> Result<(u32, u32), String> {
     Err(
         "the body extent needs the code-extraction grammar; this build was compiled without the `symbols` feature"
             .to_string(),
@@ -5194,6 +5291,28 @@ fn read_model_drift(
     let store = Namespaced::new(backend.as_ref(), project);
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     Ok(metrics::model_drift(&events))
+}
+
+/// The `rigger validate` GRAPH INDEX LAG sample (spec 92 criterion 1, FRESH ON EVERY
+/// INTEGRATION): reads the project's own event stream - the SAME `events.db` stream every other
+/// validate advisory above reads (mirrors [`read_model_drift`]'s own store-open shape, reused, not
+/// a second courier) - and hands it to [`rigger::ingest::graph_index_lag_sample`], the one authority
+/// that both derives the bounded candidate list and compares each against a fresh re-extraction.
+/// An absent sqlite store degrades to an empty sample (nothing recorded, so nothing can lag) rather
+/// than an error, exactly like [`read_model_drift`].
+fn read_graph_index_lag(
+    path: &str,
+    project: &str,
+    root: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let sel = store_selection(None, None)?;
+    if sel.is_sqlite() && !Path::new(path).exists() {
+        return Ok(Vec::new());
+    }
+    let backend = resolve_store(&sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    Ok(rigger::ingest::graph_index_lag_sample(root, &events))
 }
 
 /// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
@@ -9540,6 +9659,22 @@ fn cmd_validate(args: &[String]) -> Res {
     if let Some(drift) = rigger::grounder::symbols::staleness(root.to_str().unwrap_or(".")) {
         eprintln!("{}", index_staleness_message(&drift));
     }
+    // GRAPH INDEX LAG advisory (spec 92 criterion 1, FRESH ON EVERY INTEGRATION): warn when a
+    // bounded sample of files `graph.db` has previously recorded disagrees with their live
+    // re-extraction - staleness the integration-time reindex above is supposed to prevent,
+    // surfaced before it is felt rather than discovered by a stale `graph --show` line (Design:
+    // "validate reports index lag ... as an advisory, so staleness is visible before it is
+    // felt"). A store-read failure just skips the advisory (never fails validate), exactly like
+    // the model-drift advisory above.
+    if let Ok(lagging) = read_graph_index_lag(
+        &db_path("events.db"),
+        &project_identity(),
+        root.to_str().unwrap_or("."),
+    ) {
+        if let Some(advisory) = graph_index_lag_advisory(&lagging) {
+            eprintln!("{advisory}");
+        }
+    }
     // LOG BLOAT advisory (spec 68, VALIDATE ADVISORIES): warn when the event log's derived
     // index is duplicated above threshold and name `rigger reset --derived`. Reuses the
     // store's OWN aggregate ([`rigger::eventstore::sqlite::Store::measure_derived_duplication`],
@@ -9730,6 +9865,25 @@ fn index_staleness_message(drift: &rigger::grounder::symbols::IndexDrift) -> Str
         rigger::grounder::symbols::store::index_path(".").display(),
         parts.join(", "),
     )
+}
+
+/// The GRAPH INDEX LAG advisory line (spec 92 criterion 1, FRESH ON EVERY INTEGRATION), rendered
+/// from an already-sampled list of files [`rigger::ingest::graph_index_lag_sample`] found
+/// disagreeing with `graph.db`'s own last recorded generation for them. `None` when the sample is
+/// empty - nothing to warn about, not merely nothing measured (the pure formatting stays separate
+/// from the gathering, exactly like [`index_staleness_message`] above). Names every lagging file
+/// (never just a bare count) and the fix, `rigger reindex`, so the same fix that keeps the
+/// `symbols` index fresh also closes the gap this advisory reports.
+fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
+    if lagging.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
+         ({}). Run `rigger reindex <file>...` to refresh it.",
+        lagging.len(),
+        lagging.join(", "),
+    ))
 }
 
 /// The derived-index duplication FACTOR (rows per distinct key) above which `rigger validate`
@@ -23336,6 +23490,30 @@ mod tests {
             msg.contains("rigger reindex"),
             "the message must name the fix: {msg}"
         );
+    }
+
+    // --- Spec 92 criterion 1, FRESH ON EVERY INTEGRATION: the GRAPH INDEX LAG advisory's pure
+    // formatter (the sample itself is `rigger::ingest::graph_index_lag_sample`, tested beside its
+    // own implementation) ---
+
+    #[test]
+    fn graph_index_lag_advisory_names_every_lagging_file_and_the_fix() {
+        let lagging = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let msg = graph_index_lag_advisory(&lagging).expect("a non-empty sample draws an advisory");
+        assert!(msg.starts_with("warning:"), "advisory: {msg}");
+        assert!(
+            msg.contains("src/a.rs") && msg.contains("src/b.rs"),
+            "the message must name every lagging file: {msg}"
+        );
+        assert!(
+            msg.contains("rigger reindex"),
+            "the message must name the fix: {msg}"
+        );
+    }
+
+    #[test]
+    fn graph_index_lag_advisory_is_none_when_the_sample_is_empty() {
+        assert_eq!(graph_index_lag_advisory(&[]), None);
     }
 
     #[test]
