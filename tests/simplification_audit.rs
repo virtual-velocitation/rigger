@@ -9789,58 +9789,6 @@ mod tests {
     }
 
     #[test]
-    fn probe_sdet_review_dead_code_pin_bump_byte_identical() {
-        // TEMPORARY probe, not part of the diff under review - verifying whether the
-        // sdet-author-flagged gap (sdet-u90c2-surface-accounting: dead-code CLAIM 2 untested)
-        // hides an actual correctness defect or is purely a coverage gap. Mirrors
-        // `a_pin_bump_that_shifts_every_site_in_a_file_leaves_the_guarded_catalog_byte_identical`
-        // but for dead-code.json, and additionally exercises `ambiguous_with_hashed` stability by
-        // having the shifted file's dead fn share a bare name with an unshifted file's dead fn.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/a.rs", "fn helper() {}\n");
-        write_fixture(dir.path(), "src/z.rs", "fn helper() {}\n");
-        let base_json = dead_code_to_json(&candidates_for(dir.path()));
-
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
-             fn helper() {}\n",
-        );
-        let bumped_json = dead_code_to_json(&candidates_for(dir.path()));
-
-        assert_eq!(
-            base_json, bumped_json,
-            "PROBE: a pin bump that only shifts helper's own line number should leave \
-             dead-code.json byte-identical"
-        );
-    }
-
-    #[test]
-    fn probe_sdet_review_dead_code_two_branch_merge_free() {
-        // TEMPORARY probe - CLAIM 3 equivalent for dead-code.json.
-        let base = tempfile::tempdir().expect("base scratch dir");
-        write_fixture(base.path(), "src/a.rs", "fn helper() {}\n");
-        write_fixture(base.path(), "src/z.rs", "fn other() {}\n");
-        let base_json = dead_code_to_json(&candidates_for(base.path()));
-
-        let branch_a = tempfile::tempdir().expect("branch A scratch dir");
-        write_fixture(
-            branch_a.path(),
-            "src/a.rs",
-            "fn helper() {}\n\nfn branch_a_only() {}\n",
-        );
-        write_fixture(branch_a.path(), "src/z.rs", "fn other() {}\n");
-        let a_json = dead_code_to_json(&candidates_for(branch_a.path()));
-
-        assert_eq!(
-            base_json, a_json,
-            "PROBE: branch A's own unrelated addition to src/a.rs must not perturb the guarded \
-             dead-code.json for entries in src/z.rs or unrelated to it"
-        );
-    }
-
-    #[test]
     fn every_real_candidate_has_a_zero_degree_knowledge_graph_cross_check_shape() {
         // Every real candidate is a genuine `src/` production fn (never a test, never from
         // `tests/`). The actual `rigger graph --show <entity>` degree per candidate (spec 87
