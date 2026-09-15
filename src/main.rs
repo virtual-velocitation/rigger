@@ -14332,6 +14332,17 @@ mod tests {
             rule < heartbeat,
             "the rule is composed into the prompt ahead of the heartbeat and progress notes"
         );
+        // The courier's structured return is the only way a wave reaches the driver, and a
+        // key the schema does not REQUIRE is a key the courier can drop while retyping: the
+        // schema requires every field the worker's instructions are built from.
+        let required = RIGGER_WORKFLOW
+            .find("required: ['id', 'unit', 'stage', 'dir', 'max_wall_clock', 'marker_path', 'cargo_target_dir']")
+            .expect("the wave-item schema requires the driver-critical fields");
+        let items = RIGGER_WORKFLOW.find("wave: {").unwrap();
+        assert!(
+            items < required,
+            "the requirement sits on the wave items, not the top level"
+        );
     }
 
     #[test]

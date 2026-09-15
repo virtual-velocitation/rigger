@@ -1019,6 +1019,12 @@ const STATUS_INTEGRATE_CONFLICT_REGEN: &str = "integrate-conflict-regenerate-pen
 /// returns `None` for every one and folding is a no-op on `Unit.status`; all ride the
 /// existing `TYPE_UNIT_STATUS` vocabulary, no new event type.
 const STATUS_INTEGRATE_MERGE_ATTEMPT: &str = "integrate-merge-attempt";
+/// A landing found the run branch moved after the worktree merge (spec 88's integrate
+/// rows, one more): the pass is recorded and repeated against the new tip.
+const STATUS_INTEGRATE_TIP_MOVED: &str = "integrate-tip-moved";
+/// How many landing passes may find the tip moved before the stage fails loud - the run
+/// branch moving under every pass is a sibling storm or an operator loop, not progress.
+const TIP_MOVED_PASS_BOUND: u32 = 8;
 /// See [`STATUS_INTEGRATE_MERGE_ATTEMPT`] - this is its paired after-record's status.
 const STATUS_INTEGRATE_MERGE_OUTCOME: &str = "integrate-merge-outcome";
 /// Round 4 TABLE row 2's after-record status: `paths` finished placeholder-staging via
@@ -8521,7 +8527,29 @@ impl RunCtx<'_> {
                         // conflict's placeholder-staged version lands now; the real regeneration,
                         // if any, lands as a SEPARATE, later pass's own row 4).
                         self.record_landing_intent(&st.name, attempt, pass, &c, &pre_merge)?;
-                        wt.land()?;
+                        if wt.land()? == worktree::LandOutcome::TipMoved {
+                            // The run branch moved after the worktree merge (an operator
+                            // commit, a sibling's landing): a fast-forward is impossible and
+                            // a real merge would only re-resolve in the wrong place. Record
+                            // it and go around again - the next pass merges the NEW tip into
+                            // the worktree (regenerable conflicts resolve themselves there)
+                            // and lands as a fast-forward. Bounded like every other pass.
+                            self.record_integrate_row(
+                                &format!("{}/tip-moved#{attempt}~{pass}", st.name),
+                                STATUS_INTEGRATE_TIP_MOVED,
+                                &st.name,
+                                attempt,
+                                json!({"run_tip": pre_merge, "unit_tip": c}),
+                            )?;
+                            if pass >= TIP_MOVED_PASS_BOUND {
+                                return Err(Error(format!(
+                                    "integrate {}: the run branch moved under every one of \
+                                     {pass} landing passes",
+                                    st.name
+                                )));
+                            }
+                            continue;
+                        }
                         self.record_landed(&st.name, attempt, pass, &c)?;
                         // Spec 88, criterion 1 round 2 (adv-u88c1r1-crash-resume-permanently-
                         // skips-regeneration): a MIXED conflict's source side can clear (the
