@@ -5479,8 +5479,28 @@
       },
       {
         "file": "tests/cli.rs",
-        "start_line": 28471,
-        "end_line": 28471
+        "start_line": 28502,
+        "end_line": 28502
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 28627,
+        "end_line": 28627
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 28633,
+        "end_line": 28633
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 28651,
+        "end_line": 28651
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 28836,
+        "end_line": 28836
       },
       {
         "file": "tests/common/mod.rs",
@@ -16156,6 +16176,11 @@
         "file": "tests/cli.rs",
         "start_line": 18686,
         "end_line": 18729
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 28903,
+        "end_line": 28943
       }
     ]
   },

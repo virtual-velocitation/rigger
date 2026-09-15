@@ -5661,6 +5661,26 @@
         "content_hash": "090bbeba5641ea09"
       },
       {
+        "file": "tests/cli.rs",
+        "name": "\"the hook must be inert on a project without .rigger/; got:\\n{out}\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "97a7314d6e3a1bc6"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "090bbeba5641ea09"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
         "file": "tests/common/mod.rs",
         "name": "\"{}/.rigger-test-scratch\"",
         "content_hash": "87085d501bb35f83"
@@ -6937,7 +6957,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 695 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 699 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0061",
@@ -17594,9 +17614,14 @@
         "file": "tests/cli.rs",
         "name": "docs_ships_three_verb_lookup_guidance_to_consumers",
         "content_hash": "e81b86ee3f27d917"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook",
+        "content_hash": "577e2dd41a27b940"
       }
     ],
-    "proposed_home": "cli::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "cli::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

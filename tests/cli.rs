@@ -28457,47 +28457,54 @@ fn mcp_serves_peers_ground_and_graph_over_stdio() {
     );
 }
 
+/// Spawn `rigger grep-guard` in `root`, write one PreToolUse `payload` to its stdin, and
+/// parse its one printed JSON object. Shared by every end-to-end `grep-guard` test below (the
+/// happy-path test and the SDET periphery additions that follow it): each drives a DIFFERENT
+/// decision surface, but the subprocess plumbing to get there is identical, so it lives once
+/// here rather than as a near-identical closure repeated at every call site.
+fn run_grep_guard(root: &Path, payload: &str) -> serde_json::Value {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["grep-guard"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger grep-guard");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.as_bytes())
+        .unwrap();
+    let out = child
+        .wait_with_output()
+        .expect("rigger grep-guard must exit");
+    assert!(
+        out.status.success(),
+        "rigger grep-guard must always exit 0 (the decision rides in the JSON body); \
+         stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("grep-guard must print one JSON object")
+}
+
 /// `rigger grep-guard` (the command the installed PreToolUse hook runs) bounces a bare
 /// `grep` over `src/` with the stated message, and passes the SAME command through when
 /// `--literal` is added - end to end through the compiled binary reading real PreToolUse
 /// JSON from stdin.
 #[test]
 fn grep_guard_bounces_a_bare_source_grep_and_passes_literal() {
-    use std::io::Write;
-    use std::process::Stdio;
-
     let dir = temp_project();
     let root = dir.path();
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
 
-    let run_guard = |payload: &str| -> serde_json::Value {
-        let mut cmd = common::rigger_courier();
-        cmd.args(["grep-guard"])
-            .current_dir(root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = cmd.spawn().expect("spawn rigger grep-guard");
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(payload.as_bytes())
-            .unwrap();
-        let out = child
-            .wait_with_output()
-            .expect("rigger grep-guard must exit");
-        assert!(
-            out.status.success(),
-            "rigger grep-guard must always exit 0 (the decision rides in the JSON body); \
-             stderr:\n{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        serde_json::from_slice(&out.stdout).expect("grep-guard must print one JSON object")
-    };
-
-    let blocked =
-        run_guard(r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO src/"}}"#);
+    let blocked = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO src/"}}"#,
+    );
     assert_eq!(
         blocked["hookSpecificOutput"]["permissionDecision"], "deny",
         "a bare source grep must be denied; got:\n{blocked}"
@@ -28512,7 +28519,8 @@ fn grep_guard_bounces_a_bare_source_grep_and_passes_literal() {
         "the denial must carry the stated message; got: {reason:?}"
     );
 
-    let allowed = run_guard(
+    let allowed = run_grep_guard(
+        root,
         r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal -rn TODO src/"}}"#,
     );
     assert_eq!(
@@ -28521,10 +28529,415 @@ fn grep_guard_bounces_a_bare_source_grep_and_passes_literal() {
         "--literal must pass the hook through untouched; got:\n{allowed}"
     );
 
-    let unrelated = run_guard(r#"{"tool_name":"Bash","tool_input":{"command":"ls src/"}}"#);
+    let unrelated = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"ls src/"}}"#,
+    );
     assert_eq!(
         unrelated,
         serde_json::json!({}),
         "a non-grep command must never be touched; got:\n{unrelated}"
     );
+}
+
+// ===========================================================================================
+// SDET periphery layer, spec 92 criterion 4 (IN EVERY SESSION'S HAND). The three tests above
+// (authored at the build seam this criterion's implementer round emitted) drive the happy
+// paths of `rigger setup`, `rigger mcp`, and `rigger grep-guard` end to end. The tests below
+// close the boundary this diff's mechanical enumeration otherwise leaves unaccounted: the
+// `install_operator_mcp` DRIFT branch through the full `cmd_setup` composition (only the pure
+// helper had it), the `grep-guard` CONSTRAINTS WALK clauses ("inert on a project without
+// rigger", "malformed input degrades to allow") that no test anywhere exercised, the built-in
+// `Grep` tool call driven through the compiled binary (previously proven only against the pure
+// decision function), `rigger mcp`'s API edges (an unknown tool, missing required arguments, a
+// malformed JSON-RPC line) which the happy-path test never sends, the brand-new
+// `operator_tool_graph`/`entity_site_json` JSON wiring on a SUCCESSFUL `show` resolution (never
+// exercised anywhere - the happy-path test only tries `around` on an unknown entity), and the
+// installed skill/handbook text proven only against the in-process render function, never
+// against the file `rigger docs` actually writes.
+// ===========================================================================================
+
+/// `cmd_setup`'s full composition (workflow, skill, hooks, agents, THEN the operator MCP
+/// registration and lookup hook, gated by one combined "anything changed" check) correctly
+/// reports and repairs a DRIFTED `.mcp.json` entry on a rerun - not just the pure
+/// `install_operator_mcp` helper (already unit-tested for this transition in main.rs's own
+/// tests), but the real CLI path: the Refreshed branch's message, distinct from the Installed
+/// one, and the combined silent-no-op gate correctly staying non-silent when ONLY this one
+/// artifact drifted and every other install step is already current.
+#[test]
+fn setup_reports_a_drifted_operator_mcp_server_as_refreshed_through_the_full_composition() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "the first setup must succeed; stderr:\n{err}");
+
+    // Hand-corrupt ONLY the operator MCP entry (an older build's path, or a hand edit) -
+    // every other artifact `setup` installed a moment ago stays exactly as it is.
+    let mcp_path = root.join(".mcp.json");
+    std::fs::write(
+        &mcp_path,
+        r#"{"mcpServers":{"rigger":{"command":"/old/stale/rigger","args":["mcp"]}}}"#,
+    )
+    .unwrap();
+
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "the repair rerun must succeed; stderr:\n{err2}");
+    assert!(
+        out2.contains("refreshed the drifted rigger MCP server entry"),
+        "a drifted entry must be reported as refreshed, not silently repaired; got:\n{out2}"
+    );
+    assert!(
+        !out2.contains("registered the rigger MCP server"),
+        "a refresh must never be misreported as a fresh install; got:\n{out2}"
+    );
+    // Nothing ELSE drifted - the lookup hook (already installed and unchanged) must not
+    // re-report, proving the combined gate isolates the one artifact that actually changed.
+    assert!(
+        !out2.contains("installed the graph-first lookup hook"),
+        "an untouched artifact must not re-report merely because a sibling drifted; got:\n{out2}"
+    );
+
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+    assert_eq!(
+        v["mcpServers"]["rigger"]["command"], "rigger",
+        "the drifted command must self-heal to the current build's own invocation"
+    );
+}
+
+/// `rigger grep-guard`'s CONSTRAINTS WALK clauses that no test (unit or periphery) exercised
+/// anywhere else: it is INERT on a project that carries no `.rigger/` at all (a bare source
+/// grep must pass through untouched, never bounced, on a tree that never opted into rigger),
+/// and malformed/unreadable stdin DEGRADES TO ALLOW rather than erroring or blocking (a
+/// transport hiccup must never turn into a false block on an agent's tool call). Both are
+/// stated guarantees in `cmd_grep_guard`'s own doc comment; this is their only proof.
+#[test]
+fn grep_guard_is_inert_outside_a_rigger_project_and_degrades_to_allow_on_malformed_input() {
+    // A project with NO `.rigger/` at all: a bare source grep that would be denied inside a
+    // rigger project must pass through untouched here.
+    let not_rigger = temp_project();
+    let out = run_grep_guard(
+        not_rigger.path(),
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO src/"}}"#,
+    );
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "the hook must be inert on a project without .rigger/; got:\n{out}"
+    );
+
+    // A real rigger project, but the hook payload on stdin is not JSON at all - a transport
+    // hiccup, not a deliberate tool call the hook could reason about.
+    let is_rigger = temp_project();
+    std::fs::create_dir_all(is_rigger.path().join(".rigger")).unwrap();
+    let out = run_grep_guard(is_rigger.path(), "not json at all { this is garbage");
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "malformed stdin must degrade to allow, never block; got:\n{out}"
+    );
+}
+
+/// `rigger grep-guard` bounces the built-in `Grep` TOOL call (not only a `Bash` `grep`
+/// command) end to end through the compiled binary - the pure `grep_guard_decision` function
+/// already proves this in isolation (main.rs's own unit tests); this is its only end-to-end
+/// proof that `cmd_grep_guard` actually wires a real `tool_name: "Grep"` payload through to
+/// that decision.
+#[test]
+fn grep_guard_bounces_the_built_in_grep_tool_call_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let blocked = run_grep_guard(root, r#"{"tool_name":"Grep","tool_input":{"path":"src/"}}"#);
+    assert_eq!(
+        blocked["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a Grep tool call over src/ must be denied; got:\n{blocked}"
+    );
+
+    let allowed = run_grep_guard(
+        root,
+        r#"{"tool_name":"Grep","tool_input":{"path":"docs/"}}"#,
+    );
+    assert_eq!(
+        allowed,
+        serde_json::json!({}),
+        "a Grep tool call outside the guarded trees must pass through untouched; got:\n{allowed}"
+    );
+}
+
+/// `rigger mcp`'s API edges: an unknown tool name, and the required-argument checks
+/// `rigger_ground`/`rigger_graph` state in their own error strings - none of which the
+/// happy-path test above (which only ever sends well-formed calls) sends. Each must answer a
+/// JSON-RPC error object (never a crash, never a silently dropped response), and the SAME
+/// session must keep answering normally afterward - one bad call must never poison the rest
+/// of an agent's session.
+#[test]
+fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_arguments() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    let unknown = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_nope", "arguments": {}}),
+    );
+    assert_eq!(
+        unknown["error"]["code"], -32602,
+        "an unknown tool name must be a JSON-RPC error, not a crash or a silent drop; got:\n{unknown}"
+    );
+    assert!(
+        unknown["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("rigger_nope"),
+        "the error must name the unknown tool; got:\n{unknown}"
+    );
+
+    let missing_query = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_ground", "arguments": {}}),
+    );
+    assert_eq!(missing_query["error"]["code"], -32603);
+    assert!(
+        missing_query["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("query"),
+        "the error must name the missing argument; got:\n{missing_query}"
+    );
+
+    let missing_selector = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": {}}),
+    );
+    assert_eq!(missing_selector["error"]["code"], -32603);
+    let msg = missing_selector["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("show") && msg.contains("around"),
+        "the error must name both selectors a caller may pass; got:\n{missing_selector}"
+    );
+
+    // The session survives every error above and keeps answering normally.
+    let list = call("tools/list", serde_json::json!({}));
+    assert!(
+        list["result"]["tools"].is_array(),
+        "the session must keep answering after error responses; got:\n{list}"
+    );
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp must exit 0 after an error-only session; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A malformed (non-JSON) line on `rigger mcp`'s stdin answers a JSON-RPC PARSE ERROR
+/// (`-32700`), and the session keeps answering normally afterward - a transport hiccup (a
+/// truncated write, a client bug) must degrade to one error response, never end the session or
+/// desync the reader from the writer.
+#[test]
+fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, "not valid json at all {{").unwrap();
+    stdin.flush().unwrap();
+    let mut line1 = String::new();
+    stdout
+        .read_line(&mut line1)
+        .expect("a malformed line must still get one response line");
+    let resp1: serde_json::Value = serde_json::from_str(&line1)
+        .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line1:?}"));
+    assert_eq!(
+        resp1["error"]["code"], -32700,
+        "malformed input must answer a JSON-RPC parse error; got:\n{line1}"
+    );
+
+    let req = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    writeln!(stdin, "{req}").unwrap();
+    stdin.flush().unwrap();
+    let mut line2 = String::new();
+    stdout
+        .read_line(&mut line2)
+        .expect("the session must keep answering after the malformed line");
+    let resp2: serde_json::Value = serde_json::from_str(&line2).unwrap();
+    assert!(
+        resp2["result"]["tools"].is_array(),
+        "a well-formed request right after a malformed one must still succeed; got:\n{line2}"
+    );
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(out.status.success());
+}
+
+/// `rigger_graph`'s `show` selector - brand new JSON wiring (`operator_tool_graph`'s `show`
+/// arm and `entity_site_json`) that no test anywhere else exercises: the happy-path test above
+/// only ever tries `around` on an unknown entity. Seeds one real code-entity definition into
+/// `graph.db` (the same `CodeEntityExtracted` fold a real extraction pass would produce, the
+/// ALWAYS-compiled arm so this holds in both feature lanes) and proves a SUCCESSFUL resolution
+/// serializes its site fields correctly over the wire, and an unresolved `show` still answers
+/// honestly `"none"` rather than erroring.
+#[test]
+fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknown_one() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
+    use rigger::eventstore::Event;
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let id = run_stream_identity(root);
+    let rigger_dir = root.join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).unwrap();
+    {
+        let p = Projector::open(rigger_dir.join("graph.db").to_str().unwrap(), &id).unwrap();
+        let payload =
+            r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
+        let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
+        e.position = 1;
+        p.apply(&e).unwrap();
+    }
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    let found = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": {"show": "frobnicate"}}),
+    );
+    let structured = &found["result"]["structuredContent"];
+    assert_eq!(
+        structured["status"], "one",
+        "a seeded, unambiguous entity must resolve to exactly one site; got:\n{found}"
+    );
+    assert_eq!(structured["site"]["id"], "src/widget.rs::frobnicate");
+    assert_eq!(structured["site"]["file"], "src/widget.rs");
+    assert_eq!(structured["site"]["line"], 7);
+    assert_eq!(structured["site"]["kind"], "fn");
+
+    let missing = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": {"show": "does-not-exist"}}),
+    );
+    assert_eq!(
+        missing["result"]["structuredContent"]["status"], "none",
+        "an unresolved show query must answer honestly none, never error; got:\n{missing}"
+    );
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(out.status.success());
+}
+
+/// The shipped skill's lookup section states the graph-first rule for a human reader
+/// (criterion 4's own Done-when text) - proven only against the in-process render function by
+/// the implementer's own docs.rs unit tests. This drives the REAL `rigger docs` binary and
+/// reads the ACTUAL committed files it writes, so a wiring bug between `docs_context()` and the
+/// file `rigger setup`/`rigger docs` installs (as opposed to the render function alone) cannot
+/// hide.
+#[test]
+fn docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    let skill = std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md"))
+        .expect("the skill must be rendered");
+    let handbook = std::fs::read_to_string(root.join("docs/handbook/using-rigger.md"))
+        .expect("the handbook must be rendered");
+
+    for (label, out) in [("skill", &skill), ("handbook", &handbook)] {
+        assert!(
+            out.contains(".mcp.json"),
+            "{label} must name .mcp.json, where the operator's own MCP server is registered; \
+             got:\n{out}"
+        );
+        assert!(
+            out.contains("rigger_peers")
+                && out.contains("rigger_ground")
+                && out.contains("rigger_graph"),
+            "{label} must name all three operator MCP tools; got:\n{out}"
+        );
+        assert!(
+            out.contains("PreToolUse"),
+            "{label} must name the PreToolUse hook event the lookup hook installs under; \
+             got:\n{out}"
+        );
+        // Interpolated verbatim from the SAME message `rigger grep-guard` denies with, not a
+        // hand-paraphrase that could describe a different rule than the hook actually enforces.
+        assert!(
+            out.contains("rigger_ground / rigger_graph for code lookups"),
+            "{label} must carry the hook's real bounce message verbatim; got:\n{out}"
+        );
+        assert!(
+            out.contains("--literal"),
+            "{label} must name the --literal escape hatch; got:\n{out}"
+        );
+    }
 }
