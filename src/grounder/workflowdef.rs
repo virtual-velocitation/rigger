@@ -121,7 +121,7 @@ fn reviewers_of(workflow: &Workflow, stage: &Stage) -> Vec<String> {
         reviewers.push(stage.adjudicator.clone());
     }
     reviewers.extend(stage.review.agent_ids());
-    if reviewers.is_empty() {
+    if reviewers.is_empty() && !stage.gates.is_empty() {
         reviewers = workflow.effective_review_panel(stage).agent_ids();
     }
     reviewers.retain(|r| !r.is_empty());
