@@ -12040,13 +12040,37 @@ unit=
 case "$worktree_base" in
     rigger-wt-*) unit="${worktree_base#rigger-wt-}" ;;
 esac
+# The relocated per-unit target (spec 89): a unit's build cache is the sibling
+# `cargo-target-<unit>` of its worktree under `<cache home>/rigger/<encoded repo root>`,
+# where the repo root is encoded byte by byte - alphanumerics and `-` kept, every other
+# byte as `_xx` hex - exactly as the binary encodes it, so this shell derivation and the
+# Rust one name the same directory.
+encode_repo_path() {
+    p="$1"; out=""
+    while [ -n "$p" ]; do
+        c=${p%"${p#?}"}; p=${p#?}
+        case "$c" in
+            [A-Za-z0-9-]) out="$out$c" ;;
+            *) out="$out$(printf '_%02x' "'$c")" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
 unit_release=
 unit_debug=
+relocated_release=
+relocated_debug=
 shared_debug=
 if [ -n "$git_common_dir" ]; then
     if [ -n "$unit" ]; then
         unit_release="$git_common_dir/../.rigger/tmp/cargo-target-$unit/release/rigger"
         unit_debug="$git_common_dir/../.rigger/tmp/cargo-target-$unit/debug/rigger"
+        repo_root=$(cd "$git_common_dir/.." 2>/dev/null && pwd -P)
+        if [ -n "$repo_root" ]; then
+            cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/rigger/$(encode_repo_path "$repo_root")"
+            relocated_release="$cache_root/cargo-target-$unit/release/rigger"
+            relocated_debug="$cache_root/cargo-target-$unit/debug/rigger"
+        fi
     fi
     shared_debug="$git_common_dir/../.rigger/tmp/cargo-target/debug/rigger"
 fi
@@ -12056,6 +12080,8 @@ for candidate in \
     "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/rigger}" \
     "./target/release/rigger" \
     "./target/debug/rigger" \
+    "$relocated_release" \
+    "$relocated_debug" \
     "$unit_release" \
     "$unit_debug" \
     "$shared_debug" \
@@ -14228,6 +14254,86 @@ mod tests {
     /// provenance line invoke the RESOLVED binary, not a bare unqualified `rigger`. This
     /// criterion OWNS the candidate order and its rendering in the template (c2 owns the
     /// end-to-end fixture-driven behavior, not this test).
+    #[test]
+    fn precommit_block_finds_the_relocated_unit_target_with_the_binary_s_own_path_encoding() {
+        // Spec 89 moved a unit's build cache to `<cache home>/rigger/<encoded repo>/
+        // cargo-target-<unit>`; the hook must look there FIRST among the unit-derived
+        // candidates (before the pre-relocation `.rigger/tmp` paths), and its shell encoding
+        // of the repo root must equal `liveness::marker_filename`'s byte for byte, or the two
+        // sides name different directories and the chain silently falls back to PATH.
+        let hook = compose_precommit(None);
+        let loop_start = hook.find("for candidate in").unwrap();
+        let body_start = loop_start + "for candidate in".len();
+        let loop_end = body_start + hook[body_start..].find("; do").unwrap();
+        let candidates = &hook[body_start..loop_end];
+        let local_debug = candidates.find("./target/debug/rigger").unwrap();
+        let relocated_release = candidates
+            .find("$relocated_release")
+            .expect("the relocated per-unit release candidate is tried");
+        let relocated_debug = candidates
+            .find("$relocated_debug")
+            .expect("the relocated per-unit debug candidate is tried");
+        let unit_release = candidates.find("$unit_release").unwrap();
+        assert!(
+            local_debug < relocated_release
+                && relocated_release < relocated_debug
+                && relocated_debug < unit_release,
+            "relocated candidates sit after the local target and before the pre-relocation \
+             unit paths; got:\n{candidates}"
+        );
+        assert!(
+            hook.contains("XDG_CACHE_HOME:-$HOME/.cache") && hook.contains("/rigger/"),
+            "the relocated root honors XDG_CACHE_HOME and nests under rigger/; got:\n{hook}"
+        );
+
+        let fn_start = hook.find("encode_repo_path() {").unwrap();
+        let fn_end = fn_start + hook[fn_start..].find("\n}\n").unwrap() + "\n}\n".len();
+        let shell_fn = &hook[fn_start..fn_end];
+        for path in [
+            "/home/byran/Documents/Development/rigger",
+            "/srv/build farm/proj.x_y-1",
+            "/tmp/a~b@c",
+        ] {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{shell_fn}\nencode_repo_path \"$1\"",))
+                .arg("sh")
+                .arg(path)
+                .output()
+                .expect("sh runs the hook's encoder");
+            let encoded = String::from_utf8(out.stdout).unwrap();
+            assert_eq!(
+                encoded,
+                rigger::liveness::marker_filename(path).unwrap(),
+                "shell and Rust encodings must agree for {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_workflow_driver_tells_a_worker_its_units_build_location() {
+        // Spec 77 criterion 1 through the editor's workflow driver: the shipped driver reads
+        // the wave's `cargo_target_dir` and makes exporting it a hard rule for every cargo
+        // command inside the worktree, so a worker never builds a `target/` in its tree.
+        assert!(
+            RIGGER_WORKFLOW.contains("req.cargo_target_dir"),
+            "the driver reads the build location off the wave item"
+        );
+        assert!(
+            RIGGER_WORKFLOW.contains("BUILD LOCATION (hard rule)")
+                && RIGGER_WORKFLOW.contains("export CARGO_TARGET_DIR='${req.cargo_target_dir}'"),
+            "the worker prompt names the export as a hard rule"
+        );
+        let rule = RIGGER_WORKFLOW.find("BUILD LOCATION (hard rule)").unwrap();
+        let heartbeat = RIGGER_WORKFLOW
+            .find("buildLocation +\n    heartbeat +")
+            .unwrap();
+        assert!(
+            rule < heartbeat,
+            "the rule is composed into the prompt ahead of the heartbeat and progress notes"
+        );
+    }
+
     #[test]
     fn precommit_block_resolves_a_tree_built_binary_before_path() {
         let hook = compose_precommit(None);

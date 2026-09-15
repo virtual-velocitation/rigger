@@ -794,6 +794,16 @@ pub struct WaveItem {
     /// and run id are not known to a pure fold - `rigger step` fills it in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker_path: Option<String>,
+    /// The unit's ONE build location (spec 77, criterion 1): the `cargo-target-<unit>`
+    /// sibling of the worktree, the same directory the unit's gates build into. The SDK
+    /// driver receives it as `CARGO_TARGET_DIR` in the spawn's environment; a driver that
+    /// cannot set a worker's environment (the editor's workflow driver runs workers through
+    /// an agent tool with none) must NAME it in the worker's instructions instead, or every
+    /// `cargo test` the worker runs lands in `<worktree>/target` - three such trees filled
+    /// the disk on 2026-09-15. Absent when the spawn has no unit worktree (a review or
+    /// plan spawn inherits the shared cache).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo_target_dir: Option<String>,
     /// The spawn's LIVE WORK-LINE (spec 19a, c4): the unit's criterion, copied from the
     /// [`SpawnRequest::title`] so it rides the SLIM manifest the thin driver actually reads.
     /// The wave `rigger step` prints is a `Vec<WaveItem>`, NOT the request, so a title that
@@ -824,6 +834,9 @@ impl From<&SpawnRequest> for WaveItem {
             // Stamped by `rigger step` (cmd_step) from the resolved scratch root + run id;
             // a pure fold has neither, so leave it absent here.
             marker_path: None,
+            // The same derivation `spawn_env` uses for the SDK driver's CARGO_TARGET_DIR, so
+            // both drivers name one build location per unit.
+            cargo_target_dir: crate::worktree::unit_cache_sibling(&req.dir),
             // The live work-line rides the slim manifest: the wave the thin driver reads is
             // a `Vec<WaveItem>`, so the title MUST be copied here or `rigger.js` narrates
             // nothing (the false-green class this copy closes).
@@ -1764,6 +1777,44 @@ mod tests {
         assert!(
             !step.done,
             "two spawns have no result yet, so the run is not done"
+        );
+    }
+
+    #[test]
+    fn wave_item_carries_the_units_build_location_beside_its_worktree() {
+        // Spec 77 criterion 1 for a driver that cannot set a worker's environment: the wave
+        // names the unit's one build location, derived exactly as the gates derive theirs,
+        // and omits it for a spawn with no unit worktree.
+        let req = SpawnRequest {
+            id: "u1/implementer#0".into(),
+            dir: "/scratch/rigger-wt-u1".into(),
+            ..Default::default()
+        };
+        let item = WaveItem::from(&req);
+        assert_eq!(
+            item.cargo_target_dir.as_deref(),
+            Some("/scratch/cargo-target-u1"),
+            "the worktree's cargo-target sibling, the gates' own directory"
+        );
+        let json = serde_json::to_string(&item).unwrap();
+        assert!(
+            json.contains("\"cargo_target_dir\":\"/scratch/cargo-target-u1\""),
+            "the driver reads it off the wave: {json}"
+        );
+        let bare = SpawnRequest {
+            id: "plan/plan#0".into(),
+            ..Default::default()
+        };
+        let item = WaveItem::from(&bare);
+        assert!(
+            item.cargo_target_dir.is_none(),
+            "no unit worktree, no per-unit location"
+        );
+        assert!(
+            !serde_json::to_string(&item)
+                .unwrap()
+                .contains("cargo_target_dir"),
+            "omitted, not null, when absent"
         );
     }
 
