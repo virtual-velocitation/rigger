@@ -5117,7 +5117,11 @@ impl RunCtx<'_> {
                     // worktree-less path (no `wt`, e.g. an `isolation: none` agent or a
                     // repo-less run) has no commit step and is unchanged.
                     if let Some(w) = wt {
-                        w.commit(&format!("rigger: {} attempt {}", st.name, attempts + 1))?;
+                        w.commit_checkpoint(&format!(
+                            "rigger: {} attempt {}",
+                            st.name,
+                            attempts + 1
+                        ))?;
                     }
                     // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
                     // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
@@ -5559,7 +5563,10 @@ impl RunCtx<'_> {
                     // lane-L candidate spawn id with lane-0 remediation attempt L). Keeping the
                     // unit `Fresh` across phase B makes a resume re-enter `run_speculation`
                     // deterministically (replaying the recorded candidates + gates + review).
-                    wt.commit(&format!("rigger: {} speculation candidate {lane}", st.name))?;
+                    wt.commit_checkpoint(&format!(
+                        "rigger: {} speculation candidate {lane}",
+                        st.name
+                    ))?;
                     candidates.push(SpecCandidate {
                         lane,
                         wt,
@@ -9117,7 +9124,7 @@ impl RunCtx<'_> {
         for cmd in commands {
             self.run_regenerate_command(&wt.dir, cmd)?;
         }
-        let committed = wt.commit(&format!(
+        let committed = wt.commit_checkpoint(&format!(
             "rigger: regenerate conflicting artifacts for {unit}"
         ))?;
         if committed.is_empty() {
