@@ -57,13 +57,15 @@ fn seed_store(root: &Path) {
 }
 
 /// The shared gate build cache's resolved path for a `temp_project()` with no `defaults.workdir`
-/// override: the repo-default `<repo>/.rigger/tmp/cargo-target`.
+/// override: `<default scratch root>/cargo-target` (spec 89, criterion 2 - the default
+/// scratch root itself no longer nests inside the repo's own `.rigger`; see
+/// [`common::default_scratch_root`]).
 fn shared_cache_dir(root: &Path) -> PathBuf {
-    root.join(".rigger").join("tmp").join("cargo-target")
+    common::default_scratch_root(root).join("cargo-target")
 }
 
 fn guard_path(root: &Path) -> PathBuf {
-    root.join(".rigger").join("tmp").join("cargo-target.lock")
+    common::default_scratch_root(root).join("cargo-target.lock")
 }
 
 fn write_file(path: &Path, bytes: &[u8]) {
@@ -561,6 +563,7 @@ fn a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shar
     let handle = std::thread::spawn(move || {
         ExecRunner.run(
             &gate,
+            "",
             "",
             "",
             &cache_str,

@@ -7,9 +7,13 @@
 //!  - THE EMPTY CELL: a subject whose members carry NO membership under a DERIVED lens returns the
 //!    documented empty-cell state - `no derived communities` under [`Lens::Code`], `not part of any
 //!    concept` under [`Lens::Concepts`] - so the panel captions the absence rather than showing a
-//!    bare kind-bucket view with no explanation. The kind-fallback clusters criterion 1 ships still
-//!    render (nothing is dropped); the message is ADDITIVE. A [`Lens::Files`] re-grain always resolves,
-//!    so it never carries the message.
+//!    bare kind-bucket view with no explanation. Under [`Lens::Code`] the criterion-1 kind-fallback
+//!    clusters still render (nothing is dropped); the message is ADDITIVE there. Under
+//!    [`Lens::Concepts`] criterion 4's purity is TOTAL (no own-kind fallback, kind never being a
+//!    filtering axis for concept membership), so the empty cell there is genuinely empty - the
+//!    message is the WHOLE explanation, not an addition to a rendered kind bucket. A [`Lens::Files`]
+//!    re-grain that resolves at least one member never carries the message (spec 63 c3 owns the
+//!    FILES lens's own empty-cell case, when EVERY member is unresolvable).
 //!  - THE WIDE CELL: a re-grain whose bucket count EXCEEDS the render budget truncates through the
 //!    SAME [`CLUSTER_RENDER_BUDGET`] the cluster drill uses - the largest buckets are kept (ties by
 //!    key), the cross-bucket edges are pruned to the kept set so none dangles, and `truncated` carries
@@ -145,24 +149,26 @@ fn communities_no_concepts_graph() -> Graph {
 }
 
 /// A derived lens whose re-grain folds NO member into a community/concept bucket returns the documented
-/// empty-cell MESSAGE (per lens, never swapped), WITH the criterion-1 kind-fallback clusters still
-/// rendered - the message is additive, not a replacement. The full cell (same subject, code lens) never
-/// carries it.
+/// empty-cell MESSAGE (per lens, never swapped). Under [`Lens::Code`] the criterion-1 kind-fallback
+/// clusters still render beside it (additive, not a replacement); under [`Lens::Concepts`] criterion
+/// 4's purity is total, so no kind-fallback cluster renders at all and the message is the sole
+/// explanation. The full cell (same subject, code lens) never carries it.
 #[test]
 fn a_derived_regrain_with_no_membership_carries_the_documented_empty_cell_message() {
     let graph = communities_no_concepts_graph();
 
-    // CONCEPTS lens: the two entities realize no concept -> the empty cell.
+    // CONCEPTS lens: the two entities realize no concept -> the empty cell, genuinely empty (criterion
+    // 4's total purity: no own-kind fallback).
     let concepts = reproject(&graph, FILE_SUBJECT, &concepts_lens());
     assert_eq!(
         concepts.empty_state.as_deref(),
         Some(REPROJECT_NO_CONCEPT),
         "a concepts re-grain with no realized concept carries the `not part of any concept` message: {concepts:?}"
     );
-    assert_eq!(
-        concepts.clusters,
-        vec![kind_bucket(2)],
-        "the kind-fallback clusters criterion 1 ships still render - the message is ADDITIVE: {concepts:?}"
+    assert!(
+        concepts.clusters.is_empty(),
+        "no kind-fallback cluster renders under the concepts lens - purity is total, so the empty \
+         cell is genuinely empty, not merely captioned: {concepts:?}"
     );
     assert_eq!(
         concepts.total, 2,
@@ -186,10 +192,12 @@ fn a_derived_regrain_with_no_membership_carries_the_documented_empty_cell_messag
 const CONCEPT_ONLY: &str = "concept/5/0";
 
 /// The code-lens twin: a concept subject whose one member realizes the concept but is in NO community
-/// returns `no derived communities` under the code lens, while the FILES lens - which always resolves -
-/// never carries any empty-cell message even for an unknown (memberless) subject.
+/// returns `no derived communities` under the code lens, while the FILES lens - whose one member DOES
+/// resolve to a file - carries no empty-cell message here, nor for an unknown (memberless) subject
+/// (a different, already-documented degenerate-but-defined cell; spec 63 c3 owns the FILES lens's OWN
+/// empty-cell case, when every member is unresolvable, proven elsewhere).
 #[test]
-fn the_code_lens_empty_cell_and_the_files_lens_never_carrying_a_message() {
+fn the_code_lens_empty_cell_and_the_files_lens_resolving_its_one_member_carry_no_message() {
     let graph = Graph {
         nodes: vec![
             node(CONCEPT_ONLY, KIND_CONCEPT, Some("idea")),
@@ -211,14 +219,17 @@ fn the_code_lens_empty_cell_and_the_files_lens_never_carrying_a_message() {
         "the code empty cell still renders the member's kind-fallback bucket: {code:?}"
     );
 
-    // FILES lens: a file re-grain always resolves, so it NEVER carries an empty-cell message.
+    // FILES lens: the one member (a real definition) resolves to its own file, so it carries no
+    // empty-cell message.
     let files = reproject(&graph, CONCEPT_ONLY, &Lens::Files);
     assert_eq!(
         files.empty_state, None,
-        "a files re-grain resolves every member, so it carries no empty-cell message: {files:?}"
+        "a files re-grain where the member resolves carries no empty-cell message: {files:?}"
     );
     // An UNKNOWN subject (empty member set) under files is a degenerate-but-defined cell: still no
-    // message (the honesty rules never invent a lens membership a files view does not have).
+    // message (the honesty rules never invent a lens membership a files view does not have; an EMPTY
+    // member set is a different, pre-existing degenerate cell from a NON-EMPTY one that resolves to
+    // nothing - spec 63 c3's own empty-cell case, proven elsewhere).
     let unknown = reproject(&graph, "no/such/subject", &Lens::Files);
     assert_eq!(
         unknown.total, 0,
@@ -226,7 +237,7 @@ fn the_code_lens_empty_cell_and_the_files_lens_never_carrying_a_message() {
     );
     assert_eq!(
         unknown.empty_state, None,
-        "the files lens never carries an empty-cell message, even for an unknown subject: {unknown:?}"
+        "the files lens carries no empty-cell message for an unknown (empty-member-set) subject: {unknown:?}"
     );
 }
 
@@ -262,11 +273,14 @@ fn mixed_membership_graph() -> Graph {
 
 /// A PARTIALLY-membered derived cell is FULL, never empty: when at least one - but not every - member
 /// folds into a community/concept bucket, `empty_state` stays `None` (the documented boundary "a single
-/// member with a derived membership makes the cell full and clears the message"). The kind-fallback
-/// bucket for the membership-less member still renders BESIDE the derived bucket, so the cell is
-/// genuinely mixed. Holds under BOTH derived lenses. This is the boundary the all-membered and
-/// none-membered fixtures cannot reach: it distinguishes the "ANY member folds" rule (full) from an
-/// "EVERY member folds" one, which would wrongly caption a partially-membered cell as empty.
+/// member with a derived membership makes the cell full and clears the message"). Holds under BOTH
+/// derived lenses, but the membership-less member's OWN cluster differs by lens: under [`Lens::Code`]
+/// its kind-fallback bucket still renders BESIDE the derived one (criterion 1's nothing-dropped
+/// contract); under [`Lens::Concepts`] criterion 4's purity is total, so the membership-less member
+/// contributes to `total` but spawns NO cluster of its own - only the derived concept bucket renders.
+/// This is the boundary the all-membered and none-membered fixtures cannot reach: it distinguishes the
+/// "ANY member folds" rule (full) from an "EVERY member folds" one, which would wrongly caption a
+/// partially-membered cell as empty.
 #[test]
 fn a_partially_membered_derived_cell_is_full_under_both_derived_lenses() {
     let graph = mixed_membership_graph();
@@ -308,16 +322,15 @@ fn a_partially_membered_derived_cell_is_full_under_both_derived_lenses() {
     );
     assert_eq!(
         concepts.clusters,
-        vec![
-            kind_bucket(1),
-            Cluster {
-                key: MIXED_CONCEPT.to_string(),
-                count: 1,
-                kind: KIND_CODE_ENTITY.to_string(),
-                label: Some("cc".to_string()),
-            },
-        ],
-        "the mixed concepts cell renders the concept bucket beside the kind-fallback bucket: {concepts:?}"
+        vec![Cluster {
+            key: MIXED_CONCEPT.to_string(),
+            count: 1,
+            kind: KIND_CODE_ENTITY.to_string(),
+            label: Some("cc".to_string()),
+        }],
+        "the mixed concepts cell renders ONLY the concept bucket - e2's membership-less realization \
+         spawns no kind-fallback cluster of its own, purity being total under the concepts lens: \
+         {concepts:?}"
     );
     // e1 realizes exactly one concept, so it is NOT flagged shared - a mixed cell is not a shared one.
     assert!(
@@ -332,9 +345,11 @@ fn a_partially_membered_derived_cell_is_full_under_both_derived_lenses() {
 /// so no member folds into a derived bucket and the re-grain is the documented empty cell under BOTH
 /// derived lenses - `no derived communities` under code, `not part of any concept` under concepts -
 /// with zero clusters over a zero-size member set. This pins the derived arms of the absent-subject row
-/// the Files twin (`the_code_lens_empty_cell_and_the_files_lens_never_carrying_a_message`) leaves open:
-/// there the absent subject is asserted only under Files (which never carries a message), so without
-/// this the two derived arms could regress in either direction undetected.
+/// the Files twin (`the_code_lens_empty_cell_and_the_files_lens_resolving_its_one_member_carry_no_message`)
+/// leaves open: there the absent subject is asserted only under Files (an empty member set carries no
+/// message there either - a different, pre-existing degenerate cell from the NON-empty-but-unresolvable
+/// case `REPROJECT_FILES_UNRESOLVED` covers, spec 63 c3, proven elsewhere), so without this the two
+/// derived arms could regress in either direction undetected.
 #[test]
 fn an_absent_subject_under_a_derived_lens_is_the_documented_empty_cell() {
     // Any graph works; the subject is simply not one of its nodes.

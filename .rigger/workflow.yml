@@ -108,8 +108,27 @@ defaults:
   #     class: product
 
 build:
-  mutation: "on"            # implementer's diff-scoped mutation-efficacy step (spec 73)
+  # spec 91 retires the per-round `mutation` switch entirely (an explicit value of any
+  # kind is now a validation error naming this spec): no per-round sweep; mutation runs
+  # ONCE at the `checkin` stage below via the `mutation` gate, remediated once.
   max_concurrent: 1         # serialize builds machine-wide: two concurrent cargo-mutants sweeps (~100G each) exhausted /home this session. Blunt cap (operator-binary boundary blocks a surgical mutation-only slot); revisit as a spec.
+
+# Registered regenerable artifacts (spec 88, criterion 1): an integration merge conflict
+# CONFINED entirely to paths one of these rules matches is resolved by the conductor
+# itself - running `run` in the unit's worktree and committing - with no implementer
+# spawn at all. `docs/audit/*` is the simplification-audit catalog/report spec 85/87's
+# units regenerate today by hand with RIGGER_AUDIT_WRITE=1; registering it here lets a
+# conflict confined to those files (a common parallel-unit collision, since every unit
+# that touches audited code also updates them) resolve itself.
+# Only the FULLY generated artifacts are regenerable. The report
+# (docs/audit/2026-09-simplification-audit.md) is partly hand-written - the generator
+# rewrites only its section 2 - so a merge conflict in it is source: it goes to the
+# implementer's conflict-resolution retry like any other file (2026-09-15: a `docs/audit/*`
+# rule left 475 conflict-marker lines in the report after a "successful" regeneration and
+# the half-merge checkpoint guard rightly refused the commit; run c6ccaf8e, u89c2).
+regenerate:
+  - paths: ["docs/audit/*.json"]
+    run: "RIGGER_AUDIT_WRITE=1 cargo test --test simplification_audit"
 
 gates:                      # the project's verification library, referenced by name
   fmt:    { run: "cargo fmt --check",                        kind: core }
@@ -141,6 +160,60 @@ gates:                      # the project's verification library, referenced by 
   # panel approved each site because nothing mechanical forbade it. Now something does.
   no-os-kill:
     run: 'base=$(git rev-parse --verify -q rigger-run || git rev-parse --verify -q origin/main || git rev-parse --verify -q HEAD); bad="Command::new\(.(kill|pkill|killall|xkill)|[^a-zA-Z_]kill(all)? -[0-9A-Za-z]|[^a-zA-Z_]pkill[^a-zA-Z_]|killpg|libc::kill\(|signal::kill\(|kill_process\(|\.arg\(.--.\)|format!\(.-\{"; if git diff "$base"...HEAD -- src tests ":(exclude)src/reap.rs" ":(exclude)tests/common/mod.rs" | grep "^+" | grep -v "^+++ " | grep -qE "$bad"; then echo "no-os-kill gate FAILED: an OS-level kill, a process-group target, or a direct signal call was introduced outside the sanctioned lifecycle helpers (src/reap.rs, tests/common/mod.rs). Lifecycle is handle-bound: Child::kill()/wait(), or the shared helper. See specs/78-no-os-level-kills.md"; exit 1; fi; if git diff "$base"...HEAD -- src/reap.rs tests/common/mod.rs | grep "^+" | grep -v "^+++ " | grep -qE "Command::new\(.(kill|pkill|killall|xkill)|\.arg\(.--.\)|format!\(.-\{"; then echo "no-os-kill gate FAILED: a sanctioned lifecycle file shelled out to kill or formatted a process-group target; use the internal guarded signal call only"; exit 1; fi'
+    kind: core
+  # The check-in-stage mutation gate (spec 91): runs the diff-scoped `cargo mutants`
+  # sweep ONCE, at the `checkin` stage below - after every implement unit has
+  # integrated - rather than once per implementer round (spec 73's original per-round
+  # placement, retired). `$MUTANTS` is the unit-keyed mutants root the conductor
+  # exports to every gate command exactly like `CARGO_TARGET_DIR` already is
+  # (`worktree::unit_mutants_sibling`), and reaps at unit terminus alongside it
+  # (`worktree::reclaim_cache_sibling`) - this command owns creating/wiping it each
+  # run, never this crate. `$RIGGER_RUN_BASE` is the run branch's tip commit sha AT
+  # THE MOMENT this run started (`RunStarted.base_tip`, exported to every gate
+  # command the same way `$MUTANTS` is) - NEVER a `git merge-base` with the run
+  # branch: the checkin stage's own worktree branches off the run branch AFTER every
+  # implement unit has already integrated, so a merge-base there is already HEAD and
+  # would diff nothing (the whole-spec sweep would then certify zero mutants, every
+  # run, silently). A run whose `RunStarted` predates this field has no base to diff
+  # against; `test -n` refuses loud rather than sweeping an empty diff. The checkin
+  # stage's own task text (below, and the `rust-engineer` persona's checkin-stage
+  # prose) carries the kill-or-justify protocol: read `mutants.out/outcomes.json`,
+  # kill each missed mutant with a strengthened test or justify it via an
+  # `exclude_re` entry in `.cargo/mutants.toml` with a one-line reason, commit, and
+  # record the deterministic per-mutant accounting as a DecisionMade. Declaring a
+  # gate under this exact id requires `cargo-mutants` on PATH (`rigger validate`
+  # checks at run start). The gate fails on MISSED mutants only (spec 91: "fails while a
+  # missed mutant is neither killed nor justified"). A TIMEOUT is a detection, not a miss:
+  # the suite hangs or overruns under the mutant (a server that returns at once, an
+  # inverted loop guard - hang-class mutants the suite catches only by bounded waits), and
+  # cargo-mutants exits 3 for it. On the first live check-in (spec 89, 2026-09-14) the same
+  # four hang-class mutants timed out at 1.5x AND 3x the baseline with zero misses, and a
+  # remediation round of fast-failing contract tests still left two: cargo stops at the
+  # first FAILING test binary, and the binaries with the bounded waits run before the one
+  # that fails fast, so no test can make the whole suite finish early. Two green units
+  # escalated on that treadmill. The budget stays at 3x (two suites run at once); the
+  # sweep's own missed.txt is the verdict, and the accounting names every timeout.
+  #
+  # `GateSelection::PostMerge` (spec 12, unit 5) re-runs this same gate against
+  # `self.deps.repo` after the checkin unit merges - a dir with no per-unit worktree of
+  # its own. This command's `$MUTANTS` is never left empty there: `RunCtx::run_gates`
+  # (conductor.rs) derives the postmerge root from the unit's own worktree name when the
+  # sibling-of-`dir` derivation every other selection uses comes back empty, so the
+  # re-sweep always runs on a real root - never `mkdir -p ""`. That re-sweep is not mere
+  # redundant cost: it certifies the ACTUAL merged tree, which a batch-mate's own
+  # pre-merge gate can miss entirely (the second of two units merging into a tree its
+  # own gate never saw). An earlier fix instead skipped the sweep whenever `$MUTANTS`
+  # came back empty - trading that real gap away for a crash workaround, when the
+  # crash's true cause (an ungenerated root) had a real fix available in-conductor;
+  # retired here in favor of that fix.
+  mutation:
+    run: >-
+      test -n "$RIGGER_RUN_BASE" &&
+      git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff &&
+      rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
+      { TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 3 -j 2;
+      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
+      test ! -s mutants.out/missed.txt
     kind: core
 
 stages:
@@ -193,3 +266,20 @@ stages:
     gates: [fmt, clippy, build, test, style, no-os-kill]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
+
+  # 3. Check in ONCE, after every implement unit has integrated (spec 91). A `needs`
+  #    entry naming the fan-out `implement` TEMPLATE is satisfied exactly when every
+  #    unit it expanded into has integrated (an escalated or still-open unit leaves it
+  #    unsatisfied, so the run's escalated fixpoint stays loud) - never before every
+  #    unit has landed, and never per implementer round the way spec 73's original
+  #    placement ran it. Re-verifies the whole gate suite against the now-merged tree,
+  #    THEN sweeps mutants; `max_retries: 2` overrides `defaults.max_retries` for this
+  #    stage alone - one remediation round for the WHOLE spec diff's mutants, then
+  #    integrate or escalate with the accounting already on record.
+  checkin:
+    needs: [implement]
+    agent: rust-engineer
+    max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the sweep, one remediation round, the sweep again (1 escalated on the first miss - run c6ccaf8e)
+    gates: [fmt, clippy, build, test, style, no-os-kill, mutation]
+    on_pass: merge
+    coverage: "mutation efficacy of the whole spec diff"

@@ -27,8 +27,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_REFERENCES,
-    TIER_EXTRACTED, TIER_INFERRED,
+    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY,
+    REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{self, DashInputs};
 
@@ -365,7 +365,11 @@ const pageScript = fs.readFileSync(process.argv[2], "utf8");
 // poll's /api/state fetch), recording the graph URL so the driver can assert the seed was carried.
 const SHIM = String.raw`
 const __els = {};
-let __fetchedGraphUrl = "";
+// Every '/api/graph' URL fetched, in order (spec 63 c2 added a SECOND, additive fetch -
+// card=<seed> - right after a plain seed renders, so this must NOT collapse to a single
+// last-writer-wins string: asserting "the seed URL is IN the fetched set" survives that additive
+// fetch, where asserting "the LAST fetch equals the seed URL" would not).
+const __fetchedGraphUrls = [];
 const __NB = { seed: "u1", depth: 2,
   nodes: [ { id: "u1", kind: "unit", label: "u1" }, { id: "d1", kind: "decision", label: "the d1 decision" } ],
   edges: [ { from: "d1", to: "u1", rel: "DECIDED", tier: "extracted" } ] };
@@ -380,8 +384,11 @@ const document = { getElementById: function(id){ return __els[id] || (__els[id] 
 const window = { addEventListener: function(){} };
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
-    __fetchedGraphUrl = String(url);
-    return Promise.resolve({ json: function(){ return Promise.resolve(__NB); } });
+    __fetchedGraphUrls.push(String(url));
+    // A card=<id> fetch (spec 63 c2) resolves gracefully empty here - this harness's own fixture
+    // is the plain-neighborhood shape __NB, which carries no card field.
+    const body = String(url).indexOf("card=") !== -1 ? { card: null } : __NB;
+    return Promise.resolve({ json: function(){ return Promise.resolve(body); } });
   }
   return Promise.reject(new Error("no network for " + url));
 };
@@ -389,7 +396,7 @@ const setTimeout = function(){ return 0; };
 `;
 
 // Test driver (vm-realm, appended after the page script - shares its scope, so it calls el()/render()
-// and reads kgSeed/__fetchedGraphUrl directly).
+// and reads kgSeed/__fetchedGraphUrls directly).
 const DRIVER = String.raw`
 ;(async function(){
   // A click on a run-tree node carrying data-seed="u1" (what treeNode() emits), dispatched through
@@ -404,8 +411,8 @@ const DRIVER = String.raw`
   for (let k = 0; k < 12; k++) { await Promise.resolve(); }
 
   if (kgSeed !== "u1") throw new Error("clicking a data-seed node did not set the seed: " + kgSeed);
-  if (__fetchedGraphUrl.indexOf("seed=u1") === -1)
-    throw new Error("select-to-seed did not fetch /api/graph for the selected seed: " + __fetchedGraphUrl);
+  if (!__fetchedGraphUrls.some(function(u){ return u.indexOf("seed=u1") !== -1; }))
+    throw new Error("select-to-seed did not fetch /api/graph for the selected seed: " + __fetchedGraphUrls);
   const panel = el("kgpanel")._html;
   if (panel.indexOf("DECIDED") === -1) throw new Error("the KG panel did not render the neighborhood edge: " + panel);
   if (panel.indexOf("extracted") === -1) throw new Error("the KG panel did not render the edge confidence tier: " + panel);
@@ -792,7 +799,11 @@ const pageScript = fs.readFileSync(process.argv[2], "utf8");
 
 const SHIM = String.raw`
 const __els = {};
-let __fetchedGraphUrl = "";
+// Every '/api/graph' URL fetched, in order (spec 63 c2 added a SECOND, additive fetch -
+// card=<seed> - right after a plain seed renders, so this must NOT collapse to a single
+// last-writer-wins string: asserting "the query-path URL is IN the fetched set" survives that
+// additive fetch, where asserting "the LAST fetch equals the query-path URL" would not).
+const __fetchedGraphUrls = [];
 const __NB_PATH = { seed: "a", depth: 2,
   nodes: [ { id: "a", kind: "unit", label: "a", degree: 1, god: false },
            { id: "b", kind: "unit", label: "b", degree: 2, god: false },
@@ -815,8 +826,11 @@ const document = { getElementById: function(id){ return __els[id] || (__els[id] 
 const window = { addEventListener: function(){} };
 const fetch = function(url){
   if (String(url).indexOf("/api/graph") !== -1) {
-    __fetchedGraphUrl = String(url);
-    const body = String(url).indexOf("from=") !== -1 ? __NB_PATH : __NB_SEED;
+    __fetchedGraphUrls.push(String(url));
+    // A card=<id> fetch (spec 63 c2) resolves gracefully empty here - this harness's own
+    // fixtures carry no card field.
+    const body = String(url).indexOf("card=") !== -1 ? { card: null }
+      : String(url).indexOf("from=") !== -1 ? __NB_PATH : __NB_SEED;
     return Promise.resolve({ json: function(){ return Promise.resolve(body); } });
   }
   return Promise.reject(new Error("no network for " + url));
@@ -847,8 +861,8 @@ const DRIVER = String.raw`
   const target = { dataset: { seed: "h" }, closest: function(sel){ return sel === "[data-seed]" ? this : null; } };
   handlers.forEach(function(fn){ fn({ target: target, shiftKey: true }); });
   for (let k = 0; k < 12; k++) { await Promise.resolve(); }
-  if (__fetchedGraphUrl.indexOf("from=") === -1 || __fetchedGraphUrl.indexOf("to=h") === -1)
-    throw new Error("a shift-click did not request the query path (from/to): " + __fetchedGraphUrl);
+  if (!__fetchedGraphUrls.some(function(u){ return u.indexOf("from=") !== -1 && u.indexOf("to=h") !== -1; }))
+    throw new Error("a shift-click did not request the query path (from/to): " + __fetchedGraphUrls);
   if (el("kgpanel")._html.indexOf("onpath") === -1)
     throw new Error("the shift-click query path was not highlighted: " + el("kgpanel")._html);
 
@@ -1389,14 +1403,25 @@ fn the_served_root_page_ships_the_tier_toggles_and_the_explain_provenance() {
     );
 }
 
-/// A two-module + decision fixture the EXPLORATION route (spec 42 c4) drills, overviews, and seeds
-/// over the real socket: two distinct file directories (`src/a`, `src/b`) fold to two file clusters
-/// and a bare `decision` node folds by KIND, so the three served views are visibly different.
+/// A two-file + decision + community fixture the EXPLORATION route (spec 42 c4) drills, overviews,
+/// and seeds over the real socket. Under the DEFAULT (Files) lens (spec 63 c3, FILES-LENS PURITY): a
+/// cluster IS A FILE, not a directory - the two `src/a/mod.rs` entities merge into ONE cluster there,
+/// `src/b/mod.rs::baz` is a different file and its own cluster, and the decision node carries NO
+/// cluster at all (a non-code-entity never folds under this lens). Drilling a files-lens cluster is
+/// now unconditionally empty (spec 63 c3), so the DRILL dispatch below is proven instead over
+/// `?lens=code`, where the same two `src/a/mod.rs` entities are ADDITIONALLY wired into one coupling
+/// community and so stay a real, many-member drill target; the OVERVIEW and SEED dispatch stay
+/// proven over the default (lens-absent) request, unaffected by the added membership edges.
 fn exploration_graph() -> Graph {
+    // A real definition carries a `name` attr (the extraction fold's marker; spec 63 c3's files-lens
+    // honesty gate reads it to tell a real definition from a bare cross-file placeholder).
     let ce = |id: &str| Node {
         id: id.to_string(),
         kind: KIND_CODE_ENTITY.to_string(),
-        attrs: BTreeMap::new(),
+        attrs: BTreeMap::from([(
+            "name".to_string(),
+            id.rsplit_once("::").map_or(id, |(_, n)| n).to_string(),
+        )]),
     };
     let refs = |from: &str, to: &str| Edge {
         from: from.to_string(),
@@ -1407,21 +1432,32 @@ fn exploration_graph() -> Graph {
         source: 0,
         tier: TIER_EXTRACTED.to_string(),
     };
+    let membership = |id: &str| Edge {
+        from: id.to_string(),
+        to: "community/1/0".to_string(),
+        rel: REL_IN_COMMUNITY.to_string(),
+        valid_from: 0,
+        valid_to: None,
+        source: 0,
+        tier: TIER_INFERRED.to_string(),
+    };
     Graph {
         nodes: vec![
-            ce("src/a/mod.rs::foo"), // cluster "src/a"
-            ce("src/a/mod.rs::bar"), // cluster "src/a"
-            ce("src/b/mod.rs::baz"), // cluster "src/b"
+            ce("src/a/mod.rs::foo"), // file cluster "src/a/mod.rs"; community "community/1/0"
+            ce("src/a/mod.rs::bar"), // file cluster "src/a/mod.rs"; community "community/1/0"
+            ce("src/b/mod.rs::baz"), // file cluster "src/b/mod.rs"
             Node {
                 id: "d1".to_string(),
                 kind: KIND_DECISION.to_string(),
                 attrs: BTreeMap::new(),
-            }, // cluster "decision"
+            }, // no cluster under either lens (spec 63 c1/c3 purity)
         ],
         edges: vec![
-            refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"), // intra src/a
-            refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"), // cross src/a <-> src/b
-            refs("d1", "src/a/mod.rs::foo"),                // cross decision <-> src/a
+            refs("src/a/mod.rs::foo", "src/a/mod.rs::bar"), // intra file / intra community
+            refs("src/a/mod.rs::bar", "src/b/mod.rs::baz"), // cross file
+            refs("d1", "src/a/mod.rs::foo"),                // touches the purity-excluded decision
+            membership("src/a/mod.rs::foo"),
+            membership("src/a/mod.rs::bar"),
         ],
     }
 }
@@ -1449,11 +1485,13 @@ fn the_served_graph_route_dispatches_the_exploration_overview_drill_and_seed() {
         serde_json::from_str(body_of(&resp)).expect("the served body is valid JSON")
     };
 
-    // DRILL: `cluster=src%2Fa` (the `/` in the module key is `encodeURIComponent`d) is decoded back
-    // and returns the src/a cluster's members as a neighborhood echoing the cluster key as its seed.
-    let drill = served("/api/graph?cluster=src%2Fa");
+    // DRILL: proven over `?lens=code` - spec 63 c3 makes the default Files-lens drill unconditionally
+    // empty (see the fixture's module doc), so it is no longer a vehicle for this assertion.
+    // `cluster=community%2F1%2F0` (the `/` in the key is `encodeURIComponent`d) is decoded back and
+    // returns the community's members as a neighborhood echoing the cluster key as its seed.
+    let drill = served("/api/graph?lens=code&cluster=community%2F1%2F0");
     assert_eq!(
-        drill["seed"], "src/a",
+        drill["seed"], "community/1/0",
         "the served drill echoes the decoded cluster key as its seed: {drill}"
     );
     let drill_ids: BTreeSet<&str> = drill["nodes"]
@@ -1467,11 +1505,13 @@ fn the_served_graph_route_dispatches_the_exploration_overview_drill_and_seed() {
         ["src/a/mod.rs::foo", "src/a/mod.rs::bar"]
             .into_iter()
             .collect(),
-        "the served drill returns exactly the src/a members: {drill}"
+        "the served drill returns exactly the community's members: {drill}"
     );
 
-    // OVERVIEW: the no-argument request returns the whole-graph fold (clusters + total), NOT a
-    // neighborhood - the default KG view the panel loads on open.
+    // OVERVIEW: the no-argument request returns the whole-graph fold (clusters + total) under the
+    // DEFAULT (Files) lens, NOT a neighborhood - the default KG view the panel loads on open. Spec 63
+    // c3 purity: a cluster is a FILE (the two src/a entities merge into one), and the decision node
+    // carries no cluster at all.
     let overview = served("/api/graph");
     assert_eq!(
         overview["total"], 4,
@@ -1489,8 +1529,8 @@ fn the_served_graph_route_dispatches_the_exploration_overview_drill_and_seed() {
         .collect();
     assert_eq!(
         keys,
-        ["decision", "src/a", "src/b"].into_iter().collect(),
-        "the served overview folds the graph into its three clusters: {overview}"
+        ["src/a/mod.rs", "src/b/mod.rs"].into_iter().collect(),
+        "the served overview folds the graph into its two FILE clusters; the decision carries none: {overview}"
     );
 
     // SEED: a non-empty seed returns the spec-30 neighborhood unchanged - depth-1 from `d1` reaches
@@ -1545,15 +1585,17 @@ fn the_served_graph_route_precedence_and_graceful_empty_cluster() {
         resp
     };
 
-    // PRECEDENCE: `cluster=src%2Fa` AND `seed=d1` are both present. The drill wins - the body echoes
-    // the src/a cluster key as its seed and carries the src/a members, NOT the depth-1 seeded
-    // neighborhood of `d1` (which would echo seed `d1` and carry {d1, foo}). Reordering the dispatch
-    // to check `seed` before `cluster` would return the d1 neighborhood and redden both asserts.
-    let resp = served("/api/graph?cluster=src%2Fa&seed=d1&depth=1");
+    // PRECEDENCE: `cluster=community%2F1%2F0` AND `seed=d1` are both present (over `?lens=code`, per
+    // the fixture's module doc - the default Files-lens drill is unconditionally empty under spec 63
+    // c3, so it cannot discriminate this precedence). The drill wins - the body echoes the community
+    // key as its seed and carries the community's members, NOT the depth-1 seeded neighborhood of
+    // `d1` (which would echo seed `d1` and carry {d1, foo}). Reordering the dispatch to check `seed`
+    // before `cluster` would return the d1 neighborhood and redden both asserts.
+    let resp = served("/api/graph?cluster=community%2F1%2F0&seed=d1&depth=1&lens=code");
     let drill: serde_json::Value =
         serde_json::from_str(body_of(&resp)).expect("the precedence body is valid JSON");
     assert_eq!(
-        drill["seed"], "src/a",
+        drill["seed"], "community/1/0",
         "cluster takes precedence: the body echoes the cluster key, not the seed d1: {drill}"
     );
     let drill_ids: BTreeSet<&str> = drill["nodes"]
@@ -1567,7 +1609,7 @@ fn the_served_graph_route_precedence_and_graceful_empty_cluster() {
         ["src/a/mod.rs::foo", "src/a/mod.rs::bar"]
             .into_iter()
             .collect(),
-        "the drill wins over the seed: exactly the src/a members, not {{d1, foo}}: {drill}"
+        "the drill wins over the seed: exactly the community's members, not {{d1, foo}}: {drill}"
     );
 
     // GRACEFUL DEAD KEY: an empty `cluster=` and an unknown `cluster=nope` each drill to an EMPTY

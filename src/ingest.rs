@@ -333,7 +333,7 @@ pub fn derived_key_spans(key: &str) -> Option<(std::ops::Range<usize>, std::ops:
 /// [`derived_key_spans`] as the two slices themselves - `(<prefix>/<file>, <hash>)` - for the
 /// callers that want the text rather than the offsets. ONE parse, two views: it cuts the ranges
 /// that function returns and computes nothing of its own.
-fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
+pub(crate) fn derived_key_parts(key: &str) -> Option<(&str, &str)> {
     let (identity, generation) = derived_key_spans(key)?;
     Some((&key[identity], &key[generation]))
 }
@@ -417,6 +417,22 @@ pub fn reasserted_derived_types() -> Vec<&'static str> {
 /// "latest generation per file" is a statement about this return value at the moment it is taken,
 /// never about a sink's set once the sink has run.
 pub fn project_scoped_replay_keys(prior: &[Event]) -> std::collections::HashSet<String> {
+    project_scoped_latest_generations(prior)
+        .into_values()
+        .flat_map(|(_, keys)| keys)
+        .collect()
+}
+
+/// [`project_scoped_replay_keys`]'s own per-identity working set, BEFORE it flattens to the
+/// keys-only return value that function's callers want: `identity -> (that identity's latest
+/// recorded generation hash, the keys of that generation)`. Extracted as its own
+/// `pub(crate)` function (spec 86 criterion 3) so `conductor::RunCtx` can seed its
+/// `replayed_generations` field from the SAME one whole-stream walk
+/// [`project_scoped_replay_keys`] already does, rather than a second hand-rolled aggregation
+/// that could drift from it - the two are ONE authority read two ways, never two authorities.
+pub(crate) fn project_scoped_latest_generations(
+    prior: &[Event],
+) -> std::collections::HashMap<String, (String, Vec<String>)> {
     // identity -> (that identity's latest recorded generation, the keys of that generation)
     let mut latest: std::collections::HashMap<String, (String, Vec<String>)> =
         std::collections::HashMap::new();
@@ -442,7 +458,7 @@ pub fn project_scoped_replay_keys(prior: &[Event]) -> std::collections::HashSet<
         }
         slot.1.push(key.clone());
     }
-    latest.into_values().flat_map(|(_, keys)| keys).collect()
+    latest
 }
 
 /// The light lane compiles no extraction pass, so there is nothing to walk - a no-op that emits

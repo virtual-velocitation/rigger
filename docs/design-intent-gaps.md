@@ -100,6 +100,8 @@ Dogfooding. Rigger ran on its own spec; the run's telemetry (`rigger stats`, `ri
 
 **Status: CLOSED (root-cause) 2026-07-09.** Pinned by a worktree test (an add/add conflict aborts, leaves the run branch untouched with no merge in progress, and reports Conflict). The partitioner's under-grounding (the trigger) is a separate grounder-accuracy concern; this closes the AMPLIFIER that turned a recoverable conflict into a run-wedge.
 
+**Superseded (spec 88, criterion 1) 2026-09-11.** The RESET-the-unit's-branch fix shape above turned into its own defect: resetting to the run-branch tip discarded every commit the unit's reviewed rounds had accumulated (u86-c3 lost rounds 1-3 to a conflict in generated audit files alone). `integrate()` now merges the run branch INTO the unit's worktree (`git merge --no-commit`, conflict markers left in place, the unit's branch and every prior commit untouched) and the conductor re-parks the implementer to resolve on the SAME branch, charging no remediation attempt; a conflict confined to a registered regenerable path (`workflow.yml`'s `regenerate:` list) is resolved by the conductor itself with no spawn at all. The run-wedge this gap closed stays closed either way - see specs/88-a-unit-lineage-is-durable.md.
+
 ## Gap 29: a gate's test run can pollute and HIJACK the live run store
 
 **Intent.** A gate (`cargo test`) verifies a unit; it must have NO side effect on the live run store. A run's `RunStarted` boundaries are the spine of run-scoping - nothing outside the run's own driver may append one.

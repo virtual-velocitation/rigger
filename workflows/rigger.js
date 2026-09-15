@@ -8,9 +8,10 @@
 //   1. COURIERS a step: an agent runs `cd <repo> && rigger step` and returns the one
 //      line of JSON it prints - `{"wave":[<SpawnRequest>...],"done":<bool>}` - the wave
 //      the conductor newly parked plus whether the run has reached a fixpoint.
-//   2. SPAWNS the wave natively in parallel: one `agent()` per SpawnRequest, each in its
-//      own per-unit `opts.phase` progress group so the /workflows display groups a unit's
-//      agents together. Two ready units with disjoint blast radii share a wave, so
+//   2. SPAWNS the wave natively in parallel: one `agent()` per SpawnRequest, each labeled
+//      with the LIFECYCLE-PHASE `opts.phase` group `phaseOf` derives from its role (Plan /
+//      Build / Review), so the /workflows display groups by what stage of the loop an agent
+//      is doing - never by unit. Two ready units with disjoint blast radii share a wave, so
 //      fan-out falls straight out of the conductor's partition - the driver just runs it.
 //   3. Lets each worker SELF-REPORT via `rigger result <id> ...`, which is exactly what
 //      the next `rigger step` replays past to advance the run. A worker that DIES without
@@ -40,18 +41,19 @@
 // meta MUST be a pure literal: the Workflow runtime extracts it statically (before the
 // workflow body ever runs), so it cannot contain computed values or interpolation. Unit
 // ids come from the conductor at RUNTIME and are unknowable at static-extraction time, so
-// meta.phases names only the FIXED lifecycle stages a unit passes through; the per-unit
-// distinction that makes the /workflows display match execution is carried entirely by the
-// runtime `opts.phase` strings the driver builds from each wave item (see `phaseOf` below).
+// meta.phases names only the FIXED lifecycle-phase groups every spawn falls into (Plan /
+// Build / Review / Drive); which group a given spawn renders under is carried entirely by
+// the runtime `opts.phase` string the driver derives from its ROLE (see `phaseOf` below),
+// never by its unit.
 export const meta = {
   name: 'rigger',
   description:
     'Turn a spec into working, reviewed code: it splits the spec into small units, implements and tests each one, reviews every change before merging it, and stops loudly if it gets stuck. Use it when you want a spec built out automatically instead of by hand.',
   phases: [
     { title: 'Plan', detail: 'the conductor sets up the run branch and decomposes the spec into a unit DAG on the first `rigger step` (one global pass)' },
-    { title: 'Build', detail: 'per-unit implement + cargo gates; the conductor parks the implementer, the driver spawns it under opts.phase "<unit>:<stage>"' },
-    { title: 'Review', detail: 'per-unit three-tier adversarial review (lenses, adversary, adjudicator); the conductor parks each reviewer, the driver spawns it under "<unit>:<stage>"' },
-    { title: 'Integrate', detail: 'per-unit merge of the approved unit onto the run branch; the conductor does the merge when a unit passes review' },
+    { title: 'Build', detail: 'per-unit implement + cargo gates; the driver spawns the implementer under opts.phase "Build" (phaseOf maps its role to this lifecycle phase)' },
+    { title: 'Review', detail: 'per-unit three-tier adversarial review (lenses, adversary, adjudicator); the driver spawns each reviewer under opts.phase "Review". An approved unit then integrates onto the run branch automatically - conductor work that spawns no agent of its own' },
+    { title: 'Drive', detail: 'orchestration: the step courier that advances the run each frontier (labeled step#N); sidecar couriers (liveness probes, fault recorders) ride the phase of the worker they accompany instead' },
   ],
 }
 
@@ -65,7 +67,66 @@ if (typeof A === 'string') {
   }
 }
 A = A || {}
-const REPO = A.repo || '.'
+// STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolve the repository to an
+// ABSOLUTE path exactly ONCE, here, before anything builds a courier command from it. A bare
+// relative default (`.`) is a no-op `cd .` that leaves a LATER courier's Bash tool call
+// wherever its own cwd already happens to be - which can drift into a linked unit worktree
+// left over from an earlier, unrelated Bash call in the same agent session - so `rigger step`
+// then runs in the WRONG tree and fails deep inside branch setup with git's own opaque
+// "'rigger-run' is already used by worktree ..." (2026-09-11 evidence: the driver stopped
+// after 28 waves for exactly this reason). This script has no filesystem or Node.js API of
+// its own (the Workflow harness grants none), so the resolution runs through one throwaway
+// agent() Bash round-trip - the very FIRST Bash command this workflow ever issues, before
+// anything else could have drifted its cwd - whose reported `pwd` becomes REPO for every
+// courier command the rest of this run builds.
+const REPO_ARG = A.repo || '.'
+const repoResolution = await agent(
+  `Run EXACTLY this ONE foreground Bash command and nothing else: cd ${REPO_ARG} && pwd. Return ` +
+    `its trimmed stdout (the absolute directory path) as structured output, verbatim - do not ` +
+    `guess, normalize, or invent a path.`,
+  {
+    phase: 'Drive',
+    // haiku: a single, unambiguous shell command with no judgment involved - the cheapest
+    // tier that can run a Bash call and relay its output.
+    model: 'haiku',
+    // The `path` schema constrains the relay to look like an absolute POSIX path
+    // (leading `/`) at the source: the LLM relay behind agent() is not a trusted
+    // resolver (spec 89, criterion 4 round 2 - a misbehaving relay that returns a
+    // non-empty, non-absolute value, e.g. a bare unit-worktree basename, would
+    // otherwise sail past the old `if (!REPO) throw` below and silently reintroduce
+    // the exact wrong-cwd-drift failure class this whole resolution exists to close).
+    // The pattern alone is not load-bearing on its own - see the runtime check right
+    // after REPO is bound, which is what actually refuses a relay that ignores the
+    // schema.
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['path'],
+      properties: { path: { type: 'string', pattern: '^/' } },
+    },
+    label: 'resolve-repo',
+  },
+)
+const REPO = (repoResolution && repoResolution.path ? repoResolution.path : '').trim()
+if (!REPO) {
+  throw new Error(
+    'rigger driver: could not resolve the repository to an absolute path before couriering the first step',
+  )
+}
+// A runtime check ALONGSIDE the empty-check above, not a replacement for it: the schema's
+// `pattern` constrains a well-behaved relay, but nothing enforces a JSON schema against a
+// model's structured-output relay at the wire level, so a misbehaving relay can still return
+// a non-empty, non-absolute `path` (spec 89, criterion 4 round 2). Every courier command built
+// below interpolates REPO directly into `cd ${REPO} && ...`, so a relative or otherwise
+// non-absolute value would resolve wherever THIS Bash call's own cwd already happens to be -
+// the identical drift-into-a-linked-worktree failure this whole agent() round-trip exists to
+// close - so it is refused here, loudly, before any courier command is ever built from it.
+if (!REPO.startsWith('/')) {
+  throw new Error(
+    `rigger driver: the resolved repository path is not absolute (${REPO}) - refusing to ` +
+      'build a courier command from it',
+  )
+}
 const SPEC = A.spec || 'spec.md'
 // Pass --base ONLY when the caller explicitly provided one: `rigger step` applies its
 // own default (origin/main) for a run branch it must create, and an existing run branch
@@ -240,13 +301,162 @@ function relayAttention(step) {
   }
 }
 
-// phaseOf builds a worker's per-unit `opts.phase` progress-group label from the wave item,
-// exactly per the documented `unit + stage` contract on spawn::SpawnRequest. The conductor
-// currently sets both to the unit id, so a unit's whole wave (implementer + reviewers)
-// shares one group - which is precisely the grouping we want; if the conductor later
-// distinguishes the stage half, this label refines automatically with no driver change.
+// roleOf reads the ROLE half of a wave item's deterministic spawn id, mirroring the grammar
+// `spawn::spawn_role` (src/spawn.rs) owns on the Rust side: `<unit>/<role>#<attempt>`, with an
+// optional `~retry{n}` respawn suffix riding after the role, both trimmed. Unit ids never
+// contain `/` (spawn::spawn_id's own invariant), so splitting on the first `/` is unambiguous.
+// Shared by every driver-side label that needs a wave item's role (phaseOf below, and the
+// persona-led work label) so the id grammar has ONE reader here, not a copy per caller.
+function roleOf(req) {
+  const afterUnit = String(req.id || '').split('/')[1] || ''
+  return afterUnit.split(/[#~]/)[0]
+}
+
+// phaseOf maps a wave item onto one of the fixed `meta.phases` groups (spec 67, criterion 1).
+// The two run-wide meta-stages are special-cased on the UNIT, ahead of any role read: `plan`
+// and `plan-critique` are `Plan` regardless of which role spawns them (the planner spawns as
+// an `implementer`, the critique gate as `adversary`/`adjudicator` - unmapped, those would
+// split the two meta-stages across Build/Review instead of the one Plan group they belong to).
+// Every other item is a per-criterion unit, and its ROLE decides the rest: the three review
+// tiers (`lens:*`, `adversary`, `adjudicator`) group under `Review`; `implementer` and every
+// other role - INCLUDING one this mapping does not yet recognize - group under `Build`, a
+// fail-visible default that keeps an unknown role's row visible under ongoing work rather than
+// dropping it. Courier placement (the Drive lane) is criterion 3's, at its own call sites.
 function phaseOf(req) {
-  return `${req.unit}:${req.stage}`
+  if (req.unit === 'plan' || req.unit === 'plan-critique') return 'Plan'
+  const role = roleOf(req)
+  if (role === 'adversary' || role === 'adjudicator' || role.startsWith('lens')) return 'Review'
+  return 'Build'
+}
+
+// PERSONA_VERB maps each REAL role token - the id's role half, from the deterministic
+// <unit>/<role>#<attempt> spawn id (spec 18) - to the human action phrase naming that persona's
+// MANDATE (spec 67 Design): the criterion sentence alone would render every tier of one unit
+// identically, so the verb is what actually distinguishes them. This is the ROSTER-LESS base
+// phrase for every role, including adversary/adjudicator: it is what `workerLabel` renders for a
+// roster-less item (an older conductor, or a panel with no lenses/adversary) - see `ROSTER_VERB`
+// below for the roster-bearing form spec 67 criterion 4 adds on top, once the conductor stamps
+// `req.reviews` onto the wave item. This table itself never reads that field.
+//
+// `plan` and `plan-critique` are the two run-wide META-STAGE UNIT ids, never role tokens, so they
+// do NOT belong in this role-keyed table (a prior round put them here and they were unreachable
+// dead code: conductor.rs:4139 mints the planning unit's own producer spawn via the ordinary
+// ROLE_IMPLEMENTER, and the plan-critique gate's tier-2/3 spawns use the ordinary
+// "adversary"/"adjudicator" roles - conductor.rs:6265,6280 - so no spawn id's role half is ever
+// literally "plan" or "plan-critique"). `workerLabel` below derives THEIR persona structurally,
+// from `req.unit`, instead. `replan` (conductor.rs:6080's re-plan respawn, role token "replan")
+// DOES occur as a real role half and gets its own verb here rather than falling to the generic
+// "review" fallback.
+const PERSONA_VERB = {
+  'implementer': 'implement',
+  'sdet-author': 'author the discriminating tests for',
+  'lens:sdet': 'evaluate testing effectiveness',
+  'lens:architecture-reviewer': 'evaluate architectural integrity',
+  'adversary': 'challenge the findings, assumptions, and rigor',
+  'adjudicator': 'weigh and rule',
+  'replan': 'revise the unit DAG from the critique feedback',
+}
+
+// ROSTER_VERB maps the two review-tier roles a routed roster ever names (spec 67 criterion 4:
+// "the conductor stamps the adversary's wave item with the unit's routed lens roster and the
+// adjudicator's with lenses plus adversary") to a function inlining that roster into
+// PERSONA_VERB's own base phrase for the SAME role - the adversary's mandate names WHO it is
+// disproving ("challenge ... of <roster>"), the adjudicator's names WHO it is weighing ("weigh
+// <roster> and rule"). Consulted ONLY when `req.reviews` is a real, non-empty array (`workerLabel`
+// below); a lens, an unmapped role, or a roster-less item (an older conductor, an empty panel)
+// never reaches this table and renders PERSONA_VERB's base phrase unchanged - the driver renders
+// EXACTLY what the conductor stamped, never a guessed or stale roster of its own.
+const ROSTER_VERB = {
+  'adversary': (roster) => `challenge the findings, assumptions, and rigor of ${roster.join(', ')}`,
+  'adjudicator': (roster) => `weigh ${roster.join(', ')} and rule`,
+}
+
+// personaOf title-cases a role for display, segment by segment on its ':'/'-' separators (e.g.
+// `lens:architecture-reviewer` -> `Lens:Architecture-Reviewer`), with one documented exception:
+// the `sdet` segment renders as the acronym `SDET` (e.g. `lens:sdet` -> `Lens:SDET`, `sdet-author`
+// -> `SDET-Author`) rather than merely capitalized, per spec 67 Design's own example.
+function personaOf(role) {
+  return role
+    .split(/([:-])/)
+    .map((seg) =>
+      seg === ':' || seg === '-'
+        ? seg
+        : seg.toLowerCase() === 'sdet'
+          ? 'SDET'
+          : seg.charAt(0).toUpperCase() + seg.slice(1).toLowerCase(),
+    )
+    .join('')
+}
+
+// firstSentence cuts an already whitespace-normalized string at its first sentence boundary (a
+// `.`, `!`, or `?` followed by whitespace or end of string), inclusive of the terminator, and
+// returns it WHOLE - the caller never slices or ellipsizes further (spec 67 criterion 2's own
+// no-truncation convention). A string with no sentence-ending punctuation is returned unchanged.
+function firstSentence(s) {
+  const m = /^.*?[.!?](?=\s|$)/.exec(s)
+  return m ? m[0] : s
+}
+
+// roleAttempt parses a spawn id's `{unit}/{role}#{attempt}[~retry{n}]` grammar (spec 18),
+// MIRRORING `src/spawn.rs::spawn_role`/`attempt_of`'s own semantics exactly - strip an optional
+// trailing `~retry{n}` suffix before anchoring on the attempt digits - rather than a second,
+// divergent `$`-anchored digit-only regex. A Gap-18 reviewer respawn (spec 07,
+// `src/spawn.rs::spawn_retry_id`) carries that suffix and is a normal, frequently-exercised path
+// for lens/adversary/adjudicator spawns whose result comes back empty or whitespace-only, not a
+// corner case - a `$`-anchored regex silently drops the persona for every such respawn. Returns
+// `null` when the id carries no `/` (no structured role to render), so the caller falls back to
+// the pre-criterion `${req.id}: ${subject}` shape unchanged.
+function roleAttempt(id) {
+  const s = String(id || '')
+  const slash = s.lastIndexOf('/')
+  if (slash === -1) return null
+  const rest = s.slice(slash + 1) // "role#attempt[~retry{n}]"
+  const hash = rest.indexOf('#')
+  if (hash === -1) return null
+  const role = rest.slice(0, hash)
+  const attempt = rest.slice(hash + 1).split('~')[0] // strip an optional trailing ~retry{n}
+  if (!/^\d+$/.test(attempt)) return null
+  return { role, attempt }
+}
+
+// workerLabel renders a titled wave item's display label per spec 67 criterion 2 (ROWS LEAD WITH
+// THE PERSONA): `<Persona> - <action phrase> #<attempt>: <subject>`. Role and attempt come from
+// the id's own deterministic <unit>/<role>#<attempt>[~retry{n}] shape (spec 18, via `roleAttempt`
+// above); the action phrase is PERSONA_VERB's mandate for a known role, or the generic `review`
+// verb for an unmapped one (an unmapped custom lens still reads with its OWN persona token, never
+// a bare slug); the subject is `req.title`'s first sentence, whitespace-normalized, passed WHOLE.
+// An untitled item (no `req.title`, or one that whitespace-normalizes to empty) falls back to
+// `req.id`, exactly as before this criterion.
+//
+// REVIEW TIERS NAME THEIR TARGETS (spec 67 criterion 4): when `req.reviews` is a real, non-empty
+// array - the roster the CONDUCTOR routed this panel to, never a driver guess - and the role has
+// a `ROSTER_VERB` entry (adversary/adjudicator only), the action phrase inlines that roster via
+// `ROSTER_VERB[role](reviews)` instead of `PERSONA_VERB`'s roster-less base. Every other case
+// (an absent/empty `req.reviews`, a lens, an unmapped role) renders `PERSONA_VERB`'s base phrase
+// unchanged - a roster-less item renders the phrase without the roster clause, exactly as before
+// this criterion.
+//
+// The persona itself is `personaOf(role)` title-casing the role - EXCEPT for the two run-wide
+// META-STAGE units (`plan`, `plan-critique`), whose role half is always an ordinary role
+// (`implementer`/`replan`, `adversary`/`adjudicator`) and so can never itself carry the "Plan" /
+// "Plan-Critique" persona a reader needs to recognize these rows: rendering them as a plain
+// "Implementer"/"Adversary" persona would be indistinguishable from any ordinary build unit's row
+// (the "plan personas are dead code" regression a prior round shipped). So the persona for these
+// two is derived STRUCTURALLY, from `req.unit` (the same field `phaseOf` above reads only to
+// special-case these two meta-stage units into `Plan`, never as a per-unit grouping key), never
+// from the role half.
+function workerLabel(req) {
+  const work = (req.title || '').replace(/\s+/g, ' ').trim()
+  if (!work) return req.id
+  const subject = firstSentence(work)
+  const parsed = roleAttempt(req.id)
+  if (!parsed) return `${req.id}: ${subject}`
+  const { role, attempt } = parsed
+  const persona =
+    req.unit === 'plan' ? 'Plan' : req.unit === 'plan-critique' ? 'Plan-Critique' : personaOf(role)
+  const roster = Array.isArray(req.reviews) ? req.reviews.filter((r) => typeof r === 'string' && r) : []
+  const verb = roster.length && ROSTER_VERB[role] ? ROSTER_VERB[role](roster) : PERSONA_VERB[role] || 'review'
+  return `${persona} - ${verb} #${attempt}: ${subject}`
 }
 
 // runWorker spawns one wave item natively and lets it self-report. The Workflow `agent()`
@@ -384,13 +594,16 @@ async function runWorker(req, fatal) {
   // The live work-line (spec 19a, c4): the unit's criterion the conductor threaded onto the
   // wave item. It rides the RENDER surfaces here - the log() narrator and the per-worker
   // progress-group label - so an observer sees the actual WORK a spawn is doing, not just its
-  // `${req.unit}:${req.stage}` group. Collapsed to a single line so a multi-line criterion
-  // never breaks the one-line narration; empty for an untitled (plan/canary) spawn, which then
-  // renders exactly as before. The group label (phaseOf) is UNCHANGED - the title is additive.
+  // lifecycle-phase group. Collapsed to a single line so a multi-line criterion never breaks
+  // the one-line narration; empty for an untitled (plan/canary) spawn, which then renders
+  // exactly as before. The group label (phaseOf) is UNCHANGED - the title is additive.
   const work = (req.title || '').replace(/\s+/g, ' ').trim()
-  const workLabel = work ? `${req.id} · ${work}` : req.id
+  // The progress-group LABEL leads with the persona (spec 67 criterion 2): `<Persona> - <action
+  // phrase> #<attempt>: <subject>`, replacing the old `${req.id} · ${work}` concatenation. An
+  // untitled spawn still falls back to `req.id` unchanged (workerLabel's own fallback).
+  const workLabel = workerLabel(req)
   // Narrate the start of this worker's run so a long silent stretch is a visible line, not a
-  // gap; the title is what turns `${req.unit}:${req.stage}` into the actual criterion.
+  // gap; the title is what turns the bare phase group into the actual criterion.
   log(`starting ${req.id}${work ? `: ${work}` : ''}`)
   const workdir = req.dir
     ? `Do all your file edits, cargo, and any git commit inside your isolated worktree ${req.dir} (the conductor assigned it and owns its lifecycle; run \`rigger ...\` commands from ${REPO}).`
@@ -546,24 +759,41 @@ async function runWorker(req, fatal) {
   }
 }
 
-// The single global phase marker: everything up front (and the courier steps, which have no
-// unit of their own) is the run's Plan/orchestration pass. The per-unit progress groups are
-// the runtime opts.phase strings on the workers, NOT a global phase('Build') marker - a
-// global build marker would falsely imply every unit builds together before any review, when
-// in fact each unit runs its whole Build -> Review -> Integrate lifecycle (inside the
-// conductor) before the next unit's spawns are parked.
-phase('Plan')
-
-// The thin driver loop. Each iteration: courier one `rigger step`, spawn the wave it parked,
-// and stop when the conductor reports a fixpoint. Termination is guaranteed by the conductor
-// (its spawn-budget breaker and per-unit retry bound), so this loop needs no cap of its own.
-// Every non-fixpoint exit is an ANOMALY and stops the loop LOUDLY (`stop(...)` throws): a
-// stuck/failed run must never be reported as a clean completion, and a courier that itself
-// dies must be a controlled, visible stop - not an uncaught rejection that aborts the driver.
+// The thin driver loop, PIPELINED PER UNIT (spec 89, criterion 5). Before this criterion, one
+// iteration couriered a step, then awaited the WHOLE wave as one `parallel()` batch over every
+// `runWorker` call before ever couriering again - so a unit whose round finished in five minutes
+// sat idle while a slower sibling in the SAME wave spent an hour in its own mutation sweep, and
+// the fast unit's review could not even start until the slow one's agent() call finally
+// resolved. Now the driver treats each wave item as its own pipeline stage: `inFlight` tracks
+// every worker CURRENTLY running (id -> its wrapped promise), spawned but never re-awaited as
+// one monolithic batch. As soon as ANY one of them
+// settles, the driver couriers the NEXT step immediately (steps still serialize one at a time -
+// the Rust side's own step lock, unchanged by this criterion) and spawns only the wave items
+// `inFlight` does not already hold, so an item still running is never spawned a second time.
+// `step_result` (src/spawn.rs) already returns the FULL PENDING FRONTIER on every call - every
+// request with no recorded result, not merely what THIS call newly parked, per its own doc
+// comment - which is exactly why the in-flight guard is load-bearing here and was a no-op
+// before: the pre-pipelining driver never couriered again until its one wave had fully drained,
+// so the same id could never appear across two of its OWN step calls.
+// Termination is guaranteed by the conductor (its spawn-budget breaker and per-unit retry
+// bound), so this loop needs no cap of its own. Every non-fixpoint exit is an ANOMALY and stops
+// the loop LOUDLY (`stop(...)` throws): a stuck/failed run must never be reported as a clean
+// completion, and a courier that itself dies must be a controlled, visible stop - not an
+// uncaught rejection that aborts the driver.
 let waves = 0
 // `--fresh` is a ONE-SHOT: it begins a new run, so it rides the FIRST step only; every step
 // after it must ADOPT that boundary, not mint another. Flipped false the moment it is used.
 let firstStep = true
+// The workers CURRENTLY running, keyed by spawn id, each entry the promise `runWorker` returns
+// (wrapped below to delete itself the moment it settles). Lives OUTSIDE the loop - not rebuilt
+// per iteration - so a worker spawned several steps ago is still recognized as running however
+// long its own round takes.
+const inFlight = new Map()
+// A death-report courier that itself died. Also lives OUTSIDE the loop, for the identical
+// reason `inFlight` does: a worker spawned several steps ago can still push into this the moment
+// it finally settles, and a fresh per-iteration array (the pre-pipelining shape) would silently
+// lose that push the instant the loop moved past the iteration that spawned it.
+const fatal = []
 
 // stop the driver LOUDLY: throw a clear, single Error so the anomalous exit surfaces as a
 // workflow failure with an actionable message (decision `thin-driver-loud-stops`), instead of
@@ -571,6 +801,37 @@ let firstStep = true
 function stop(reason) {
   log(`stopping the driver loop: ${reason}`)
   throw new Error(`rigger driver stopped after ${waves} wave(s): ${reason}`)
+}
+
+// drainInFlight awaits every CURRENTLY in-flight worker before a loud stop (a fatal courier
+// death, or a budget/rail halt), so neither ever abandons a worker mid-session - the same
+// courtesy the pre-pipelining loop gave for free by awaiting its one wave in full before ever
+// checking either condition. `runWorker`'s own promise never rejects (every internal path
+// resolves; a dead worker's own agent() rejection is caught and turned into a `{kind:'error'}`
+// outcome before runWorker returns), so `Promise.all` here is safe.
+async function drainInFlight() {
+  if (inFlight.size > 0) {
+    await Promise.all(Array.from(inFlight.values()))
+  }
+}
+
+// spawnNewItems starts a worker for every wave item `inFlight` does not already hold. `wave` is
+// the FULL pending frontier (`step_result`'s own doc comment), so an item still running from an
+// earlier step reappears on every later step's wave verbatim until it finally has a recorded
+// result - spawning it again here would run the SAME spawn id twice in parallel. Each new
+// worker is entered into `inFlight` before this function returns (never awaited here - that is
+// the whole point of pipelining) and removes itself the instant it settles.
+function spawnNewItems(wave) {
+  const newReqs = wave.filter((req) => !inFlight.has(req.id))
+  if (newReqs.length === 0) return
+  waves += 1
+  log(`wave ${waves}: spawning ${newReqs.length} agent(s) in parallel: ${newReqs.map((r) => r.id).join(', ')}`)
+  for (const req of newReqs) {
+    const p = runWorker(req, fatal).then(() => {
+      inFlight.delete(req.id)
+    })
+    inFlight.set(req.id, p)
+  }
 }
 
 for (;;) {
@@ -599,7 +860,7 @@ for (;;) {
       // large JSON object, and haiku demonstrably "helps" by externalizing big waves
       // to a file reference - which loses the wave (the driver reads only the
       // returned JSON) and stalls the run.
-      { phase: 'Plan', model: 'sonnet', schema: STEP, label: `step#${waves + 1}` },
+      { phase: 'Drive', model: 'sonnet', schema: STEP, label: `step#${waves + 1}` },
     )
   } catch (e) {
     // The `rigger step` courier AGENT itself rejected (its own max turns / crash) - distinct
@@ -631,43 +892,47 @@ for (;;) {
 
   // 1a. Relay this step's push-side ATTENTION array (spec 69, criterion 6): render each entry
   //     as one narrator log() line "at the wave it arrived" - as soon as the step that
-  //     surfaced it is in hand, before that same wave's own agents are spawned below. Purely
-  //     a render: it never stops the loop and never changes what happens next.
+  //     surfaced it is in hand, before any new items it parks are spawned below. Purely a
+  //     render: it never stops the loop and never changes what happens next.
   relayAttention(step)
 
-  // 2. Spawn the wave natively in parallel; each worker in its own per-unit progress group. A
+  // 2. Spawn every wave item `inFlight` does not already hold (spawnNewItems above, spec 89
+  //    criterion 5): an item still running from an earlier step is filtered out, never spawned
+  //    twice; each worker still labeled with its lifecycle-phase progress group (phaseOf). A
   //    worker that dies has its failure recorded on its behalf inside runWorker; if that death
-  //    courier ITSELF dies, runWorker records it in `fatal` (it never re-throws, so parallel()
-  //    is not aborted mid-wave) and we stop loudly below.
-  const fatal = []
+  //    courier ITSELF dies, runWorker records it in the shared `fatal` sink and we stop loudly
+  //    below (after draining whatever is still in flight).
   const wave = step.wave || []
-  if (wave.length > 0) {
-    waves += 1
-    log(`wave ${waves}: spawning ${wave.length} agent(s) in parallel: ${wave.map((r) => r.id).join(', ')}`)
-    await parallel(wave.map((req) => () => runWorker(req, fatal)))
-  }
+  spawnNewItems(wave)
 
   // A death-report courier died, so a spawn may have no result and the conductor's replay could
-  // hang on resume. Stop LOUDLY rather than looping into an unrecoverable hang.
+  // hang on resume. Drain whatever is still in flight - never abandon a worker mid-session -
+  // then stop LOUDLY rather than looping into an unrecoverable hang.
   if (fatal.length > 0) {
+    await drainInFlight()
     stop(`the failure of ${fatal.length} worker(s) could not be recorded (their death-report couriers also died): ${fatal.join(' | ')}`)
   }
 
   // 3. A budget (or other rail) HALT is a LOUD stop, never a clean completion (Gap 13).
   //    `rigger step` reports it as a `halted` reason distinct from `done` convergence: the
   //    breaker stopped the run with ready work unscheduled (a resume needs a raised budget).
-  //    We drain any wave the halting step already parked (above), then surface the halt as a
-  //    workflow FAILURE carrying the reason - rather than letting the `done` fixpoint below
-  //    read a starved run as success (the exact Gap-13 defect: a breaker halt printed as a
-  //    clean completion and the driver reporting a starved run as done).
+  //    Drain whatever this (or an earlier) step already parked - never abandon a worker
+  //    mid-session - then surface the halt as a workflow FAILURE carrying the reason, rather
+  //    than letting the `done` fixpoint below read a starved run as success (the exact Gap-13
+  //    defect: a breaker halt printed as a clean completion and the driver reporting a starved
+  //    run as done).
   if (step.halted) {
+    await drainInFlight()
     stop(`the run halted: ${step.halted}`)
   }
 
-  // 4. Stop at the conductor's fixpoint (every parked spawn has a result and nothing new was
-  //    parked). A non-empty wave always implies done === false, so we drain it first (above),
-  //    then re-check on the next iteration.
-  if (step.done) {
+  // 4. Stop at the conductor's fixpoint. The fixpoint rule is UNCHANGED by pipelining (spec 89,
+  //    criterion 5's Design says so explicitly): "done with nothing in flight" - `step.done`
+  //    alone is not enough, because a worker can record its result and keep running a while
+  //    longer before its own agent() call actually resolves, so `rigger step` can report `done`
+  //    while that straggler still sits in `inFlight`. Requiring both means a fixpoint is never
+  //    declared out from under a still-running worker.
+  if (step.done && inFlight.size === 0) {
     // A fixpoint reached with an ESCALATED unit is NOT a clean completion (spec 19c, unit 1):
     // the unit exhausted remediation and went terminal WITHOUT integrating, yet the run
     // converged AROUND it, so a bare `done` would report a wedged terminus as success. Surface
@@ -676,18 +941,34 @@ for (;;) {
     // untouched: this gates only the FINAL terminus (`done`), never a mid-run wave.
     const escalated = step.escalated || []
     if (escalated.length > 0) {
-      stop(`the run reached a fixpoint but ${escalated.length} unit(s) never integrated (escalated after exhausting remediation): ${escalated.join(', ')}`)
+      // Spec 88, criterion 3 (ESCALATION RESUMES): the stop reason names the operator's
+      // own remedy - `rigger resume-unit <unit>` grants a wedged unit more attempts
+      // without replanning the whole spec - so an unattended run's failure surfaces the
+      // exact next command, not just the bare fact that it is stuck.
+      stop(`the run reached a fixpoint but ${escalated.length} unit(s) never integrated (escalated after exhausting remediation): ${escalated.join(', ')} - run \`rigger resume-unit <unit>\` to grant it more attempts before replanning`)
     }
     log(`run complete: the conductor reached a fixpoint after ${waves} wave(s)`)
     break
   }
-  // An empty wave that is NOT done means a prior worker resolved WITHOUT self-reporting (its
-  // agent() neither errored nor recorded a result): the conductor has an unanswered spawn but
-  // there is nothing new for us to run, so stepping again would spin. This is an anomaly, not a
-  // completion - stop loudly rather than resolve as done or loop forever.
-  if (wave.length === 0) {
-    stop('`rigger step` parked no new wave yet is not done (a worker likely resolved without self-reporting)')
+
+  // An empty wave with nothing in flight and not done means a prior worker resolved WITHOUT
+  // self-reporting (its agent() neither errored nor recorded a result): the conductor has an
+  // unanswered spawn but nothing is running and nothing new was parked, so stepping again would
+  // spin. This is an anomaly, not a completion or an ordinary pipelining pause (an empty wave
+  // WITH a straggler still in flight is the ordinary pause - see the final wait below) - stop
+  // loudly rather than resolve as done or loop forever.
+  if (wave.length === 0 && inFlight.size === 0) {
+    stop(
+      '`rigger step` parked no new items and nothing is in flight, yet is not done (a worker ' +
+        'likely resolved without self-reporting)',
+    )
   }
+
+  // Otherwise something is still running - this step's own new items, a straggler from an
+  // earlier one, or both - and nothing about this step warrants stopping. Wait for ANY of them
+  // to settle (spec 89, criterion 5: that settling is the signal a courier should run again
+  // immediately), then loop back to step 1.
+  await Promise.race(Array.from(inFlight.values()))
 }
 
 return { waves }

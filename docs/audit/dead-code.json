@@ -1,0 +1,1709 @@
+[
+  {
+    "name": "cataloged_classes",
+    "file": "src/canary.rs",
+    "content_hash": "2c737e5a2252b7b9",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/canary.rs",
+        "content_hash": "99d81069c44251eb"
+      },
+      {
+        "file": "src/canary.rs",
+        "content_hash": "99d81069c44251eb"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "cataloged_classes has no production caller anywhere in src/ (checked whole-tree, recursively). Its only two references are its own inline tests (canary.rs:1419/1433); the one behavior it exists to prove - the shipped corpus catalogs >= 3 defect classes (spec 13 unit 5) - is asserted by the_shipped_corpus_loads_and_catalogs_at_least_three_defect_classes, which is the ONLY caller and would go dead with it. run_canary (the real production review-panel loop) never consults it: corpus diversity is a load-time authoring check, not a runtime one."
+  },
+  {
+    "name": "sdet_author_enabled",
+    "file": "src/config.rs",
+    "content_hash": "b414f75c17b36a10",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/config.rs",
+        "content_hash": "c580718a0832b3af"
+      },
+      {
+        "file": "src/config.rs",
+        "content_hash": "51460f61d0ac1cbe"
+      },
+      {
+        "file": "src/config.rs",
+        "content_hash": "51460f61d0ac1cbe"
+      },
+      {
+        "file": "src/config.rs",
+        "content_hash": "a2a512a1dfc1c841"
+      },
+      {
+        "file": "src/config.rs",
+        "content_hash": "51460f61d0ac1cbe"
+      }
+    ],
+    "disposition": "keep-pending",
+    "reason": "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not a false positive: spawn_sdet_author (conductor.rs:3980) gates the always-on SDET periphery-test author ONLY on whether an sdet-author agent is configured (self.cfg.agents.get(ROLE_SDET_AUTHOR)) and never consults self.cfg.defaults.sdet_author_enabled() at all, so today an explicit sdet_author: false in a workflow's defaults: block does nothing - the on-by-default opt-out spec 32 documents and this very method's own doc comment claims ('the conductor's build-seam reads through here') is not actually true of the shipped code. keep-pending, citing spec 32 (the sdet-author feature this toggle governs, already landed): deleting the method would delete the documented resolution authority for an already-shipped, still-referenced config field (Defaults::sdet_author) before a follow-up wires spawn_sdet_author to call it - the correct fix is wiring the call site, out of scope here (no production code changes this criterion)."
+  },
+  {
+    "name": "pid_is_alive",
+    "file": "src/dash.rs",
+    "content_hash": "3589ffc443c8c257",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/dash.rs",
+        "content_hash": "3207cd690757f51f"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "ff171bde4c677e38"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "4b05e60950e03ad8"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "4b05e60950e03ad8"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "c5c2fe0f8d3cb3c3"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "72c2747f506cd564"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "72c2747f506cd564"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "pid_is_alive has no production caller. It is the RETIRED predecessor of the real marker-serving check: dash_marker_serving (main.rs:5711, the production predicate ensure_run_dashboard_at is called with) calls dash::dash_serving_on - a REAL network probe of the port - and its own doc comment explains why by name: 'A REAL network probe of the port, never a bare pid-liveness check: a marker left by a self-reaped or pid-recycled dash must never masquerade as still serving just because its pid happens to be alive'. pid_is_alive's only references are its own unit test (dash.rs:9304) and an older fixture test (main.rs:12795-12841) that injects it as a simplified closure for readability, not a claim about production behavior."
+  },
+  {
+    "name": "neighborhood",
+    "file": "src/dash.rs",
+    "content_hash": "017b0ac3890e0793",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/dash.rs",
+        "content_hash": "41aa7f33c1b0e2d3"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "0a4677751bad5fea"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "41aa7f33c1b0e2d3"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "41aa7f33c1b0e2d3"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "41aa7f33c1b0e2d3"
+      },
+      {
+        "file": "tests/dash_cluster_detail_drill.rs",
+        "content_hash": "19e529030aee63fe"
+      },
+      {
+        "file": "tests/dash_cluster_detail_drill.rs",
+        "content_hash": "28b97baa337d7460"
+      },
+      {
+        "file": "tests/files_lens_view_periphery.rs",
+        "content_hash": "cabef5d8c6e2da20"
+      },
+      {
+        "file": "tests/files_lens_view_periphery.rs",
+        "content_hash": "76b104c5f032f1d5"
+      },
+      {
+        "file": "tests/subject_lens_reprojection_periphery.rs",
+        "content_hash": "d218ee4a0356d34b"
+      },
+      {
+        "file": "tests/subject_lens_reprojection_periphery.rs",
+        "content_hash": "a6b1dbd1e7fc3d1d"
+      },
+      {
+        "file": "tests/subject_lens_reprojection_periphery.rs",
+        "content_hash": "64ec1ad315bd0717"
+      },
+      {
+        "file": "tests/subject_lens_reprojection_periphery.rs",
+        "content_hash": "3fb4b4655dac6074"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "neighborhood (the single-seed convenience wrapper) has no production caller. The route handler (dash.rs:3404) calls neighborhood_of (the multi-seed core neighborhood delegates to) DIRECTLY, per its own doc comment: 'the re-pointed run-tree click (spec 43) uses it to seed from a unit's several decision/finding content nodes at once'. neighborhood's 13 references are all its own tests exercising the single-seed case directly."
+  },
+  {
+    "name": "serve",
+    "file": "src/dash.rs",
+    "content_hash": "dda53586dfed30f6",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/mcpserver.rs",
+        "content_hash": "809a0c685a6290d0"
+      },
+      {
+        "file": "src/mcpserver.rs",
+        "content_hash": "809a0c685a6290d0"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "serve (the blocking, self-binding accept-loop entry point) has no production caller. The real dash-serving CLI path (main.rs::cmd_dash) calls dash::serve_on (main.rs:6493) with the listener bind_singleton already bound, never dash::serve, which would bind its own listener and so cannot participate in spec 62's singleton-bind-then-serve flow. (main.rs:6574's doc comment still names '[`dash::serve`]' as the accept loop that terminates - a stale intra-doc reference worth a follow-up fixing it to name serve_on, disclosed here rather than silently left.) serve's 2 references are its own smoke tests."
+  },
+  {
+    "name": "rebuild",
+    "file": "src/distiller.rs",
+    "content_hash": "4501c113a4c9d271",
+    "visibility": "pub",
+    "ambiguous": true,
+    "ambiguous_with": [
+      "src/playbooks.rs#4501c113a4c9d271"
+    ],
+    "test_only_references": [
+      {
+        "file": "src/distiller.rs",
+        "content_hash": "3bd5681a7e5465a9"
+      },
+      {
+        "file": "src/distiller.rs",
+        "content_hash": "c4a3b0853623550d"
+      },
+      {
+        "file": "src/distiller.rs",
+        "content_hash": "c4a3b0853623550d"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "ec3c05273a03cca1"
+      }
+    ],
+    "disposition": "keep-pending",
+    "reason": "rebuild (the digest-pool projection rebuild, spec 27) has no production caller anywhere - src/lib.rs's mod distiller; declaration is the only mention of the module outside distiller.rs itself, confirmed by a whole-tree recursive grep. Unlike a mere convenience wrapper, rebuild's own tested behavior IS spec 27's already-landed Done-when contract (clearing and re-deriving the digest pool, run-boundary scoping, determinism) - deleting it would delete the shipped mechanism those criteria proved, not an unused alternative to one. keep-pending, citing spec 27: it is modeled directly on playbooks::rebuild, which IS wired to a CLI surface (rigger playbooks --rebuild); distiller::rebuild is the equivalent primitive awaiting its own call site (a rigger distill command, or a hook into rigger reset), never spec'd as a Done-when criterion of spec 27 itself, which is why it shipped unwired."
+  },
+  {
+    "name": "with_content_identity",
+    "file": "src/eventstore/sqlite.rs",
+    "content_hash": "2d40d6951fb887b3",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "ed049ee64b9530dd"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "ad018b4310c2c67d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "ad018b4310c2c67d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "ad018b4310c2c67d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "c697e97097051bb5"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "2d5a5a6903d9f690"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "2d5a5a6903d9f690"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "ee13900bd82693e3"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "ee13900bd82693e3"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "content_hash": "507c0b11c6f02468"
+      },
+      {
+        "file": "tests/published_content_key_split_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "tests/reset_derived_compaction_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "ed049ee64b9530dd"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "2d5a5a6903d9f690"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "16795d3bb8b8418a"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "2d5a5a6903d9f690"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "507c0211c6f0151d"
+      }
+    ],
+    "disposition": "keep-pending",
+    "reason": "with_content_identity (the storage-level idempotency append-guard builder, spec 60) has no production caller: open_sqlite_store (main.rs:444), the crate's ONE sqlite event-log constructor, is a bare Store::open(path) with no guard chained, and derived_index_identity() (ingest.rs:368, the production ContentIdentity value) is only ever passed to maintenance operations (count_derived_duplicates, prune_derived_index) that take it as a query-time parameter, never to with_content_identity itself. Its 44 references are all test fixtures exercising the guard directly against a Store they construct, per spec 60 criterion 4's own Done-when text: 'it DOES prove itself by driving the STORE PORT directly'. keep-pending, citing spec 60 (already landed): this is the documented, deliberately injected-at-the-composition-root 'defense in depth so a regression upstream can never re-bloat the log' criterion 4 shipped and tested - deleting it removes a proven backstop the composition root is architecturally meant to wire in, not dead weight. Disclosed plainly: whether main.rs's real store-open path SHOULD chain it is an open question this criterion does not resolve (no production code changes here) - a follow-up spec should either wire it into open_sqlite_store or explicitly retire it, rather than let it sit silently unwired indefinitely."
+  },
+  {
+    "name": "resolve_wrapper_name",
+    "file": "src/gate.rs",
+    "content_hash": "5ed0f5d7996db5e1",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "content_hash": "3ff5ebf50a1b237d"
+      },
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "content_hash": "fdbe24f9e23fee7f"
+      },
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "content_hash": "fdbe24f9e23fee7f"
+      },
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "content_hash": "ce3afae8f8065607"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "resolve_wrapper_name has no production caller - independently confirmed (u87c2's own decision u87c2-three-precision-fixes-from-real-tree-spot-check already found this by hand: 'resolve_build_layer duplicates its ambient-PATH read inline rather than calling it'). resolve_build_layer (gate.rs:581), its own doc comment's named sole intended caller ('kept pub as the wrapper-only building block ... resolve_build_layer composes'), instead reads std::env::var_os(\"PATH\") itself (gate.rs:588) rather than calling resolve_wrapper_name(wrapper) - a small, confirmed duplicate-glue defect (worth folding into section 2's duplication catalog on a follow-up pass), not a sign the function is unneeded. resolve_wrapper_name's 4 references are its own tests."
+  },
+  {
+    "name": "index_events",
+    "file": "src/grounder/symbols/events.rs",
+    "content_hash": "f82d5f772c572137",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "content_hash": "16c98c4a018c415a"
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "content_hash": "99d81069c44251eb"
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "content_hash": "99d81069c44251eb"
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "content_hash": "99d81069c44251eb"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "a791706909546f3c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "content_hash": "b848769f198b2e2c"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "6c8ae37f81182437"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "6c8ae37f81182437"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "b7c638b9a8231000"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "b7c638b9a8231000"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "6c8ae37f81182437"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "b7c638b9a8231000"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "b7c638b9a8231000"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "b7c638b9a8231000"
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "content_hash": "b7c638b9a8231000"
+      },
+      {
+        "file": "tests/migration_is_deliberate_periphery.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/migration_is_deliberate_periphery.rs",
+        "content_hash": "4fa000804804f19e"
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "content_hash": "a791706909546f3c"
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "content_hash": "a791706909546f3c"
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "content_hash": "8538b515555d6083"
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "content_hash": "a248d89b30e8c7d1"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "content_hash": "ddf9361d84df7cbb"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "index_events is spec 87's own Goal-worked example of the false negative this whole spec exists to fix ('a function whose only caller is its own test reads as alive: the false negative the operator predicted... e.g. src/grounder/symbols/events.rs:17 index_events, 21 test references'). Confirmed again on the current tree (now 64 test references at line 29, having grown with the test suite): no production caller anywhere."
+  },
+  {
+    "name": "definitions_named",
+    "file": "src/grounder/symbols/model.rs",
+    "content_hash": "46d9c961e1c52481",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "content_hash": "59f8820c2c73d774"
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "content_hash": "c8d4b8378d3e0a3d"
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "content_hash": "59f8820c2c73d774"
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "content_hash": "59f8820c2c73d774"
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "content_hash": "c8d4b8378d3e0a3d"
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "content_hash": "59f8820c2c73d774"
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "content_hash": "0a68549443b7c66d"
+      },
+      {
+        "file": "src/grounder/symbols/model.rs",
+        "content_hash": "59f8820c2c73d774"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "definitions_named has no production caller - only its own module's assertion-style tests (symbols/mod.rs) use it to check index state after a build/update, never a production edge-resolution path."
+  },
+  {
+    "name": "references_named",
+    "file": "src/grounder/symbols/model.rs",
+    "content_hash": "eeed60763fb30cc3",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/grounder/symbols/model.rs",
+        "content_hash": "8d9bb677be2e5d2c"
+      },
+      {
+        "file": "src/grounder/symbols/model.rs",
+        "content_hash": "196da7bb828b5b03"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "references_named has no production caller - the same test-only accessor shape as its sibling definitions_named immediately above it."
+  },
+  {
+    "name": "ingest_project",
+    "file": "src/ingest.rs",
+    "content_hash": "e872a1f75704d43d",
+    "visibility": "pub",
+    "ambiguous": true,
+    "ambiguous_with": [
+      "src/ingest.rs#9919f7f948a106f7"
+    ],
+    "test_only_references": [
+      {
+        "file": "tests/batched_fold_cadence.rs",
+        "content_hash": "b007baf7d7e8d032"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "293bf80f8e9c007b"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "dc361c6fe297ee27"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "dc361c6fe297ee27"
+      },
+      {
+        "file": "tests/parallel_ordered_emit.rs",
+        "content_hash": "b007baf7d7e8d032"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "ingest_project (the #[cfg(feature = \"symbols\")] single-event lane) has no production caller. Production calls ingest_project_batched (conductor.rs:8050/15473, main.rs:4067) exclusively - the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession. Ambiguous with its #[cfg(not(feature = \"symbols\"))] sibling at ingest.rs:468 (the textual scanner sees two same-named definitions where rustc, feature-gated, sees one); both carry the identical finding and disposition."
+  },
+  {
+    "name": "ingest_project",
+    "file": "src/ingest.rs",
+    "content_hash": "9919f7f948a106f7",
+    "visibility": "pub",
+    "ambiguous": true,
+    "ambiguous_with": [
+      "src/ingest.rs#e872a1f75704d43d"
+    ],
+    "test_only_references": [
+      {
+        "file": "tests/batched_fold_cadence.rs",
+        "content_hash": "b007baf7d7e8d032"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "293bf80f8e9c007b"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "dc361c6fe297ee27"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "dc361c6fe297ee27"
+      },
+      {
+        "file": "tests/parallel_ordered_emit.rs",
+        "content_hash": "b007baf7d7e8d032"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "ingest_project (the #[cfg(not(feature = \"symbols\"))] light-lane no-op) has no production caller, for the identical reason as its #[cfg(feature = \"symbols\")] sibling at ingest.rs:124: production calls ingest_project_batched exclusively on both lanes."
+  },
+  {
+    "name": "fully_done",
+    "file": "src/ledger.rs",
+    "content_hash": "387948cc5003fbbd",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "ca09514201c534d2"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "5b392a63a53e225c"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "6c3bef54a54f2f35"
+      },
+      {
+        "file": "src/ledger.rs",
+        "content_hash": "f3fd1c1804b0cb0a"
+      },
+      {
+        "file": "src/ledger.rs",
+        "content_hash": "14435dd3b6b7d548"
+      },
+      {
+        "file": "src/ledger.rs",
+        "content_hash": "14435dd3b6b7d548"
+      },
+      {
+        "file": "src/ledger.rs",
+        "content_hash": "7a595a0a5652bb05"
+      },
+      {
+        "file": "src/ledger.rs",
+        "content_hash": "5b392a63a53e225c"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "fully_done has no production caller. Its own doc comment's three-conjunct completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it (confirmed whole-tree, recursively) - the wired run-completion checks it was apparently meant to serve use done() and the per-unit is_terminal predicate instead. (Line shifted 500 -> 506 -> 574: spec 88 round 3's prior_criterion_unit spec-scoping fix added 6 lines above spec_stem, then merging rigger-run's spec 88 criterion 3 (ESCALATION RESUMES) added resume_bound/ResumeGrant/UnitResumed earlier in this same file.)"
+  },
+  {
+    "name": "is_integrated",
+    "file": "src/ledger.rs",
+    "content_hash": "0e3c19b7921f5993",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/ledger.rs",
+        "content_hash": "4d6e245d8082bee6"
+      },
+      {
+        "file": "src/ledger.rs",
+        "content_hash": "4060adb46078196c"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "is_integrated has no production caller, though its doc comment claims one ('used by resume to skip completed work'): the real resume-skip logic uses is_terminal (Integrated OR Escalated - confirmed live at conductor.rs:1621/9829, ledger.rs:643, main.rs:9927/9932), which correctly subsumes is_integrated's narrower Integrated-only check (a resume must also skip an Escalated unit, which is_integrated alone would wrongly re-attempt). Superseded, not merely unused. (Line shifted 577 -> 583 -> 651: same round-3 doc-comment addition, then the same rigger-run merge shift above.)"
+  },
+  {
+    "name": "new",
+    "file": "src/spawn.rs",
+    "content_hash": "37135921f81c0140",
+    "visibility": "pub",
+    "ambiguous": true,
+    "ambiguous_with": [
+      "src/budget.rs#789015f44c6a905b",
+      "src/dash.rs#30699d151b93d069",
+      "src/dash.rs#1d6d73587ac2f278",
+      "src/driver/replay.rs#bb5d69d8debb3ee7",
+      "src/driver/workflow.rs#f24517a3c13a6746",
+      "src/eventstore/mod.rs#ad9a99aca1ad333b",
+      "src/eventstore/mod.rs#8e6468f4cfcc6be7",
+      "src/eventstore/mod.rs#5082f3efa9407c5e",
+      "src/eventstore/namespace.rs#b5bc38330f1d09de",
+      "src/failure.rs#d85d31c3f71923f5",
+      "src/ledger.rs#8018493a7c1d87a8",
+      "src/mcpserver.rs#fe8a4012cd9e457c",
+      "src/watch.rs#f24517a3c13a6746"
+    ],
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "038e2dec6bef996c"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "038e2dec6bef996c"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "038e2dec6bef996c"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "038e2dec6bef996c"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "038e2dec6bef996c"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "52df8ec8a1497bc5"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "52df8ec8a1497bc5"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/dash.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/liveness.rs",
+        "content_hash": "553210990f0ada01"
+      },
+      {
+        "file": "src/liveness.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "038e2dec6bef996c"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "038e2dec6bef996c"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "2a757b2d2ab4df3f"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "2a757b2d2ab4df3f"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "2a757b2d2ab4df3f"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "9e10d783f767c6d3"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "9e10d783f767c6d3"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "9e10d783f767c6d3"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "9e10d783f767c6d3"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "9e10d783f767c6d3"
+      },
+      {
+        "file": "src/main.rs",
+        "content_hash": "9e10d783f767c6d3"
+      },
+      {
+        "file": "src/mcpserver.rs",
+        "content_hash": "590fccb098034019"
+      },
+      {
+        "file": "src/metrics.rs",
+        "content_hash": "c0e622510a0ff8b1"
+      },
+      {
+        "file": "src/progress.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "src/progress.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "7306390b3e246060"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "7306390b3e246060"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "7306390b3e246060"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "50cd3c1e51affeb1"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "1d55ce66904bf3bf"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "1d55ce66904bf3bf"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "1d55ce66904bf3bf"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "7306390b3e246060"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "46b8e7a60ffa0654"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "5630551b3ff25a2e"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "7306390b3e246060"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "743af6980f75ecba"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "7306390b3e246060"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "5630551b3ff25a2e"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "7306390b3e246060"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "1d55ce66904bf3bf"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "1d55ce66904bf3bf"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "50cd3c1e51affeb1"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "125f40c5b679c4ab"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "e651d48238cf4da1"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "e651d48238cf4da1"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "e651d48238cf4da1"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "content_hash": "50cd3c1e51affeb1"
+      },
+      {
+        "file": "tests/mcp_activity_liveness_age_periphery.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/mcp_activity_liveness_age_periphery.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "content_hash": "572defa6902d294e"
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "content_hash": "5e83253481260366"
+      },
+      {
+        "file": "tests/worktree_liveness_fence_periphery.rs",
+        "content_hash": "a76cd38d7e33a485"
+      },
+      {
+        "file": "tests/worktree_liveness_fence_periphery.rs",
+        "content_hash": "a76cd38d7e33a485"
+      },
+      {
+        "file": "tests/worktree_liveness_fence_periphery.rs",
+        "content_hash": "a76cd38d7e33a485"
+      },
+      {
+        "file": "tests/worktree_liveness_fence_periphery.rs",
+        "content_hash": "572defa6902d294e"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "SpawnRequest::new and its 7 builder methods (with_system_prompt/with_model/ with_tools/with_dir/with_blast_radius/with_title/with_reviews) plus the park convenience wrapper are ALL dead together, same root cause: the real production spawn path (driver/replay.rs:251-252 fn spawn_request(...) -> SpawnRequest { SpawnRequest { ... } }) constructs the struct via a direct struct literal and calls park_in_run(store, &req, &opts.run_id) directly (driver/replay.rs:338) - it never touches the builder or the zero-run-id park() wrapper at all. Every one of these 9 fns' references is a test fixture building a SpawnRequest by hand; spec 87's own Goal text names four of the seven builders (with_title/with_reviews/with_model/ with_blast_radius) as its worked example of confirmed dead code."
+  },
+  {
+    "name": "with_system_prompt",
+    "file": "src/spawn.rs",
+    "content_hash": "1cce55987dd721e9",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0a68549443b7c66d"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0a68549443b7c66d"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "with_system_prompt - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+  },
+  {
+    "name": "with_model",
+    "file": "src/spawn.rs",
+    "content_hash": "1cce55987dd721e9",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0a68549443b7c66d"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0a68549443b7c66d"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0a68549443b7c66d"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "with_model - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+  },
+  {
+    "name": "with_tools",
+    "file": "src/spawn.rs",
+    "content_hash": "36e910c9138cc41b",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "18171a8614dd0379"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "8dc4ec749d386297"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "with_tools - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+  },
+  {
+    "name": "with_dir",
+    "file": "src/spawn.rs",
+    "content_hash": "1cce55987dd721e9",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0a68549443b7c66d"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "0a68549443b7c66d"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "with_dir - part of the SpawnRequest builder family; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+  },
+  {
+    "name": "with_blast_radius",
+    "file": "src/spawn.rs",
+    "content_hash": "36e910c9138cc41b",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "ca283b86f29ebcbb"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "ca283b86f29ebcbb"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "ca283b86f29ebcbb"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "with_blast_radius - part of the SpawnRequest builder family (one of the four spec 87 Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+  },
+  {
+    "name": "with_title",
+    "file": "src/spawn.rs",
+    "content_hash": "1cce55987dd721e9",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "6330ce3a5a38ef8d"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "46b8e7a60ffa0654"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "6330ce3a5a38ef8d"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "with_title - part of the SpawnRequest builder family (one of the four spec 87 Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+  },
+  {
+    "name": "with_reviews",
+    "file": "src/spawn.rs",
+    "content_hash": "36e910c9138cc41b",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "743af6980f75ecba"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "a70e08b35868d289"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "ca283b86f29ebcbb"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "with_reviews - part of the SpawnRequest builder family (one of the four spec 87 Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation."
+  },
+  {
+    "name": "park",
+    "file": "src/spawn.rs",
+    "content_hash": "171d2ebbbaacbdf3",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "ce7fbe03de34f36b"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/liveness.rs",
+        "content_hash": "f4c646369672d901"
+      },
+      {
+        "file": "src/liveness.rs",
+        "content_hash": "479cb033fa276e17"
+      },
+      {
+        "file": "src/liveness.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "bcd7620b2f61753c"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "bcd7620b2f61753c"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "bcd7620b2f61753c"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "bcd7620b2f61753c"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "bcd7620b2f61753c"
+      },
+      {
+        "file": "src/spawn.rs",
+        "content_hash": "446ab234af65a4ac"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "park (the zero-run-id convenience wrapper around park_in_run) - part of the SpawnRequest-construction dead set; see the disposition on SpawnRequest::new (spawn.rs:320) for the shared root cause and citation. park_in_run itself (spawn.rs:410, the real park authority) is correctly NOT a candidate: its own body is the one real production reference driver/replay.rs:338 needs - this scanner counts direct references, not reachability, so park_in_run reads alive even though its only OTHER caller (park) is itself dead."
+  },
+  {
+    "name": "is_dirty",
+    "file": "src/worktree.rs",
+    "content_hash": "93fbfd06412e1f0e",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "5d6d3db4ae2ef1ac"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "5d6d3db4ae2ef1ac"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "dc00505c458a3b7e"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "fab60fab5f09efe3"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "is_dirty has no production caller - one of spec 87's own two Goal-cited worked examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current tree: its 3 references (src/conductor.rs and worktree.rs's own `mod tests`) are all test-only; its own body now delegates to `path_is_dirty` (spec 89 round 3), but that internal call is not a caller of `is_dirty` itself. Line shifted again, this time by spec 89 criterion 1's round 3 fix (`arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`): `is_dirty`'s body was replaced with a one-line delegation to the new shared `path_is_dirty` free fn (built on the pre-existing `git`/`run_git` primitives, and now also called directly by `sweep_terminal_logged` and `main.rs`'s `reclaim_orphan_scratch` so the two no longer risk diverging on how a git-status failure is read), and the doc comment naming that delegation pushes the line down 8 more, 627->635. expect_merged itself (formerly src/worktree.rs:86) is no longer a candidate at all: round 4 moved it, together with `IntegrateOutcome` and the pre-round-4 `integrate` method, into this file's own `#[cfg(test)] mod tests` (a test-only recomposition of the newly-split `merge_into_worktree`/`land`, since production - `integrate_and_emit` - now calls those two split methods directly for its own row-level durable recording and has no caller left for the combined form) - a test-scoped item is not a production dead-code candidate by this scanner's own definition, closing the finding at its root rather than re-dispositioning it in place."
+  }
+]

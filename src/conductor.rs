@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::budget::{self, BuildBudget};
-use crate::config::{AgentDef, Config, Stage};
+use crate::config::{AgentDef, Config, RegenerateRule, Stage};
 use crate::contextgraph::{self, Graph, Projection};
 use crate::eventstore::{Appended, Direction, Event, EventStore};
 use crate::failure::{self, Signal};
@@ -228,6 +228,40 @@ pub const META_COMPENSATE_TARGET: &str = "compensate_target";
 /// real re-derivation signal is [`META_COMPENSATE_TARGET`], not this string.
 const STATUS_COMPENSATION_QUEUED: &str = "compensation-queued";
 
+/// The `UnitStatus.status` token recording ADOPTION PROVENANCE durably (spec 88 round 4,
+/// operator correction
+/// `op-u88c2-round-4-adoption-keys-corrected-escalated-baselines-are-always-candidates`
+/// item 3): [`RunCtx::adopt_prior_criterion_branch`] stamps this the MOMENT it decides to
+/// adopt - BEFORE the git side effect ([`Worktree::create_branch_at`]) that actually seeds
+/// the adopting unit's branch, which itself happens BEFORE the eventual `UnitStarted` that
+/// would otherwise be the only place this decision is recorded. This closes the crash
+/// window: whichever of the two writes below it a process dies before, a resumed call
+/// finds this mark already durable and reads the SAME decision back
+/// ([`recorded_adoption`]) instead of silently losing it (re-deciding fresh could, in a
+/// pathological case, compute a different answer if intervening log state changed - once
+/// decided, the decision is log-state-authoritative). Rides the existing `UnitStatus`
+/// vocabulary as a fold-neutral marker (no new event type), exactly like
+/// [`STATUS_COMPENSATION_QUEUED`]: deliberately NOT a [`ledger::Status`] variant, so
+/// `Status::parse` returns `None` and both the ledger and metrics folds ignore it.
+const STATUS_ADOPTION_RECORDED: &str = "adoption-recorded";
+
+/// The `UnitStatus.status` token recording a QUARANTINE durably (spec 88 round 7, closing
+/// `adv-u88c2-r6-quarantine-orphans-the-criterions-own-future-adoption`):
+/// [`RunCtx::adopt_prior_criterion_branch`]'s quarantine path (spec 88 round 6) moves a
+/// FOREIGN occupant of a unit's canonical branch aside rather than destroying it (Operator
+/// rule, spec 88 Goal: "a unit's reviewed history is never discarded by the harness"), but
+/// round 6 left that move entirely unrecorded - the deleted canonical name then reads as
+/// "never existed" to a LATER, genuine retry of the exact `(unit, criterion_id, spec)`
+/// identity the quarantined content was itself started under, even though
+/// [`prior_criterion_unit`] still (correctly) names the same bare unit id for it. This mark
+/// is stamped the MOMENT the quarantine's git side effect runs, keyed on the QUARANTINED
+/// content's own identity (never the unit that TRIGGERED the collision), so
+/// [`quarantined_branch`] can resolve a later retry to the real ref instead of the deleted
+/// name. Rides the existing `UnitStatus` vocabulary (no new event type), exactly like
+/// [`STATUS_ADOPTION_RECORDED`]: deliberately NOT a [`ledger::Status`] variant, so
+/// `Status::parse` returns `None` and both the ledger and metrics folds ignore it.
+const STATUS_BRANCH_QUARANTINED: &str = "branch-quarantined";
+
 /// The metadata key naming a first-green-wins speculation GROUP (spec 13, unit 3) on the
 /// events its candidates emit: the winner's `UnitIntegrated`, every cancelled candidate's
 /// `UnitStatus`, and each candidate's green/verified status carry it. It is audit metadata
@@ -324,6 +358,36 @@ fn postmerge_gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
 /// carries no `/gate:` substring, so [`unit_of_gate_key`] never mis-parses it as a gate key.
 fn compensation_queued_key(triggerer: &str, target: &str, attempt: u32) -> String {
     format!("{triggerer}/compensate-queued:{target}#{attempt}")
+}
+
+/// The replay key for a durable [`STATUS_ADOPTION_RECORDED`] mark (spec 88 round 4,
+/// rescoped round 5), keyed by the FULL `(unit, criterion_id, spec)` identity the
+/// decision was made under - NEVER the bare unit id alone. Round 4 keyed this on the bare
+/// id, reasoning the decision is made "at most once per unit ever" - false:
+/// `criterion_stable_id` and a planner slug both carry no cross-run, cross-spec
+/// uniqueness guarantee (nothing enforces one - a slug can be, and empirically is,
+/// reused across two entirely unrelated specs/criteria), so a bare-id key let a later,
+/// wholly unrelated unit reusing the same literal id replay an earlier unit's decision
+/// forever (arch-u88c2-r4-recorded-adoption-bare-id-crosses-specs,
+/// adv-u88c2-r4-independently-live-reproduced-bare-id-collision). This mirrors the exact
+/// identity scheme [`prior_criterion_unit`] already uses for its own integrated-exclusion
+/// set. The `adopted-from:` infix carries no `/gate:` substring, so [`unit_of_gate_key`]
+/// never mis-parses it as a gate key.
+fn adoption_provenance_key(unit: &str, criterion_id: &str, spec: &str) -> String {
+    format!("{unit}/{criterion_id}/{spec}/adopted-from")
+}
+
+/// The replay key for a durable [`STATUS_BRANCH_QUARANTINED`] mark (spec 88 round 7),
+/// keyed on the QUARANTINED content's own `(unit, criterion_id, spec)` identity - the
+/// `(criterion_id, spec)` [`branch_owner`] proved the foreign occupant actually belongs
+/// to, never the colliding unit's own `st.criterion_id`/spec (those are unrelated by
+/// construction - that is exactly what "foreign" means). Mirrors
+/// [`adoption_provenance_key`]'s identical scoping rationale: a planner slug carries no
+/// cross-run uniqueness guarantee, so the quarantine record must resolve by the content's
+/// real identity, never the bare id alone. The `quarantined:` infix carries no `/gate:`
+/// substring, so [`unit_of_gate_key`] never mis-parses it as a gate key.
+fn quarantine_record_key(unit: &str, criterion_id: &str, spec: &str) -> String {
+    format!("{unit}/{criterion_id}/{spec}/quarantined")
 }
 
 /// Whether a gate RUNS during the blast-radius-narrowed inner loop (spec 12, unit 3): a
@@ -725,6 +789,66 @@ struct Integration {
     blocked: Option<Vec<String>>,
 }
 
+/// What a producer (`plan`) stage's worktree held when it reached its DAG-terminal
+/// integration point ([`RunCtx::integrate_plan_commits`], spec 88 criterion 4 - PLAN
+/// AMENDMENTS LAND). A `produces` stage writes no code, but its agent MAY commit a spec
+/// amendment directly with its own git access - an approved fix to the very spec it is
+/// decomposing - and unlike an ordinary unit, nothing else ever merges that worktree
+/// into the run branch, so without resolving it here a committed amendment reaches no
+/// branch (Goal item 4: the b6a471c amendment).
+#[derive(Debug)]
+enum PlanCommitOutcome {
+    /// No commit exists on the worktree beyond the run branch's current HEAD: the
+    /// historical review-only path, byte-for-byte unchanged. Per operator ruling
+    /// `op-u88c4-next-round-plan-commit-landing-is-log-carried-and-idempotent` item
+    /// (2), this is reachable ONLY when the intent itself (`commits_since_base`) is
+    /// empty - never as a fallback for a non-empty intent this call could not
+    /// confirm (that case is [`Self::Landed`] with whatever subset patch-id
+    /// recovery could confirm, which - absent an internal bug - is always all of
+    /// it).
+    None,
+    /// Every commit touched ONLY `specs/` and landed on the run branch cleanly: the
+    /// shas AS THEY LANDED (see [`worktree::CherryPickOutcome::Picked`]), oldest-first.
+    Landed(Vec<String>),
+    /// A commit touched a path outside `specs/` - the offending paths (sorted,
+    /// deduplicated) named in the failure fed back to the planner.
+    OutOfScope(Vec<String>),
+    /// The cherry-pick conflicted with a concurrent operator commit under `specs/` and
+    /// was aborted; the run branch is untouched. Carries the conflict detail.
+    Conflict(String),
+}
+
+/// Bound on implementer respawns [`RunCtx::integrate_and_emit`]'s conflict-resolution loop
+/// makes to resolve ONE integration merge conflict (spec 88, criterion 1) before treating
+/// it as a genuine remediation failure rather than a free re-park: mirrors
+/// [`REVIEWER_RESPAWN_BOUND`]'s identical role for a degenerate reviewer result - bounded so
+/// a conflict a real agent truly cannot resolve still converges through ordinary
+/// remediation instead of spinning.
+const CONFLICT_RESOLVE_BOUND: u32 = 3;
+
+/// The remediation prompt for a merge-conflict re-park (spec 88, criterion 1): lists ONLY
+/// the conflicting SOURCE paths a real edit must resolve - never a full re-implementation
+/// prompt, and never a registered regenerable path also in conflict (the conductor
+/// regenerates those itself, in a follow-up commit, after this one lands).
+fn conflict_resolution_prompt(unit: &str, conflicting: &[String]) -> String {
+    format!(
+        "Your unit {unit:?}'s change was approved and gated green, but integrating it hit a \
+         real merge conflict against work another unit landed on the run branch meanwhile - \
+         this is not a defect in your implementation, and no remediation attempt is charged for \
+         it. The run branch has already been merged into your worktree (`git merge \
+         --no-commit`) and conflict markers are left in place in exactly these path(s):\n{}\n\n\
+         Resolve the conflicts in these paths only, preserving both sides' intent, `git add` \
+         each resolved path, and `git commit` to complete the merge on your CURRENT branch. Do \
+         not revert, discard, or re-implement any of your PRIOR commits - they stay exactly as \
+         they are; you are only completing this one merge.",
+        conflicting
+            .iter()
+            .map(|p| format!("- {p}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
 /// The ratchet effect of a single gate run, resolved by the failure taxonomy's three-way
 /// outcome (spec 10, unit 2). `record_gate` maps each to a promote / demote / hold.
 enum GateRatchet {
@@ -870,6 +994,195 @@ fn pending_compensations_from_log(prior_events: &[Event]) -> Vec<Compensation> {
     pending
 }
 
+/// The status token stamped on a `TYPE_UNIT_STATUS` event that durably records which
+/// regenerable paths (spec 88, criterion 1) an integrate-conflict resolution round has
+/// PLACEHOLDER-staged (`Worktree::accept_incoming`) before parking the implementer for
+/// the SOURCE side of a mixed conflict - never a real lifecycle status, so
+/// `ledger::Status::parse` returns `None` for it and folding it is a no-op on
+/// `Unit.status` (mirrors `STATUS_COMPENSATION_QUEUED`, spec 12 unit 4's identical
+/// "ride the existing UnitStatus vocabulary, no new event type" seam - the ONE new
+/// event type this spec's budget allows is criterion 3's `UnitResumed`, not this).
+///
+/// Round 2 fix for adv-u88c1r1-crash-resume-permanently-skips-regeneration: the
+/// moment `accept_incoming` stages a regenerable path, the tree looks entirely clean
+/// to git (nothing unmerged) as soon as the implementer's OWN commit finalizes the
+/// merge - so a crash between that commit and the follow-up REAL regeneration commit
+/// is, on resume, indistinguishable from "nothing was ever conflicted" by reading
+/// worktree state alone. Which paths still owe a real regeneration must therefore be
+/// readable from the LOG.
+const STATUS_INTEGRATE_CONFLICT_REGEN: &str = "integrate-conflict-regenerate-pending";
+
+/// Round 4 TABLE row 1's after-record status: the outcome of a
+/// [`RunCtx::record_merge_attempt`]-bracketed [`Worktree::merge_into_worktree`] call - clean
+/// (ready to land) or conflicted (with the conflicting path list). Fold-neutral like its
+/// siblings below - none of these is a real lifecycle status, so `ledger::Status::parse`
+/// returns `None` for every one and folding is a no-op on `Unit.status`; all ride the
+/// existing `TYPE_UNIT_STATUS` vocabulary, no new event type.
+const STATUS_INTEGRATE_MERGE_ATTEMPT: &str = "integrate-merge-attempt";
+/// See [`STATUS_INTEGRATE_MERGE_ATTEMPT`] - this is its paired after-record's status.
+const STATUS_INTEGRATE_MERGE_OUTCOME: &str = "integrate-merge-outcome";
+/// Round 4 TABLE row 2's after-record status: `paths` finished placeholder-staging via
+/// `Worktree::accept_incoming`, bracketing [`STATUS_INTEGRATE_CONFLICT_REGEN`]'s before-record.
+const STATUS_INTEGRATE_PLACEHOLDER_STAGED: &str = "integrate-conflict-placeholder-staged";
+/// Round 4 TABLE row 3's after-record status: the real regeneration commit's sha, bracketing
+/// [`STATUS_INTEGRATE_CONFLICT_REGEN`]'s before-record.
+const STATUS_INTEGRATE_REGENERATE_COMMIT: &str = "integrate-conflict-regenerate-commit";
+/// Round 4 TABLE row 4's before-record status: the landing intent (unit tip, run tip) about
+/// to be merged via `Worktree::land`.
+const STATUS_INTEGRATE_LANDING_INTENT: &str = "integrate-landing-intent";
+/// See [`STATUS_INTEGRATE_LANDING_INTENT`] - this is its paired after-record's status (the
+/// landed sha).
+const STATUS_INTEGRATE_LANDED: &str = "integrate-landed";
+
+/// Re-derive, per unit+attempt, the FULL set of regenerable paths an integrate-conflict
+/// resolution has placeholder-staged so far in the CURRENT (not-yet-integrated) merge
+/// episode: the union of every [`STATUS_INTEGRATE_CONFLICT_REGEN`] marker recorded for
+/// that unit+attempt, in the order first seen. A unit that never conflicted, or whose
+/// conflict was confined to regenerable paths alone (resolved inline with no spawn, so
+/// no crash window ever separates staging from real regeneration), contributes nothing.
+/// Keyed by `(unit, attempt)` - never by unit alone - so an entirely separate LATER
+/// remediation attempt for the same unit id never inherits a stale, already-abandoned
+/// episode's pending paths (a fresh attempt starts this fold empty).
+fn conflict_regenerate_pending_from_log(prior_events: &[Event]) -> HashMap<String, Vec<String>> {
+    let mut pending: HashMap<String, Vec<String>> = HashMap::new();
+    for e in prior_events {
+        if e.type_ != ledger::TYPE_UNIT_STATUS {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+            continue;
+        };
+        if v.get("status").and_then(Value::as_str) != Some(STATUS_INTEGRATE_CONFLICT_REGEN) {
+            continue;
+        }
+        let Some(id) = v.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0);
+        let Some(paths) = v
+            .get("evidence")
+            .and_then(|ev| ev.get("regenerate"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let entry = pending
+            .entry(conflict_regenerate_key(id, attempt as u32))
+            .or_default();
+        for p in paths.split(',').filter(|s| !s.is_empty()) {
+            if !entry.iter().any(|q| q == p) {
+                entry.push(p.to_string());
+            }
+        }
+    }
+    pending
+}
+
+/// The [`RunCtx::conflict_regenerate_pending`] map key for `unit`'s conflict-resolution
+/// episode at `attempt` - shared by the log fold above and every live reader/writer so
+/// the two can never drift onto different key shapes.
+fn conflict_regenerate_key(unit: &str, attempt: u32) -> String {
+    format!("{unit}#{attempt}")
+}
+
+/// Re-derive [`RunCtx::pending_landing`]: per `(unit, attempt)` ([`conflict_regenerate_key`]'s
+/// shape), the `(pass, unit_tip, run_tip)` of the LATEST [`STATUS_INTEGRATE_LANDING_INTENT`]
+/// (row 4's before-record) not yet matched by a [`STATUS_INTEGRATE_LANDED`] (its after-
+/// record) - round 4's own fix for the SAME class of gap
+/// [`conflict_regenerate_pending_from_log`] closes for row 3: `Worktree::land` can fast-
+/// forward the run branch to exactly the unit's own tip, so a crash between that real
+/// mutation and its durable after-record leaves BOTH `integrate_and_emit`'s own
+/// `changed_since_base` (its very first read) and a fresh `merge_into_worktree` call
+/// reporting a genuine "nothing new" on resume - indistinguishable, from git state alone,
+/// from a stage that never had anything to land at all. `run_tip` (the OLDER base this
+/// landing merged FROM) is carried so a resumed `integrate_and_emit` can recompute the
+/// files this landing touched via [`Worktree::committed_diff_names`] against it, since the
+/// CURRENT base has already absorbed them. `pass` is recovered from the recording event's
+/// own `replay_key` meta (`{unit}/landing-intent#{attempt}~{pass}`, the exact key
+/// [`RunCtx::record_landing_intent`] already stamps) rather than a second field, so the fold
+/// and the live writer can never drift onto two different sources for the same number.
+fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, String, String)> {
+    let mut pending: HashMap<String, (u32, String, String)> = HashMap::new();
+    for e in prior_events {
+        if e.type_ != ledger::TYPE_UNIT_STATUS {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+            continue;
+        };
+        let Some(status) = v.get("status").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(id) = v.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0) as u32;
+        let key = conflict_regenerate_key(id, attempt);
+        if status == STATUS_INTEGRATE_LANDING_INTENT {
+            let Some(evidence) = v.get("evidence") else {
+                continue;
+            };
+            let (Some(unit_tip), Some(run_tip)) = (
+                evidence.get("unit_tip").and_then(Value::as_str),
+                evidence.get("run_tip").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let pass = e
+                .meta
+                .get("replay_key")
+                .and_then(|k| k.rsplit_once('~'))
+                .and_then(|(_, p)| p.parse::<u32>().ok())
+                .unwrap_or(0);
+            pending.insert(key, (pass, unit_tip.to_string(), run_tip.to_string()));
+        } else if status == STATUS_INTEGRATE_LANDED {
+            pending.remove(&key);
+        }
+    }
+    pending
+}
+
+/// Re-derive [`RunCtx::integrate_attempted`]: the `(unit, attempt)` keys for which `prior_events`
+/// carries at least one spec 88 criterion 1 round 4 TABLE marker (any of the seven
+/// `STATUS_INTEGRATE_*` tokens) - durable proof that `Worktree::merge_into_worktree` was
+/// genuinely invoked for that unit's episode, so its branch's work is never the "lost" case
+/// `resume_phase`'s `branch_has_work` guard exists to catch, however git state itself now
+/// reads (see [`RunCtx::integrate_attempted`]'s own doc for the crash window this closes).
+/// Reuses [`conflict_regenerate_key`]'s exact key shape (never a second, parallel one) even
+/// though this fold tracks a different fact.
+fn integrate_attempted_from_log(prior_events: &[Event]) -> HashSet<String> {
+    const MARKERS: [&str; 7] = [
+        STATUS_INTEGRATE_MERGE_ATTEMPT,
+        STATUS_INTEGRATE_MERGE_OUTCOME,
+        STATUS_INTEGRATE_PLACEHOLDER_STAGED,
+        STATUS_INTEGRATE_CONFLICT_REGEN,
+        STATUS_INTEGRATE_REGENERATE_COMMIT,
+        STATUS_INTEGRATE_LANDING_INTENT,
+        STATUS_INTEGRATE_LANDED,
+    ];
+    let mut attempted = HashSet::new();
+    for e in prior_events {
+        if e.type_ != ledger::TYPE_UNIT_STATUS {
+            continue;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+            continue;
+        };
+        let Some(status) = v.get("status").and_then(Value::as_str) else {
+            continue;
+        };
+        if !MARKERS.contains(&status) {
+            continue;
+        }
+        let Some(id) = v.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0);
+        attempted.insert(conflict_regenerate_key(id, attempt as u32));
+    }
+    attempted
+}
+
 /// The proof, carried into [`RunCtx::integrate_and_emit`], that a unit's three-tier
 /// review EXPLICITLY APPROVED it (and its gates passed) - the ONLY thing that may
 /// merge a unit onto the integration branch.
@@ -910,6 +1223,11 @@ struct PriorFailure {
     /// it fixes the specific defect its (now reverted) integrating commit introduced, rather
     /// than blindly re-implementing. Empty except on a compensation re-entry.
     contradiction: String,
+    /// The sha of the `wip(<unit>): tree of halted spawn <id>` commit `run_single_stage`
+    /// made, on entry, to capture a PRIOR incarnation's uncommitted, abandoned edit (spec
+    /// 89, criterion 1: A HALT NEVER DISCARDS A TREE). Empty except on the one re-entry
+    /// that found the freshly adopted worktree genuinely dirty.
+    halted_commit: String,
 }
 
 impl PriorFailure {
@@ -917,6 +1235,7 @@ impl PriorFailure {
         self.gate_evidence.is_empty()
             && self.review_reason.trim().is_empty()
             && self.contradiction.trim().is_empty()
+            && self.halted_commit.trim().is_empty()
     }
 
     /// A one-line summary of the failure, for the escalation lesson (spec 02: the
@@ -932,6 +1251,12 @@ impl PriorFailure {
         if !self.contradiction.trim().is_empty() {
             parts.push(format!("compensated: {}", self.contradiction.trim()));
         }
+        if !self.halted_commit.trim().is_empty() {
+            parts.push(format!(
+                "recovered a halted spawn's tree as commit {}",
+                self.halted_commit.trim()
+            ));
+        }
         parts.join("; ")
     }
 
@@ -942,9 +1267,26 @@ impl PriorFailure {
         if self.is_empty() {
             return String::new();
         }
-        let mut b = String::from(
-            "Your previous attempt failed the checks below. Fix exactly these - do not start over:\n",
-        );
+        let mut b = String::new();
+        if !self.halted_commit.trim().is_empty() {
+            // Spec 89, criterion 1: "the re-park prompt names that commit and says
+            // 'finish and report; do not start over'" - verbatim, so the agent reads
+            // an unambiguous instruction rather than inferring one from the sha alone.
+            b.push_str(&format!(
+                "A prior incarnation of this spawn was halted before it could report; \
+                 its uncommitted work is captured as commit {} on your branch. Finish \
+                 and report; do not start over.\n",
+                self.halted_commit.trim()
+            ));
+        }
+        if !self.gate_evidence.is_empty()
+            || !self.review_reason.trim().is_empty()
+            || !self.contradiction.trim().is_empty()
+        {
+            b.push_str(
+                "Your previous attempt failed the checks below. Fix exactly these - do not start over:\n",
+            );
+        }
         for ev in &self.gate_evidence {
             b.push_str("Your previous attempt failed these gates: ");
             b.push_str(ev);
@@ -1064,6 +1406,17 @@ pub struct SpawnOpts {
     /// applies every pair to its spawned `Command`; a driver with no subprocess of its
     /// own (a test double) may ignore it.
     pub env: Vec<(String, String)>,
+    /// The routed review roster (spec 67, criterion 4): for the adversary tier, the
+    /// unit's routed lens role tokens (`lens:<agent_id>`, [`review_roster`]); for the
+    /// adjudicator tier, that same roster plus [`ROLE_ADVERSARY`] when an adversary
+    /// ran ([`adjudicator_roster`]). Empty for every other tier (a lens, or a panel with
+    /// no lenses/adversary). The CONDUCTOR is the only honest source - it reads the
+    /// panel `review_unit`/`run_fan_out_review_loop` actually routed to (light or full),
+    /// never a static declaration a driver guess could get stale against a replayed
+    /// lens - so a parking driver copies it verbatim onto
+    /// [`SpawnRequest::reviews`](crate::spawn::SpawnRequest::reviews) for the thin
+    /// driver to render inside the action phrase.
+    pub reviews: Vec<String>,
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
@@ -1270,6 +1623,50 @@ fn is_verdict_channel_mismatch(e: &Error) -> bool {
     e.0.contains(MISMATCH_MARKER)
 }
 
+/// The sentinel a hard PLAN-STAGE-COMMIT-LANDING failure
+/// ([`RunCtx::integrate_plan_commits`], spec 88 criterion 4) embeds in its error so
+/// [`run_wave`](RunCtx::run_wave) recognizes it through its own error wrapping and
+/// routes it through a DEDICATED arm - like [`DEGENERATE_MARKER`] and
+/// [`MISMATCH_MARKER`] it uses control characters no real error text carries.
+/// `integrate_plan_commits` performs GIT PLUMBING directly (it is not a spawn): every
+/// hard Err it can produce - a `record_plan_intent`/`record_plan_landed` store-append
+/// failure, a `find_landed_by_patch_id`/`patch_id_of` subprocess failure, an
+/// unresolvable leftover cherry-pick state, or any other git-level surprise - is a
+/// CONDUCTOR-SIDE infrastructure fault around landing the producer's own commits,
+/// never a defect in the unit's own code or tests (adv-u88c4-r7-plan-commit-errors-
+/// still-carry-no-infra-fault-marker - the SAME structural gap named at round 2
+/// (adv-u88c4-crash-resume-halts-the-whole-run-not-just-the-stage) and round 4
+/// (adv-u88c4-r4-cherry-pick-in-progress-marker-survives-a-crash-mid-skip-loop),
+/// never closed by three successive git-level-only fixes to the TRIGGER while the
+/// missing marker itself went unaddressed). Routed exactly like the degenerate-
+/// reviewer and verdict-channel-mismatch halts: the dedicated arm propagates the
+/// loud halt but emits NO per-unit lesson (a lesson there would misattribute a
+/// conductor/git-plumbing fault to the producer unit under review) and charges the
+/// unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`).
+const PLAN_LANDING_MARKER: &str = "\u{1}rigger:plan-landing-failed\u{1}";
+
+/// Wrap `e` - any hard Err out of [`RunCtx::integrate_plan_commits`]'s own body -
+/// with the [`PLAN_LANDING_MARKER`] naming `unit`, so [`is_plan_landing_failed`]
+/// recognizes it through the conductor's own error wrapping (the `?` at its one
+/// call site, conductor.rs `run_single_stage`). Wrapping ONCE at this single
+/// boundary - rather than annotating each of the function's several internal `?`
+/// sites individually - is what guarantees every current AND future internal
+/// failure path carries the marker, with no site left un-wrapped by omission.
+fn plan_landing_failed(unit: &str, e: Error) -> Error {
+    Error(format!(
+        "{PLAN_LANDING_MARKER}unit {unit:?}: landing its plan-stage commits onto the run \
+         branch failed: {}",
+        e.0
+    ))
+}
+
+/// Whether `e` is a plan-landing infra-fault HALT (see [`plan_landing_failed`])
+/// rather than a real unit failure. Robust to callers' own error wrapping, since the
+/// [`PLAN_LANDING_MARKER`] survives as a substring.
+fn is_plan_landing_failed(e: &Error) -> bool {
+    e.0.contains(PLAN_LANDING_MARKER)
+}
+
 /// The conductor's injected ports.
 pub struct Deps<'a> {
     pub store: &'a dyn EventStore,
@@ -1403,13 +1800,15 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     //   content hash does not change because a new run started, so scoping those keys to the run
     //   made every new run re-append the WHOLE index. They are seeded from the WHOLE stream
     //   instead, via the one predicate that owns the content-key format
-    //   ([`crate::ingest::project_scoped_replay_keys`]) - latest-generation-per-file, never
+    //   ([`crate::ingest::project_scoped_latest_generations`]) - latest-generation-per-file, never
     //   ever-recorded, so a file reverted to earlier content still re-emits.
     //
     // This is the SEED only. Both arms feed ONE set that the emit sinks then EXTEND with every key
-    // they append and never shrink, so "latest generation per file" describes the set at run start,
-    // not for the rest of the process - see [`replayed_keys`](RunCtx::replayed_keys) for the
-    // two-phase reading and why the seed is the phase that governs.
+    // they append; the project-scoped half can also SHRINK in place, one identity's stale
+    // generation at a time, once the sink's own in-process tracking
+    // ([`replayed_generations`](RunCtx::replayed_generations), seeded below from the SAME map)
+    // sees a fresh generation for that identity - see [`replayed_keys`](RunCtx::replayed_keys) for
+    // the two-phase reading and why the seed is the phase that governs.
     //
     // The type test comes first in BOTH arms, so the partition is a property of the code rather
     // than of the key's spelling: a derived event is excluded here even if its key looks like a
@@ -1421,7 +1820,20 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .filter(|e| !crate::ingest::is_derived_index_type(&e.type_))
         .filter_map(|e| e.meta.get(META_REPLAY_KEY).cloned())
         .collect();
-    replayed_keys.extend(crate::ingest::project_scoped_replay_keys(&all_prior));
+    // ONE whole-stream walk feeds BOTH `replayed_keys`' project-scoped extension and
+    // `replayed_generations`' seed (spec 86 criterion 3) - never two independent aggregations
+    // that could drift apart.
+    let latest_generations = crate::ingest::project_scoped_latest_generations(&all_prior);
+    replayed_keys.extend(
+        latest_generations
+            .values()
+            .flat_map(|(_, keys)| keys.iter().cloned()),
+    );
+    #[cfg(feature = "symbols")]
+    let replayed_generations: HashMap<String, (String, HashSet<String>)> = latest_generations
+        .into_iter()
+        .map(|(identity, (hash, keys))| (identity, (hash, keys.into_iter().collect())))
+        .collect();
     // Cross-step spawn budget (spec 04, criterion 5 / finding adv-budget-per-step-resets):
     // the authoritative spawn count is DERIVED from the log, not an in-memory counter that
     // resets every step process. Fold the DISTINCT spawn requests already recorded (keyed
@@ -1522,6 +1934,21 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // resume of a fully-drained run. Seeds the in-memory queue below; the pre-loop drain then
     // reverts them before the first wave re-schedules the re-entered units.
     let pending_compensations = pending_compensations_from_log(prior_events);
+    // Crash-resume recovery of the integrate-conflict regenerate ledger (spec 88, criterion
+    // 1 round 2): re-derive which regenerable paths any in-progress conflict episode has
+    // already placeholder-staged, so a resumed process still regenerates them for real even
+    // though the worktree alone (after the implementer's own commit finalized the merge) now
+    // looks entirely clean. Empty on a fresh run and on a resume with no such episode pending.
+    let conflict_regenerate_pending = conflict_regenerate_pending_from_log(prior_events);
+    // Round 4 fix (`RunCtx::integrate_attempted`'s own doc): durable proof a unit's integrate
+    // door was already reached in a prior window, so a Reviewed unit whose branch now reads
+    // `tip == base` (already fast-forward-landed, not merely never-committed) still resumes at
+    // the integrate door instead of restarting from implement.
+    let integrate_attempted = integrate_attempted_from_log(prior_events);
+    // Round 4 fix (`RunCtx::pending_landing`'s own doc): a landing-intent durably recorded
+    // with no matching landed record yet - `Worktree::land` may have already fast-forwarded
+    // the run branch onto the unit's own tip before this process crashed.
+    let pending_landing = pending_landing_from_log(prior_events);
 
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
@@ -1545,6 +1972,15 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .filter(|u| u.attempts > 0)
         .map(|u| (u.id.clone(), u.attempts))
         .collect();
+    // Spec 88, criterion 3 (ESCALATION RESUMES): seed the per-unit remediation-bound
+    // override from the prior log's folded `UnitResumed` grants, mirroring
+    // `prior_attempts`' own seeding - both are run-start snapshots of the SAME fold.
+    let prior_resume_bound: HashMap<String, u32> = prior
+        .units
+        .values()
+        .filter(|u| u.resume_bound > 0)
+        .map(|u| (u.id.clone(), u.resume_bound))
+        .collect();
     let ctx = RunCtx {
         cfg,
         deps,
@@ -1562,7 +1998,10 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         ingested: std::sync::atomic::AtomicBool::new(false),
         prior_status,
         prior_attempts,
+        prior_resume_bound,
         replayed_keys: Mutex::new(replayed_keys),
+        #[cfg(feature = "symbols")]
+        replayed_generations: Mutex::new(replayed_generations),
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests: Mutex::new(green_digests),
         stale_units: Mutex::new(stale_units),
@@ -1570,6 +2009,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         compensation_feedback: Mutex::new(compensation_feedback),
         compensation_attempts: Mutex::new(HashMap::new()),
         compensated_commits: Mutex::new(compensated_commits),
+        conflict_regenerate_pending: Mutex::new(conflict_regenerate_pending),
+        integrate_attempted,
+        pending_landing: Mutex::new(pending_landing),
         // The failure taxonomy is built ONCE here from the same validated config the run
         // loads (its regexes were compiled and classes checked at `Config::validate`), so
         // every gate-failure classification this run makes reads one rule set.
@@ -1606,11 +2048,36 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // UnitProposed. With no fan-out template the run synthesizes no baseline units and
     // falls back to the historical shape. The no-spec (empty criteria) path is
     // untouched: no template expansion, the workflow's own stages run as authored.
+    // fanout_criteria (spec 91, criterion 1, rule 1; round 2 fix for
+    // adj-u91c1-verdict-reject/arch-u91c1-fanout-members-orphans-a-superseded-baseline):
+    // snapshot, at the exact moment the template is consumed, which CRITERION IDS
+    // `baseline_units` synthesized units FOR - never the unit ids themselves. `stages`
+    // entries are never pruned on integration (only the template above, and a
+    // superseded owner below), and `harvest_proposed`'s supersede fold always stamps
+    // the SAME criterion_id onto whichever unit replaces an owner (conductor.rs:10547
+    // `criterion_id: resolved_criterion_id`) - so a criterion id always names EXACTLY
+    // ONE live `stages` entry, whoever currently owns it. `ready_stages` resolves a
+    // later stage's `needs: [<template name>]` by walking `stages` LIVE for each
+    // criterion id's CURRENT owner and checking that unit's integration - never a
+    // frozen unit-id set. A frozen unit-id snapshot (the round-1 shape) permanently
+    // orphaned the needs edge the instant a planner supersede swapped which unit id
+    // owned a criterion, because the old id could never appear in `integrated` again
+    // and the snapshot was never patched; resolving by criterion id against the live
+    // map sidesteps the staleness entirely - there is nothing to keep in sync.
+    let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
     if !deps.criteria.is_empty() {
         if let Some(template_name) = fan_out_template_name(&stages) {
             let template = stages.remove(&template_name).expect("template just found");
             let producer = producer_name(&stages);
-            for (name, unit) in baseline_units(&template, &deps.criteria, producer.as_deref()) {
+            let units = baseline_units(&template, &deps.criteria, producer.as_deref());
+            fanout_criteria.insert(
+                template_name,
+                units
+                    .iter()
+                    .map(|(_, st)| st.criterion_id.clone())
+                    .collect(),
+            );
+            for (name, unit) in units {
                 stages.entry(name).or_insert(unit);
             }
         }
@@ -1643,7 +2110,14 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // expansion would silently exempt them from the widened predicate). Moving this call
     // does not reorder anything it reads (`prior` is already fully projected) or
     // anything downstream that depends on it having already run.
-    ctx.gc_integrated_branches(&prior, &stages);
+    //
+    // `prior_events` (spec 83, criterion 1: THE FENCE) is passed through unchanged - it is
+    // already the SAME current-run-scoped slice `main.rs::cmd_step`'s own `fence_events`
+    // is folded from (`crate::run::current_run` over the whole stream), so `spawn_fence`
+    // reads identically here as it does at that call site. See `gc_integrated_branches`'s
+    // own doc comment for why this THIRD reclaim authority needed the same consultation
+    // `sweep_terminal`/`current_run_units` already had.
+    ctx.gc_integrated_branches(&prior, &stages, prior_events);
 
     // Resume-safe dedup (the duplication fix, order-independent): fold any
     // ALREADY-EMITTED UnitProposed events from a PRIOR window and apply the
@@ -1678,7 +2152,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // already integrated, `ready_stages` would otherwise surface the gate (it needs
         // plan) and `run_wave` would run it through the wrong path (`run_single_stage`).
         let gate = critique_gate_name(&stages);
-        let ready = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
+        let ready = wave_ready(
+            &stages,
+            &integrated,
+            &terminal,
+            gate.as_deref(),
+            &fanout_criteria,
+        );
         if !ready.is_empty() {
             ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
             ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
@@ -1767,7 +2247,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         // with nothing pending) the queue is empty and this is a no-op.
         ctx.drain_compensations(&mut integrated, &mut terminal)?;
         loop {
-            let ready = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
+            let ready = wave_ready(
+                &stages,
+                &integrated,
+                &terminal,
+                gate.as_deref(),
+                &fanout_criteria,
+            );
             if ready.is_empty() {
                 break;
             }
@@ -2191,10 +2677,43 @@ struct RunCtx<'a> {
     /// that never failed). Integrated/escalated units are terminal and skipped before
     /// the lifecycle, so their presence here is harmless.
     prior_attempts: HashMap<String, u32>,
+    /// Each unit's folded remediation-bound OVERRIDE from the prior log's latest
+    /// `UnitResumed` (spec 88, criterion 3: ESCALATION RESUMES) - the attempt count
+    /// at the moment of that resume PLUS its granted attempts
+    /// ([`ledger::Unit::resume_bound`]). A unit absent from this map (never
+    /// operator-resumed) has no override and reads the plain
+    /// [`max_retries`](RunCtx::max_retries). [`max_retries_for`](RunCtx::max_retries_for)
+    /// is the sole reader; it is the per-unit bound `safety::remediate` uses in place
+    /// of the global one, so a granted unit gets EXACTLY the extra attempts an
+    /// operator's `rigger resume-unit` command gave it before it can re-escalate -
+    /// never zero (the bug a bare status revert without this override would produce,
+    /// since the global bound is already spent) and never unbounded.
+    prior_resume_bound: HashMap<String, u32>,
+    /// The `(unit, attempt)` keys ([`conflict_regenerate_key`]'s shape) for which the prior
+    /// log durably recorded at least one spec 88 criterion 1 round 4 TABLE marker (round 4's
+    /// own fix, `resume_phase`'s sole reader): [`Worktree::branch_has_work`]'s `tip == base`
+    /// check alone cannot distinguish "this branch never carried committed work" (the ONLY
+    /// case `resume_phase`'s own doc comment names: "the prior worktree's commits were
+    /// lost") from "this branch's work already fast-forward-landed into base" (GAP 9's row-4
+    /// after-record fixture: a crash between `Worktree::land` and the durable
+    /// `UnitIntegrated`/[`STATUS_INTEGRATE_LANDED`] record leaves EXACTLY this git state) -
+    /// both make `tip == base` true. A `Reviewed` unit whose log already shows a genuine
+    /// integrate attempt is never the lost-branch case, so `resume_phase` trusts THIS durable
+    /// evidence over `branch_has_work`'s git-state-only answer, exactly the principle the
+    /// whole round 4 table exists to establish. Seeded once from `prior_events` at run start
+    /// ([`integrate_attempted_from_log`]), mirroring [`RunCtx::conflict_regenerate_pending`]'s
+    /// own seeded-once-at-start pattern - never mutated afterward. Sufficient because
+    /// `resume_phase` for a given unit is only ever consulted BEFORE this process's own first
+    /// integrate attempt for it; a unit this same process later re-parks back to `Reviewed`
+    /// re-enters through a FRESH `run()` call next step, which re-seeds from the by-then-
+    /// updated log exactly like every other `prior_*` field.
+    integrate_attempted: HashSet<String>,
     /// The set of REPLAY KEYS an emit may be suppressed against. Its SEED is a PARTITION over two
     /// scopes decided BY EVENT TYPE (spec 60), not one seed with one meaning - so read the half a
-    /// key was seeded into before reading membership. Both halves then share ONE lifetime: every
-    /// key this process emits is inserted, and no key is ever removed.
+    /// key was seeded into before reading membership. The run-scoped half's keys, once inserted,
+    /// are NEVER removed. The project-scoped half now can be: see
+    /// [`replayed_generations`](RunCtx::replayed_generations) (spec 86 criterion 3) for when
+    /// [`emit_keyed_batch`](RunCtx::emit_keyed_batch) retires one of its keys in place.
     ///
     /// The RUN-SCOPED half is every NON-derived key (spec 04, criterion 4): seeded at run start
     /// from THIS run's slice of the prior log's [`META_REPLAY_KEY`] metadata and extended as this
@@ -2213,9 +2732,14 @@ struct RunCtx<'a> {
     ///    project by ANY run", so it names keys this run has not itself emitted - the opposite of
     ///    the run-scoped half's meaning, and the phase every suppression decision is made in.
     /// 2. EXTENDED by its sole consumer [`emit_keyed_batch`](RunCtx::emit_keyed_batch), which
-    ///    inserts EVERY key it appends and retires no superseded generation. From the first batch
-    ///    onward the half is therefore "latest generation as of run start, PLUS everything this
-    ///    process emitted", which is neither latest-generation-per-file nor a this-run-only fact.
+    ///    inserts EVERY key it appends and, since spec 86 criterion 3, ALSO retires a batch
+    ///    identity's own STALE generation's keys the moment a fresh generation for that SAME
+    ///    identity is seen - see [`replayed_generations`](RunCtx::replayed_generations). From
+    ///    the first batch onward the half is therefore "latest generation as of run start, PLUS
+    ///    everything this process has emitted for a generation it currently tracks as live",
+    ///    which is neither latest-generation-per-file nor a this-run-only fact, but no longer
+    ///    grows without bound either: an identity re-emitted with a changed generation drops its
+    ///    prior one's keys in the same step it adds the new one's.
     ///
     /// Which phase a read lands in is what matters. On the RUN path the seed governs: the walk is
     /// bounded to once per process by
@@ -2223,11 +2747,38 @@ struct RunCtx<'a> {
     /// returns, and that one walk hands the sink each batch identity (`gc`/`gd` per file) exactly
     /// once - so no suppression decision a run takes is ever weighed against a key phase 2 added.
     /// The walk-and-emit half [`ingest_project_batches`](RunCtx::ingest_project_batches) carries NO
-    /// such guard, so a direct second call in the same process (what the unit tests drive) IS
-    /// weighed against the extended set, which is not the set a later step would seed from the log.
-    /// Nothing may read this half as a this-run fact, and nothing may read it once the ingest sink
-    /// has run as a latest-generation fact.
+    /// such guard, so a direct second (or third, or fourth) call in the same process (what the unit
+    /// tests drive, and what a long-lived conductor process crosses many times over a run's many
+    /// review/rework rounds) IS weighed against the extended-and-retired set, which is not the set
+    /// a later step would seed from the log. Nothing may read this half as a this-run fact, and
+    /// nothing may read it once the ingest sink has run as a latest-generation-as-of-run-start
+    /// fact - but within one process it IS latest-generation-as-tracked-by-`replayed_generations`,
+    /// which is what closes the identical-key-across-two-exclusions collision
+    /// (`adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle`) without
+    /// requiring a fresh process between rounds.
     replayed_keys: Mutex<HashSet<String>>,
+    /// PER-IDENTITY tracking of the CURRENT in-process generation `replayed_keys`' project-scoped
+    /// half holds keys for: `identity -> (that identity's current generation hash, the keys THAT
+    /// generation itself contributed to `replayed_keys`)`. Spec 86 criterion 3's own fix for
+    /// `adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle`:
+    /// `empty_structural_boundary_event`'s payload is CONSTANT per `(file, lang)`, so re-excluding
+    /// the SAME file within one process hashes to the IDENTICAL replay key as its first exclusion,
+    /// and more generally ANY in-process content revert to a generation already recorded collides
+    /// the same way. [`emit_keyed_batch`](RunCtx::emit_keyed_batch), this map's SOLE
+    /// reader and writer, consults it before the ordinary per-key dedup: when a batch's identity
+    /// already names a DIFFERENT generation here, that stale generation's own keys are removed
+    /// from `replayed_keys` first, so the fresh generation's boundary (or ordinary) event can
+    /// never be shadowed by an earlier generation's still-resident key merely because the two
+    /// happen to hash identically. Seeded ONCE at run start from the SAME whole-stream walk
+    /// [`replayed_keys`](RunCtx::replayed_keys)'s own project-scoped seed is flattened from
+    /// ([`crate::ingest::project_scoped_latest_generations`], not a second aggregation), and never
+    /// read or written anywhere else - only the four derived index types key a per-file generation
+    /// at all, so a run-scoped (lifecycle/gate/breaker) key never enters this map.
+    ///
+    /// Symbols-gated like its sole reader/writer [`emit_keyed_batch`](RunCtx::emit_keyed_batch):
+    /// the light lane compiles no extraction pass, so no derived-index generation is ever tracked.
+    #[cfg(feature = "symbols")]
+    replayed_generations: Mutex<HashMap<String, (String, HashSet<String>)>>,
     /// The recorded gate verdicts keyed by their replay key -> `(pass, evidence)`, seeded
     /// ONCE at run start from the prior log's `GateVerdict` events and extended as this
     /// process records new verdicts. [`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)
@@ -2293,6 +2844,30 @@ struct RunCtx<'a> {
     /// review) never applies the same git revert twice - the reverse gear is deterministic
     /// over the log exactly like the forward integrate.
     compensated_commits: Mutex<HashSet<String>>,
+    /// Regenerable paths an integrate-conflict resolution has PLACEHOLDER-staged so far,
+    /// per `(unit, attempt)` (spec 88 c1 round 2: adv-u88c1r1-crash-resume-permanently-
+    /// skips-regeneration). Seeded ONCE at run start from the prior log's
+    /// [`STATUS_INTEGRATE_CONFLICT_REGEN`] markers ([`conflict_regenerate_pending_from_log`])
+    /// and extended live as this process stages more. Read at the top of
+    /// [`integrate_and_emit`](RunCtx::integrate_and_emit) - BEFORE `Worktree::merge_into_worktree`
+    /// is even called - so a resumed process whose worktree already looks entirely clean (the
+    /// implementer's commit landed pre-crash, placeholder content included) still knows a
+    /// real regeneration is owed, never trusting live git state alone to answer that.
+    conflict_regenerate_pending: Mutex<HashMap<String, Vec<String>>>,
+    /// Row 4's own crash-resume ledger (round 4 fix, mirrors
+    /// [`conflict_regenerate_pending`](RunCtx::conflict_regenerate_pending) exactly): per
+    /// `(unit, attempt)`, the `(pass, unit_tip, run_tip)` of the latest durably-recorded
+    /// `integrate-landing-intent` not yet matched by an `integrate-landed`. Seeded ONCE at run
+    /// start from the prior log ([`pending_landing_from_log`]) and only ever REMOVED (never
+    /// added to) live, the moment [`RunCtx::record_landed`] closes it out. Read at the very
+    /// TOP of [`integrate_and_emit`](RunCtx::integrate_and_emit), BEFORE trusting
+    /// `Worktree::changed_since_base`'s "nothing new" answer as "there was never anything to
+    /// land": `Worktree::land` can fast-forward the run branch to exactly the unit's own tip,
+    /// so a crash between that real mutation and its durable after-record leaves git state
+    /// alone unable to tell that apart from a stage that genuinely never had anything to
+    /// contribute. `run_tip` lets the resumed call recompute the actual touched-files set via
+    /// [`Worktree::committed_diff_names`] against the OLDER base this landing merged from.
+    pending_landing: Mutex<HashMap<String, (u32, String, String)>>,
     /// The declarative failure taxonomy (spec 10, unit 2): the SINGLE authority the
     /// conductor folds its gate-failure classification from, built once from
     /// `defaults.failure_rules` (or the shipped spec-07-preserving default when none are
@@ -2337,7 +2912,10 @@ impl<'a> RunCtx<'a> {
             ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
+            prior_resume_bound: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
+            #[cfg(feature = "symbols")]
+            replayed_generations: Mutex::new(HashMap::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),
@@ -2345,6 +2923,9 @@ impl<'a> RunCtx<'a> {
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
             compensated_commits: Mutex::new(HashSet::new()),
+            conflict_regenerate_pending: Mutex::new(HashMap::new()),
+            integrate_attempted: HashSet::new(),
+            pending_landing: Mutex::new(HashMap::new()),
             // The pure-helper test context builds no gates through the taxonomy; the
             // shipped default is a harmless placeholder. The gate-behavior tests drive the
             // full `run`, which builds the taxonomy from the config under test.
@@ -2498,22 +3079,55 @@ impl RunCtx<'_> {
 
     /// The batched analogue of [`emit_keyed`](RunCtx::emit_keyed): given a file's WHOLE keyed batch,
     /// drop the events whose key is already in [`replayed_keys`](RunCtx::replayed_keys) (the replay
-    /// dedup, UNCHANGED - an already-seen key appends nothing) and INSERT every key it keeps, so
-    /// this sink both reads and grows that set and retires no superseded generation from it; then
-    /// append the SURVIVORS in ONE transaction and fold them in ONE graph
-    /// transaction via [`append_and_fold_batch`](RunCtx::append_and_fold_batch) (spec 49's per-file
-    /// cadence). Each survivor is rebuilt exactly as `emit_keyed` builds it - a fresh event carrying
-    /// the replay key, its payload round-tripped through the same serialize path - and an event whose
-    /// data is not JSON is skipped exactly as the per-event `from_slice` guard skips it (BEFORE its
-    /// key is recorded), so batching changes transaction CADENCE only, never event content, order, or
-    /// the dedup contract. The dedup lock is held only around the set (released before the append),
-    /// so concurrent units in a wave still append their own keyed events in parallel.
+    /// dedup - an already-seen key appends nothing) and INSERT every key it keeps; then append the
+    /// SURVIVORS in ONE transaction and fold them in ONE graph transaction via
+    /// [`append_and_fold_batch`](RunCtx::append_and_fold_batch) (spec 49's per-file cadence). Each
+    /// survivor is rebuilt exactly as `emit_keyed` builds it - a fresh event carrying the replay key,
+    /// its payload round-tripped through the same serialize path - and an event whose data is not
+    /// JSON is skipped exactly as the per-event `from_slice` guard skips it (BEFORE its key is
+    /// recorded), so batching changes transaction CADENCE only, never event content, order, or the
+    /// dedup contract.
+    ///
+    /// Spec 86 criterion 3: BEFORE that ordinary per-key dedup runs, this is also the SOLE
+    /// reader and writer of [`replayed_generations`](RunCtx::replayed_generations) - every key in
+    /// `keyed` shares one batch identity and one content generation (`key_batch` stamps a whole
+    /// file's batch under one `<prefix>/<file>@<hash>#<i>` hash), read once from the batch's first
+    /// key via [`crate::ingest::derived_key_parts`]. When that identity already names a DIFFERENT
+    /// generation in `replayed_generations`, this retires the STALE generation's own keys from
+    /// `replayed_keys` before tracking the fresh one, so a fresh generation's keys can never be
+    /// shadowed by an earlier generation's still-resident keys merely because the two generations
+    /// happen to hash identically (the empty structural/evidence boundary sentinels are constant
+    /// per file, so any two exclusions of the same file do) or because in-process content reverted
+    /// to a generation already recorded. An unparseable key (`keyed` is empty, or its first key is
+    /// not the `key_batch` shape) fails safe to the plain dedup above, tracking no generation - the
+    /// same fail-safe direction [`crate::ingest::project_scoped_replay_keys`] itself takes on an
+    /// unparseable key. `replayed_generations` is locked OUTER and `replayed_keys` NESTED inside
+    /// it, and this is the ONLY site that ever acquires both, so that order is never reversed and no
+    /// deadlock is reachable.
+    ///
+    /// The two locks are held only around the two sets (released before the append), so concurrent
+    /// units in a wave still append their own keyed events in parallel.
     ///
     /// Symbols-gated: its only caller is the code-ingest sink, which the light lane compiles out.
     #[cfg(feature = "symbols")]
     fn emit_keyed_batch(&self, keyed: &[(String, &Event)]) -> Result<(), Error> {
+        let identity_generation = keyed
+            .first()
+            .and_then(|(k, _)| crate::ingest::derived_key_parts(k));
         let survivors: Vec<Event> = {
+            let mut gens = self.replayed_generations.lock().unwrap();
             let mut keys = self.replayed_keys.lock().unwrap();
+            if let Some((identity, generation)) = identity_generation {
+                let slot = gens
+                    .entry(identity.to_string())
+                    .or_insert_with(|| (generation.to_string(), HashSet::new()));
+                if slot.0 != generation {
+                    for stale_key in slot.1.drain() {
+                        keys.remove(&stale_key);
+                    }
+                    slot.0 = generation.to_string();
+                }
+            }
             keyed
                 .iter()
                 .filter_map(|(key, ev)| {
@@ -2523,6 +3137,11 @@ impl RunCtx<'_> {
                     let payload: Value = serde_json::from_slice(&ev.data).ok()?;
                     if !keys.insert(key.clone()) {
                         return None;
+                    }
+                    if let Some((identity, _)) = identity_generation {
+                        if let Some(slot) = gens.get_mut(identity) {
+                            slot.1.insert(key.clone());
+                        }
                     }
                     let data = serde_json::to_vec(&payload).ok()?;
                     Some(Event::new(&ev.type_, data).with_meta(META_REPLAY_KEY, key.as_str()))
@@ -2760,9 +3379,13 @@ impl RunCtx<'_> {
     /// the REAL git commits its `UnitIntegrated` events recorded in THIS run, in REVERSE
     /// integration order (newest first, so reverting the newest never conflicts with an
     /// older commit it sits on top of), excluding empty / review-only-marker commits and any
-    /// commit already compensated (the replay-idempotency guard). A unit that integrated once
-    /// yields exactly one commit; the reverse order is the general contract for a unit that
-    /// integrated more than once across compensation cycles.
+    /// commit already compensated (the replay-idempotency guard). An ordinary unit that
+    /// integrated once yields exactly one commit; a plan-stage producer (spec 88, criterion
+    /// 4) can yield SEVERAL from that one integration (its `shas` field carries every
+    /// commit it landed, not only the newest `commit`) - every one of them is reverted, in
+    /// the same reverse order. The reverse order is the general contract for a unit that
+    /// integrated more than once across compensation cycles, or landed more than one
+    /// commit in a single integration.
     fn commits_to_compensate(&self, unit: &str) -> Vec<String> {
         let all = match self.deps.store.read_stream(STREAM, 0, Direction::Forward) {
             Ok(e) => e,
@@ -2781,17 +3404,33 @@ impl RunCtx<'_> {
             if v.get("id").and_then(Value::as_str) != Some(unit) {
                 continue;
             }
-            let Some(commit) = v.get("commit").and_then(Value::as_str) else {
-                continue;
+            // A plan-stage integrate (spec 88, criterion 4) can land MULTIPLE commits in
+            // one `UnitIntegrated` event (`shas`, the full oldest-first ordered list);
+            // `commit` alone is only the NEWEST - a single-sha PROJECTION kept so every
+            // OTHER unit's single-commit contract (this function's own historical
+            // callers) still reads a plain string. Compensate EVERY commit the event
+            // actually landed when `shas` is present, falling back to the lone `commit`
+            // for every ordinary (non-producer) integration, which never carries `shas`
+            // at all (arch-u88c4-multicommit-landing-breaks-compensation-single-commit-
+            // contract).
+            let event_commits: Vec<&str> = match v.get("shas").and_then(Value::as_array) {
+                Some(shas) => shas.iter().filter_map(Value::as_str).collect(),
+                None => v
+                    .get("commit")
+                    .and_then(Value::as_str)
+                    .into_iter()
+                    .collect(),
             };
-            if commit.is_empty()
-                || commit == REVIEW_ONLY_NO_ARTIFACT
-                || already.contains(commit)
-                || commits.iter().any(|c| c == commit)
-            {
-                continue;
+            for commit in event_commits {
+                if commit.is_empty()
+                    || commit == REVIEW_ONLY_NO_ARTIFACT
+                    || already.contains(commit)
+                    || commits.iter().any(|c| c == commit)
+                {
+                    continue;
+                }
+                commits.push(commit.to_string());
             }
-            commits.push(commit.to_string());
         }
         // Recorded ascending by integration order; reverse to revert newest-first.
         commits.reverse();
@@ -2928,6 +3567,30 @@ impl RunCtx<'_> {
         } else {
             configured
         }
+    }
+
+    /// The remediation bound `safety::remediate` uses for exactly THIS unit (spec 88,
+    /// criterion 3: ESCALATION RESUMES; spec 91, criterion 1, rule 2: STAGE OVERRIDE) -
+    /// `st`'s own `max_retries` when it sets one (unset, `0`, falls back to the plain
+    /// [`max_retries`](RunCtx::max_retries) run default - the same unset-means-inherit
+    /// convention `st.speculation_width` already uses), widened to a unit's
+    /// [`prior_resume_bound`](RunCtx::prior_resume_bound) ceiling when an operator's
+    /// `rigger resume-unit` grant raised it higher. The max of the two (never the resume
+    /// ceiling alone) so a pathologically small `--attempts` grant on a unit that
+    /// escalated early can never LOWER the bound every other unit already gets; a unit
+    /// absent from the map (never resumed) reads the plain (stage-or-default) bound,
+    /// byte-for-byte the historical behavior for a stage that sets no override.
+    fn max_retries_for(&self, unit: &str, st: &Stage) -> u32 {
+        let plain = if st.max_retries == 0 {
+            self.max_retries()
+        } else {
+            st.max_retries
+        };
+        self.prior_resume_bound
+            .get(unit)
+            .copied()
+            .unwrap_or(0)
+            .max(plain)
     }
 
     /// Whether the pre-wave spawn-budget breaker has tripped (§4.4, §8): a positive
@@ -3193,6 +3856,21 @@ impl RunCtx<'_> {
                             first_err = Some(Error(e.0.replace(MISMATCH_MARKER, "")));
                         }
                     }
+                    // A plan-stage commit-landing infra fault (spec 88 c4,
+                    // adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-fault-marker)
+                    // is a CONDUCTOR-SIDE git-plumbing fault around landing a
+                    // producer's own commits onto the run branch, not the unit's
+                    // fault: route it through its OWN arm exactly like the
+                    // degenerate-reviewer and verdict-channel-mismatch halts -
+                    // propagate the loud hard error (marker stripped) but emit NO
+                    // per-unit lesson (a lesson would misattribute the conductor's own
+                    // git-plumbing fault to the producer unit) and charge no attempt
+                    // (no UnitFailed/UnitEscalated is written on this path).
+                    Err(e) if is_plan_landing_failed(&e) => {
+                        if first_err.is_none() {
+                            first_err = Some(Error(e.0.replace(PLAN_LANDING_MARKER, "")));
+                        }
+                    }
                     Err(e) => {
                         // EVERY erroring stage leaves a record, not just the first
                         // (item 8): the wave collapses to a single returned error, so
@@ -3324,6 +4002,18 @@ impl RunCtx<'_> {
         // first recorded unit event and the alias is known at spawn time, so it names the
         // model asked for even before any result. The resolved id is not known yet - it
         // arrives on the spawn's later status events once the worker reports it.
+        //
+        // ADOPTION KEYS ON THE CRITERION (spec 88, decided): resolved BEFORE the emit
+        // below, so a genuinely fresh unit's FIRST (and only, `emit_keyed_meta` is
+        // replay-keyed) UnitStarted records the adoption in the SAME event as its own
+        // branch/agent - never a second event, and never a window where the emitted
+        // record and the actual worktree seed could disagree. Computed unconditionally
+        // on every call (a cheap full-log fold), but its own durable provenance write
+        // and git side effect only ever mutate once - see
+        // [`Self::adopt_prior_criterion_branch`]'s own doc comment (round 4: the
+        // provenance below is never freshly re-derived once decided, so this call is
+        // also what a crash-resumed process reads back rather than losing).
+        let adopted_from = self.adopt_prior_criterion_branch(st)?;
         self.emit_keyed_meta(
             &format!("{name}/started"),
             ledger::TYPE_UNIT_STARTED,
@@ -3332,9 +4022,13 @@ impl RunCtx<'_> {
                 "unit": name,
                 "spec_criterion": st.coverage,
                 "criterion": st.coverage,
+                "criterion_id": st.criterion_id,
                 "agent": st.agent,
                 "needs": st.needs,
                 "branch": unit_branch(name),
+                "adopted_from": adopted_from
+                    .as_ref()
+                    .map(|(unit, tip, spec)| json!({"unit": unit, "tip": tip, "spec": spec})),
             }),
             // UnitStarted is a once-per-unit checkpoint, so it names the model the unit's
             // FIRST attempt asks for - rung 0 of any cascade. The per-attempt rungs a
@@ -3596,6 +4290,11 @@ impl RunCtx<'_> {
         attempt: u32,
         parallel: bool,
         st: &Stage,
+        // The routed review roster (spec 67, criterion 4): empty for a lens, the unit's
+        // lens roster for the adversary, and that roster plus the adversary for the
+        // adjudicator - always the CALLER's already-computed value (`run_reviewer`'s own
+        // `reviews` parameter), never re-derived here.
+        reviews: &[String],
     ) -> Result<SpawnOpts, Error> {
         self.assert_isolated_cwd(role, agent_id, dir)?;
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
@@ -3636,6 +4335,7 @@ impl RunCtx<'_> {
             // per-unit cache a gate build for this `dir` gets, so its own `cargo`
             // invocations share both.
             env: Self::spawn_env(&build_env, dir),
+            reviews: reviews.to_vec(),
         })
     }
 
@@ -3754,7 +4454,7 @@ impl RunCtx<'_> {
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
         // their findings; it tries to prove them wrong and emits its own findings.
         if !adversary.is_empty() {
-            self.run_adversary(st, &adversary, dir, attempt, wt)?;
+            self.run_adversary(st, &adversary, dir, attempt, wt, &lenses)?;
         }
         if adjudicator.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
@@ -3762,7 +4462,7 @@ impl RunCtx<'_> {
         // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
         // findings from the graph, and renders the gating verdict.
         let (approved, reason, adj_resolved) =
-            self.run_adjudicator(st, &adjudicator, dir, attempt, wt)?;
+            self.run_adjudicator(st, &adjudicator, dir, attempt, wt, &lenses, &adversary)?;
         // A COMPENSATION target (spec 12, unit 4): the verdict may name a PRIOR integrated
         // unit as the real defect source, INDEPENDENTLY of whether it approves this unit.
         // Carried on the outcome so the run loop can roll that unit back after the wave.
@@ -3902,6 +4602,9 @@ impl RunCtx<'_> {
                 attempt,
                 false,
                 st,
+                // The sdet-author writes periphery tests - it is not a review tier judging
+                // another agent's output, so it carries no roster (spec 67, criterion 4).
+                &[],
             )
             .and_then(|opts| {
                 self.deps
@@ -3935,6 +4638,53 @@ impl RunCtx<'_> {
         phase: ResumePhase,
         any_parked: &std::sync::atomic::AtomicBool,
     ) -> Result<bool, Error> {
+        // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1): `stage_worktree`'s call
+        // to `Worktree::create`, just before this call, ADOPTS a worktree already
+        // sitting at this unit's deterministic dir/branch by a path lookup alone -
+        // never a checkout or reset - so a prior incarnation of this spawn that was
+        // halted (a liveness sweep, the outer wall clock, a crash) after editing the
+        // tree but BEFORE its own per-attempt checkpoint (below) ever committed
+        // leaves that edit sitting dirty right here, on first entry to THIS process's
+        // handling of the unit. Captured ONCE, here, as its own `wip` commit on the
+        // unit's durable branch, before anything else touches the tree, so it is
+        // never silently discarded and never silently blended into a LATER,
+        // unrelated attempt's own checkpoint commit as if it were that attempt's
+        // work. `Worktree::commit` is the single shared authority that refuses
+        // (infra fault, no attempt charged, propagated by `?`) a tree that instead
+        // carries an in-progress merge/cherry-pick or literal conflict-marker text -
+        // never staged as if resolved (the other half of this criterion). A no-op
+        // ("nothing to commit") on the overwhelmingly common clean tree, exactly like
+        // the ordinary per-attempt checkpoint's own unconditional call below.
+        //
+        // Skipped entirely while a merge is ALREADY in progress here (round 2 fix, spec 89
+        // criterion 1 - arch-u89c1-halted-commit-guard-preempts-resumed-conflict-idempotency /
+        // adv-u89c1-conflict-idempotency-preemption-empirically-confirmed): `merge_in_progress`
+        // is true ONLY when a PRIOR `integrate_and_emit` call already ran `merge_into_worktree`
+        // on this exact worktree and left it mid-merge (a genuine, still-unresolved content
+        // conflict, or the narrow crash window right before its own finalize commit) - never an
+        // ordinary implementer's abandoned edit, which never starts a git merge at all. That
+        // state belongs entirely to `merge_into_worktree`'s OWN crash-resume idempotency (spec
+        // 88, criterion 1): it reads the worktree's already-recorded conflict list back
+        // (`conflicting_paths`) rather than re-attempting the merge command, reachable ONLY
+        // through the `ResumePhase::Reviewed` branch just below (the sole phase whose ledger
+        // status means "already approved - only the merge could still be running"). Calling
+        // `commit` unconditionally here first - BEFORE that branch ever runs - trips its
+        // conflict-marker refusal on the merge's own still-unresolved marker text (correct
+        // for an abandoned edit, but a false alarm for a legitimate in-progress merge) and
+        // turns a resumable state into a hard, no-attempt-charged error instead of ever
+        // reaching the idempotent path built to handle exactly this.
+        let halted_commit = match wt {
+            Some(w) if !w.merge_in_progress() => w.commit(&format!(
+                "wip({}): tree of halted spawn {}",
+                st.name,
+                spawn_id(
+                    &st.name,
+                    ROLE_IMPLEMENTER,
+                    self.effective_attempts(&st.name)
+                )
+            ))?,
+            _ => String::new(),
+        };
         // Resume-continuity, Reviewed phase: the unit's review was APPROVED in a prior
         // window and its branch carries the committed, approved code - only the merge
         // was interrupted. Skip BOTH implement and review and integrate the existing
@@ -4050,6 +4800,9 @@ impl RunCtx<'_> {
         // prompt (item 3 + 5 / spec 02). Empty on the first attempt, so that prompt
         // is unchanged.
         let mut prior = PriorFailure::default();
+        if !halted_commit.is_empty() {
+            prior.halted_commit = halted_commit;
+        }
         // Compensation re-entry (spec 12, unit 4): a unit that a later unit's review proved
         // wrong was reverted and re-entered here; its FIRST re-attempt is prompted with the
         // recorded contradiction so it fixes the specific defect, not blindly restart. Read
@@ -4212,6 +4965,9 @@ impl RunCtx<'_> {
                             // cache a gate build for this `dir` gets, instead of
                             // embedding a `target/` dir inside the worktree itself.
                             env: Self::spawn_env(&build_env, dir),
+                            // An implementer is never a review tier: no roster to render
+                            // (spec 67, criterion 4).
+                            reviews: Vec::new(),
                         },
                         &emit,
                     )
@@ -4279,231 +5035,286 @@ impl RunCtx<'_> {
                 // lifecycle (implement -> gates -> three-tier review -> integrate)
                 // below, unchanged.
                 if is_producer(st) {
-                    self.emit(
-                        ledger::TYPE_UNIT_INTEGRATED,
-                        json!({"id": st.name, "commit": REVIEW_ONLY_NO_ARTIFACT}),
-                    )?;
-                    return Ok(true);
-                }
-                // The SDET-author spawn (spec 33): author periphery tests into the
-                // implementer's OWN worktree (`dir`) at the build seam - AFTER the
-                // implementer's green status and BEFORE the pre-gate commit below - so on
-                // every unit the SDET authors its periphery tests into the same tree the
-                // existing commit sweeps in and the unscoped gates and the reviewers judge.
-                // ONE shared seam authority (`spawn_sdet_author`), so the single-lane path
-                // and the speculation path place the spawn identically. This unit OWNS the
-                // spawn placement and its role token; result-advancement, absent-agent, and
-                // crash disposition are the next unit's - so only the replay-safe parked arm
-                // acts here: `?` propagates it, holding the unit with no commit until a later
-                // step replays the sdet and its periphery tests land in the committed tree.
-                self.spawn_sdet_author(st, dir, attempts)?;
-                // Commit the implementer's worktree BEFORE running the gates (§3.2),
-                // so the gate measures EXACTLY the committed artifact that the
-                // subsequent integrate merges - never a dirty worktree. A unit could
-                // otherwise pass `cargo test` on uncommitted files (e.g. three new
-                // tests the implementer wrote but never `git add`ed) while the
-                // committed tree the adjudicator inspects is still short: a false
-                // green that loops the unit forever on a reject it can never satisfy.
-                // Committing here collapses gate-green to committed-green. The
-                // worktree-less path (no `wt`, e.g. an `isolation: none` agent or a
-                // repo-less run) has no commit step and is unchanged.
-                if let Some(w) = wt {
-                    w.commit(&format!("rigger: {} attempt {}", st.name, attempts + 1))?;
-                }
-                // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
-                // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
-                // blast radius (its `grounded_seed`, the SAME radius the spawn/partition/
-                // staleness passes use), skipping and logging the rest. A remediation iteration
-                // then re-verifies only what its change could have touched; the exhaustive suite
-                // is asserted once at the integrate door below.
-                let gate_outcome =
-                    self.run_gates(st, dir, attempts, GateSelection::Narrowed(&blast_radius))?;
-                if gate_outcome.pass {
-                    // Ensure-on-park, defense in depth (spec 64 criterion 3): `stage_worktree`
-                    // asserted this worktree exists exactly ONCE, before this call began - the
-                    // gates that just ran above are real wall-clock time (a genuine cargo
-                    // build/test), the exact window in which an out-of-band actor could delete
-                    // it before the review tier's spawns below consume it. Re-assert now, right
-                    // before handing it out again, with the SAME deterministic adopt-or-create
-                    // machinery `stage_worktree` already uses - a no-op when nothing disturbed
-                    // it (see [`Worktree::ensure_present`]). This MUST run before the sha stamp
-                    // immediately below: a gate that deleted the worktree as its own side
-                    // effect (proven live above) would otherwise leave `head_sha_of` reading a
-                    // directory that does not exist yet, silently stamping an EMPTY sha
-                    // (`unwrap_or_default`) instead of the tree the review tier is about to
-                    // judge (adj-u3c3 round-2 reject: sdet-u3c3-verified-sha-stamped-before-
-                    // restore).
-                    if let Some(w) = wt {
-                        w.ensure_present()?;
-                    }
-                    // The verified status carries the gate evidence (item 4): each
-                    // gate that ran summarized for the ledger's per-unit evidence.
-                    // Replay-keyed on unit + attempt so a re-step past this unit's
-                    // recorded gates does not re-append it (spec 04, criterion 4). It is
-                    // still an event of the implementer spawn, so it carries the same
-                    // requested alias and resolved id as the green status (spec 05 line 52).
-                    // The worktree HEAD the tiers are about to judge (spec 11, unit 1):
-                    // the implementer's committed tree (committed above, before gating,
-                    // and just re-asserted present by `ensure_present` above), stamped so
-                    // a later reject/approve on the SAME sha reads as a flip-flop. Empty
-                    // (omitted) on a repo-less unit with no worktree.
-                    let reviewed_sha = worktree::head_sha_of(dir);
-                    self.emit_keyed_meta(
-                        &format!("{}/verified#{attempts}", st.name),
-                        ledger::TYPE_UNIT_STATUS,
-                        json!({
-                            "id": st.name,
-                            "status": "verified",
-                            "evidence": verified_evidence(&st.gates),
-                        }),
-                        &[
-                            (META_MODEL_ALIAS, &impl_alias),
-                            (META_MODEL_RESOLVED, &resolved_model),
-                            (META_WORKTREE_SHA, &reviewed_sha),
-                        ],
-                    )?;
-                    // Route the review tier over the UNCAPPED safe-superset view (spec 16 unit 3),
-                    // not the capped precise seed: high-risk membership tested over the full
-                    // structural width forces the full panel for a beyond-cap high-risk file, and a
-                    // wide structural change earns the full panel by size. On the non-symbols
-                    // default `radius.safe == radius.precise`, so routing is byte-for-byte unchanged.
-                    let review = self.review_unit(
-                        st,
-                        dir,
-                        attempts,
-                        attempts > 0,
-                        false,
-                        &radius.safe,
-                        any_parked,
-                        wt,
-                    )?;
-                    // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
-                    // adjudicator named another, already-integrated unit as the real defect
-                    // source. QUEUE the rollback for the run loop to drain after this wave
-                    // (single-threaded, so the git revert never races a concurrent merge). A
-                    // unit never compensates ITSELF (that is ordinary remediation below).
-                    if let Some(target) = &review.compensate {
-                        if target != &st.name {
-                            // DURABLY record the compensation INTENT here, the MOMENT the
-                            // review names the target - BEFORE this unit integrates and before
-                            // the post-wave drain reverts anything - so a crash between now and
-                            // the drain does not silently drop the rollback. A resume
-                            // re-derives this un-drained mark (`pending_compensations_from_log`)
-                            // and the pre-loop drain re-drives it. Rides the existing
-                            // `UnitStatus` vocabulary as a fold-neutral marker (no new event
-                            // type, spec 12 G2): `META_COMPENSATE_TARGET` names the unit to roll
-                            // back and `META_CONTRADICTION` the reason; keyed so a stepwise
-                            // resume re-appends it exactly once. The mark's `id` is the TARGET
-                            // and its status token is not a real lifecycle status, so folding it
-                            // leaves the target `Integrated` until the drain reverts it.
-                            self.emit_keyed_meta(
-                                &compensation_queued_key(&st.name, target, attempts),
-                                ledger::TYPE_UNIT_STATUS,
+                    // PLAN AMENDMENTS LAND (spec 88, criterion 4): resolve the
+                    // worktree BEFORE the historical no-artifact integration, so a
+                    // spec amendment the planner committed directly reaches the run
+                    // branch instead of dying with the worktree. See
+                    // `integrate_plan_commits`'s doc comment for the mechanism and
+                    // why this is the one place it must happen.
+                    match self.integrate_plan_commits(&st.name, wt)? {
+                        PlanCommitOutcome::None => {
+                            self.emit(
+                                ledger::TYPE_UNIT_INTEGRATED,
+                                json!({"id": st.name, "commit": REVIEW_ONLY_NO_ARTIFACT}),
+                            )?;
+                            return Ok(true);
+                        }
+                        PlanCommitOutcome::Landed(shas) => {
+                            // `commit` is the newest landed sha - a single valid,
+                            // reachable, revertible run-branch ref (the same
+                            // single-sha contract `commits_to_compensate` reads for
+                            // every other unit); `shas` carries the full ordered
+                            // list for provenance.
+                            self.emit(
+                                ledger::TYPE_UNIT_INTEGRATED,
                                 json!({
-                                    "id": target,
-                                    "status": STATUS_COMPENSATION_QUEUED,
-                                    "evidence": {
-                                        "compensation-queued": review.reason.trim(),
-                                    },
+                                    "id": st.name,
+                                    "commit": shas.last().cloned().unwrap_or_default(),
+                                    "shas": shas,
                                 }),
-                                &[
-                                    (META_COMPENSATE_TARGET, target),
-                                    (META_CONTRADICTION, review.reason.trim()),
-                                ],
                             )?;
-                            self.compensations.lock().unwrap().push(Compensation {
-                                target: target.clone(),
-                                reason: review.reason.clone(),
-                            });
+                            return Ok(true);
                         }
-                    }
-                    if review.approved {
-                        // on_pass governs integration (§3.2): empty or `merge` lands
-                        // the work; any other value (e.g. `none`) runs the gates but
-                        // never integrates - the verified, reviewed work stays
-                        // un-merged.
-                        if !integrates(st) {
-                            return Ok(false);
+                        PlanCommitOutcome::OutOfScope(paths) => {
+                            // A plan-stage commit may touch ONLY `specs/`: fail the
+                            // stage loudly, naming exactly what it touched, and feed
+                            // the normal remediation loop below - CAUSE_REJECT
+                            // already covers "this unit's output was refused" (see
+                            // its doc comment); a conductor-detected scope violation
+                            // is the same kind of refusal.
+                            cause = CAUSE_REJECT.to_string();
+                            next.review_reason = format!(
+                                "a plan-stage commit touched paths outside specs/: {}",
+                                paths.join(", ")
+                            );
                         }
-                        // The integrate door's EXHAUSTIVE gate (spec 12, unit 3): "done" is
-                        // asserted against the FULL gate library, never the blast-radius-narrowed
-                        // inner-loop subset, so a unit never lands on a partial suite (R6). Cheap
-                        // via unit-1's content cache - the gates the inner loop already ran replay
-                        // from the log, so only the gates it SKIPPED actually run here. A red here
-                        // (a skipped gate the merged-to-be tree fails) BLOCKS the merge and feeds
-                        // remediation, exactly like an inner-loop gate failure. `integrate_and_emit`
-                        // itself is untouched - the exhaustive suite gates whether it is CALLED.
-                        let full = self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?;
-                        if full.pass {
-                            // The gates passed AND the review explicitly approved: the only
-                            // path that mints an `IntegrationApproval`, so the only path that
-                            // can merge. The reject branch below has no approval to hand to
-                            // `integrate_and_emit`, so it cannot land the unit's code.
-                            //
-                            // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
-                            // acted on HERE, and an approve returns before the `remediate`
-                            // terminal check below ever runs. So an approval on a unit's
-                            // FINAL permitted attempt integrates - `max_retries` gates only
-                            // STARTING another attempt, it never overrides an approval. This
-                            // ordering (verdict-fold before attempt-counter) is load-bearing;
-                            // reversing it re-opens the bug where unit-2's approved-on-
-                            // attempt-6 review was recorded as UnitFailed/UnitEscalated.
-                            let integration = self.integrate_and_emit(
-                                stages,
-                                wt,
-                                st,
-                                attempts,
-                                IntegrationApproval::approved(),
-                            )?;
-                            match integration.blocked {
-                                None => {
-                                    self.emit_meta(
-                                        ledger::TYPE_UNIT_INTEGRATED,
-                                        json!({"id": st.name, "commit": integration.commit}),
-                                        &[(META_STALE, &integration.staled.join(","))],
-                                    )?;
-                                    return Ok(true);
-                                }
-                                // The post-merge re-gate went RED (spec 12, unit 5): the pre-
-                                // merge gates passed in this unit's OWN worktree, but the MERGED
-                                // tree failed - an unpredicted batch-mate overlap auto-merged
-                                // into a broken tree. The merge was ROLLED BACK (nothing
-                                // landed), so capture the merge-break evidence and fall through
-                                // to remediation, exactly like the exhaustive pre-merge red
-                                // below - never integrate a broken merged tree.
-                                Some(evidence) => {
-                                    // spec 69, criterion 3: a post-merge break is a merge
-                                    // conflict, never a plain gate cause - set it HERE, at
-                                    // the branch that detected it, not inferred later from
-                                    // the evidence this shares with a plain gate failure.
-                                    cause = CAUSE_INTEGRATE_CONFLICT.to_string();
-                                    next.gate_evidence = evidence;
-                                }
-                            }
-                        } else {
-                            // The exhaustive suite went red on an approved unit (a gate the
-                            // inner loop had skipped fails against the merged-to-be tree): treat
-                            // it like any gate failure - capture the evidence and fall through
-                            // to remediation, do NOT integrate a tree that fails the full suite.
-                            cause = gate_failure_cause(&full.evidence);
-                            next.gate_evidence = full.evidence;
+                        PlanCommitOutcome::Conflict(detail) => {
+                            // CONSTRAINTS WALK (spec 88 c4): a plan amendment that
+                            // conflicts with a concurrent operator commit under
+                            // `specs/` must escalate to a human rather than
+                            // silently drop the amendment - bounded remediation
+                            // below eventually reaches UnitEscalated (this
+                            // project's "awaiting a human") when the planner's
+                            // retries do not resolve it.
+                            cause = CAUSE_INTEGRATE_CONFLICT.to_string();
+                            next.review_reason = format!(
+                                "the plan amendment conflicts with a concurrent specs/ change: {}",
+                                detail.trim()
+                            );
                         }
-                    } else {
-                        // A rejecting adjudicator is treated exactly like a gate failure:
-                        // capture its reasoning for the next attempt's prompt (item 5) and
-                        // fall through to remediation, do NOT integrate.
-                        cause = CAUSE_REJECT.to_string();
-                        next.review_reason = review.reason;
                     }
                 } else {
-                    // Capture the failing gates' evidence for the next attempt's
-                    // prompt (item 3 / spec 02).
-                    cause = gate_failure_cause(&gate_outcome.evidence);
-                    next.gate_evidence = gate_outcome.evidence;
-                }
+                    // The SDET-author spawn (spec 33): author periphery tests into the
+                    // implementer's OWN worktree (`dir`) at the build seam - AFTER the
+                    // implementer's green status and BEFORE the pre-gate commit below - so on
+                    // every unit the SDET authors its periphery tests into the same tree the
+                    // existing commit sweeps in and the unscoped gates and the reviewers judge.
+                    // ONE shared seam authority (`spawn_sdet_author`), so the single-lane path
+                    // and the speculation path place the spawn identically. This unit OWNS the
+                    // spawn placement and its role token; result-advancement, absent-agent, and
+                    // crash disposition are the next unit's - so only the replay-safe parked arm
+                    // acts here: `?` propagates it, holding the unit with no commit until a later
+                    // step replays the sdet and its periphery tests land in the committed tree.
+                    self.spawn_sdet_author(st, dir, attempts)?;
+                    // Commit the implementer's worktree BEFORE running the gates (§3.2),
+                    // so the gate measures EXACTLY the committed artifact that the
+                    // subsequent integrate merges - never a dirty worktree. A unit could
+                    // otherwise pass `cargo test` on uncommitted files (e.g. three new
+                    // tests the implementer wrote but never `git add`ed) while the
+                    // committed tree the adjudicator inspects is still short: a false
+                    // green that loops the unit forever on a reject it can never satisfy.
+                    // Committing here collapses gate-green to committed-green. The
+                    // worktree-less path (no `wt`, e.g. an `isolation: none` agent or a
+                    // repo-less run) has no commit step and is unchanged.
+                    if let Some(w) = wt {
+                        w.commit(&format!("rigger: {} attempt {}", st.name, attempts + 1))?;
+                    }
+                    // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
+                    // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
+                    // blast radius (its `grounded_seed`, the SAME radius the spawn/partition/
+                    // staleness passes use), skipping and logging the rest. A remediation iteration
+                    // then re-verifies only what its change could have touched; the exhaustive suite
+                    // is asserted once at the integrate door below.
+                    let gate_outcome =
+                        self.run_gates(st, dir, attempts, GateSelection::Narrowed(&blast_radius))?;
+                    if gate_outcome.pass {
+                        // Ensure-on-park, defense in depth (spec 64 criterion 3): `stage_worktree`
+                        // asserted this worktree exists exactly ONCE, before this call began - the
+                        // gates that just ran above are real wall-clock time (a genuine cargo
+                        // build/test), the exact window in which an out-of-band actor could delete
+                        // it before the review tier's spawns below consume it. Re-assert now, right
+                        // before handing it out again, with the SAME deterministic adopt-or-create
+                        // machinery `stage_worktree` already uses - a no-op when nothing disturbed
+                        // it (see [`Worktree::ensure_present`]). This MUST run before the sha stamp
+                        // immediately below: a gate that deleted the worktree as its own side
+                        // effect (proven live above) would otherwise leave `head_sha_of` reading a
+                        // directory that does not exist yet, silently stamping an EMPTY sha
+                        // (`unwrap_or_default`) instead of the tree the review tier is about to
+                        // judge (adj-u3c3 round-2 reject: sdet-u3c3-verified-sha-stamped-before-
+                        // restore).
+                        if let Some(w) = wt {
+                            w.ensure_present()?;
+                        }
+                        // The verified status carries the gate evidence (item 4): each
+                        // gate that ran summarized for the ledger's per-unit evidence.
+                        // Replay-keyed on unit + attempt so a re-step past this unit's
+                        // recorded gates does not re-append it (spec 04, criterion 4). It is
+                        // still an event of the implementer spawn, so it carries the same
+                        // requested alias and resolved id as the green status (spec 05 line 52).
+                        // The worktree HEAD the tiers are about to judge (spec 11, unit 1):
+                        // the implementer's committed tree (committed above, before gating,
+                        // and just re-asserted present by `ensure_present` above), stamped so
+                        // a later reject/approve on the SAME sha reads as a flip-flop. Empty
+                        // (omitted) on a repo-less unit with no worktree.
+                        let reviewed_sha = worktree::head_sha_of(dir);
+                        self.emit_keyed_meta(
+                            &format!("{}/verified#{attempts}", st.name),
+                            ledger::TYPE_UNIT_STATUS,
+                            json!({
+                                "id": st.name,
+                                "status": "verified",
+                                "evidence": verified_evidence(&st.gates),
+                            }),
+                            &[
+                                (META_MODEL_ALIAS, &impl_alias),
+                                (META_MODEL_RESOLVED, &resolved_model),
+                                (META_WORKTREE_SHA, &reviewed_sha),
+                            ],
+                        )?;
+                        // Route the review tier over the UNCAPPED safe-superset view (spec 16 unit 3),
+                        // not the capped precise seed: high-risk membership tested over the full
+                        // structural width forces the full panel for a beyond-cap high-risk file, and a
+                        // wide structural change earns the full panel by size. On the non-symbols
+                        // default `radius.safe == radius.precise`, so routing is byte-for-byte unchanged.
+                        let review = self.review_unit(
+                            st,
+                            dir,
+                            attempts,
+                            attempts > 0,
+                            false,
+                            &radius.safe,
+                            any_parked,
+                            wt,
+                        )?;
+                        // A contradiction against a PRIOR integrated unit (spec 12, unit 4): the
+                        // adjudicator named another, already-integrated unit as the real defect
+                        // source. QUEUE the rollback for the run loop to drain after this wave
+                        // (single-threaded, so the git revert never races a concurrent merge). A
+                        // unit never compensates ITSELF (that is ordinary remediation below).
+                        if let Some(target) = &review.compensate {
+                            if target != &st.name {
+                                // DURABLY record the compensation INTENT here, the MOMENT the
+                                // review names the target - BEFORE this unit integrates and before
+                                // the post-wave drain reverts anything - so a crash between now and
+                                // the drain does not silently drop the rollback. A resume
+                                // re-derives this un-drained mark (`pending_compensations_from_log`)
+                                // and the pre-loop drain re-drives it. Rides the existing
+                                // `UnitStatus` vocabulary as a fold-neutral marker (no new event
+                                // type, spec 12 G2): `META_COMPENSATE_TARGET` names the unit to roll
+                                // back and `META_CONTRADICTION` the reason; keyed so a stepwise
+                                // resume re-appends it exactly once. The mark's `id` is the TARGET
+                                // and its status token is not a real lifecycle status, so folding it
+                                // leaves the target `Integrated` until the drain reverts it.
+                                self.emit_keyed_meta(
+                                    &compensation_queued_key(&st.name, target, attempts),
+                                    ledger::TYPE_UNIT_STATUS,
+                                    json!({
+                                        "id": target,
+                                        "status": STATUS_COMPENSATION_QUEUED,
+                                        "evidence": {
+                                            "compensation-queued": review.reason.trim(),
+                                        },
+                                    }),
+                                    &[
+                                        (META_COMPENSATE_TARGET, target),
+                                        (META_CONTRADICTION, review.reason.trim()),
+                                    ],
+                                )?;
+                                self.compensations.lock().unwrap().push(Compensation {
+                                    target: target.clone(),
+                                    reason: review.reason.clone(),
+                                });
+                            }
+                        }
+                        if review.approved {
+                            // on_pass governs integration (§3.2): empty or `merge` lands
+                            // the work; any other value (e.g. `none`) runs the gates but
+                            // never integrates - the verified, reviewed work stays
+                            // un-merged.
+                            if !integrates(st) {
+                                return Ok(false);
+                            }
+                            // The integrate door's EXHAUSTIVE gate (spec 12, unit 3): "done" is
+                            // asserted against the FULL gate library, never the blast-radius-narrowed
+                            // inner-loop subset, so a unit never lands on a partial suite (R6). Cheap
+                            // via unit-1's content cache - the gates the inner loop already ran replay
+                            // from the log, so only the gates it SKIPPED actually run here. A red here
+                            // (a skipped gate the merged-to-be tree fails) BLOCKS the merge and feeds
+                            // remediation, exactly like an inner-loop gate failure. `integrate_and_emit`
+                            // itself is untouched - the exhaustive suite gates whether it is CALLED.
+                            let full =
+                                self.run_gates(st, dir, attempts, GateSelection::Exhaustive)?;
+                            if full.pass {
+                                // The gates passed AND the review explicitly approved: the only
+                                // path that mints an `IntegrationApproval`, so the only path that
+                                // can merge. The reject branch below has no approval to hand to
+                                // `integrate_and_emit`, so it cannot land the unit's code.
+                                //
+                                // Gap 16 invariant (spec 06 unit 3): the verdict is folded and
+                                // acted on HERE, and an approve returns before the `remediate`
+                                // terminal check below ever runs. So an approval on a unit's
+                                // FINAL permitted attempt integrates - `max_retries` gates only
+                                // STARTING another attempt, it never overrides an approval. This
+                                // ordering (verdict-fold before attempt-counter) is load-bearing;
+                                // reversing it re-opens the bug where unit-2's approved-on-
+                                // attempt-6 review was recorded as UnitFailed/UnitEscalated.
+                                let integration = self.integrate_and_emit(
+                                    stages,
+                                    wt,
+                                    st,
+                                    attempts,
+                                    IntegrationApproval::approved(),
+                                )?;
+                                match integration.blocked {
+                                    None => {
+                                        self.emit_meta(
+                                            ledger::TYPE_UNIT_INTEGRATED,
+                                            json!({"id": st.name, "commit": integration.commit}),
+                                            &[(META_STALE, &integration.staled.join(","))],
+                                        )?;
+                                        return Ok(true);
+                                    }
+                                    // The post-merge re-gate went RED (spec 12, unit 5): the pre-
+                                    // merge gates passed in this unit's OWN worktree, but the MERGED
+                                    // tree failed - an unpredicted batch-mate overlap auto-merged
+                                    // into a broken tree. The merge was ROLLED BACK (nothing
+                                    // landed), so capture the merge-break evidence and fall through
+                                    // to remediation, exactly like the exhaustive pre-merge red
+                                    // below - never integrate a broken merged tree.
+                                    Some(evidence) => {
+                                        // spec 69, criterion 3: a post-merge break is a merge
+                                        // conflict, never a plain gate cause - set it HERE, at
+                                        // the branch that detected it, not inferred later from
+                                        // the evidence this shares with a plain gate failure.
+                                        cause = CAUSE_INTEGRATE_CONFLICT.to_string();
+                                        next.gate_evidence = evidence;
+                                    }
+                                }
+                            } else {
+                                // The exhaustive suite went red on an approved unit (a gate the
+                                // inner loop had skipped fails against the merged-to-be tree): treat
+                                // it like any gate failure - capture the evidence and fall through
+                                // to remediation, do NOT integrate a tree that fails the full suite.
+                                cause = gate_failure_cause(&full.evidence);
+                                next.gate_evidence = full.evidence;
+                            }
+                        } else {
+                            // A rejecting adjudicator is treated exactly like a gate failure:
+                            // capture its reasoning for the next attempt's prompt (item 5) and
+                            // fall through to remediation, do NOT integrate.
+                            cause = CAUSE_REJECT.to_string();
+                            next.review_reason = review.reason;
+                        }
+                    } else {
+                        // Capture the failing gates' evidence for the next attempt's
+                        // prompt (item 3 / spec 02).
+                        cause = gate_failure_cause(&gate_outcome.evidence);
+                        next.gate_evidence = gate_outcome.evidence;
+                    }
+                } // end `else` (non-producer lifecycle), spec 88 criterion 4
             }
 
-            let rem = safety::remediate(attempts, self.max_retries());
+            let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
             attempts = rem.attempts;
             // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
             // adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion, UPHELD): the
@@ -4601,12 +5412,13 @@ impl RunCtx<'_> {
         let dir = unit_worktree_dir(&scratch, &st.name);
         let branch = unit_branch(&st.name);
         if lane == 0 {
-            return Ok(Worktree::create(&self.deps.repo, &dir, &branch)?);
+            return Ok(Worktree::create(&self.deps.repo, &dir, &branch, &scratch)?);
         }
         Ok(Worktree::create(
             &self.deps.repo,
             &format!("{dir}-spec{lane}"),
             &format!("{branch}-spec{lane}"),
+            &scratch,
         )?)
     }
 
@@ -4709,6 +5521,9 @@ impl RunCtx<'_> {
                         // same wrapper cache AND land in its own lane's per-unit cache,
                         // never a `target/` dir embedded in its own lane worktree.
                         env: Self::spawn_env(&build_env, &dir),
+                        // A speculation candidate is an implementer lane, never a review
+                        // tier: no roster to render (spec 67, criterion 4).
+                        reviews: Vec::new(),
                     },
                     &emit,
                 )
@@ -5281,7 +6096,7 @@ impl RunCtx<'_> {
             // guards - unchanged by that fix.
             self.run_review_agents_concurrently(st, &lenses, dir, attempts, any_lens_parked, None)?;
             if !st.adversary.is_empty() {
-                self.run_adversary(st, &st.adversary, dir, attempts, None)?;
+                self.run_adversary(st, &st.adversary, dir, attempts, None, &lenses)?;
             }
             // The neutral adjudicator's verdict gates the stage (§3.2), fail-closed:
             // it approves ONLY on an explicit `approve`, blocking integration
@@ -5289,7 +6104,15 @@ impl RunCtx<'_> {
             let (approved, reason, adj_resolved) = if st.adjudicator.is_empty() {
                 (true, String::new(), String::new())
             } else {
-                self.run_adjudicator(st, &st.adjudicator, dir, attempts, None)?
+                self.run_adjudicator(
+                    st,
+                    &st.adjudicator,
+                    dir,
+                    attempts,
+                    None,
+                    &lenses,
+                    &st.adversary,
+                )?
             };
 
             // A standalone review stage integrates no code of its own, so there is nothing to
@@ -5364,7 +6187,7 @@ impl RunCtx<'_> {
             // duplicate UnitFailed - the bound accumulates from the log, it is never
             // re-counted (finding rf-fanout-replay-dup-unitfailed).
             let failed_attempt = attempts;
-            let rem = safety::remediate(attempts, self.max_retries());
+            let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
             attempts = rem.attempts;
             // spec 69, criterion 3 (the cause wire): `approved` means the gates ran and
             // failed (`gate_result` is `Some`); otherwise the adjudicator itself rejected.
@@ -5521,6 +6344,9 @@ impl RunCtx<'_> {
             false,
             &prompt,
             wt,
+            // A lens judges the diff directly, not another tier's output - it carries no
+            // review roster (spec 67, criterion 4; that's the adversary/adjudicator's job).
+            &[],
         )?;
         Ok(())
     }
@@ -5557,7 +6383,10 @@ impl RunCtx<'_> {
     /// in parallel); `stdout_is_verdict` selects the tier-specific degeneracy signal (see
     /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)); `prompt`
     /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
-    /// sentinel exactly like the original spawn.
+    /// sentinel exactly like the original spawn. `reviews` is the routed review roster
+    /// (spec 67, criterion 4) this spawn's `SpawnOpts` carries verbatim - empty for a lens,
+    /// the unit's lens roster for the adversary, that roster plus the adversary for the
+    /// adjudicator - always the CALLER's already-computed value, never re-derived here.
     #[allow(clippy::too_many_arguments)]
     fn run_reviewer(
         &self,
@@ -5578,6 +6407,7 @@ impl RunCtx<'_> {
         // unit's OWN durable worktree (`review_unit`, reached from both the single-lane
         // and speculation lifecycles).
         wt: Option<&Worktree>,
+        reviews: &[String],
     ) -> Result<AgentResult, Error> {
         let agent_def = self.cfg.agents.get(agent_id).ok_or_else(|| {
             Error(format!(
@@ -5589,7 +6419,8 @@ impl RunCtx<'_> {
         // ordinal is a `~retry{n}` respawn. At most `1 + REVIEWER_RESPAWN_BOUND` spawns.
         for retry in 0..=REVIEWER_RESPAWN_BOUND {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
-            let opts = self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st)?;
+            let opts =
+                self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
             if !self.reserve_spawn(&id) {
                 return Err(budget_refused(&st.name, tier, agent_id));
             }
@@ -5850,7 +6681,10 @@ impl RunCtx<'_> {
     /// the adjudicator it reviews - it produces no code to integrate, so it owns no
     /// worktree of its own; it runs IN the unit's worktree (`dir`), never the live
     /// main checkout - and unlike the adjudicator its output does NOT gate the stage;
-    /// it informs the adjudicator's judgment via the graph.
+    /// it informs the adjudicator's judgment via the graph. `lenses` is the routed panel's
+    /// own lens agent ids (spec 67, criterion 4) - the CALLER's already-routed value (light
+    /// or full), stamped verbatim as this spawn's [`SpawnOpts::reviews`] roster via
+    /// [`review_roster`].
     fn run_adversary(
         &self,
         st: &Stage,
@@ -5858,6 +6692,7 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
         wt: Option<&Worktree>,
+        lenses: &[String],
     ) -> Result<(), Error> {
         // Like a lens, the adversary emits its findings to the graph rather than
         // returning a verdict, so its substantive result is discarded; `run_reviewer`
@@ -5877,6 +6712,7 @@ impl RunCtx<'_> {
             false,
             &prompt,
             wt,
+            &review_roster(lenses),
         )?;
         Ok(())
     }
@@ -5888,7 +6724,15 @@ impl RunCtx<'_> {
     /// tiers by retrieving their findings through the graph, not from a hand-threaded
     /// block. The reviewer produces no code to integrate. The returned output is the
     /// verdict reason: it is folded into the unit's `reviewed` evidence on approval
-    /// (item 4) and into the next attempt's prompt on a reject (item 5).
+    /// (item 4) and into the next attempt's prompt on a reject (item 5). `lenses` and
+    /// `adversary_id` are the routed panel's own lens agent ids and adversary agent id
+    /// (spec 67, criterion 4) - the CALLER's already-routed values (light or full),
+    /// combined via [`adjudicator_roster`] into this spawn's [`SpawnOpts::reviews`] roster.
+    // Each argument is a distinct, already-documented review input (stage, agent id, dir,
+    // attempt, the ensure-on-park worktree, and now the routed lens/adversary roster
+    // inputs) - the same primitive-argument shape `run_reviewer`/`reviewer_spawn_opts`
+    // already carry this allow for.
+    #[allow(clippy::too_many_arguments)]
     fn run_adjudicator(
         &self,
         st: &Stage,
@@ -5896,6 +6740,8 @@ impl RunCtx<'_> {
         dir: &str,
         attempt: u32,
         wt: Option<&Worktree>,
+        lenses: &[String],
+        adversary_id: &str,
     ) -> Result<(bool, String, String), Error> {
         // Unlike the other tiers the adjudicator's result IS the verdict, so it is read
         // here (not discarded). `run_reviewer` guarantees it is non-degenerate before it
@@ -5915,6 +6761,7 @@ impl RunCtx<'_> {
             true,
             &prompt,
             wt,
+            &adjudicator_roster(lenses, adversary_id),
         )?;
         // The resolved model the adjudicator ran as (spec 05 line 52) rides back with the
         // verdict so the `reviewed` status - this spawn's unit event - can carry it.
@@ -6141,6 +6988,9 @@ impl RunCtx<'_> {
                     // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
                     // yields `None` and no `CARGO_TARGET_DIR` is added here.
                     env: Self::spawn_env(&build_env, ""),
+                    // The planner/re-planner is never a review tier: no roster to render
+                    // (spec 67, criterion 4).
+                    reviews: Vec::new(),
                 },
                 &emit,
             )
@@ -6273,6 +7123,9 @@ impl RunCtx<'_> {
                     false,
                     &format!("{prompt}{}", review_protocol(ROLE_ADVERSARY)),
                     None,
+                    // The DAG-level critique names no lens tier of its own (spec 67, c4): an
+                    // empty roster here is the honest one, never a fabricated lens.
+                    &[],
                 )?;
             }
             // TIER 3: the adjudicator renders the gating verdict over the DAG, fail-closed.
@@ -6290,6 +7143,9 @@ impl RunCtx<'_> {
                     true,
                     &prompt,
                     None,
+                    // No lens tier at the DAG level, so the shared helper's roster reduces to
+                    // just the adversary token when one ran (spec 67, c4) - never fabricated.
+                    &adjudicator_roster(&[], &gate_st.adversary),
                 )?;
                 (
                     verdict_approves(&result.output),
@@ -6331,7 +7187,7 @@ impl RunCtx<'_> {
             // Reject: charge a remediation attempt (replay-keyed on the failing attempt so a
             // replay re-reaching it appends no duplicate) and either escalate or re-plan.
             let failed_attempt = attempts;
-            let rem = safety::remediate(attempts, self.max_retries());
+            let rem = safety::remediate(attempts, self.max_retries_for(&gate_name, gate_st));
             attempts = rem.attempts;
             self.emit_keyed(
                 &format!("{gate_name}/failed#{failed_attempt}"),
@@ -6404,6 +7260,30 @@ impl RunCtx<'_> {
             &self.cfg.workflow.build.cache_dir,
             self.cfg.workflow.build.jobs,
         ))
+    }
+
+    /// The run's own `$RIGGER_RUN_BASE` (spec 91, THE GATE ENVIRONMENT): the SINGLE
+    /// resolution both gate call sites ([`run_gates`](Self::run_gates) and
+    /// [`run_deferred_gates`](Self::run_deferred_gates)) layer onto their own `build_env` -
+    /// never a second, independently re-derived copy. Reads the run's own `RunStarted` off
+    /// the live event stream and folds [`crate::run::current_run_base_tip`] over it: the run
+    /// branch's tip commit sha AT THE MOMENT this run started, persisted once at mint
+    /// (`RunStarted::base_tip`) and never re-resolved live - so a unit that lands mid-run
+    /// never shifts what a LATER gate diffs against, and the checkin stage's `mutation` gate
+    /// always measures the whole spec diff, never a moving target.
+    ///
+    /// Empty (so [`gate::BuildEnv::with_var`] injects nothing) when this run predates the
+    /// field - a legacy `RunStarted` - or the event stream cannot be read; the mutation gate's
+    /// own `test -n "$RIGGER_RUN_BASE"` guard then refuses loud rather than sweeping an empty
+    /// diff, exactly the behavior `specs/91-mutation-runs-once-at-the-check-in-seam.md`
+    /// documents for a run with nothing to diff against.
+    fn run_base_env(&self) -> String {
+        self.deps
+            .store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .ok()
+            .and_then(|events| crate::run::current_run_base_tip(&events))
+            .unwrap_or_default()
     }
 
     /// The env vars a spawn's OWN process must carry (spec 77 criterion 1, ONE BUILD
@@ -6517,6 +7397,37 @@ impl RunCtx<'_> {
         // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
         // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        // The unit-keyed mutants root (spec 91, THE GATE ENVIRONMENT): derived from the
+        // SAME `dir` and the SAME sibling shape as `target` immediately above (Gap 19's own
+        // precedent) - a `checkin` stage's `mutation` gate command creates/wipes/repopulates
+        // this dir itself each run (`rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`), never this
+        // crate. Empty for anything that owns no per-unit `target` either (a review/plan
+        // worktree-less run), mirroring `target`'s own empty case; harmless for every OTHER
+        // gate, whose command never reads `$MUTANTS`.
+        //
+        // EXCEPT the POST-MERGE re-gate (spec 12, unit 5): it runs in the repo's OWN checkout,
+        // whose basename is no `rigger-wt-<slug>`, so the sibling derivation yields nothing
+        // there - yet the merged tree it certifies is still THIS unit's, and a `checkin`
+        // stage's `mutation` gate must sweep it into a real root (`mkdir -p ""` fails the gate
+        // before cargo-mutants ever runs, blocking the integration of a green unit - spec 89's
+        // own check-in, 2026-09-13). The root is the SAME unit-keyed sibling the pre-merge
+        // sweep used, derived from the SAME `unit_worktree_dir` the unit's worktree was cut
+        // at, so the one terminus reap (`Worktree::remove` / `sweep_terminal`) removes both.
+        let mutants = crate::worktree::unit_mutants_sibling(dir)
+            .or_else(|| {
+                matches!(selection, GateSelection::PostMerge)
+                    .then(|| {
+                        let scratch = crate::worktree::scratch_root_from_env(
+                            &self.deps.repo,
+                            &self.cfg.workflow.defaults.workdir,
+                        );
+                        crate::worktree::unit_mutants_sibling(&unit_worktree_dir(
+                            &scratch, &st.name,
+                        ))
+                    })
+                    .flatten()
+            })
+            .unwrap_or_default();
         // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
         // CACHE), on the SAME signal as `target` above: a non-empty `target` means this
         // gate builds into its OWN per-unit `cargo-target-<slug>` cache, never at risk from
@@ -6552,8 +7463,16 @@ impl RunCtx<'_> {
         let store_fence = crate::worktree::review_fence_sibling(dir).unwrap_or_default();
         // The ONE build-environment authority (spec 65): resolved once per call and
         // threaded to every gate this attempt runs, so they all build under the same
-        // wrapper/cache/incremental settings an agent-spawn build gets too.
-        let build_env = self.build_env()?;
+        // wrapper/cache/incremental settings an agent-spawn build gets too. Layered with
+        // `$RIGGER_RUN_BASE` (spec 91, THE GATE ENVIRONMENT): the SAME bag every gate command
+        // already receives unconditionally (`gate::ExecRunner::run`'s existing
+        // `build_env.apply`), so exporting it here alone reaches every gate this attempt
+        // runs - no new `Runner::run` parameter, no new call site to update. See
+        // `run_base_env`'s own doc for why this is the run's `base_tip`, never a `git
+        // merge-base` with the run branch.
+        let build_env = self
+            .build_env()?
+            .with_var("RIGGER_RUN_BASE", &self.run_base_env());
         // The machine-wide build budget (spec 65): resolved once per call, alongside
         // `build_env`, and threaded to every gate this attempt runs.
         let budget = self.build_budget();
@@ -6664,6 +7583,7 @@ impl RunCtx<'_> {
                 &g,
                 dir,
                 &target,
+                &mutants,
                 &build_cache_dir,
                 &build_cache_guard,
                 &store_fence,
@@ -6719,6 +7639,7 @@ impl RunCtx<'_> {
         g: &Gate,
         dir: &str,
         target: &str,
+        mutants: &str,
         build_cache_dir: &str,
         build_cache_guard: &str,
         store_fence: &str,
@@ -6729,6 +7650,7 @@ impl RunCtx<'_> {
             g,
             dir,
             target,
+            mutants,
             build_cache_dir,
             build_cache_guard,
             store_fence,
@@ -6779,6 +7701,7 @@ impl RunCtx<'_> {
                 g,
                 dir,
                 target,
+                mutants,
                 build_cache_dir,
                 build_cache_guard,
                 store_fence,
@@ -6848,7 +7771,46 @@ impl RunCtx<'_> {
     /// FRESH-path call sites' own (synchronous, same-call-stack) reclaim a few lines later
     /// would permanently strand that unit's registered scratch - it is not `Integrated`, so
     /// this resume backstop never revisited it either.
-    fn gc_integrated_branches(&self, rs: &ledger::RunState, stages: &BTreeMap<String, Stage>) {
+    /// `events` is the SAME current-run-scoped slice the caller resolved `rs` from -
+    /// production wires `run`'s own `prior_events` (spec 83, criterion 1: THE FENCE, round
+    /// 2). This THIRD worktree-reclaim authority re-derives `Integrated` from a `RunState`
+    /// FROZEN before this window's own spawns exist, with no liveness signal of its own -
+    /// so a straggler spawn for a unit already read as terminal (the `u81c1` shape) used
+    /// to lose its worktree here even after `sweep_terminal`/`current_run_units` had
+    /// correctly spared it moments earlier in the SAME `rigger step` (finding
+    /// `sdet-u83c1-gc-integrated-branches-bypasses-fence`, upheld in
+    /// `adj-u83c1-constraints-recheck-fails-gc2`). Consulting [`worktree::spawn_fence`]
+    /// here closes that gap the same way `sweep_terminal`'s own internal check does,
+    /// reusing the identical fence authority rather than a second notion of liveness.
+    fn gc_integrated_branches(
+        &self,
+        rs: &ledger::RunState,
+        stages: &BTreeMap<String, Stage>,
+        events: &[Event],
+    ) {
+        self.gc_integrated_branches_logged(rs, stages, events, &mut |line| eprintln!("{line}"));
+    }
+
+    /// [`Self::gc_integrated_branches`]'s real body, with its evidence lines routed
+    /// through an injected `log` sink instead of a hardcoded `eprintln!` - mirrors
+    /// [`worktree::sweep_terminal`]/`sweep_terminal_logged`'s identical DI seam (strict DI
+    /// per this crate's discipline: no hardcoded I/O a test cannot observe), so a KEPT vs.
+    /// REMOVED fence decision is itself an assertable fact here too.
+    fn gc_integrated_branches_logged(
+        &self,
+        rs: &ledger::RunState,
+        stages: &BTreeMap<String, Stage>,
+        events: &[Event],
+        log: &mut dyn FnMut(&str),
+    ) {
+        // The SAME caller-resolved scratch root every other `Worktree::create`/`discard`
+        // call site in this file already computes (spec 79 round-2 fix): threaded through
+        // to `reclaim_worktree_on_branch` so its reap-before-removal is authorized against
+        // the real root, never a re-derivation from the lingering worktree's own dir.
+        let scratch = crate::worktree::scratch_root_from_env(
+            &self.deps.repo,
+            &self.cfg.workflow.defaults.workdir,
+        );
         for u in rs.units.values() {
             if u.status == ledger::Status::Integrated {
                 // Prefer the branch recorded on the unit's `UnitStarted`; fall back to
@@ -6858,15 +7820,81 @@ impl RunCtx<'_> {
                 } else {
                     u.branch.clone()
                 };
-                // Ordered teardown, mirroring the fresh half: remove the lingering
-                // worktree FIRST (or `git branch -D` refuses the checked-out branch and
-                // BOTH survive), THEN delete the branch. Best-effort exactly like the
-                // fresh half's `let _`.
-                let _ = worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch);
-                let _ = Worktree::delete_branch(&self.deps.repo, &branch);
+                // THE FENCE (spec 83, criterion 1): a unit already ledger-`Integrated`
+                // may still have a straggler spawn (a slower confirmatory review lens
+                // dispatched after the deciding verdict already integrated it) still
+                // working the very worktree this loop is about to reclaim.
+                // `SpawnFence::NoSpawn` (no spawn ever recorded for this unit) sweeps
+                // exactly as before - the fence has nothing to add and must never itself
+                // become a reason dead residue lingers.
+                let fence = worktree::spawn_fence(events, &u.id);
+                if fence.permits_reclaim() {
+                    // Round 3 fix for `sdet-u83c1r2-removing-evidence-repeats-forever-
+                    // after-real-removal` (UPHELD, ADJUDICATION u83c1 round 2, cause
+                    // genuine-defect): `rs.units` is a ledger-projected, monotonic,
+                    // never-shrinking `Integrated` set folded fresh on EVERY
+                    // `conductor::run`, so gating this log purely on ledger status plus
+                    // the fence's (also purely event-derived) liveness state - never on
+                    // the branch/worktree's actual PHYSICAL presence - made every
+                    // already-integrated unit with any recorded spawn re-emit a false
+                    // "removing branch" claim on every future step for the rest of the
+                    // campaign, long after the real removal already happened. Sharper
+                    // still, it double-attributed a SINGLE real vanish within the very
+                    // FIRST triggering step too: `main.rs::cmd_step` runs `worktree::
+                    // sweep_terminal` BEFORE `conductor::run` in the SAME step, so a
+                    // "hung" unit's worktree is typically already reclaimed by `sweep_
+                    // terminal` - complete with its OWN "worktree sweep: removing" line -
+                    // by the time this loop reaches it.
+                    //
+                    // Mirroring `sweep_terminal_logged`'s own candidate set (`git
+                    // worktree list --porcelain`, never the ledger), the "removing"
+                    // evidence now fires only when THIS call finds the worktree still
+                    // actually REGISTERED - i.e. only when this call is the one genuinely
+                    // performing the removal (the resume backstop's sole-reclaimer case:
+                    // `gc_integrated_branches_logged_prints_removing_evidence_for_a_
+                    // terminal_spawns_decision`). A branch whose worktree is already gone
+                    // - reclaimed by a prior call to this same function on an earlier
+                    // step (`..._does_not_repeat_removing_evidence_once_the_real_
+                    // removal_already_happened`), or by `sweep_terminal` moments earlier
+                    // in the SAME step (the periphery suite's `hung` arm) - stays silent
+                    // instead of re-claiming a removal that already happened or
+                    // duplicating another authority's own evidence for the identical
+                    // vanish. The best-effort reclaim calls themselves are UNCHANGED -
+                    // still unconditional and idempotent exactly as before: an orphaned
+                    // branch a prior worktree removal left behind is still silently
+                    // cleaned up here
+                    // (`..._stays_silent_for_an_already_gone_worktree_but_still_
+                    // reclaims_an_orphaned_branch`), just without a second headline for
+                    // it.
+                    let worktree_present = !matches!(fence, worktree::SpawnFence::NoSpawn)
+                        && worktree::registered_worktree_for(&self.deps.repo, &branch).is_some();
+                    if worktree_present {
+                        log(&format!(
+                            "rigger: branch-gc: removing branch {branch:?} - {}",
+                            fence.evidence(&u.id)
+                        ));
+                    }
+                    // Ordered teardown, mirroring the fresh half: remove the lingering
+                    // worktree FIRST (or `git branch -D` refuses the checked-out branch
+                    // and BOTH survive), THEN delete the branch. Best-effort exactly like
+                    // the fresh half's `let _`.
+                    let _ =
+                        worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch, &scratch);
+                    let _ = Worktree::delete_branch(&self.deps.repo, &branch);
+                } else {
+                    log(&format!(
+                        "rigger: branch-gc: kept branch {branch:?} - {}",
+                        fence.evidence(&u.id)
+                    ));
+                }
             }
             // See `mutation_scratch_settled`'s own doc comment for why this predicate
-            // covers more than the `Integrated` branch/worktree teardown just above.
+            // covers more than the `Integrated` branch/worktree teardown just above - it
+            // is UNGATED by THE FENCE above on purpose: that fence protects the WORKTREE/
+            // BRANCH a straggler spawn may still be working in, never the unit's separate
+            // registered mutation-scratch (build debris with zero review value once
+            // mutation testing has finished, per that predicate's own doc comment), so a
+            // fenced (kept) unit above still reaches this check exactly as before.
             if mutation_scratch_settled(u, rs, stages) {
                 self.reclaim_terminal_unit_mutation_scratch(&u.id);
             }
@@ -7014,8 +8042,12 @@ impl RunCtx<'_> {
                     // build-environment authority's resolved wrapper/cache/incremental vars
                     // (spec 65), same as every other gate this run's config resolves - and
                     // the same machine-wide build budget, so this phase-boundary gate waits
-                    // for a slot exactly like every inline gate does.
-                    let build_env = self.build_env()?;
+                    // for a slot exactly like every inline gate does. Layered with
+                    // `$RIGGER_RUN_BASE` too (spec 91), the SAME `run_base_env` resolution
+                    // `run_gates` layers onto its own `build_env` - never a second copy.
+                    let build_env = self
+                        .build_env()?
+                        .with_var("RIGGER_RUN_BASE", &self.run_base_env());
                     // The deferred gate measures the ONE integrated tree with no worktree
                     // dir (empty `target_dir`, matching `run_gates`'s own "empty target"
                     // shared-cache case) - so it holds the SAME shared build-cache guard
@@ -7024,6 +8056,7 @@ impl RunCtx<'_> {
                     let (cache_dir, guard) = self.shared_build_cache_paths();
                     let res = self.deps.gates.run(
                         &g,
+                        "",
                         "",
                         "",
                         &cache_dir,
@@ -7205,6 +8238,62 @@ impl RunCtx<'_> {
         }
     }
 
+    /// Merge a unit's worktree into the run branch (spec 88, criterion 1: INTEGRATE-CONFLICT
+    /// MERGES) - the run branch's tip merges INTO the unit's own worktree, never the reverse,
+    /// so a conflict re-parks the implementer on the SAME branch with every prior commit
+    /// intact, and a conflict confined to a registered `regenerate:` path resolves itself with
+    /// no spawn at all.
+    ///
+    /// # THE RECORD -> MUTATE -> RECORD TABLE (round 4, `op-u88c1-round-4-definition-of-done`)
+    ///
+    /// Operator ruling `op-u88c1-round-3-record-before-mutate-everywhere-in-integration`:
+    /// every git mutation this function (or the `Worktree` methods it calls) performs during
+    /// integration is preceded by a durable log record a resumed step needs to redo it
+    /// idempotently or skip it, and followed by an outcome record - a resumed step re-derives
+    /// its position from the log AND the worktree markers, never from what the tree happens to
+    /// contain alone. Four rows, each `record-before -> mutation -> record-after`:
+    ///
+    /// | # | record-before | mutation | record-after |
+    /// |---|---|---|---|
+    /// | 1 | [`Self::record_merge_attempt`]: the run tip about to be merged | [`Worktree::merge_into_worktree`]: `git merge --no-commit --no-ff` into the unit worktree | [`Self::record_merge_outcome`]: "clean" (ready to land) or the conflicting path list |
+    /// | 2 | [`Self::record_regenerate_pending`]: the paths about to be placeholder-staged (mixed-conflict episode) | [`Worktree::accept_incoming`]: `git checkout --theirs` per regenerable path | [`Self::record_placeholder_staged`]: those paths finished staging |
+    /// | 3 | [`Self::record_regenerate_pending`]: the regenerate-pending set (identical marker for a mixed episode; its own fresh marker for a confined-to-regenerable conflict, round 4's own gap fix) | [`Self::regenerate_conflicted_paths`]: run the registered regeneration command through the gates port and commit | [`Self::record_regenerate_commit`]: the regeneration commit's sha |
+    /// | 4 | [`Self::record_landing_intent`]: the landing intent (unit tip, run tip) | [`Worktree::land`]: `git merge --no-edit` onto the run branch | [`Self::record_landed`]: the landed sha |
+    ///
+    /// Row 1's and row 4's OWN git mutations are individually idempotent via worktree state
+    /// alone once re-entered (`merge_into_worktree`'s `MERGE_HEAD` / `conflicting_paths`
+    /// re-derivation; `land`'s plain `git merge` is a harmless no-op once the branches already
+    /// coincide) - confirmed sound reasoning, per `sdet-u88c1r3-verdict-no-blocking-defect` and
+    /// the round-3 adjudicator's own trace. The round-4 ruling still requires the explicit
+    /// record either way, and round 4's OWN GAP 9 fixtures (the row-1 and row-4 after-record
+    /// boundaries specifically) found a SEPARATE, previously unidentified gap ONE LEVEL UP from
+    /// those individual mutations: the FUNCTION-LEVEL entry checks that decide whether to even
+    /// ATTEMPT them are themselves git-state-only, and suffer the identical blindness.
+    /// [`RunCtx::resume_phase`]'s `Worktree::branch_has_work` (`tip == base`) and this
+    /// function's own `Worktree::changed_since_base` (diffed against the run branch's CURRENT
+    /// tip) both read IDENTICALLY whether a unit's branch never had anything to land at all, OR
+    /// its landing already succeeded for real via an earlier, crashed attempt of THIS SAME
+    /// function - the CURRENT tip has, in the latter case, already absorbed everything, so
+    /// both checks answer "nothing to do" and short-circuit BEFORE the internal,
+    /// correctly-idempotent merge/land machinery is ever reached: row 1's or row 4's
+    /// after-record is lost, and - for `resume_phase`'s own copy of the gap - the WHOLE unit
+    /// silently restarts from implement instead of resuming at the integrate door.
+    /// [`RunCtx::integrate_attempted`] (consulted by `resume_phase`) and
+    /// [`RunCtx::pending_landing`] (consulted at this function's own entry, just below) close
+    /// these two entry-level gaps respectively - both durable, log-derived, seeded once at run
+    /// start exactly like [`RunCtx::conflict_regenerate_pending`] already does for row 3. Rows
+    /// 2 and 3 are the pair whose MUTATION itself (not merely its outer entry check) has a
+    /// REAL, previously-missed crash window (round 3's own fix, `adv-u88c1r2-accept-incoming-
+    /// precedes-durable-record-crash-window`; round 4's own fix for row 3's confined variant,
+    /// `RunCtx::regenerate_conflicted_paths` now returning the current worktree HEAD instead of
+    /// an empty sentinel on an idempotent no-op resume): `accept_incoming`/the regeneration
+    /// command are git mutations that can fail outright, so the SAME record must land before
+    /// either can run at all.
+    ///
+    /// THE FIXTURES: `tests/integrate_conflict_merge_periphery.rs` GAP 9 drives all eight
+    /// crash points this table implies (one between each row's record-before and mutation, one
+    /// between each row's mutation and record-after), each resuming to the same final log and
+    /// run branch - see that file's own header for the fixture-by-fixture mapping.
     fn integrate_and_emit(
         &self,
         // The LIVE unit DAG (spec 12, unit 2): the set of units the staleness pass grounds
@@ -7248,37 +8337,333 @@ impl RunCtx<'_> {
         // we take the COMMITTED diff vs base unioned with any residual dirty files,
         // so the FILE_TOUCHED / GATED_BY edges and the reindex see the real artifact
         // set whether or not the unit was pre-committed.
-        let files = wt.changed_since_base()?;
+        let mut files = wt.changed_since_base()?;
+        // Round 4 fix (`RunCtx::pending_landing`'s own doc): `changed_since_base` diffs
+        // against the run branch's CURRENT tip, so it reads EMPTY both for a stage that
+        // genuinely never had anything to land AND for one whose `Worktree::land` already
+        // fast-forwarded the run branch to exactly this worktree's tip in an earlier,
+        // crashed attempt - before that attempt's process ever durably recorded row 4's
+        // after-record. The durable log (never git state) is the one thing that can tell
+        // these two apart - but ONLY when `files` itself came back empty: a still-open
+        // landing-intent whose `land` genuinely FAILED (a real non-content error, GAP 9's own
+        // row-4 before-record fixture) leaves `files` non-empty (the worktree's commit never
+        // reached the run branch at all), and that case must still run the merge loop for
+        // real, never take this short-circuit.
+        let mut already_landed: Option<(u32, String, String)> = None;
         if files.is_empty() {
-            return Ok(Integration::default());
+            match self.pending_landing_for(&st.name, attempt) {
+                None => {
+                    // Round 5 fix (sdet-u88c1r4-pending-landing-hides-owed-regeneration):
+                    // `None` here means row 4 (landing) is fully closed - but says nothing
+                    // about row 3 (the follow-up real regeneration), which this arm used to
+                    // treat as implied by "nothing left to land." An ordinary regenerate-
+                    // command failure right after an otherwise-successful land is enough to
+                    // leave [`Self::regenerate_pending_for`] non-empty here with nothing
+                    // further to merge - so check it before declaring the unit done, exactly
+                    // mirroring the merge/land loop's own post-land owed-check below.
+                    if !self.catch_up_owed_regeneration(wt, &st.name, attempt)? {
+                        return Ok(Integration::default());
+                    }
+                    // The catch-up made a real regenerate commit on the worktree's own
+                    // branch, still unlanded - recompute `files` and fall through to the
+                    // ordinary merge/land loop below (`already_landed` stays `None`), which
+                    // will merge and land this commit for real (a trivial fast-forward,
+                    // since nothing else changed base-side) and re-check owed once more
+                    // (now empty) before breaking.
+                    files = wt.changed_since_base()?;
+                }
+                Some((pass, unit_tip, run_tip)) => {
+                    // Recompute the ACTUAL files this already-landed merge touched from the
+                    // OLDER base it merged FROM (the current base has since absorbed them,
+                    // which is exactly why `changed_since_base` read empty above).
+                    files = wt.committed_diff_names(&run_tip)?;
+                    // Row 5 fix, generalized to this sibling recovery sub-path (the SAME
+                    // root cause: "row 4 closed" was treated as "fully integrated" without
+                    // ever consulting row 3): `Worktree::land` already fast-forwarded the
+                    // run branch for real here too - this branch exists ONLY to finish its
+                    // still-open after-record - so row 3 can be owed here exactly as it can
+                    // in the `None` arm above (e.g. a crash between `wt.land()` succeeding
+                    // and its own `record_landed` append, before regeneration was even
+                    // attempted). When nothing is owed this is UNCHANGED from before this
+                    // fix: `already_landed` carries `(pass, unit_tip, run_tip)` down to the
+                    // shared finalization below, which records row 4's after-record and
+                    // resolves `(commit, pre_merge)` to `(unit_tip, run_tip)`. When
+                    // something IS owed, finish that same after-record HERE instead (an
+                    // idempotently-keyed call - never a duplicate of the shared
+                    // finalization's own, since `already_landed` stays `None` and that
+                    // finalization is never reached for this call), catch row 3 up, and
+                    // fall through to the ordinary merge/land loop below to land the fresh
+                    // regenerate commit for real, exactly like the `None` arm above.
+                    if self.regenerate_pending_for(&st.name, attempt).is_empty() {
+                        already_landed = Some((pass, unit_tip, run_tip));
+                    } else {
+                        self.record_landed(&st.name, attempt, pass, &unit_tip)?;
+                        self.clear_pending_landing(&st.name, attempt);
+                        self.catch_up_owed_regeneration(wt, &st.name, attempt)?;
+                        files = wt.changed_since_base()?;
+                    }
+                }
+            }
         }
-        let _lock = self.integrate_mu.lock().unwrap();
-        // spec 12, unit 5 (Gap 21): record the run-branch tip BEFORE the merge so a RED
-        // post-merge re-gate can roll the merge back. The whole merge -> re-gate -> land/undo
-        // sequence runs UNDER the integrate lock, so no concurrent integration mutates the run
-        // branch between the merge and the re-gate that judges it.
-        let pre_merge = worktree::head_sha_of(&self.deps.repo);
-        let commit = match wt.integrate(&format!("rigger: integrate {}", st.name))? {
-            worktree::IntegrateOutcome::Merged(c) => c,
-            worktree::IntegrateOutcome::Conflict(detail) => {
-                // A merge CONFLICT: an unpredicted overlap the partitioner did not serialize
-                // (two batch-mates the grounder placed together that edit the same region).
-                // `wt.integrate` already ABORTED the merge, so the run branch is untouched -
-                // NOTHING landed. RESET this unit's branch to the run-branch tip (`pre_merge`,
-                // unchanged by the aborted merge) so its NEXT remediation attempt re-implements
-                // off the INTEGRATED tree (with the batch-mate's change) and rebases cleanly,
-                // then re-enter remediation fed the conflict - EXACTLY like a RED post-merge
-                // re-gate below - instead of wedging the run on a broken branch.
-                wt.reset_branch_to(&pre_merge)?;
-                return Ok(Integration {
-                    blocked: Some(vec![format!(
-                        "integrate merge conflict (unpredicted overlap; the partitioner did \
-                         not serialize this unit against a batch-mate editing the same region) \
-                         - re-implement off the current run-branch tree so your change merges \
-                         cleanly:\n{detail}"
-                    )]),
-                    ..Default::default()
-                });
+        // spec 12, unit 5 (Gap 21): `pre_merge`, produced by the loop below alongside `commit`
+        // (bound just under it), is the run-branch tip BEFORE the merge that ultimately lands -
+        // so a RED post-merge re-gate can roll back EXACTLY that merge, never a sibling's own
+        // already-integrated work that happened to land earlier. It is captured fresh as the
+        // FIRST thing inside EACH loop iteration (spec 88, criterion 1, round 2 fix for
+        // adv-u88c1r2-pre-merge-snapshot-races-a-sibling-off-the-lock), never once before the
+        // loop starts: a one-time snapshot taken outside the lock (this fn's shape before this
+        // fix) races a concurrent sibling's own land - a sibling can merge onto the run branch
+        // in the window between that read and `lock.lock()`, or, once the loop itself can span
+        // multiple iterations, during ANY later drop/reacquire cycle around a conflict-
+        // resolution spawn or a regenerate-through-budget call - leaving the snapshot stale. A
+        // post-merge-red rollback then resets the repo to that stale tip, discarding the
+        // sibling's already-landed merge along with this unit's own aborted one. Re-capturing
+        // it under the lock, immediately before the SPECIFIC `wt.integrate` call whose `commit`
+        // the loop ultimately keeps, is the only snapshot the later rollback may trust - it
+        // always names "the run branch's tip right before THIS unit's landing," regardless of
+        // how many iterations (or sibling merges interleaved between them) it took to get there.
+        //
+        // The unit's OWN branch tip BEFORE this call's merge attempt (spec 88, criterion 1):
+        // `wt.integrate` now merges the run branch INTO the worktree FIRST, so a merge this
+        // call does not ultimately land (the post-merge re-gate below goes RED, or the
+        // conflict-resolve-bound-exhausted arm below) must roll the unit's branch back to
+        // exactly this point too - not just the repo - or its NEXT attempt would fast-forward
+        // the repo from a branch still carrying the abandoned merge commit, silently erasing
+        // whatever the repo held (a batch-mate's already-integrated work included).
+        let unit_head_before_merge = worktree::head_sha_of(&wt.dir);
+        // Spec 88, criterion 1 (INTEGRATE-CONFLICT MERGES), round 2: the operator ruling
+        // op-u88c1-round-1-conflict-resolution-is-a-parked-spawn-not-an-inline-loop.
+        // `integrate_mu` is held ONLY across each fast, bounded, git-only merge attempt -
+        // `wt.integrate` itself, which never runs an agent or a gate and is always a
+        // handful of local git commands touching this unit's OWN worktree/branch (it reads
+        // the run branch's tip but mutates it only at its very last step, the actual land).
+        // It is explicitly DROPPED before EITHER of the two things in this loop that can
+        // genuinely block for real, open-ended wall-clock time: a conflict-resolution
+        // implementer spawn (a real agent turnaround), and a registered regeneration
+        // command ([`Self::regenerate_conflicted_paths`], routed through the shared
+        // `gate::Runner` port and [`Self::build_budget`] - spec 65's machine-wide build-
+        // concurrency budget, an UNBOUNDED wait when every slot is taken by a sibling's own
+        // gate: adv-u88c1r1-budget-fix-worsens-unfixed-lock-span). Neither one touches the
+        // shared run branch, so a sibling's concurrent `integrate_and_emit` runs freely for
+        // either's whole duration; re-acquiring `lock` just for the next `wt.integrate` retry
+        // is cheap and correct regardless, since that call re-reads the run branch's CURRENT
+        // tip fresh every time - a sibling that landed meanwhile is picked up automatically,
+        // never stale. Once this loop finally lands a clean merge, `lock` stays held
+        // (unchanged from before this fix) through the post-merge gate suite and staleness
+        // marking below.
+        let mut lock = self.integrate_mu.lock().unwrap();
+        // Round 4 fix (`RunCtx::pending_landing`'s own doc): `already_landed` is set ONLY
+        // when `files` came back empty above AND a still-open landing-intent explained it -
+        // together, proof `Worktree::land` already completed this exact landing for real in
+        // an earlier, crashed attempt. Finish recording row 4's after-record and skip the
+        // merge loop ENTIRELY: re-attempting `merge_into_worktree`/`land` here would be a
+        // redundant, pointless no-op at best, and - unlike every other row's mutation -
+        // `Worktree::land`'s own `git merge` cannot even be safely re-invoked once the
+        // branches already coincide (nothing left to merge, not "already up to date" in
+        // every git version's exact wording). A still-open landing-intent whose `land`
+        // genuinely never ran (or failed) instead leaves `files` non-empty, `already_landed`
+        // `None`, and this loop runs for real - it durably re-records row 4 itself once
+        // `land` actually succeeds, same as any other resumed pass.
+        let (commit, pre_merge) = if let Some((landed_pass, unit_tip, run_tip)) = already_landed {
+            self.record_landed(&st.name, attempt, landed_pass, &unit_tip)?;
+            self.clear_pending_landing(&st.name, attempt);
+            (unit_tip, run_tip)
+        } else {
+            let mut retry = 0u32;
+            // Counts EVERY loop iteration (spec 88, criterion 1 round 4 TABLE rows 1 and 4):
+            // unlike `retry`, which counts only mixed-conflict-episode ROUNDS, `pass`
+            // advances on every single attempt at the merge - a confined-regenerate loop-back
+            // and an owed-regenerate loop-back each get their own fresh value too - so the
+            // row 1 / row 4 records below always key a genuinely NEW merge/land attempt,
+            // never alias a stale earlier one.
+            let mut pass = 0u32;
+            loop {
+                pass += 1;
+                // Captured HERE, under `lock`, immediately before the merge attempt it describes -
+                // see the doc comment on `pre_merge`'s declaration above for why a snapshot taken
+                // anywhere else (before the loop, or before re-acquiring `lock` on a later
+                // iteration) can go stale. A fresh local each iteration, escaping only via the
+                // `break` that actually lands - never an outer variable a stale earlier iteration
+                // could leave behind. It also serves as row 1's before-record content (the run
+                // branch tip about to be merged) and row 4's before-record content (the run tip
+                // half of "the landing intent").
+                let pre_merge = worktree::head_sha_of(&self.deps.repo);
+                // TABLE row 1's before-record: "the conflicting path list" - i.e. the merge
+                // attempt about to run, whose outcome (row 1's after-record, just below) names
+                // that list if it conflicts.
+                self.record_merge_attempt(&st.name, attempt, pass, &pre_merge)?;
+                match wt.merge_into_worktree(&format!("rigger: integrate {}", st.name))? {
+                    worktree::MergeOutcome::Ready(c) => {
+                        // TABLE row 1's after-record: clean (nothing conflicted).
+                        self.record_merge_outcome(&st.name, attempt, pass, &[])?;
+                        if c.is_empty() {
+                            // A true no-op pass within a LIVE loop iteration (e.g. the follow-up
+                            // check after a confined/owed regenerate round found nothing further
+                            // to land): the already-landed-but-uncrecorded case this function's
+                            // OWN entry already special-cased before this loop ever starts (see
+                            // `pending_landing` above) never reaches here - a resumed call whose
+                            // FIRST pass would otherwise hit this exact branch takes that earlier
+                            // fast path instead, recording row 4's after-record without ever
+                            // re-attempting `merge_into_worktree`/`land` at all.
+                            break (c, pre_merge);
+                        }
+                        // TABLE row 4: land this pass's resolved commit onto the run branch,
+                        // bracketed by its own before/after records - unconditionally, exactly
+                        // like the pre-split `Worktree::integrate` always did before this function
+                        // ever checked whether a follow-up regeneration is still owed (a mixed
+                        // conflict's placeholder-staged version lands now; the real regeneration,
+                        // if any, lands as a SEPARATE, later pass's own row 4).
+                        self.record_landing_intent(&st.name, attempt, pass, &c, &pre_merge)?;
+                        wt.land()?;
+                        self.record_landed(&st.name, attempt, pass, &c)?;
+                        // Spec 88, criterion 1 round 2 (adv-u88c1r1-crash-resume-permanently-
+                        // skips-regeneration): a MIXED conflict's source side can clear (the
+                        // implementer's own commit lands, bundling in the ALREADY-staged
+                        // placeholder) without `merge_into_worktree` ever re-observing the tree as
+                        // conflicted - it short-circuits straight to `Ready` the instant nothing
+                        // is unmerged, regardless of whether a follow-up regeneration is still
+                        // owed. This is also exactly what a CRASH-RESUMED process's very FIRST
+                        // call for this unit sees: the implementer's commit landed pre-crash, so
+                        // the worktree already looks entirely clean. Live git state cannot tell
+                        // "resolved for real" from "resolved via placeholder" apart - the durable
+                        // ledger ([`Self::regenerate_pending_for`], seeded at run start from the
+                        // log by [`conflict_regenerate_pending_from_log`]) can, so check it before
+                        // trusting this `Ready` as final, on EVERY pass through this arm.
+                        let owed = self.regenerate_pending_for(&st.name, attempt);
+                        if owed.is_empty() {
+                            break (c, pre_merge);
+                        }
+                        drop(lock);
+                        // TABLE row 3's mutation - its before-record (the regenerate-pending set)
+                        // is the SAME durable marker `record_regenerate_pending` already wrote
+                        // below, keyed by this same mixed-conflict episode's `retry` (unchanged
+                        // since that write - no new conflict has been detected in between).
+                        let regen_sha = self.regenerate_conflicted_paths(wt, &st.name, &owed)?;
+                        self.record_regenerate_commit(
+                            &st.name,
+                            attempt,
+                            &retry.to_string(),
+                            &regen_sha,
+                        )?;
+                        self.clear_regenerate_pending(&st.name, attempt);
+                        lock = self.integrate_mu.lock().unwrap();
+                        // Loop back: the next pass's `merge_into_worktree` picks up the follow-up
+                        // regenerate commit just made and fast-forwards it too, this time with
+                        // nothing owed.
+                    }
+                    worktree::MergeOutcome::Conflict(conflicting) => {
+                        // TABLE row 1's after-record: conflicted (names the conflicting paths).
+                        self.record_merge_outcome(&st.name, attempt, pass, &conflicting)?;
+                        // An unpredicted overlap the partitioner did not serialize (two
+                        // batch-mates the grounder placed together that edit the same region)
+                        // is NOT a defect of this unit. `merge_into_worktree` already merged the
+                        // run branch INTO this worktree, leaving conflict markers there and the
+                        // unit's branch (every prior commit) untouched.
+                        let (regenerable, source): (Vec<String>, Vec<String>) = conflicting
+                            .iter()
+                            .cloned()
+                            .partition(|p| self.regenerate_rule_for(p).is_some());
+                        if source.is_empty() {
+                            // Confined to registered regenerable paths: the conductor resolves
+                            // it itself, no spawn at all - together with any regenerable path a
+                            // PRIOR round of THIS SAME episode already placeholder-staged
+                            // (durably accumulated, spec 88 criterion 1 round 2) but whose real
+                            // regeneration was still pending because THIS round's own partition
+                            // no longer sees it as unmerged (`accept_incoming` staged it away).
+                            let all_regenerable =
+                                self.union_regenerate_pending(&st.name, attempt, &regenerable);
+                            // TABLE row 3's before-record (round 4: this branch never recorded
+                            // the obligation at all before this diff - the regeneration command
+                            // it is about to run through the gates port/build budget is real,
+                            // open-ended wall-clock time, the same class of crash window the
+                            // mixed branch's own `record_regenerate_pending` call already closes).
+                            let episode = format!("confined{pass}");
+                            self.record_regenerate_pending(
+                                &st.name,
+                                attempt,
+                                &episode,
+                                &all_regenerable,
+                            )?;
+                            drop(lock);
+                            let regen_sha =
+                                self.regenerate_conflicted_paths(wt, &st.name, &all_regenerable)?;
+                            self.record_regenerate_commit(&st.name, attempt, &episode, &regen_sha)?;
+                            self.clear_regenerate_pending(&st.name, attempt);
+                            lock = self.integrate_mu.lock().unwrap();
+                            continue;
+                        }
+                        // A mixed conflict needs a real implementer to resolve the SOURCE
+                        // paths. `retry` counts implementer ROUNDS this ONE conflict episode
+                        // has cost (mirroring the historical `CONFLICT_RESOLVE_BOUND` meaning),
+                        // regardless of how many merge attempts it took to get here.
+                        retry += 1;
+                        if retry > CONFLICT_RESOLVE_BOUND {
+                            // The bound was reached with a real conflict still unresolved:
+                            // abort the in-progress merge by rolling the unit's branch back to
+                            // where it stood before this call, so the unit's NEXT
+                            // (attempt-charging) remediation round starts from a clean,
+                            // uncommitted-merge-free tree.
+                            wt.reset_branch_to(&unit_head_before_merge)?;
+                            return Ok(Integration {
+                                blocked: Some(vec![format!(
+                                    "integrate conflict unresolved after {CONFLICT_RESOLVE_BOUND} \
+                                 implementer attempt(s); still unmerged: {}",
+                                    conflicting.join(", ")
+                                )]),
+                                ..Default::default()
+                            });
+                        }
+                        // Durably record the still-owed regeneration BEFORE placeholder-staging
+                        // it (round 3 fix for adv-u88c1r2-accept-incoming-precedes-durable-
+                        // record-crash-window, upheld round 2 REJECT): the OLD order ran
+                        // `accept_incoming` (a real git mutation - `git checkout --theirs`, which
+                        // resolves the path's conflict stage on disk) BEFORE this log write, so a
+                        // crash in between left the obligation unrecorded forever even once the
+                        // source side later cleared for real - `conflicting_paths` no longer sees
+                        // the path as unmerged, a resumed retry's own `regenerable` partition
+                        // computes it empty, and `record_regenerate_pending`'s own
+                        // `paths.is_empty()` early return means the obligation NEVER lands on the
+                        // log at all. Recording first closes the window: a crash before this log
+                        // write leaves the path genuinely unmerged (this call never ran), so a
+                        // resumed retry re-derives `regenerable` non-empty and redoes both steps
+                        // from scratch - `record_regenerate_pending`'s own per-path dedup (never a
+                        // duplicate log write) and `accept_incoming` (plain `git checkout
+                        // --theirs`, idempotent) both tolerate the redo. A crash AFTER both
+                        // succeed is unaffected either way - the log already has it. This is the
+                        // design's "in that order" for the regeneration ITSELF (the real
+                        // regeneration commit still lands strictly after the implementer's own
+                        // resolution commit, unchanged) - this ordering is a narrower guarantee,
+                        // for the LOG WRITE that must survive a crash purely to unblock `git
+                        // commit`, which refuses while ANY path is still unmerged.
+                        self.record_regenerate_pending(
+                            &st.name,
+                            attempt,
+                            &retry.to_string(),
+                            &regenerable,
+                        )?;
+                        for p in &regenerable {
+                            wt.accept_incoming(p)?;
+                        }
+                        // TABLE row 2's after-record: the placeholder-staging just above is done.
+                        self.record_placeholder_staged(&st.name, attempt, retry, &regenerable)?;
+                        // integrate_mu is released HERE, before the spawn, so siblings
+                        // integrate meanwhile (the ruling's own words: "returns the unit to
+                        // building"). A park propagates straight through the `?` below with
+                        // no lock held at all; a real (non-parked) result - a replay hit, or a
+                        // synchronous/blocking driver - re-acquires `lock` and loops back to
+                        // re-attempt the merge from scratch, never trusting anything this
+                        // iteration observed before the spawn.
+                        drop(lock);
+                        self.spawn_conflict_resolution_implementer(
+                            st, wt, attempt, retry, &source,
+                        )?;
+                        // Defense in depth (spec 64 criterion 3): the spawn just above is real
+                        // wall-clock time, the window in which an out-of-band actor could
+                        // delete the worktree before the next iteration's read consumes it.
+                        wt.ensure_present()?;
+                        lock = self.integrate_mu.lock().unwrap();
+                    }
+                }
             }
         };
         // spec 12, unit 5: re-run the FULL gate suite against the MERGED run-branch tree
@@ -7288,13 +8673,22 @@ impl RunCtx<'_> {
         // re-gate is content-addressed (unit 1): a merge that changed nothing a gate reads (a
         // clean fast-forward) replays the pre-merge green as a cache-hit - near-free - while a
         // merge that combined divergent trees misses the cache and the gate RUNS on the merged
-        // tree. A RED here BLOCKS integration: the merge is rolled back so NOTHING lands (no
-        // UnitIntegrated over a broken tree) and the caller re-enters remediation fed the
-        // merge-break evidence, exactly like a pre-merge gate failure.
+        // tree. A RED here BLOCKS integration: the merge is rolled back - on the repo AND (spec
+        // 88 criterion 1: `wt.integrate` may have advanced it) on the unit's own branch - so
+        // NOTHING lands (no UnitIntegrated over a broken tree) and the caller re-enters
+        // remediation fed the merge-break evidence, exactly like a pre-merge gate failure.
         if !commit.is_empty() {
             let merged = self.run_gates(st, &self.deps.repo, attempt, GateSelection::PostMerge)?;
             if !merged.pass {
                 Worktree::reset_to(&self.deps.repo, &pre_merge)?;
+                // Defense in depth (spec 64 criterion 3), same as every other post-gate touch
+                // of `wt` in this function: the post-merge gate just above is real wall-clock
+                // time IN THE BASE REPO, not `wt.dir` - a window in which an out-of-band actor
+                // (or, as spec 88 criterion 1's own fixture drives, the gate command's own side
+                // effect) can delete the unit's worktree dir before this reset consumes it. A
+                // no-op fast path when nothing disturbed the tree.
+                wt.ensure_present()?;
+                wt.reset_branch_to(&unit_head_before_merge)?;
                 return Ok(Integration {
                     blocked: Some(merged.evidence),
                     ..Default::default()
@@ -7341,6 +8735,788 @@ impl RunCtx<'_> {
             staled,
             blocked: None,
         })
+    }
+
+    /// PLAN AMENDMENTS LAND (spec 88, criterion 4): resolve a producer stage's worktree
+    /// at its DAG-terminal integration point, BEFORE the historical no-artifact
+    /// integration runs - so a spec amendment the planner committed directly (with its
+    /// own git access) reaches the run branch instead of dying with the worktree. This
+    /// is the ONE place those commits land: the NEXT plan-critique worktree
+    /// ([`Self::review_only_worktree`]) branches from the run branch, so without this a
+    /// committed amendment is invisible to it (Goal item 4: the b6a471c amendment
+    /// reached no branch, and a fresh critique rejected the plan for the gap that
+    /// amendment had already closed).
+    ///
+    /// `None` when there is no worktree (a repo-less or non-isolated producer): there
+    /// is nothing it could have committed into.
+    ///
+    /// LOG-CARRIED, IDEMPOTENT (operator ruling
+    /// `op-u88c4-next-round-plan-commit-landing-is-log-carried-and-idempotent`,
+    /// superseding rounds 4-6's git-state heuristics - `commits_since_base` identity
+    /// plus the removed `Worktree::already_landed_commits` tree-position walk, both
+    /// upheld REJECT for deriving landing state from git instead of the log): item
+    /// (1) - before touching git at all, the FULL current intent (every commit the
+    /// worktree has ever committed, oldest-first) is recorded durably via
+    /// [`Self::record_plan_intent`], a `DecisionMade`-shaped record this conductor
+    /// owns (no new event type). Item (2) - the durable, per-original-sha landed-sha
+    /// map [`Self::read_plan_landed`] wrote on some PRIOR call (if any) is consulted
+    /// FIRST; only a sha this unit has never confirmed before is even considered for
+    /// a fresh git mutation, and any such sha found ALREADY on the run branch by
+    /// [`Worktree::find_landed_by_patch_id`] (content identity, never tree position -
+    /// so an unrelated commit landing on the run branch in between changes nothing)
+    /// is confirmed without mutating anything. The outcome always carries every
+    /// intended sha's real landed identity - `PlanCommitOutcome::None` is reachable
+    /// only when `shas` itself is empty (a genuinely review-only producer), matching
+    /// item (2) literally.
+    ///
+    /// EVERY hard Err this produces is an infra-fault marked with
+    /// [`PLAN_LANDING_MARKER`] (adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-
+    /// fault-marker): this is a thin boundary wrapper over
+    /// [`Self::integrate_plan_commits_inner`], which does the actual work - wrapping
+    /// ONCE here, rather than at each of that function's several internal `?` sites,
+    /// is what guarantees no failure path is left un-marked by omission. See
+    /// [`plan_landing_failed`]'s doc comment for why this is a conductor-side fault,
+    /// never the unit's own.
+    fn integrate_plan_commits(
+        &self,
+        unit: &str,
+        wt: Option<&Worktree>,
+    ) -> Result<PlanCommitOutcome, Error> {
+        self.integrate_plan_commits_inner(unit, wt)
+            .map_err(|e| plan_landing_failed(unit, e))
+    }
+
+    fn integrate_plan_commits_inner(
+        &self,
+        unit: &str,
+        wt: Option<&Worktree>,
+    ) -> Result<PlanCommitOutcome, Error> {
+        let Some(w) = wt else {
+            return Ok(PlanCommitOutcome::None);
+        };
+        let shas = w.commits_since_base()?;
+        if shas.is_empty() {
+            return Ok(PlanCommitOutcome::None);
+        }
+        // Validate scope BEFORE landing anything, at TWO granularities: the aggregate
+        // three-dot diff (`changed_since_base`) catches the common case, but nets a
+        // path to NOTHING when a LATER commit in this SAME sequence reverts an EARLIER
+        // commit's own non-specs touch to it - so also walk every commit in `shas`
+        // INDIVIDUALLY (`adv-u88c4-scope-check-nets-the-diff-not-each-commit`). A
+        // producer's git access must never let a transient non-specs write ride the
+        // run branch just because a later commit in the same batch undid it - either
+        // source flags a violation, and both feed the SAME offending-paths list so the
+        // remediation feedback names every path either check caught.
+        let touched = w.changed_since_base()?;
+        let mut offending: Vec<String> = touched
+            .into_iter()
+            .filter(|p| !p.starts_with("specs/"))
+            .collect();
+        for sha in &shas {
+            let per_commit = w.files_touched_by_commit(sha)?;
+            offending.extend(per_commit.into_iter().filter(|p| !p.starts_with("specs/")));
+        }
+        if !offending.is_empty() {
+            offending.sort();
+            offending.dedup();
+            return Ok(PlanCommitOutcome::OutOfScope(offending));
+        }
+
+        // RULING ITEM 1: durable, log-carried intent BEFORE any git mutation - a
+        // resumed call (a crash anywhere after this point) always has a durable
+        // record of exactly what this worktree meant to land, never re-derived from
+        // git tree state alone.
+        self.record_plan_intent(unit, &shas)?;
+
+        // The SAME mutation authority every other write to the run branch checkout
+        // serializes through (`integrate_and_emit`'s merge above, `revert_on_base`'s
+        // rollback): a cherry-pick mutates `self.deps.repo` exactly like those do -
+        // and so does the patch-id recovery search just below, so a concurrent
+        // writer can never land between "what's already there" and "cherry-pick the
+        // rest".
+        let _lock = self.integrate_mu.lock().unwrap();
+
+        // RULING ITEM 2: resume compares against intent, never against "nothing
+        // new". The durable landed-map from a PRIOR call is the fast, authoritative
+        // path; only a sha this unit has never confirmed is even considered pending.
+        let prior_landed = self.read_plan_landed(unit)?;
+        let mut landed_map: HashMap<String, String> = HashMap::new();
+        let mut pending: Vec<String> = Vec::new();
+        for s in &shas {
+            match prior_landed.get(s) {
+                Some(l) => {
+                    landed_map.insert(s.clone(), l.clone());
+                }
+                None => pending.push(s.clone()),
+            }
+        }
+
+        // A pending sha may ALREADY be on the run branch by CONTENT (a crash between
+        // a prior call's real git success and that call's own confirmation write) -
+        // confirm by patch-id, bounded to the run branch's own recent history,
+        // before deciding anything still needs a fresh cherry-pick. `never a guess`:
+        // an entry this cannot confirm stays pending for the cherry-pick below.
+        const SEARCH_WINDOW: usize = 256;
+        let mut still_pending: Vec<String> = Vec::new();
+        for s in &pending {
+            match w.find_landed_by_patch_id(s, SEARCH_WINDOW)? {
+                Some(l) => {
+                    landed_map.insert(s.clone(), l);
+                }
+                None => still_pending.push(s.clone()),
+            }
+        }
+
+        if !still_pending.is_empty() {
+            match w.cherry_pick_onto_run_branch(&still_pending)? {
+                worktree::CherryPickOutcome::Conflict(detail) => {
+                    return Ok(PlanCommitOutcome::Conflict(detail));
+                }
+                worktree::CherryPickOutcome::Picked(landed) => {
+                    if landed.len() == still_pending.len() {
+                        // The common, fast path: a clean cherry-pick of N genuinely
+                        // new commits lands N new commits in the SAME order.
+                        for (orig, sha) in still_pending.iter().zip(landed.iter()) {
+                            landed_map.insert(orig.clone(), sha.clone());
+                        }
+                    } else {
+                        // A coincidental empty pick (content identical to something
+                        // ALREADY on the run branch under a commit this call's own
+                        // pre-check did not find - e.g. a duplicate amendment)
+                        // shifted `landed` shorter than requested. Recover every
+                        // entry by CONTENT, never by position - the SAME never-a-
+                        // guess contract as the pre-check above, now over the run
+                        // branch's state AFTER this call's own mutation.
+                        for orig in &still_pending {
+                            if let Some(sha) = w.find_landed_by_patch_id(orig, SEARCH_WINDOW)? {
+                                landed_map.insert(orig.clone(), sha);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // RULING ITEM 2: "the outcome always carries the FULL landed list from
+        // intent" - record the durable confirmation BEFORE returning, then emit
+        // exactly the ordered list every entry this call could confirm carries.
+        self.record_plan_landed(unit, &landed_map, &shas)?;
+        let full_landed: Vec<String> = shas
+            .iter()
+            .filter_map(|s| landed_map.get(s).cloned())
+            .collect();
+        Ok(PlanCommitOutcome::Landed(full_landed))
+    }
+
+    /// RULING ITEM 1 (`op-u88c4-next-round-plan-commit-landing-is-log-carried-and-
+    /// idempotent`): the durable, auditable record of the FULL ordered list of
+    /// plan-stage commits `unit`'s worktree intends to land, written on a
+    /// `DecisionMade`-shaped record this conductor owns (no new event type) BEFORE
+    /// any git mutation - so a crash anywhere after this call leaves a log-carried
+    /// trail of exactly what was meant, never only git tree state. Idempotent to
+    /// re-record (a later call with a GROWN `shas` simply appends a fresh record);
+    /// outcome decisions are driven by [`Self::read_plan_landed`], never by reading
+    /// this one back - this exists as the durable intent trail itself.
+    fn record_plan_intent(&self, unit: &str, shas: &[String]) -> Result<(), Error> {
+        self.emit(
+            contextgraph::TYPE_DECISION_MADE,
+            json!({
+                "id": format!("plan-intent:{unit}"),
+                "summary": format!(
+                    "plan-stage commit landing intent for {unit}: {} commit(s) queued to land \
+                     on the run branch, oldest-first: {}",
+                    shas.len(),
+                    shas.join(", ")
+                ),
+                "governs": [],
+                "unit": unit,
+                "shas": shas,
+            }),
+        )
+    }
+
+    /// RULING ITEM 2: the durable record of what `unit`'s plan-stage commits have
+    /// ACTUALLY landed on the run branch so far, keyed by each ORIGINAL commit's own
+    /// sha (the producer worktree's identity, stable across resumes) to the real
+    /// run-branch commit that carries its content - "resume compares against
+    /// intent, not against nothing new". Scans the CURRENT run's stream
+    /// ([`crate::run::current_run`]) for the `DecisionMade`-shaped `plan-landed:
+    /// <unit>` record and keeps only the LATEST one (a later call's confirmation
+    /// simply supersedes an earlier, smaller map) - the same latest-position-wins
+    /// idiom every other log-derived state in this file already reads by.
+    fn read_plan_landed(&self, unit: &str) -> Result<HashMap<String, String>, Error> {
+        let all = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        let events = crate::run::current_run(&all);
+        let id = format!("plan-landed:{unit}");
+        let mut map = HashMap::new();
+        for e in events
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_DECISION_MADE)
+        {
+            let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+                continue;
+            };
+            if v.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+                continue;
+            }
+            if let Some(arr) = v.get("landed").and_then(Value::as_array) {
+                map.clear();
+                for entry in arr {
+                    if let (Some(o), Some(l)) = (
+                        entry.get("sha").and_then(Value::as_str),
+                        entry.get("landed_sha").and_then(Value::as_str),
+                    ) {
+                        map.insert(o.to_string(), l.to_string());
+                    }
+                }
+            }
+        }
+        Ok(map)
+    }
+
+    /// Write this call's confirmed `landed_map` (a subset, possibly all, of `shas`)
+    /// as the new `plan-landed:<unit>` record [`Self::read_plan_landed`] reads back
+    /// on a resumed call - BEFORE this call's own `PlanCommitOutcome` is even
+    /// returned to the caller, let alone before the caller's `UnitIntegrated` emit,
+    /// so a crash immediately after this write still leaves the confirmation
+    /// durable. Ordered by `shas` (the intent order), not map iteration order.
+    fn record_plan_landed(
+        &self,
+        unit: &str,
+        landed_map: &HashMap<String, String>,
+        shas: &[String],
+    ) -> Result<(), Error> {
+        let landed: Vec<Value> = shas
+            .iter()
+            .filter_map(|s| {
+                landed_map
+                    .get(s)
+                    .map(|l| json!({"sha": s, "landed_sha": l}))
+            })
+            .collect();
+        self.emit(
+            contextgraph::TYPE_DECISION_MADE,
+            json!({
+                "id": format!("plan-landed:{unit}"),
+                "summary": format!(
+                    "plan-stage commit landing confirmed for {unit}: {}/{} intended commit(s) \
+                     landed",
+                    landed.len(),
+                    shas.len()
+                ),
+                "governs": [],
+                "unit": unit,
+                "landed": landed,
+            }),
+        )
+    }
+
+    /// The registered regenerate rule matching `path` (spec 88, criterion 1), via the SAME
+    /// glob authority [`Gate::inputs`](crate::config::Gate::inputs) matches against - or
+    /// `None` when no rule's `paths` matches, i.e. `path` must be resolved by a real edit.
+    fn regenerate_rule_for(&self, path: &str) -> Option<&RegenerateRule> {
+        self.cfg
+            .workflow
+            .regenerate
+            .iter()
+            .find(|r| r.paths.iter().any(|p| glob_matches(p, path)))
+    }
+
+    /// Run a registered regeneration command inside a unit's worktree, routed through the
+    /// SAME [`gate::Runner`] port ([`Self::deps`]`.gates`) every OTHER command execution in
+    /// this crate answers to - never a second, un-injected `std::process::Command` shell-out
+    /// (a Clean-Architecture/DI violation on its own: one mutation authority per concern,
+    /// never a parallel implementation reconciled after the fact). Fixed for
+    /// arch-u88c1-regenerate-bypasses-runner-port-and-build-budget: the raw shell-out this
+    /// superseded called neither the injected port nor [`Self::build_budget`], so a
+    /// `regenerate:` rule's command (this diff's own `.rigger/workflow.yml` registers a full
+    /// `cargo test` recompile) ran completely outside `build.max_concurrent`, the one
+    /// authority spec 65 established to bound concurrent cargo/rustc load - letting
+    /// concurrent conflict resolutions across sibling units each stack an unbudgeted build
+    /// alongside every budgeted gate build.
+    ///
+    /// [`gate::Runner::run`] acquires the machine-wide budget slot ITSELF (held for exactly
+    /// its own duration), so this needs no separate `self.build_budget()` call around it -
+    /// threading `&self.build_budget()` straight into the same call this fn already makes is
+    /// the ONE gating point, exactly like every gate-build call site
+    /// ([`Self::run_gates`], [`Self::run_deferred_gates`]). The SAME per-unit `target`/
+    /// `build_cache_dir`/`build_cache_guard`/`store_fence` signals [`Self::run_gates`]
+    /// derives for a gate running in this exact worktree `dir` (Gap 19, spec 70 criterion 3)
+    /// give this command the identical `CARGO_TARGET_DIR` isolation and store fence, so a
+    /// regenerate build never races a concurrent unit's build cache or walks into the live
+    /// event store.
+    fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
+        let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        let mutants = crate::worktree::unit_mutants_sibling(dir).unwrap_or_default();
+        let (build_cache_dir, build_cache_guard) = if target.is_empty() {
+            self.shared_build_cache_paths()
+        } else {
+            (String::new(), String::new())
+        };
+        let store_fence = crate::worktree::review_fence_sibling(dir).unwrap_or_default();
+        let build_env = self.build_env()?;
+        let budget = self.build_budget();
+        let g = Gate {
+            id: "regenerate".to_string(),
+            run: run.to_string(),
+            kind: gate::Kind::Core,
+            autonomy: gate::Autonomy::Manual,
+            history: Vec::new(),
+        };
+        let res = self.deps.gates.run(
+            &g,
+            dir,
+            &target,
+            &mutants,
+            &build_cache_dir,
+            &build_cache_guard,
+            &store_fence,
+            &build_env,
+            &budget,
+        );
+        if !res.pass {
+            return Err(Error(format!(
+                "regenerate command {run:?} failed:\n{}",
+                res.evidence
+            )));
+        }
+        Ok(())
+    }
+
+    /// Resolve conflicting paths CONFINED to registered regenerable rules (spec 88,
+    /// criterion 1): run each DISTINCT matching command once in the worktree - a rule's
+    /// command may cover several of the conflicting paths - then commit the regenerated,
+    /// now-conflict-free tree, completing the merge with NO implementer spawn at all.
+    /// `paths` must already be verified (by the caller) to be entirely regenerable. Returns
+    /// the regeneration commit's sha (round 4, TABLE row 3's after-record content) - the
+    /// CURRENT worktree HEAD when the regenerated tree was already identical to what was
+    /// staged (nothing NEW to commit, `u88c1-nothing-to-commit-guard-justified`'s established
+    /// idempotent no-op), never an empty sentinel: that HEAD already IS the regenerate
+    /// commit, whether this call just made it or an earlier one did, so the caller's
+    /// [`Self::record_regenerate_commit`] durably records the SAME real sha either way. Round
+    /// 4's own fix (its previous "" contract silently and PERMANENTLY lost row 3's after-
+    /// record on exactly the resume this idempotent no-op exists to make safe: a crash right
+    /// after this call's real mutation but before that record left the durable regenerate-
+    /// pending marker un-cleared, so a resumed call re-enters here, finds nothing new to
+    /// commit, and - under the old "" contract - never re-recorded the after-record for the
+    /// mutation that already, genuinely happened).
+    fn regenerate_conflicted_paths(
+        &self,
+        wt: &Worktree,
+        unit: &str,
+        paths: &[String],
+    ) -> Result<String, Error> {
+        let mut commands: Vec<&str> = Vec::new();
+        for p in paths {
+            if let Some(rule) = self.regenerate_rule_for(p) {
+                if !commands.contains(&rule.run.as_str()) {
+                    commands.push(&rule.run);
+                }
+            }
+        }
+        for cmd in commands {
+            self.run_regenerate_command(&wt.dir, cmd)?;
+        }
+        let committed = wt.commit(&format!(
+            "rigger: regenerate conflicting artifacts for {unit}"
+        ))?;
+        if committed.is_empty() {
+            Ok(worktree::head_sha_of(&wt.dir))
+        } else {
+            Ok(committed)
+        }
+    }
+
+    /// Round 5 fix for sdet-u88c1r4-pending-landing-hides-owed-regeneration: the shared
+    /// catch-up mutation a resumed [`Self::integrate_and_emit`] call runs when it discovers
+    /// row 4 (landing) is ALREADY closed - by either of its own two recovery sub-paths,
+    /// [`Self::pending_landing_for`] returning `None` (an earlier attempt's land AND its own
+    /// after-record both completed) or returning `Some` (the land completed for real but only
+    /// its after-record was still open, now finished by the caller just before this runs) -
+    /// while [`Self::regenerate_pending_for`] still names paths nobody ever regenerated for
+    /// real. An ordinary regenerate-command failure (or a store failure on its own after-
+    /// record) right after an otherwise-successful land is enough to reach here, no crash
+    /// required: both recovery sub-paths used to treat "row 4 closed" as "fully integrated,"
+    /// mirroring only the merge/land loop's OWN post-land owed-check (`conductor.rs` around
+    /// the loop's `Ready(c)` arm) rather than ALSO running it here - so the durable
+    /// `conflict_regenerate_pending` marker sat orphaned and the `accept_incoming` placeholder
+    /// content shipped permanently. Mirrors that same loop check exactly (regenerate, record,
+    /// clear) but does NOT land the resulting commit itself - the caller must still let the
+    /// ordinary merge/land loop run once more (trivially, a fast-forward) to land it for real,
+    /// so `files` is left for the caller to recompute once this returns. The episode tag
+    /// (`record_regenerate_commit`'s pairing key with the ORIGINAL `record_regenerate_pending`
+    /// before-record) can never be recovered here - the pending map holds only paths, not the
+    /// episode string that produced them, and by construction this call is reached only from
+    /// a DIFFERENT, later invocation than the one that wrote it - so a fresh tag scoped to
+    /// this catch-up's own real regenerate commit (guaranteed unique; a repeated idempotent
+    /// no-op naturally reuses the same sha and so the same, correctly-deduplicated tag) is
+    /// used instead of trying to reconstruct a value this call structurally cannot know.
+    /// Returns whether anything was actually owed (and thus regenerated) so the caller can
+    /// decide whether to recompute `files` at all.
+    fn catch_up_owed_regeneration(
+        &self,
+        wt: &Worktree,
+        unit: &str,
+        attempt: u32,
+    ) -> Result<bool, Error> {
+        let owed = self.regenerate_pending_for(unit, attempt);
+        if owed.is_empty() {
+            return Ok(false);
+        }
+        let regen_sha = self.regenerate_conflicted_paths(wt, unit, &owed)?;
+        self.record_regenerate_commit(unit, attempt, &format!("resume-{regen_sha}"), &regen_sha)?;
+        self.clear_regenerate_pending(unit, attempt);
+        Ok(true)
+    }
+
+    /// The regenerable paths recorded so far (durably, [`STATUS_INTEGRATE_CONFLICT_REGEN`])
+    /// for `unit`'s conflict-resolution episode at `attempt` - see
+    /// [`conflict_regenerate_pending_from_log`] and [`RunCtx::conflict_regenerate_pending`].
+    fn regenerate_pending_for(&self, unit: &str, attempt: u32) -> Vec<String> {
+        self.conflict_regenerate_pending
+            .lock()
+            .unwrap()
+            .get(&conflict_regenerate_key(unit, attempt))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Clear the LIVE (in-process) pending-regenerate entry for `unit`'s episode at
+    /// `attempt` once [`Self::regenerate_conflicted_paths`] has actually run for it -
+    /// called right after every such call. Without this, [`Self::regenerate_pending_for`]
+    /// would keep reporting the same paths owed forever THIS process (the durable log
+    /// marker itself is deliberately never retracted - re-running the regenerate command
+    /// on an already-regenerated, unchanged tree is an established idempotent no-op, see
+    /// `u88c1-nothing-to-commit-guard-justified` - so a resumed process re-doing it once
+    // more is harmless), spinning [`Self::integrate_and_emit`]'s own loop forever on a
+    /// `Merged` outcome that never stops looking "owed".
+    fn clear_regenerate_pending(&self, unit: &str, attempt: u32) {
+        self.conflict_regenerate_pending
+            .lock()
+            .unwrap()
+            .remove(&conflict_regenerate_key(unit, attempt));
+    }
+
+    /// The `(pass, unit_tip, run_tip)` of `unit`'s durably-recorded landing-intent at `attempt`
+    /// not yet matched by a landed record, if any (round 4 fix - see
+    /// [`RunCtx::pending_landing`]'s own doc for the crash window this closes).
+    fn pending_landing_for(&self, unit: &str, attempt: u32) -> Option<(u32, String, String)> {
+        self.pending_landing
+            .lock()
+            .unwrap()
+            .get(&conflict_regenerate_key(unit, attempt))
+            .cloned()
+    }
+
+    /// Clear the LIVE pending-landing entry for `unit`'s `attempt` once
+    /// [`Self::record_landed`] has closed it out - mirrors
+    /// [`Self::clear_regenerate_pending`] exactly.
+    fn clear_pending_landing(&self, unit: &str, attempt: u32) {
+        self.pending_landing
+            .lock()
+            .unwrap()
+            .remove(&conflict_regenerate_key(unit, attempt));
+    }
+
+    /// [`Self::regenerate_pending_for`] unioned with `fresh` (this round's own regenerable
+    /// partition) - the full set [`Self::regenerate_conflicted_paths`] must cover once a
+    /// mixed conflict's source side finally clears, so a path a PRIOR round staged (whose
+    /// real regeneration was deferred because a LATER round's own partition no longer sees
+    /// it as unmerged) is never dropped.
+    fn union_regenerate_pending(&self, unit: &str, attempt: u32, fresh: &[String]) -> Vec<String> {
+        let mut all = self.regenerate_pending_for(unit, attempt);
+        for p in fresh {
+            if !all.iter().any(|q| q == p) {
+                all.push(p.clone());
+            }
+        }
+        all
+    }
+
+    /// Durably record (spec 88, criterion 1 round 2; round 4 TABLE row 3's before-record,
+    /// "the regenerate-pending set") that `paths` still owe a REAL regeneration for `unit`'s
+    /// episode at `attempt`, keyed by the caller's `episode` tag so a replayed step never
+    /// re-emits it (spec 04, criterion 4) yet a genuinely new episode's paths still get their
+    /// own entry. `episode` distinguishes the two DISTINCT callers so their keys can never
+    /// collide even when their numeric counters coincide: the mixed-conflict branch (round 2)
+    /// passes its `retry` counter verbatim (`"{retry}"` - the pre-existing, byte-identical key
+    /// shape `sdet-u88c1r3-gap8-crosscall-dedup`'s test already pins), where this is ALSO row
+    /// 2's before-record - the paths are about to be placeholder-staged via
+    /// [`Worktree::accept_incoming`] before a real regeneration can run, and no separate row-3
+    /// write is needed at regeneration time since it is the identical obligation. The
+    /// confined-to-regenerable branch (round 4, closing a gap the mixed branch alone used to
+    /// cover: this path never recorded the obligation at all before running the regeneration
+    /// command, relying solely on `conflicting_paths()` staying non-empty until the real
+    /// commit lands - true, but round 4's ruling wants the same explicit record either way)
+    /// passes `"confined{pass}"` - a disjoint literal prefix, so its own per-pass counter can
+    /// never alias the mixed branch's per-retry counter for the same unit+attempt. Rides the
+    /// existing `TYPE_UNIT_STATUS` vocabulary ([`STATUS_INTEGRATE_CONFLICT_REGEN`], fold-
+    /// neutral - `ledger::Status::parse` rejects it) - no new event type, mirroring spec 12
+    /// unit 4's `STATUS_COMPENSATION_QUEUED` precedent. Fixes
+    /// adv-u88c1r1-crash-resume-permanently-skips-regeneration: called BEFORE the mutation
+    /// that can fail (the mixed branch's `accept_incoming`, or the confined branch's
+    /// regeneration command itself), so the marker is on the log even if this process crashes
+    /// before the real regeneration commit ever runs - a fresh process's
+    /// [`Self::regenerate_pending_for`] then still finds it.
+    fn record_regenerate_pending(
+        &self,
+        unit: &str,
+        attempt: u32,
+        episode: &str,
+        paths: &[String],
+    ) -> Result<(), Error> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        {
+            let mut live = self.conflict_regenerate_pending.lock().unwrap();
+            let entry = live
+                .entry(conflict_regenerate_key(unit, attempt))
+                .or_default();
+            for p in paths {
+                if !entry.iter().any(|q| q == p) {
+                    entry.push(p.clone());
+                }
+            }
+        }
+        self.record_integrate_row(
+            &format!("{unit}/conflict-regen#{attempt}~{episode}"),
+            STATUS_INTEGRATE_CONFLICT_REGEN,
+            unit,
+            attempt,
+            json!({"regenerate": paths.join(",")}),
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 2's after-record, "staged") that
+    /// `paths` finished [`Worktree::accept_incoming`] placeholder-staging for `unit`'s mixed-
+    /// conflict episode at `attempt`/`retry` - the mutation the row's before-record
+    /// ([`Self::record_regenerate_pending`], already durable by construction before this runs)
+    /// brackets. Keyed identically to that before-record's episode tag so the pair is
+    /// unambiguously one row's before/after, idempotent across a resume exactly like every
+    /// other keyed emit here.
+    fn record_placeholder_staged(
+        &self,
+        unit: &str,
+        attempt: u32,
+        retry: u32,
+        paths: &[String],
+    ) -> Result<(), Error> {
+        self.record_integrate_row(
+            &format!("{unit}/placeholder-staged#{attempt}~{retry}"),
+            STATUS_INTEGRATE_PLACEHOLDER_STAGED,
+            unit,
+            attempt,
+            json!({"staged": paths.join(",")}),
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 3's after-record, "the
+    /// regeneration commit sha") that the real regeneration for `unit`'s episode at
+    /// `attempt`/`episode` landed as `sha` on the unit's own branch - the mutation
+    /// [`Self::record_regenerate_pending`]'s before-record (same `episode` tag) brackets.
+    /// [`Self::regenerate_conflicted_paths`] never returns an empty sha (round 4's own fix:
+    /// it falls back to the current worktree HEAD when there was nothing NEW to commit,
+    /// since that HEAD already IS the regenerate commit either way) - the empty-sha guard
+    /// below is kept purely defensive, never expected to fire in real operation.
+    fn record_regenerate_commit(
+        &self,
+        unit: &str,
+        attempt: u32,
+        episode: &str,
+        sha: &str,
+    ) -> Result<(), Error> {
+        if sha.is_empty() {
+            return Ok(());
+        }
+        self.record_integrate_row(
+            &format!("{unit}/regenerate-commit#{attempt}~{episode}"),
+            STATUS_INTEGRATE_REGENERATE_COMMIT,
+            unit,
+            attempt,
+            json!({"sha": sha}),
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 1's before-record, "the
+    /// conflicting path list" - i.e. the merge about to be attempted, whose outcome names that
+    /// list when it conflicts) that `unit` is about to merge the run branch's tip `run_tip`
+    /// into its own worktree, at `attempt`/`pass` (`pass` counts EVERY loop iteration of
+    /// `integrate_and_emit`'s merge-attempt loop for this call, so a confined-regenerate or
+    /// owed-regenerate loop-back gets its own fresh pass and record, never reusing a stale
+    /// one). Brackets [`Worktree::merge_into_worktree`]; the after-record is
+    /// [`Self::record_merge_outcome`].
+    fn record_merge_attempt(
+        &self,
+        unit: &str,
+        attempt: u32,
+        pass: u32,
+        run_tip: &str,
+    ) -> Result<(), Error> {
+        self.record_integrate_row(
+            &format!("{unit}/merge-attempt#{attempt}~{pass}"),
+            STATUS_INTEGRATE_MERGE_ATTEMPT,
+            unit,
+            attempt,
+            json!({"run_tip": run_tip}),
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 1's after-record, "merge-in-
+    /// progress outcome (conflicts or clean)") the result of the [`Worktree::merge_into_worktree`]
+    /// call [`Self::record_merge_attempt`] bracketed for `unit`'s `attempt`/`pass`: `conflicts`
+    /// is empty for a clean/ready outcome, or names the conflicting paths.
+    fn record_merge_outcome(
+        &self,
+        unit: &str,
+        attempt: u32,
+        pass: u32,
+        conflicts: &[String],
+    ) -> Result<(), Error> {
+        let evidence = if conflicts.is_empty() {
+            json!({"outcome": "clean"})
+        } else {
+            json!({"outcome": "conflict", "paths": conflicts.join(",")})
+        };
+        self.record_integrate_row(
+            &format!("{unit}/merge-outcome#{attempt}~{pass}"),
+            STATUS_INTEGRATE_MERGE_OUTCOME,
+            unit,
+            attempt,
+            evidence,
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 4's before-record, "the landing
+    /// intent (unit tip, run tip)") that `unit` is about to land `unit_tip` (its own,
+    /// already-resolved-and-committed branch head) onto the run branch currently at `run_tip`,
+    /// at `attempt`/`pass`. Brackets [`Worktree::land`]; the after-record is
+    /// [`Self::record_landed`].
+    fn record_landing_intent(
+        &self,
+        unit: &str,
+        attempt: u32,
+        pass: u32,
+        unit_tip: &str,
+        run_tip: &str,
+    ) -> Result<(), Error> {
+        self.record_integrate_row(
+            &format!("{unit}/landing-intent#{attempt}~{pass}"),
+            STATUS_INTEGRATE_LANDING_INTENT,
+            unit,
+            attempt,
+            json!({"unit_tip": unit_tip, "run_tip": run_tip}),
+        )
+    }
+
+    /// Durably record (spec 88, criterion 1 round 4, TABLE row 4's after-record, "the landed
+    /// sha") that `sha` landed on the run branch for `unit`'s `attempt`/`pass` - the mutation
+    /// [`Self::record_landing_intent`]'s before-record brackets.
+    fn record_landed(&self, unit: &str, attempt: u32, pass: u32, sha: &str) -> Result<(), Error> {
+        self.record_integrate_row(
+            &format!("{unit}/landed#{attempt}~{pass}"),
+            STATUS_INTEGRATE_LANDED,
+            unit,
+            attempt,
+            json!({"sha": sha}),
+        )
+    }
+
+    /// The ONE mutation authority every spec 88 criterion 1 round 4 TABLE row-record above
+    /// funnels through: a `TYPE_UNIT_STATUS` marker keyed for idempotent replay
+    /// ([`Self::emit_keyed`]), carrying `status` (which of the six fold-neutral row tokens this
+    /// is) and `evidence` (the row-specific payload). Factored out once the six near-identical
+    /// wrappers made the shared envelope a real duplication cluster the project's own
+    /// simplification audit would otherwise flag - one shared composer, never six parallel
+    /// copies of the same `emit_keyed(..., json!({"id":..,"status":..,"attempt":..,
+    /// "evidence":..}))` shape (mirrors [`Self::record_regenerate_pending`]'s own pre-existing
+    /// key/status/evidence envelope, which now composes the same way).
+    fn record_integrate_row(
+        &self,
+        key: &str,
+        status: &str,
+        unit: &str,
+        attempt: u32,
+        evidence: Value,
+    ) -> Result<(), Error> {
+        self.emit_keyed(
+            key,
+            ledger::TYPE_UNIT_STATUS,
+            json!({
+                "id": unit,
+                "status": status,
+                "attempt": attempt,
+                "evidence": evidence,
+            }),
+        )
+    }
+
+    /// Issue ONE implementer spawn to resolve an integrate-conflict's SOURCE paths (spec 88,
+    /// criterion 1). Charges NO remediation attempt: it reuses the SAME `attempt` a
+    /// [`spawn_retry_id`] `~retry{n}` suffix, never [`safety::remediate`]'s bump - mirroring
+    /// [`Self::run_reviewer`]'s identical free-respawn pattern for a degenerate reviewer
+    /// result (spec 07), the established precedent for "infrastructure, not a defect" in
+    /// this loop.
+    ///
+    /// Operator ruling op-u88c1-round-1-conflict-resolution-is-a-parked-spawn-not-an-inline-
+    /// loop (round 1 REJECT): the caller ([`Self::integrate_and_emit`]) drops `integrate_mu`
+    /// BEFORE calling this - never held across it - so a park propagates through the `?`
+    /// below with no lock held at all, and a real (non-parked) result never blocks a
+    /// sibling's concurrent integration behind an open-ended agent turnaround.
+    fn spawn_conflict_resolution_implementer(
+        &self,
+        st: &Stage,
+        wt: &Worktree,
+        attempt: u32,
+        retry: u32,
+        source: &[String],
+    ) -> Result<(), Error> {
+        let id = spawn_retry_id(&st.name, ROLE_IMPLEMENTER, attempt, retry);
+        if !self.reserve_spawn(&id) {
+            return Err(budget_refused(&st.name, "implementer", &st.agent));
+        }
+        let agent_def = self.cfg.agents.get(&st.agent).ok_or_else(|| {
+            Error(format!(
+                "stage {:?} references unknown agent {:?}",
+                st.name, st.agent
+            ))
+        })?;
+        if self.agent_isolated(&st.agent) {
+            self.assert_isolated_cwd("implementer", &st.agent, &wt.dir)?;
+        }
+        let build_env = self.build_env()?;
+        let prompt = conflict_resolution_prompt(&st.name, source);
+        let emit = |t: &str, v: Value| {
+            self.emit_meta(
+                t,
+                v,
+                &[
+                    (contextgraph::META_ACTOR, st.agent.as_str()),
+                    (META_SPAWN, id.as_str()),
+                ],
+            )
+        };
+        self.deps.driver.spawn(
+            agent_def,
+            &prompt,
+            &SpawnOpts {
+                system_prompt: self.build_system_prompt(agent_def),
+                dir: wt.dir.clone(),
+                isolation: true,
+                parallel: false,
+                blast_radius: source.to_vec(),
+                id: id.clone(),
+                unit: st.name.clone(),
+                stage: st.name.clone(),
+                title: format!("resolve integrate conflict: {}", st.name),
+                attempt,
+                run_id: self.run_id.clone(),
+                env: Self::spawn_env(&build_env, &wt.dir),
+                reviews: Vec::new(),
+            },
+            &emit,
+        )?;
+        Ok(())
     }
 
     /// Build the SYSTEM prompt the conductor threads into every spawn: the agent's
@@ -7814,6 +9990,237 @@ impl RunCtx<'_> {
             .unwrap_or(true)
     }
 
+    /// ADOPTION KEYS ON THE CRITERION (spec 88, decided; round 4 corrects the crash
+    /// durability per operator ruling
+    /// `op-u88c2-round-4-adoption-keys-corrected-escalated-baselines-are-always-
+    /// candidates`): look across the WHOLE event log for a prior unit
+    /// ([`prior_criterion_unit`]) that served the SAME (spec, criterion) as this unit
+    /// (`st.criterion_id`) and has not integrated - regardless of the planner's slug, so
+    /// a fresh run's differently-named unit still continues a prior run's abandoned
+    /// attempt instead of discarding it. Found: seed THIS unit's branch as a NEW ref at
+    /// that prior branch's CURRENT tip ([`Worktree::create_branch_at`], pinned to the
+    /// exact sha rather than the moving branch name) - a new ref, never a rename, so the
+    /// prior branch name stays resolvable - and [`Self::stage_worktree`]'s ordinary
+    /// `Worktree::create` call (which the caller runs right after this) then reuses it
+    /// exactly as it reuses this unit's OWN prior work on any other resume, via its
+    /// existing adopt-by-path-lookup machinery.
+    ///
+    /// PROVENANCE IS LOG STATE FIRST (round 4, closing
+    /// `sdet-u88c2-adopted-from-lost-on-crash-between-branch-create-and-unitstarted`,
+    /// upheld three rounds running): the decision `{unit, tip, spec}` is stamped via
+    /// [`STATUS_ADOPTION_RECORDED`] the MOMENT it is made - BEFORE the git side effect
+    /// below, which itself lands BEFORE the caller's `UnitStarted` (the only OTHER place
+    /// this triple would otherwise be recorded). This closes the crash window from
+    /// EITHER side: [`recorded_adoption`] is consulted FIRST, before anything else, so a
+    /// resumed call whose prior incarnation died after writing the mark - whether or not
+    /// it reached the git side effect - reads the SAME already-decided triple back and
+    /// merely ensures the branch exists (a no-op if it already does), rather than
+    /// re-deriving fresh (which could, in principle, compute a different answer if
+    /// intervening log state changed) or silently returning `None` and losing the
+    /// provenance. Once decided, the decision is authoritative and this call never
+    /// mutates the git side effect a second time.
+    ///
+    /// SCOPED TO `(unit, criterion_id, spec)` (round 5, closing
+    /// arch-u88c2-r4-recorded-adoption-bare-id-crosses-specs): the durable mark and its
+    /// replay key are keyed on this unit's full identity, never its bare id alone -
+    /// round 4's bare-id key let a later, wholly unrelated unit reusing the same literal
+    /// planner slug replay an earlier unit's decision regardless of criterion or spec, a
+    /// real content-contamination bug, not merely a missed exclusion.
+    ///
+    /// Returns `Some((prior_unit_id, tip_sha, spec))` when a decision exists (freshly
+    /// made this call, or recovered from a crash-resumed prior call), for the caller to
+    /// stamp on `UnitStarted` as `adopted_from`. Returns `None` for: a repo-less run; a
+    /// unit that serves no criterion at all (`st.criterion_id` empty - the
+    /// plan/plan-critique infrastructure stages); no recorded decision AND no prior
+    /// un-integrated attempt for this (spec, criterion); a prior candidate whose own
+    /// branch is already gone (nothing to adopt - the unit simply starts fresh, exactly
+    /// as before this feature existed); or - the common repeat case - a unit whose
+    /// branch carries only its OWN prior work, with no adoption ever decided for it.
+    ///
+    /// PRIMARY BLOCKER FIX (round 6, closing
+    /// sdet-u88c2-r5-stage-worktree-branch-reuse-crosses-specs /
+    /// adv-u88c2-r5-independently-confirms-branch-reuse-crosses-specs /
+    /// arch-u88c2-r5-branch-exists-fallback-still-bare-id-crosses-specs): `unit_branch`
+    /// derives purely from the planner's bare slug, so a wholly unrelated unit under a
+    /// wholly unrelated (criterion, spec) can coincidentally reuse the same literal
+    /// name. The `branch_exists` check below used to trust that unconditionally as "this
+    /// unit's own prior work" - but `stage_worktree`'s own later `Worktree::create` call
+    /// (its own `branch_exists` fallback, src/worktree.rs) then checks out and reuses
+    /// whatever REAL content sits on that name, with no criterion/spec check of its own:
+    /// real cross-spec content contamination that never shows up as a wrong
+    /// `adopted_from` (which correctly reads `Null` the whole time - this is not an
+    /// adoption at all, sanctioned or otherwise). [`branch_owner`] answers WHOSE
+    /// (criterion_id, spec) the branch's most recent identity actually is, off the same
+    /// durable `UnitStarted` provenance every unit already writes; a mismatch means the
+    /// literal name is a coincidence, not this unit's own history, so the foreign
+    /// occupant is quarantined aside (never destroyed - Operator rule, spec 88 Goal:
+    /// "a unit's reviewed history is never discarded by the harness") so the caller's own
+    /// `Worktree::create` recomputes `branch_exists` as false and starts this unit
+    /// genuinely fresh, off HEAD.
+    ///
+    /// QUARANTINE IS A RECORD, NOT JUST A RENAME (round 7, operator ruling
+    /// `op-u88c2-round-7-definition-of-done-after-resume` item 1, closing
+    /// `adv-u88c2-r6-quarantine-orphans-the-criterions-own-future-adoption`): round 6's
+    /// quarantine correctly stopped the cross-spec content contamination but left the
+    /// move entirely unrecorded, so a LATER, genuine retry of the EXACT criterion/spec the
+    /// quarantined content was itself started under - `prior_criterion_unit` still
+    /// (correctly) names the same bare unit id for it - resolved `unit_branch(prior)` to
+    /// the now-DELETED canonical name and silently gave up (`Ok(None)`), discarding real
+    /// reviewed history the harness's own quarantine had just moved aside. Fixed two ways:
+    /// the quarantine path now stamps [`STATUS_BRANCH_QUARANTINED`] (via
+    /// [`quarantine_record_key`]) keyed on the FOREIGN content's own `(unit, criterion_id,
+    /// spec)` identity - never the colliding unit's `st.criterion_id`/spec - naming the
+    /// quarantine ref it moved to; and the prior-candidate fallback below, when the
+    /// canonical branch is absent, consults [`quarantined_branch`] for that identity
+    /// before giving up, so a `branch_tip` failure on a ref this call POSITIVELY KNOWS
+    /// should exist (either the canonical name it just checked, or a recorded quarantine
+    /// ref) surfaces as a real `Error` - with a lesson recorded by the ordinary per-stage
+    /// error path - never another silent `Ok(None)`. Only the genuinely-never-existed case
+    /// (no canonical branch AND no quarantine record for this identity) still returns
+    /// `Ok(None)`, unchanged from before this fix.
+    ///
+    /// CRASH-WINDOW GUARD (round 7, operator ruling item 2, closing
+    /// `sdet-u88c2-r6-quarantine-crash-window-permanent-wedge`): `create_branch_at` the
+    /// orphaned ref is keyed on the SAME deterministic `(unit_id, tip)` pair every retry
+    /// of this exact collision recomputes, so a process that crashes right after it lands
+    /// must never have a resumed retry redo it and hard-error on git's own "branch already
+    /// exists" refusal - a permanent wedge, since every subsequent retry would fail
+    /// identically. A `branch_exists` guard before `create_branch_at`, mirroring the
+    /// sibling adoption call site's own `!branch_exists` guard a few lines above it in this
+    /// same function, makes a resumed retry skip the already-done rename and complete only
+    /// whatever of the two steps below still hasn't landed.
+    ///
+    /// RECORD BEFORE DELETE, NOT AFTER (round 8, operator ruling
+    /// `op-u88c2-round-8-definition-of-done-record-between-create-and-delete`, closing
+    /// `arch-u88c2-r7-quarantine-record-write-ordered-after-git-not-before` /
+    /// `sdet-u88c2-r6-record-emit-crash-window-orphans-quarantine`): round 7 wrote the
+    /// durable [`STATUS_BRANCH_QUARANTINED`] mark LAST, after `delete_branch` had already
+    /// cleared this whole block's own re-entry gate (`branch_exists(branch)` above). A
+    /// crash - or any `emit_keyed_meta` failure, not only an OS-level crash - landing
+    /// between that delete succeeding and the emit completing left the canonical branch
+    /// gone, the orphaned ref real and resolvable, and NO record ever naming it; because
+    /// the gate that re-enters this whole block was already cleared, a resumed retry of
+    /// the SAME collision never even looks here again, so nothing ever retries the
+    /// dropped emit - a permanent, silent loss of the quarantined content's own future
+    /// adoptability, indistinguishable from the criterion having never been attempted.
+    /// Fixed by moving the record BEFORE the delete that clears the gate, mirroring this
+    /// same function's own record-before-mutate convention at
+    /// [`STATUS_ADOPTION_RECORDED`](Self::adopt_prior_criterion_branch)'s emit a few lines
+    /// below: a crash or failure before the record persists leaves the gate open, so a
+    /// resumed retry re-enters this block and redoes only what's still pending (the
+    /// already-guarded create is a no-op, the emit is idempotent under its replay key, and
+    /// the delete is idempotent) - closing the create-then-delete window above AND the
+    /// delete-then-emit window, with the one existing gate and no new durable state.
+    fn adopt_prior_criterion_branch(
+        &self,
+        st: &Stage,
+    ) -> Result<Option<(String, String, String)>, Error> {
+        if self.deps.repo.is_empty() || st.criterion_id.is_empty() {
+            return Ok(None);
+        }
+        let branch = unit_branch(&st.name);
+        let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        let spec = current_run_spec(&events);
+        if let Some((prior, tip, prior_spec)) =
+            recorded_adoption(&events, &st.name, &st.criterion_id, &spec)
+        {
+            if !worktree::branch_exists(&self.deps.repo, &branch) {
+                Worktree::create_branch_at(&self.deps.repo, &branch, &tip)?;
+            }
+            return Ok(Some((prior, tip, prior_spec)));
+        }
+        if worktree::branch_exists(&self.deps.repo, &branch) {
+            // No decision was ever recorded for this EXACT (unit, criterion, spec)
+            // triple (checked above). Before trusting this as "this branch carries only
+            // its own prior work", confirm it actually IS this unit's own history: a
+            // literal slug collision with an unrelated (criterion, spec) must never let
+            // that unrelated content ride into THIS unit's tree (the primary blocker
+            // fix above).
+            let owner = branch_owner(&events, &st.name);
+            if branch_is_foreign(&owner, &st.criterion_id, &spec) {
+                // `branch_is_foreign` returns `false` for `None` (see its own doc
+                // comment), so a foreign verdict proves `owner` is `Some` - this is the
+                // (criterion_id, spec) the QUARANTINED content actually belongs to,
+                // never this call's own st.criterion_id/spec.
+                let (owner_criterion, owner_spec) = owner.unwrap_or_default();
+                let tip = worktree::branch_tip(&self.deps.repo, &branch)?;
+                let quarantine = quarantine_branch_name(&st.name, &tip);
+                // CRASH-WINDOW GUARD (round 7): a resumed retry recomputes the identical
+                // (unit_id, tip) pair, so a prior incarnation that crashed after this
+                // create but before the record/delete below must never hard-error on
+                // "branch already exists" - it completes whatever's still pending instead.
+                if !worktree::branch_exists(&self.deps.repo, &quarantine) {
+                    Worktree::create_branch_at(&self.deps.repo, &quarantine, &tip)?;
+                }
+                // QUARANTINE IS A RECORD, NOT JUST A RENAME (round 7), WRITTEN BEFORE THE
+                // DELETE THAT CLEARS THIS BLOCK'S OWN RE-ENTRY GATE (round 8): keyed on the
+                // quarantined content's OWN identity so a later genuine retry of that exact
+                // criterion/spec can find it again via `quarantined_branch` below. Ordered
+                // before `delete_branch` so a crash or emit failure here leaves the gate
+                // (`branch_exists(branch)` above) open for a resumed retry to redo this
+                // idempotent emit and complete the still-pending delete - never a git
+                // mutation with no durable record surviving it.
+                self.emit_keyed_meta(
+                    &quarantine_record_key(&st.name, &owner_criterion, &owner_spec),
+                    ledger::TYPE_UNIT_STATUS,
+                    json!({
+                        "id": st.name,
+                        "status": STATUS_BRANCH_QUARANTINED,
+                        "criterion_id": owner_criterion,
+                        "spec": owner_spec,
+                        "quarantined_to": {"branch": quarantine, "tip": tip},
+                    }),
+                    &[],
+                )?;
+                // Deferred to LAST: this is the ONLY step that clears the top-level
+                // `branch_exists(branch)` re-entry gate a few lines above, and it is
+                // already idempotent (a no-op once its target is gone) - so every step
+                // before it can be safely redone by a resumed retry, but this one must
+                // never run before the record it depends on has durably landed.
+                Worktree::delete_branch(&self.deps.repo, &branch)?;
+            }
+            return Ok(None);
+        }
+        let Some(prior) = prior_criterion_unit(&events, &st.criterion_id, &st.name) else {
+            return Ok(None);
+        };
+        let prior_branch = unit_branch(&prior);
+        let tip = if worktree::branch_exists(&self.deps.repo, &prior_branch) {
+            worktree::branch_tip(&self.deps.repo, &prior_branch)?
+        } else if let Some(quarantine) =
+            quarantined_branch(&events, &prior, &st.criterion_id, &spec)
+        {
+            // The candidate's canonical branch was moved aside by a LATER, unrelated
+            // slug collision (the quarantine path above) - the durable record proves
+            // this criterion's real reviewed work still exists, so failing to find it
+            // here is a genuine defect (a lesson is recorded by the ordinary per-stage
+            // error path), never another silent "nothing to adopt" - spec 88's own
+            // Operator rule: "a unit's reviewed history is never discarded by the
+            // harness."
+            worktree::branch_tip(&self.deps.repo, &quarantine)?
+        } else {
+            // The prior unit's durable branch is gone with no quarantine trail either
+            // (manually pruned, or the prior process never actually committed one
+            // despite starting) - nothing to adopt; the unit starts fresh exactly as
+            // before this feature existed.
+            return Ok(None);
+        };
+        self.emit_keyed_meta(
+            &adoption_provenance_key(&st.name, &st.criterion_id, &spec),
+            ledger::TYPE_UNIT_STATUS,
+            json!({
+                "id": st.name,
+                "status": STATUS_ADOPTION_RECORDED,
+                "criterion_id": st.criterion_id,
+                "spec": spec,
+                "adopted_from": {"unit": prior, "tip": tip, "spec": spec},
+            }),
+            &[],
+        )?;
+        Worktree::create_branch_at(&self.deps.repo, &branch, &tip)?;
+        Ok(Some((prior, tip, spec)))
+    }
+
     /// Decide how a unit ENTERS its lifecycle on this run (resume-continuity).
     ///
     /// A unit whose deterministic branch carries committed work AND whose last
@@ -7829,7 +10236,11 @@ impl RunCtx<'_> {
     ///
     /// Both the recorded status AND real committed work on the branch are required:
     /// the status alone could be stale (e.g. the prior worktree was lost), so we never
-    /// skip implement unless the branch actually holds the code to build on.
+    /// skip implement unless the branch actually holds the code to build on - UNLESS the
+    /// log itself already proves the integrate door was reached (round 4 fix,
+    /// [`RunCtx::integrate_attempted`]'s own doc): `branch_has_work`'s `tip == base` check
+    /// alone cannot tell "never had work" apart from "already fast-forward-landed", and a
+    /// `Reviewed` unit with a durably-recorded integrate attempt is never the former.
     fn resume_phase(&self, st: &Stage) -> ResumePhase {
         // A repo-less or non-isolated unit has no branch to checkpoint on, so there is
         // never reusable prior work - it always runs fresh.
@@ -7840,10 +10251,25 @@ impl RunCtx<'_> {
             Some(s) => *s,
             None => return ResumePhase::Fresh,
         };
+        let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
+        // Round 4 fix: a `Reviewed` unit whose log already durably proves an integrate
+        // attempt was made for THIS attempt is never the "prior worktree's commits were
+        // lost" case `branch_has_work` exists to catch - it is the OTHER git state that
+        // check cannot tell apart from that: the unit's own merge already fast-forward-
+        // landed onto the run branch (GAP 9's row-4 after-record fixture: a crash between
+        // `Worktree::land` and the durable landed/`UnitIntegrated` record leaves exactly
+        // `tip == base` behind), so the integrate door must still run to finish recording
+        // and reporting it - never restart the whole unit from implement.
+        let already_integrating = prior == ledger::Status::Reviewed
+            && self
+                .integrate_attempted
+                .contains(&conflict_regenerate_key(&st.name, attempts));
         // The unit's branch must actually carry committed work to build on; a recorded
         // status with an empty/missing branch (the prior worktree's commits were lost)
         // falls back to a fresh run rather than skipping a non-existent implementation.
-        if !Worktree::branch_has_work(&self.deps.repo, &unit_branch(&st.name)) {
+        if !Worktree::branch_has_work(&self.deps.repo, &unit_branch(&st.name))
+            && !already_integrating
+        {
             return ResumePhase::Fresh;
         }
         match prior {
@@ -7888,7 +10314,7 @@ impl RunCtx<'_> {
             &self.cfg.workflow.defaults.workdir,
         );
         let dir = unit_worktree_dir(&scratch, &st.name);
-        let wt = Worktree::create(&self.deps.repo, &dir, &unit_branch(&st.name))?;
+        let wt = Worktree::create(&self.deps.repo, &dir, &unit_branch(&st.name), &scratch)?;
         Ok(Some(wt))
     }
 
@@ -7924,8 +10350,8 @@ impl RunCtx<'_> {
         // current HEAD rather than ADOPT the stale checkout and review stale code
         // (adv-u4det-review-adopt-staleness). This is the opposite of the unit worktree,
         // whose durable branch is exactly what `create` reuses.
-        Worktree::discard(&self.deps.repo, &dir, &branch)?;
-        let wt = Worktree::create(&self.deps.repo, &dir, &branch)?;
+        Worktree::discard(&self.deps.repo, &dir, &branch, &scratch)?;
+        let wt = Worktree::create(&self.deps.repo, &dir, &branch, &scratch)?;
         Ok(Some(wt))
     }
 
@@ -8460,14 +10886,19 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///
 /// - [`CAUSE_REJECT`]: an adjudicator/review verdict rejected the unit - the direct
 ///   per-unit reject, a standalone/fan-out review reject, a plan-critique DAG-critique
-///   reject (which runs no gates at all), and a compensation revert (a LATER unit's
-///   review proved this one wrong - a deferred reject, since the disqualifying signal is
-///   itself a review verdict).
+///   reject (which runs no gates at all), a compensation revert (a LATER unit's review
+///   proved this one wrong - a deferred reject, since the disqualifying signal is itself
+///   a review verdict), and a producer's own commit touching a path outside `specs/`
+///   (spec 88 criterion 4: the conductor's OWN scope check refuses the unit's output,
+///   the same kind of refusal a review verdict is).
 /// - [`CAUSE_INTEGRATE_CONFLICT`]: the merge landed cleanly but the POST-MERGE re-gate
-///   went red - a batch-mate's already-integrated change combined into a broken tree.
-///   Distinguished from a plain gate failure at the BRANCH POINT where it is detected
-///   (`integration.blocked`), never inferred from the shared evidence accumulator both
-///   cases populate for the retry prompt.
+///   went red - a batch-mate's already-integrated change combined into a broken tree -
+///   or a producer's `specs/`-only cherry-pick conflicted with a concurrent operator
+///   commit under `specs/` (spec 88 criterion 4: the same "a conflict blocked landing
+///   this unit's work" shape, textual git conflict either way). Distinguished from a
+///   plain gate failure at the BRANCH POINT where it is detected (`integration.blocked`
+///   or [`PlanCommitOutcome::Conflict`]), never inferred from the shared evidence
+///   accumulator both cases populate for the retry prompt.
 /// - [`CAUSE_INFRA_SPAWN`]: a mid-spawn driver crash (a non-zero exit, a non-usage-limit
 ///   error) - the usage-limit case never reaches `UnitFailed` at all (spec 06 unit 6:
 ///   wait-until-reset + re-spawn, no attempt charged).
@@ -9426,7 +11857,13 @@ fn write_lookup_pointer(b: &mut String) {
 /// process death and worktree removal, making the branch the unit's durable
 /// checkpoint. The id is sanitized to the bytes git accepts in a ref component, so an
 /// id with spaces or other ref-illegal characters still yields a valid, stable branch.
-fn unit_branch(unit_id: &str) -> String {
+///
+/// `pub` (spec 89, criterion 1, round 2 fix): `main.rs`'s `cmd_step` calls this to derive
+/// the CURRENTLY loaded workflow's own declared unit branches (config, never the event
+/// log) - the one signal that distinguishes a genuinely halted spawn's worktree from
+/// unrelated dead residue that happens to also be dirty - rather than re-deriving the
+/// `rigger/u/<slug>` convention a second time outside this, its one authority.
+pub fn unit_branch(unit_id: &str) -> String {
     format!("rigger/u/{}", sanitize_for_path(unit_id))
 }
 
@@ -9444,6 +11881,349 @@ fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
         crate::worktree::UNIT_WORKTREE_PREFIX,
         sanitize_for_path(unit_id)
     )
+}
+
+/// A minimal, local decode shape for the ONE field [`prior_criterion_unit`] needs off a
+/// [`ledger::TYPE_UNIT_STARTED`] event - mirroring [`UnitProposed`]'s own local shape
+/// rather than depending on `ledger`'s private fold struct. `#[serde(default)]` on
+/// `criterion_id` so a `UnitStarted` predating this feature (spec 88) decodes with an
+/// empty id rather than erroring, and an empty id never matches (guarded at the call
+/// site) - a legacy unit is simply never an adoption candidate.
+#[derive(Deserialize)]
+struct StartedCriterionProbe {
+    id: String,
+    #[serde(default)]
+    criterion_id: String,
+}
+
+/// This run's OWN owning spec identity (spec 88 round 3, factored out round 4 so
+/// [`RunCtx::adopt_prior_criterion_branch`]'s durable provenance record and
+/// [`prior_criterion_unit`]'s match use the exact SAME derivation - never two parallel
+/// ones that could drift apart): the LAST `RunStarted` in the whole stream, stemmed
+/// through [`ledger::spec_stem`] (the same authority [`pr_head_branch`] uses), since
+/// both callers always run live within the current, still-open run. Empty (never
+/// `None`) on a store with no `RunStarted` at all (a legacy pre-spec-82 log, or a bare
+/// unit test), so every comparison against it degrades to "always equal" there rather
+/// than refusing every match.
+fn current_run_spec(events: &[Event]) -> String {
+    events
+        .iter()
+        .rev()
+        .find(|e| e.type_ == crate::run::TYPE_RUN_STARTED)
+        .and_then(|e| serde_json::from_slice::<crate::run::RunStarted>(&e.data).ok())
+        .map(|rs| ledger::spec_stem(&rs.spec))
+        .unwrap_or_default()
+}
+
+/// The MOST RECENT prior unit, OF THE SAME SPEC, that served `criterion_id` and either
+/// never reached [`ledger::TYPE_UNIT_INTEGRATED`] or had that integration later REVERTED
+/// by a compensation (spec 88, ADOPTION KEYS ON THE CRITERION - decided; round 3 fix for
+/// `adv-u88c2-r2-criterion-id-unscoped-crosses-specs` and
+/// `adv-u88c2-r2-exclusion-set-permanent-blocks-a-genuine-redo-after-integration`; its
+/// tie-break: two prior units sharing a criterion, a replanned run, resolve to the most
+/// recent tip).
+///
+/// SPEC-SCOPED (round 3, criterion-id-unscoped-crosses-specs): [`criterion_stable_id`] is
+/// only `position` + a content hash of the criterion TEXT - two unrelated specs whose
+/// criterion at the same position is byte-for-byte identical text (this repo's own
+/// corpus proved this happens today: several specs share the boilerplate "both feature
+/// lanes green..." as their 3rd Done-when item) mint the IDENTICAL `criterion_id`. Without
+/// scoping, a fresh unit for spec B's criterion could adopt spec A's abandoned attempt at
+/// its own, textually-identical criterion - real content contamination across unrelated
+/// specs. So a candidate only ever counts when its OWN `[RunStarted, next RunStarted)`
+/// window's spec ([`crate::run::RunStarted::spec`], stemmed through the SAME
+/// [`ledger::spec_stem`] authority `pr_head_branch` uses) matches `this_unit`'s - the
+/// LAST `RunStarted` in `events`, since this call always runs live within the current
+/// (still-open) run and that is exactly this unit's own owning spec. A store with no
+/// `RunStarted` at all (a legacy pre-spec-82 log, or a bare unit test) resolves every
+/// spec identity to the same empty string, so matching is UNCHANGED there.
+///
+/// A single forward fold over `events` in LOG order (deliberately the WHOLE stream, not
+/// [`crate::run::current_run`] - a prior run's `UnitStarted` lives BEFORE the current
+/// run's boundary by construction, and that is exactly the history this looks for):
+/// every `UnitStarted` whose OWN `criterion_id` matches, AND whose spec (at the moment it
+/// started) matches the target spec, becomes the new leading candidate (with the spec it
+/// was recorded under), so the LAST one walked (the most recent) is what survives. The
+/// integrated-exclusion set is keyed on `(id, criterion_id, spec)`, never bare id: a
+/// planner id carries no cross-run uniqueness guarantee (nothing enforces one - a slug
+/// can be reused across two runs, or two specs, for two different criteria), so a later
+/// integration of the SAME id for a DIFFERENT criterion or spec must never mask an
+/// EARLIER, still-abandoned attempt at THIS criterion sharing that id. `UnitIntegrated`
+/// itself carries only `id` (no `criterion_id`/spec), so the criterion and spec an
+/// integration actually satisfied are looked up off the most recent `UnitStarted` walked
+/// for that id so far - a unit cannot integrate before it starts, so its `UnitStarted`
+/// always precedes its `UnitIntegrated` earlier in this same log, regardless of how many
+/// resumed processes wrote the two events.
+///
+/// TEMPORAL (round 3, exclusion-set-permanent-blocks-a-genuine-redo): a later
+/// COMPENSATION (spec 12, unit 4 - a `UnitFailed` carrying [`META_COMPENSATED`] metadata,
+/// never a new event type) proves an integrated unit's work wrong and reverts it -
+/// genuinely un-integrating its criterion again, an established mechanism this same
+/// fold must honor rather than treat the exclusion set as monotonic-only. So a
+/// compensation walked for an id CLEARS that id's `(id, criterion, spec)` triple from the
+/// set (using the same "most recently walked `UnitStarted`" lookup `UnitIntegrated`
+/// uses), letting a genuine later redo adopt the reverted unit's still-existing branch
+/// instead of being permanently barred from its reviewed progress. An ORDINARY
+/// remediation `UnitFailed` (no `META_COMPENSATED`) touches nothing - only a real
+/// compensation reopens the exclusion.
+///
+/// The final candidate is returned only when `(candidate, criterion_id, candidate's own
+/// spec)` is NOT in that set at the end of the fold.
+///
+/// This deliberately does NOT re-search for an OLDER non-integrated unit when the most
+/// recent one for this criterion already integrated: a criterion whose latest attempt
+/// landed is satisfied on the base, and adopting an older, abandoned sibling's stale,
+/// superseded work back over it would be actively wrong, not a fallback rescue.
+///
+/// `this_unit` is excluded so a unit's own `UnitStarted` (already recorded, on a resumed
+/// step of the SAME run) is never read as a prior unit to adopt from; an empty
+/// `criterion_id` never matches anything (the plan/plan-critique infrastructure stages,
+/// and any unit whose own criterion is unset, serve no criterion and so adopt nothing).
+fn prior_criterion_unit(events: &[Event], criterion_id: &str, this_unit: &str) -> Option<String> {
+    if criterion_id.is_empty() {
+        return None;
+    }
+    let target_spec = current_run_spec(events);
+    // (id, spec) at the moment of selection, so a LATER RunStarted encountered further
+    // along the fold (a still-later, unrelated run reusing the same id) can never
+    // retroactively change which spec THIS candidate was actually recorded under.
+    let mut candidate: Option<(String, String)> = None;
+    let mut current_spec = String::new();
+    // The criterion (and spec) each id's most recently walked `UnitStarted` served -
+    // consulted when that id later reaches `UnitIntegrated` (or a compensating
+    // `UnitFailed`), neither of which carries a criterion/spec of its own to key the
+    // exclusion set on directly.
+    let mut started_criterion: HashMap<String, String> = HashMap::new();
+    let mut started_spec: HashMap<String, String> = HashMap::new();
+    let mut integrated: HashSet<(String, String, String)> = HashSet::new();
+    for e in events {
+        if e.type_ == crate::run::TYPE_RUN_STARTED {
+            if let Ok(rs) = serde_json::from_slice::<crate::run::RunStarted>(&e.data) {
+                current_spec = ledger::spec_stem(&rs.spec);
+            }
+        } else if e.type_ == ledger::TYPE_UNIT_STARTED {
+            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
+                if !u.id.is_empty() {
+                    if u.id != this_unit
+                        && u.criterion_id == criterion_id
+                        && current_spec == target_spec
+                    {
+                        candidate = Some((u.id.clone(), current_spec.clone()));
+                    }
+                    started_criterion.insert(u.id.clone(), u.criterion_id);
+                    started_spec.insert(u.id, current_spec.clone());
+                }
+            }
+        } else if e.type_ == ledger::TYPE_UNIT_INTEGRATED {
+            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
+                if !u.id.is_empty() {
+                    if let Some(served) = started_criterion.get(&u.id).cloned() {
+                        let spec = started_spec.get(&u.id).cloned().unwrap_or_default();
+                        integrated.insert((u.id, served, spec));
+                    }
+                }
+            }
+        } else if e.type_ == ledger::TYPE_UNIT_FAILED
+            && e.meta.get(META_COMPENSATED).is_some_and(|c| !c.is_empty())
+        {
+            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
+                if let Some(served) = started_criterion.get(&u.id).cloned() {
+                    let spec = started_spec.get(&u.id).cloned().unwrap_or_default();
+                    integrated.remove(&(u.id, served, spec));
+                }
+            }
+        }
+    }
+    candidate
+        .filter(|(c, spec)| {
+            !integrated.contains(&(c.clone(), criterion_id.to_string(), spec.clone()))
+        })
+        .map(|(c, _)| c)
+}
+
+/// The `(criterion_id, spec)` THIS BARE unit id's branch was most recently started under,
+/// anywhere in the whole log (spec 88 round 6, closing the PRIMARY BLOCKER round 5 left
+/// open: `sdet-u88c2-r5-stage-worktree-branch-reuse-crosses-specs` /
+/// `adv-u88c2-r5-independently-confirms-branch-reuse-crosses-specs` /
+/// `arch-u88c2-r5-branch-exists-fallback-still-bare-id-crosses-specs`). [`unit_branch`]
+/// derives purely from the planner's bare slug, so two wholly unrelated units under two
+/// unrelated (criterion, spec) pairs can coincidentally resolve to the SAME git ref;
+/// [`RunCtx::adopt_prior_criterion_branch`]'s own `branch_exists` guard used to trust that
+/// unconditionally as "this unit's own prior work", with no check of whose work it
+/// actually is. This answers exactly that, off the same durable [`ledger::TYPE_UNIT_
+/// STARTED`] provenance every unit already writes on every start - read the same way
+/// [`prior_criterion_unit`]'s own `started_criterion`/`started_spec` maps are (a plain
+/// forward fold, last write wins, so a unit that started more than once always resolves
+/// to its MOST RECENT identity), for THIS unit's own bare id instead of a different
+/// candidate's.
+///
+/// `None` when this bare id has never started before anywhere in the log - nothing to
+/// compare against, so the caller preserves the historical behavior (every call site
+/// already checks `branch_exists` first, so a `None` here only ever arises for a branch
+/// with no recorded provenance at all, e.g. a pre-spec-88 legacy branch - never touched,
+/// exactly as before this feature existed).
+fn branch_owner(events: &[Event], unit_id: &str) -> Option<(String, String)> {
+    let mut current_spec = String::new();
+    let mut owner: Option<(String, String)> = None;
+    for e in events {
+        if e.type_ == crate::run::TYPE_RUN_STARTED {
+            if let Ok(rs) = serde_json::from_slice::<crate::run::RunStarted>(&e.data) {
+                current_spec = ledger::spec_stem(&rs.spec);
+            }
+        } else if e.type_ == ledger::TYPE_UNIT_STARTED {
+            if let Ok(u) = serde_json::from_slice::<StartedCriterionProbe>(&e.data) {
+                if u.id == unit_id {
+                    owner = Some((u.criterion_id, current_spec.clone()));
+                }
+            }
+        }
+    }
+    owner
+}
+
+/// Whether `owner` ([`branch_owner`]'s answer for the bare unit id about to reuse a
+/// literal branch name) proves that branch's real content belongs to an UNRELATED
+/// (criterion_id, spec) - extracted as its own pure predicate (spec 88 round 6, closing
+/// a mutation-efficacy gap: the inline `||` this replaces let a mutant flip either single
+/// `!=` to `==` without failing any test, because every periphery fixture that reaches
+/// this check happens to differ on BOTH axes at once, never isolating either alone -
+/// mirroring `recorded_adoption`'s own identical round-5 gap and fix, one axis at a
+/// time) so each axis is directly, cheaply unit-testable without a real repo. `None`
+/// (no recorded provenance at all - a pre-spec-88 legacy branch) is never foreign - the
+/// caller preserves the historical behavior.
+fn branch_is_foreign(owner: &Option<(String, String)>, criterion_id: &str, spec: &str) -> bool {
+    match owner {
+        // A recorded start with NO criterion id is UNKNOWN provenance, never proof of a
+        // foreign occupant: every `UnitStarted` written before this feature landed (the
+        // whole live run it landed in, 2026-09-13) carries none, and treating "" as
+        // "a different criterion" quarantined a unit's own live branch out from under
+        // its worktree (u88c5, spec 88). Unknown resolves like `None`: historical reuse.
+        Some((owner_criterion, _)) if owner_criterion.is_empty() => false,
+        Some((owner_criterion, owner_spec)) => {
+            owner_criterion != criterion_id || owner_spec != spec
+        }
+        None => false,
+    }
+}
+
+/// The deterministic name a FOREIGN occupant of a unit's canonical branch is preserved
+/// under when [`branch_owner`] proves its content belongs to an unrelated (criterion,
+/// spec) (spec 88 round 6, primary blocker fix): `rigger/orphaned/<sanitized-id>-
+/// <short-tip>`. Never a destructive `Worktree::delete_branch` alone - the branch is
+/// first re-pointed here (via [`Worktree::create_branch_at`], a new ref, exactly the
+/// "never a rename" pattern the legitimate adoption path already uses to keep an old name
+/// resolvable) so its commits stay reachable under a real name, honoring spec 88's own
+/// Goal-level Operator rule ("a unit's reviewed history is never discarded by the
+/// harness") even for this collision case. Keyed on the branch's own tip sha, never a
+/// random/uuid discriminator, so the derivation stays pure and reproducible - a repeat
+/// collision against a DIFFERENT foreign tip on a later run lands at a DIFFERENT
+/// quarantine name instead of colliding with an earlier quarantine of the same literal id.
+fn quarantine_branch_name(unit_id: &str, tip: &str) -> String {
+    format!(
+        "rigger/orphaned/{}-{}",
+        sanitize_for_path(unit_id),
+        &tip[..tip.len().min(12)]
+    )
+}
+
+/// The adoption decision [`RunCtx::adopt_prior_criterion_branch`] already recorded for
+/// the EXACT `(unit, criterion_id, spec)` triple, if any (spec 88 round 4, rescoped
+/// round 5) - the durable [`STATUS_ADOPTION_RECORDED`] mark its crash-window fix writes
+/// as log state BEFORE its git side effect. Folds the WHOLE stream (a `UnitStatus`
+/// predates no run-boundary concept the way `UnitStarted` does, and a unit's adoption
+/// for a given criterion/spec is decided at most once in its whole lifetime, never
+/// per-run) for the mark carrying this EXACT triple.
+///
+/// SCOPED (round 5, closing arch-u88c2-r4-recorded-adoption-bare-id-crosses-specs /
+/// sdet-u88c2-r4-confirms-recorded-adoption-bare-id-crosses-criteria /
+/// adv-u88c2-r4-independently-live-reproduced-bare-id-collision): round 4 matched on
+/// bare `unit` id alone, so a later, wholly unrelated unit reusing the same literal
+/// planner slug for a DIFFERENT criterion or spec silently replayed an earlier,
+/// unrelated unit's decision - real cross-spec content contamination via the git side
+/// effect ([`Worktree::create_branch_at`]), not merely a missed exclusion. `criterion_id`
+/// and `spec` are read off the SAME event's own top-level fields (stamped by
+/// [`RunCtx::adopt_prior_criterion_branch`] at write time from `st.criterion_id` and
+/// [`current_run_spec`] - the adopting unit's OWN identity, distinct from the nested
+/// `adopted_from.spec`, which names the PRIOR unit's spec for display/provenance and is
+/// never used for matching), never re-derived from `unit` alone. `None` when this exact
+/// triple never had an adoption decided for it (this unit's branch, if it has one, is
+/// its own prior work, or belongs to an unrelated earlier unit that only happens to
+/// share its bare id).
+fn recorded_adoption(
+    events: &[Event],
+    unit: &str,
+    criterion_id: &str,
+    spec: &str,
+) -> Option<(String, String, String)> {
+    events.iter().find_map(|e| {
+        if e.type_ != ledger::TYPE_UNIT_STATUS {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(&e.data).ok()?;
+        let own_criterion_id = v
+            .get("criterion_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let own_spec = v.get("spec").and_then(Value::as_str).unwrap_or_default();
+        if v.get("id").and_then(Value::as_str) != Some(unit)
+            || v.get("status").and_then(Value::as_str) != Some(STATUS_ADOPTION_RECORDED)
+            || own_criterion_id != criterion_id
+            || own_spec != spec
+        {
+            return None;
+        }
+        let from = v.get("adopted_from")?;
+        Some((
+            from.get("unit")?.as_str()?.to_string(),
+            from.get("tip")?.as_str()?.to_string(),
+            from.get("spec")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ))
+    })
+}
+
+/// The quarantine ref a unit's canonical `rigger/u/<id>` branch was moved to when
+/// [`branch_owner`] proved a LATER, unrelated (criterion, spec) reusing the same literal
+/// id was about to inherit its real content (spec 88 round 7, closing
+/// `adv-u88c2-r6-quarantine-orphans-the-criterions-own-future-adoption`): the durable
+/// [`STATUS_BRANCH_QUARANTINED`] mark [`RunCtx::adopt_prior_criterion_branch`]'s quarantine
+/// path writes for the EXACT `(unit, criterion_id, spec)` identity the quarantined content
+/// was itself started under - so a genuine LATER retry of that same criterion/spec, which
+/// [`prior_criterion_unit`] still (correctly) names this bare unit id for, resolves its
+/// real reviewed work here instead of reading the deleted canonical name as "never
+/// existed". Mirrors [`recorded_adoption`]'s own read shape and matching rules exactly
+/// (whole-stream fold, `(id, status, criterion_id, spec)` all required to agree). `None`
+/// when this exact triple was never quarantined.
+fn quarantined_branch(
+    events: &[Event],
+    unit: &str,
+    criterion_id: &str,
+    spec: &str,
+) -> Option<String> {
+    events.iter().find_map(|e| {
+        if e.type_ != ledger::TYPE_UNIT_STATUS {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(&e.data).ok()?;
+        let own_criterion_id = v
+            .get("criterion_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let own_spec = v.get("spec").and_then(Value::as_str).unwrap_or_default();
+        if v.get("id").and_then(Value::as_str) != Some(unit)
+            || v.get("status").and_then(Value::as_str) != Some(STATUS_BRANCH_QUARANTINED)
+            || own_criterion_id != criterion_id
+            || own_spec != spec
+        {
+            return None;
+        }
+        v.get("quarantined_to")?
+            .get("branch")?
+            .as_str()
+            .map(str::to_string)
+    })
 }
 
 /// The DETERMINISTIC dir for a STANDALONE review stage's throwaway worktree (spec 06):
@@ -9934,6 +12714,29 @@ fn fan_out_lenses(st: &Stage) -> Vec<String> {
     }
 }
 
+/// The adversary's routed review roster (spec 67, criterion 4): the unit's lens AGENT ids
+/// (`ReviewPanel::lenses` / [`fan_out_lenses`]'s raw values), rendered as the same
+/// review-attribution role tokens ([`lens_role`]) a `ReviewFinding.by` already carries - so
+/// the driver names EXACTLY who the adversary is grounding against, never a guessed set.
+/// Pure over the panel's own lens list, so it stays correct for whichever panel the
+/// conductor actually routed to (light or full) - the caller always passes THAT panel's
+/// lenses, never a static declaration.
+fn review_roster(lenses: &[String]) -> Vec<String> {
+    lenses.iter().map(|id| lens_role(id)).collect()
+}
+
+/// The adjudicator's routed review roster (spec 67, criterion 4): [`review_roster`]'s same
+/// lens roster, PLUS [`ROLE_ADVERSARY`] when an adversary tier actually ran for this panel
+/// (`adversary_id` non-empty) - never a fabricated entry for a panel with no adversary
+/// (e.g. a reduced light tier).
+fn adjudicator_roster(lenses: &[String], adversary_id: &str) -> Vec<String> {
+    let mut roster = review_roster(lenses);
+    if !adversary_id.is_empty() {
+        roster.push(ROLE_ADVERSARY.to_string());
+    }
+    roster
+}
+
 /// Whether a stage carries an LLM judge, i.e. a real verifier and not a mechanical
 /// proxy. A stage covers a criterion only if it has one (§8 proxy-gap guard, item 5):
 /// a worker agent, a fan-out lens set, or an adjudicator. A gate-command-only stage
@@ -9979,27 +12782,102 @@ fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option
 /// step satisfies `ready_stages` (needs the producer, not terminal), and driving it
 /// through `run_single_stage`'s standalone-review path spawns lenses with no worktree -
 /// the empty-cwd isolation refusal that killed the first adopted spec-10 run.
+///
+/// `fanout_criteria` is threaded straight through to [`ready_stages`] - see its own doc
+/// comment for what it resolves (spec 91, criterion 1, rule 1).
 fn wave_ready(
     stages: &BTreeMap<String, Stage>,
     integrated: &HashSet<String>,
     terminal: &HashSet<String>,
     critique_gate: Option<&str>,
+    fanout_criteria: &HashMap<String, HashSet<String>>,
 ) -> Vec<String> {
-    ready_stages(stages, integrated, terminal)
+    ready_stages(stages, integrated, terminal, fanout_criteria)
         .into_iter()
         .filter(|n| critique_gate != Some(n.as_str()))
         .collect()
 }
 
+/// A stage's `needs` entry `need` is satisfied against `stages`/`integrated` directly
+/// when it names a LIVE stage (the historical rule, unchanged). When it instead names a
+/// fan-out implement TEMPLATE - a stage `run` REMOVES from `stages` the moment it
+/// expands into per-criterion baseline units (§ the baseline-decomposition block), so it
+/// can never again satisfy a literal `integrated.contains(need)` - the entry is
+/// satisfied once EVERY criterion id `fanout_criteria` records as covered by that
+/// template's expansion has ALL of its CURRENT `stages` owners integrated (spec 91,
+/// criterion 1, rule 1; round 3 fix for adj-u91c1-r2-verdict-reject). Each criterion id
+/// is resolved LIVE against `stages` - never a frozen unit-id snapshot - because
+/// `harvest_proposed`'s supersede fold can replace which unit id owns a criterion (a
+/// planner refinement superseding a fan-out baseline member) without ever touching this
+/// table; walking `stages` fresh on every call means whichever unit id(s) currently
+/// carry that `criterion_id` are exactly the ones this checks, so a supersede can never
+/// orphan the edge. A criterion id can name MORE THAN ONE live `stages` entry at once -
+/// a same-episode planner SPLIT (spec 31/72's real-split guarantee: `harvest_proposed`
+/// never reaps a genuinely-new same-episode sibling, only a strictly-earlier-episode
+/// owner) leaves every split sibling live under the identical criterion_id
+/// simultaneously (round 2's own `.find()`-first-match resolution wrongly assumed
+/// exactly one live owner always exists, checked only the BTreeMap-key-first sibling,
+/// and so could satisfy - or permanently fail to satisfy - the whole entry on that one
+/// sibling's status alone while silently ignoring every other live sibling; round 2 was
+/// rejected for this: arch-u91c1-r2-need-satisfied-ignores-real-split-siblings). This
+/// resolves every criterion id against ALL of its current live owners via
+/// `stages.iter().filter(..).all(..)`, not a single `.find()`, so the entry is
+/// satisfied only once every live sibling under that criterion id has integrated. An
+/// empty filtered set (no live `stages` entry names that criterion id at all) is
+/// vacuously `true` by `Iterator::all`'s definition, but is unreachable in the designed
+/// paths today: `harvest_proposed` never removes a criterion's last live owner without a
+/// same-pass insertion replacing it (a bare `stages.remove` for a criterion-owning stage
+/// must always be paired with a same-pass insert, never left standing alone), so a
+/// tracked criterion id always resolves to at least one live entry in practice
+/// (adv-u91c1-r2-cleared-fix-direction-vacuous-empty-owner-candidate). A member that is
+/// merely open (never in `integrated`), or reached a terminal-but-not-integrated state
+/// (escalated, or failed-terminal), leaves the whole entry unsatisfied - the run's
+/// escalated fixpoint stays loud, never silently satisfied by a partial fan-out. A
+/// `need` naming neither a live stage nor a tracked template resolves to the historical
+/// `integrated.contains(need)` (false for a typo'd or already-consumed name), so a
+/// workflow with no fan-out template is byte-for-byte unaffected.
+fn need_satisfied(
+    need: &str,
+    stages: &BTreeMap<String, Stage>,
+    integrated: &HashSet<String>,
+    fanout_criteria: &HashMap<String, HashSet<String>>,
+) -> bool {
+    match fanout_criteria.get(need) {
+        Some(criteria) => criteria.iter().all(|criterion_id| {
+            stages
+                .iter()
+                .filter(|(_, st)| st.criterion_id == *criterion_id)
+                .all(|(name, _)| integrated.contains(name))
+        }),
+        None => integrated.contains(need),
+    }
+}
+
+/// `fanout_criteria` maps a fan-out implement TEMPLATE's name to the stable criterion
+/// ids `run` synthesized ONE baseline unit per, at the moment the template was consumed
+/// (§ the baseline-decomposition block) - the live resolution table [`need_satisfied`]
+/// consults for a `needs` entry that names a template rather than a still-live stage
+/// (spec 91, criterion 1, rule 1). It never names unit ids: which unit id currently
+/// owns a criterion is looked up FRESH in `stages` on every call (round 2 fix for
+/// adj-u91c1-verdict-reject), so a planner supersede that swaps the owning unit id
+/// needs no companion update here - one authority (`stages`/`criterion_id`, already kept
+/// in sync by `harvest_proposed`), not a second membership index to maintain. Empty for
+/// a workflow with no fan-out template, so `ready_stages` degrades to its historical
+/// literal-needs check.
 fn ready_stages(
     stages: &BTreeMap<String, Stage>,
     integrated: &HashSet<String>,
     terminal: &HashSet<String>,
+    fanout_criteria: &HashMap<String, HashSet<String>>,
 ) -> Vec<String> {
     let mut ready: Vec<String> = stages
         .iter()
         .filter(|(name, st)| {
-            !terminal.contains(*name) && st.needs.iter().all(|n| integrated.contains(n))
+            !terminal.contains(*name)
+                && st
+                    .needs
+                    .iter()
+                    .all(|n| need_satisfied(n, stages, integrated, fanout_criteria))
         })
         .map(|(name, _)| name.clone())
         .collect();
@@ -10175,6 +13053,861 @@ mod tests {
         );
     }
 
+    /// A minimal `UnitStarted` event carrying `criterion_id` - the exact additive shape
+    /// `start_and_run_stage` now stamps (spec 88, ADOPTION KEYS ON THE CRITERION).
+    fn started_with_criterion(id: &str, criterion_id: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_STARTED,
+            serde_json::to_vec(&json!({"id": id, "criterion_id": criterion_id})).unwrap(),
+        )
+    }
+
+    fn integrated(id: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_INTEGRATED,
+            serde_json::to_vec(&json!({"id": id, "commit": "abc"})).unwrap(),
+        )
+    }
+
+    #[test]
+    fn prior_criterion_unit_finds_a_prior_un_integrated_units_id() {
+        // The base case: one prior unit served this criterion under a DIFFERENT id and
+        // never integrated - it is the candidate regardless of the planner's slug.
+        let events = vec![started_with_criterion("old-slug", "c1-aaa")];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            Some("old-slug".to_string())
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_never_returns_an_integrated_units_id_and_never_falls_back_to_an_older_sibling(
+    ) {
+        // Prior units that reached UnitIntegrated are never adopted - their work is on
+        // the base already (spec 88 Design, decided).
+        let mut events = vec![
+            started_with_criterion("solo-attempt", "c1-aaa"),
+            integrated("solo-attempt"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            None,
+            "an integrated prior unit is never adopted"
+        );
+
+        // A second criterion's history, appended to the SAME log: two attempts share
+        // it, and the MORE RECENT one (attempt-2) is the one that integrated. Falling
+        // back to the OLDER, still non-integrated attempt-1 would be wrong, not a
+        // rescue - the criterion's latest state is satisfied on the base, full stop.
+        events.push(started_with_criterion("attempt-1", "c2-bbb"));
+        events.push(started_with_criterion("attempt-2", "c2-bbb"));
+        events.push(integrated("attempt-2"));
+        assert_eq!(
+            prior_criterion_unit(&events, "c2-bbb", "new-slug"),
+            None,
+            "must not fall back to the older non-integrated attempt-1 once attempt-2 (the latest) integrated"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_integration_of_one_criterion_never_masks_an_abandoned_sibling_criterion_sharing_the_same_id(
+    ) {
+        // A planner slug has no cross-run uniqueness guarantee (nothing in
+        // harvest_proposed enforces one) - the SAME id ("cleanup") can genuinely serve
+        // TWO different criteria across two different runs. The second run's
+        // integration of its own (c2-bbb) attempt must never mask the FIRST run's
+        // still-abandoned attempt at a DIFFERENT criterion (c1-aaa) sharing that id -
+        // the integrated-exclusion is keyed on (id, criterion_id), not bare id.
+        let events = vec![
+            started_with_criterion("cleanup", "c1-aaa"),
+            started_with_criterion("cleanup", "c2-bbb"),
+            integrated("cleanup"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "other-unit"),
+            Some("cleanup".to_string()),
+            "cleanup's abandoned c1-aaa attempt must still be adoptable - only its \
+             c2-bbb attempt integrated"
+        );
+        assert_eq!(
+            prior_criterion_unit(&events, "c2-bbb", "other-unit"),
+            None,
+            "cleanup's c2-bbb attempt is the one that actually integrated"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_tie_break_prefers_the_most_recent_of_two_non_integrated_priors() {
+        // The required proof (op-p88-the-three-flagged-walks-are-required-proofs): TWO
+        // prior non-integrated units share the criterion (a replanned run) - the MOST
+        // RECENT tip (by log order) wins, never the older one.
+        let events = vec![
+            started_with_criterion("attempt-1", "c1-aaa"),
+            started_with_criterion("attempt-2", "c1-aaa"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            Some("attempt-2".to_string()),
+            "the more recent of two non-integrated prior attempts wins the tie-break"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_excludes_this_unit_itself() {
+        // A unit's own (already-recorded) UnitStarted must never be read as a "prior"
+        // unit to adopt from.
+        let events = vec![started_with_criterion("new-slug", "c1-aaa")];
+        assert_eq!(prior_criterion_unit(&events, "c1-aaa", "new-slug"), None);
+    }
+
+    #[test]
+    fn prior_criterion_unit_ignores_a_different_criterion_and_an_empty_one() {
+        let events = vec![
+            started_with_criterion("other-crit-unit", "c2-bbb"),
+            // A legacy UnitStarted predating this feature carries no criterion_id at
+            // all - decodes to empty via serde default, and must never match.
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(&json!({"id": "legacy-unit"})).unwrap(),
+            ),
+        ];
+        assert_eq!(prior_criterion_unit(&events, "c1-aaa", "new-slug"), None);
+        assert_eq!(prior_criterion_unit(&events, "", "new-slug"), None);
+    }
+
+    /// A minimal `RunStarted` event carrying only the one field
+    /// [`prior_criterion_unit`]'s spec-scoping needs (spec 88 round 3) - mirroring
+    /// [`started_with_criterion`]'s own minimal-shape convention rather than routing
+    /// through [`crate::run::RunStarted::to_event`] (which also stamps metadata this
+    /// unit test has no need of).
+    fn run_started_with_spec(spec: &str) -> Event {
+        Event::new(
+            crate::run::TYPE_RUN_STARTED,
+            serde_json::to_vec(&json!({"run": "r", "spec": spec})).unwrap(),
+        )
+    }
+
+    /// A compensation revert's `UnitFailed` (spec 12, unit 4): the exact shape
+    /// `drain_compensations` appends - the existing `UnitFailed` vocabulary carrying
+    /// [`META_COMPENSATED`] metadata, never a new event type.
+    fn compensated(id: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_FAILED,
+            serde_json::to_vec(&json!({"id": id, "attempts": 2, "cause": CAUSE_REJECT})).unwrap(),
+        )
+        .with_meta(META_COMPENSATED, "deadbeef")
+    }
+
+    /// An ORDINARY remediation `UnitFailed` (spec 88 round 3's control case): no
+    /// [`META_COMPENSATED`] metadata at all, so it must never be mistaken for a
+    /// compensation revert.
+    fn plain_failure(id: &str) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_FAILED,
+            serde_json::to_vec(&json!({"id": id, "attempts": 1, "cause": CAUSE_REJECT})).unwrap(),
+        )
+    }
+
+    #[test]
+    fn prior_criterion_unit_never_adopts_across_two_different_specs_sharing_the_same_criterion_id()
+    {
+        // adv-u88c2-r2-criterion-id-unscoped-crosses-specs (upheld, round 2): two
+        // UNRELATED specs whose criterion at the same position happens to be
+        // byte-for-byte identical text mint the SAME criterion_id (position + content
+        // hash, spec 18 §3.3 - no spec identity folded in). A fresh unit for spec B's
+        // criterion must never adopt spec A's abandoned attempt at ITS OWN, textually
+        // identical criterion - that is real content contamination across unrelated
+        // specs, not a legitimate continuation.
+        let events = vec![
+            run_started_with_spec("specs/80-criteria-survive-extraction.md"),
+            started_with_criterion("spec-a-unit", "c3-deadbeef"),
+            // Spec B's own run begins later in the SAME log (a later campaign).
+            run_started_with_spec("specs/90-hermetic-test-git.md"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c3-deadbeef", "spec-b-unit"),
+            None,
+            "spec A's un-integrated attempt must never be adopted by spec B's unit even \
+             though both share the same position+content criterion_id"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_still_adopts_across_two_runs_of_the_same_spec() {
+        // The positive control for the same fix: TWO runs of the SAME spec (a
+        // replanned campaign) must still adopt across the run boundary exactly as
+        // spec 88 originally decided - the spec-scoping must not regress the
+        // feature's own reason to exist.
+        let events = vec![
+            run_started_with_spec("specs/88-adoption-keys-on-criterion.md"),
+            started_with_criterion("old-slug", "c1-aaa"),
+            run_started_with_spec("specs/88-adoption-keys-on-criterion.md"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            Some("old-slug".to_string()),
+            "a re-run of the SAME spec must still adopt its own prior abandoned attempt"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_readopts_after_a_compensation_reverts_the_integration() {
+        // adv-u88c2-r2-exclusion-set-permanent-blocks-a-genuine-redo-after-integration
+        // (upheld, round 2): a LATER compensation (spec 12, unit 4) proves the
+        // integrated unit's work wrong and reverts it - the criterion is genuinely
+        // un-integrated again, so a fresh redo must be able to adopt the reverted
+        // unit's still-existing, mostly-reviewed branch rather than starting from base.
+        let events = vec![
+            run_started_with_spec("specs/1-x.md"),
+            started_with_criterion("attempt-1", "c1-aaa"),
+            integrated("attempt-1"),
+            compensated("attempt-1"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            Some("attempt-1".to_string()),
+            "a compensation-reverted integration must clear the exclusion so the \
+             genuine redo can still adopt the reverted unit's branch"
+        );
+    }
+
+    #[test]
+    fn prior_criterion_unit_a_plain_non_compensation_failure_never_reopens_an_integrated_criterion()
+    {
+        // The control for the same fix: an ORDINARY `UnitFailed` (no META_COMPENSATED)
+        // must never be mistaken for a compensation revert - an integrated unit stays
+        // excluded from adoption unless a REAL compensation reverted it.
+        let events = vec![
+            run_started_with_spec("specs/1-x.md"),
+            started_with_criterion("attempt-1", "c1-aaa"),
+            integrated("attempt-1"),
+            plain_failure("attempt-1"),
+        ];
+        assert_eq!(
+            prior_criterion_unit(&events, "c1-aaa", "new-slug"),
+            None,
+            "a plain UnitFailed carrying no META_COMPENSATED must never reopen an \
+             already-integrated criterion for adoption"
+        );
+    }
+
+    /// A hand-built `UnitStatus` event shaped exactly like the durable mark
+    /// [`RunCtx::adopt_prior_criterion_branch`] writes (spec 88 round 4, rescoped round
+    /// 5) - lets [`recorded_adoption`]'s exact `(unit, criterion_id, spec, status)`
+    /// matching be probed directly, including negative/decoy shapes a real production
+    /// run would never itself construct.
+    fn adoption_status(
+        id: &str,
+        status: &str,
+        criterion_id: &str,
+        spec: &str,
+        adopted_from: Value,
+    ) -> Event {
+        Event::new(
+            ledger::TYPE_UNIT_STATUS,
+            serde_json::to_vec(&json!({
+                "id": id,
+                "status": status,
+                "criterion_id": criterion_id,
+                "spec": spec,
+                "adopted_from": adopted_from,
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn recorded_adoption_ignores_a_same_identity_event_carrying_the_wrong_status() {
+        // round 5 (mutation-efficacy gap closed): an id/criterion_id/spec that all
+        // match the query but a status OTHER than STATUS_ADOPTION_RECORDED must never
+        // be read as a decided adoption, even when it coincidentally carries an
+        // `adopted_from`-shaped payload. A real unit's `UnitStatus` history carries
+        // MANY status tokens sharing its id over its lifetime (`reviewed`,
+        // `compensation-queued`, ...) - only the `adoption-recorded` one is ever a
+        // real decision, and this is the one guard clause that tells them apart.
+        let decoy = adoption_status(
+            "target",
+            "reviewed",
+            "c1-aaa",
+            "spec-a",
+            json!({
+                "unit": "decoy-prior",
+                "tip": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "spec": "spec-a",
+            }),
+        );
+        assert_eq!(
+            recorded_adoption(&[decoy], "target", "c1-aaa", "spec-a"),
+            None,
+            "a same-identity event under any OTHER status must never be read as a \
+             decided adoption"
+        );
+    }
+
+    #[test]
+    fn recorded_adoption_never_answers_for_a_mismatched_criterion_or_a_mismatched_spec_alone() {
+        // round 5 (mutation-efficacy gap closed): the SAME unit id, correctly
+        // recorded under criterion c1-aaa/spec-a, must never answer a query for a
+        // DIFFERENT criterion under the SAME spec, nor a query for the SAME criterion
+        // under a DIFFERENT spec - each mismatch ALONE must refuse the match, not only
+        // when BOTH mismatch simultaneously (the periphery suite's own cross-spec-
+        // and-criterion fixture never isolates either coordinate alone).
+        let recorded = adoption_status(
+            "reused-id",
+            STATUS_ADOPTION_RECORDED,
+            "c1-aaa",
+            "spec-a",
+            json!({
+                "unit": "prior-unit",
+                "tip": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                "spec": "spec-a",
+            }),
+        );
+        assert_eq!(
+            recorded_adoption(
+                std::slice::from_ref(&recorded),
+                "reused-id",
+                "c2-bbb",
+                "spec-a"
+            ),
+            None,
+            "a mismatched criterion_id alone (same id, same spec) must refuse the match"
+        );
+        assert_eq!(
+            recorded_adoption(&[recorded], "reused-id", "c1-aaa", "spec-b"),
+            None,
+            "a mismatched spec alone (same id, same criterion_id) must refuse the match"
+        );
+    }
+
+    #[test]
+    fn branch_owner_returns_none_for_an_id_that_never_started() {
+        // Nothing to compare against - the caller preserves the historical behavior
+        // (every call site already checks `branch_exists` first).
+        let events = vec![started_with_criterion("someone-else", "c1-aaa")];
+        assert_eq!(branch_owner(&events, "never-started"), None);
+    }
+
+    #[test]
+    fn branch_owner_reads_the_most_recent_started_criterion_and_spec_for_this_bare_id() {
+        // Last write wins across the WHOLE log, mirroring `prior_criterion_unit`'s own
+        // `started_criterion`/`started_spec` maps: a bare id that started more than
+        // once (a genuine repeat run of the same logical unit) always resolves to its
+        // CURRENT, most recent identity, never a stale earlier one.
+        let events = vec![
+            run_started_with_spec("specs/1-old.md"),
+            started_with_criterion("shared-slug", "c1-aaa"),
+            run_started_with_spec("specs/2-new.md"),
+            started_with_criterion("shared-slug", "c2-bbb"),
+        ];
+        assert_eq!(
+            branch_owner(&events, "shared-slug"),
+            Some(("c2-bbb".to_string(), "2-new".to_string())),
+            "must read the SECOND (most recent) start, never the first"
+        );
+    }
+
+    #[test]
+    fn branch_owner_ignores_a_non_unit_started_event_even_when_it_shares_the_id_field() {
+        // spec 88 round 6 (mutation-efficacy gap): flipping the `TYPE_UNIT_STARTED`
+        // type-guard to `!=` would make this fold walk EVERY other event type instead -
+        // many of which (UnitIntegrated included) also carry a bare `id` field and
+        // would otherwise be misread as a start. A real `UnitStarted` for this id is
+        // present too, so a wrong answer here is masked only by ignoring the decoy.
+        let events = vec![
+            integrated("shared-slug"),
+            started_with_criterion("shared-slug", "c1-aaa"),
+        ];
+        assert_eq!(
+            branch_owner(&events, "shared-slug"),
+            Some(("c1-aaa".to_string(), String::new())),
+            "a UnitIntegrated sharing the same bare id must never be read as a start"
+        );
+    }
+
+    #[test]
+    fn branch_is_foreign_is_false_when_nothing_is_recorded_or_everything_matches() {
+        assert!(
+            !branch_is_foreign(&None, "c1-aaa", "spec-a"),
+            "no recorded provenance at all (a pre-spec-88 legacy branch) is never foreign"
+        );
+        assert!(
+            !branch_is_foreign(
+                &Some(("c1-aaa".to_string(), "spec-a".to_string())),
+                "c1-aaa",
+                "spec-a"
+            ),
+            "an owner matching on both axes is this unit's own history, never foreign"
+        );
+    }
+
+    #[test]
+    fn branch_is_foreign_is_false_when_the_recorded_owner_has_no_criterion_id() {
+        // A `UnitStarted` written before this feature carries no `criterion_id`, so the
+        // fold yields an EMPTY owner id for the unit's own branch. That is unknown
+        // provenance, not a different criterion: on 2026-09-13 the live spec-88 run's
+        // final unit (u88c5) had its own branch quarantined out from under its worktree
+        // because "" != its criterion id. Unknown must resolve exactly like `None`.
+        assert!(
+            !branch_is_foreign(
+                &Some((String::new(), "spec-a".to_string())),
+                "c5-eee",
+                "spec-a"
+            ),
+            "an owner with no recorded criterion id is unknown, never foreign"
+        );
+        assert!(
+            !branch_is_foreign(
+                &Some((String::new(), "spec-b".to_string())),
+                "c5-eee",
+                "spec-a"
+            ),
+            "unknown provenance stays unknown even when the spec axis differs"
+        );
+    }
+
+    #[test]
+    fn branch_is_foreign_when_only_one_axis_differs() {
+        // round 6 (mutation-efficacy gap): the `||` must be load-bearing on EACH `!=`
+        // independently - a query differing on only the criterion (same spec), and one
+        // differing on only the spec (same criterion), must each alone be caught, not
+        // only when both differ at once (mirrors `recorded_adoption`'s own identical
+        // round-5 fix and gap for the same reason).
+        assert!(
+            branch_is_foreign(
+                &Some(("c1-aaa".to_string(), "spec-a".to_string())),
+                "c2-bbb",
+                "spec-a"
+            ),
+            "a mismatched criterion_id alone (same spec) must be foreign"
+        );
+        assert!(
+            branch_is_foreign(
+                &Some(("c1-aaa".to_string(), "spec-a".to_string())),
+                "c1-aaa",
+                "spec-b"
+            ),
+            "a mismatched spec alone (same criterion_id) must be foreign"
+        );
+    }
+
+    /// The UnitStarted event for `id`, keyed exactly as [`Self::start_and_run_stage`]
+    /// would find it - used to locate a freshly-run unit's own recorded event out of a
+    /// real store, rather than assuming its position.
+    fn find_unit_started(events: &[Event], id: &str) -> Value {
+        let ev = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STARTED
+                    && serde_json::from_slice::<Value>(&e.data)
+                        .ok()
+                        .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(str::to_string))
+                        == Some(id.to_string())
+            })
+            .unwrap_or_else(|| panic!("{id}'s UnitStarted is recorded"));
+        serde_json::from_slice(&ev.data).unwrap()
+    }
+
+    #[test]
+    fn a_fresh_units_own_branch_adopts_a_prior_runs_un_integrated_unit_sharing_the_criterion() {
+        // The operator-required proof (op-p88-the-three-flagged-walks-are-required-
+        // proofs): a fresh run's planner proposes a NEW slug ("new-slug") for a
+        // criterion a PRIOR run left un-integrated under a DIFFERENT id ("old-slug").
+        // The new unit must start AT THE PRIOR TIP - carrying its committed work all
+        // the way through integration - with `adopted_from` recorded on its own
+        // UnitStarted.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let cid = "c1-deadbeefcafefeed";
+
+        // Prior run: "old-slug" served this criterion, committed real work on its
+        // durable branch, and the run ended without integrating it (escalated /
+        // abandoned) - modeled here by simply never emitting UnitIntegrated for it.
+        crate::run::start_fresh(&store, &["old campaign".to_string()], "", "", "", "").unwrap();
+        let prior_branch = unit_branch("old-slug");
+        let prior_dir =
+            std::env::temp_dir().join(format!("rigger-wt-prior-{}", uuid::Uuid::new_v4()));
+        let prior_wt =
+            Worktree::create(&repo_path, prior_dir.to_str().unwrap(), &prior_branch, "").unwrap();
+        std::fs::write(prior_dir.join("prior-work.txt"), "escalated attempt\n").unwrap();
+        prior_wt.commit("rigger: prior attempt checkpoint").unwrap();
+        prior_wt.remove().unwrap();
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[started_with_criterion("old-slug", cid)],
+            )
+            .unwrap();
+
+        // Fresh run: a DIFFERENT slug, "new-slug", proposed for the SAME criterion.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "new-slug".into(),
+            Stage {
+                name: "new-slug".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                criterion_id: cid.into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["new-slug"].status,
+            ledger::Status::Integrated,
+            "the adopted unit still runs its ordinary lifecycle through to integration"
+        );
+        assert!(
+            repo.path().join("prior-work.txt").exists(),
+            "the prior run's committed work rode the adoption all the way into the base"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let body = find_unit_started(&events, "new-slug");
+        assert_eq!(
+            body["adopted_from"]["unit"], "old-slug",
+            "UnitStarted records which prior unit this one adopted: {body}"
+        );
+        assert_eq!(
+            body["adopted_from"]["tip"].as_str().map(str::len),
+            Some(40),
+            "adopted_from.tip is the prior branch's real (40-hex-char) commit sha: {body}"
+        );
+        assert_eq!(
+            body["criterion_id"], cid,
+            "UnitStarted also carries this unit's own criterion_id, the join key"
+        );
+    }
+
+    #[test]
+    fn a_fresh_unit_never_adopts_a_criterion_whose_prior_attempt_already_integrated() {
+        // The other half of the operator-required proof: a prior unit that reached
+        // UnitIntegrated is never adopted - its work is on the base already, so a new
+        // unit for the same criterion starts genuinely fresh (no adopted_from, no
+        // prior-run file in its tree at start).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let cid = "c1-deadbeefcafefeed";
+
+        crate::run::start_fresh(&store, &["old campaign".to_string()], "", "", "", "").unwrap();
+        let prior_branch = unit_branch("old-slug");
+        run_git_test(&repo_path, &["branch", &prior_branch]);
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[
+                    started_with_criterion("old-slug", cid),
+                    integrated("old-slug"),
+                ],
+            )
+            .unwrap();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "new-slug".into(),
+            Stage {
+                name: "new-slug".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                criterion_id: cid.into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["new-slug"].status, ledger::Status::Integrated);
+        assert!(
+            !repo.path().join("prior-work.txt").exists(),
+            "an integrated prior unit's un-related state must not leak in either way"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let body = find_unit_started(&events, "new-slug");
+        assert_eq!(
+            body["adopted_from"],
+            Value::Null,
+            "a criterion whose prior attempt already integrated adopts nothing: {body}"
+        );
+    }
+
+    /// A thin `git -C <dir> <args>` runner for a test that only needs the exit code
+    /// (setup convenience, mirroring [`crate::worktree`]'s own private `git` helper
+    /// which is not reachable from here).
+    fn run_git_test(dir: &str, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn a_halted_spawns_uncommitted_tree_is_captured_as_a_wip_commit_and_named_in_the_next_prompt() {
+        // Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): `stage_worktree`'s call
+        // to `Worktree::create` ADOPTS a worktree already sitting at this unit's
+        // deterministic dir/branch by a path lookup alone - never a checkout or reset
+        // (`Worktree::create`'s own fast path just hands back a `Worktree` on the
+        // existing dir). So a prior incarnation of this spawn that was halted (a
+        // liveness sweep, the outer wall clock, a crash) after editing the tree but
+        // BEFORE its own per-attempt checkpoint ever committed leaves that edit
+        // sitting dirty right there for the next process to find. This proves the
+        // conductor captures it as its own `wip` commit on the unit's durable branch
+        // BEFORE spawning a fresh implementer into the same tree, and that
+        // implementer's prompt names the commit and says "finish and report; do not
+        // start over" - so the halt never silently loses, or silently blends into a
+        // later attempt's own checkpoint, the abandoned edit.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "u-halt".into(),
+            Stage {
+                name: "u-halt".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+
+        // Simulate the halted incarnation: create the SAME deterministic worktree and
+        // branch production's own `stage_worktree` would derive for this unit, then
+        // leave a real, uncommitted edit in it - never committed, exactly as an
+        // aborted spawn would.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "u-halt");
+        let halted_wt =
+            Worktree::create(&repo_path, &dir, &unit_branch("u-halt"), &scratch).unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("halted-work.txt"),
+            "abandoned mid-edit\n",
+        )
+        .unwrap();
+        assert!(
+            halted_wt.is_dirty().unwrap(),
+            "the setup must leave the worktree genuinely dirty"
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["u-halt"].status, ledger::Status::Verified);
+
+        // The unit's durable branch (still live: `on_pass: none` never merges or
+        // deletes it) now carries a `wip` commit recovering the halted spawn's edit,
+        // naming both the unit and the exact spawn id the recovery ran ahead of.
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s", &unit_branch("u-halt")])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout).to_string();
+        let expected_subject = format!(
+            "wip(u-halt): tree of halted spawn {}",
+            spawn_id("u-halt", ROLE_IMPLEMENTER, 0)
+        );
+        assert!(
+            log.lines().any(|l| l == expected_subject),
+            "the branch must carry a wip commit recovering the halted tree; wanted \
+             {expected_subject:?}, got:\n{log}"
+        );
+        // The abandoned file itself survived, inside that commit.
+        let show = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args([
+                "show",
+                &format!("{}:halted-work.txt", unit_branch("u-halt")),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&show.stdout),
+            "abandoned mid-edit\n",
+            "the halted spawn's own file must survive inside the recovery commit"
+        );
+
+        // The commit found by subject above need not be the branch tip (the ordinary
+        // per-attempt checkpoint commits again afterward) - resolve the recovery
+        // commit's OWN sha by subject instead of assuming tip == recovery commit.
+        let recovery_sha = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%H %s", &unit_branch("u-halt")])
+            .output()
+            .unwrap();
+        let recovery_sha = String::from_utf8_lossy(&recovery_sha.stdout)
+            .lines()
+            .find(|l| l.ends_with(&expected_subject))
+            .and_then(|l| l.split_whitespace().next())
+            .map(str::to_string)
+            .unwrap_or_else(|| panic!("recovery commit not found in log"));
+
+        // The fresh implementer's own (only) prompt names that exact recovery commit
+        // and tells it to finish and report rather than start over.
+        let prompts = driver.prompts_by_agent.lock().unwrap();
+        let worker_prompts = prompts.get("worker").cloned().unwrap_or_default();
+        assert_eq!(
+            worker_prompts.len(),
+            1,
+            "the implementer runs exactly once on this unit: {worker_prompts:?}"
+        );
+        assert!(
+            worker_prompts[0].contains(&recovery_sha),
+            "the re-park prompt must name the recovery commit {recovery_sha}; got:\n{}",
+            worker_prompts[0]
+        );
+        assert!(
+            worker_prompts[0].contains("finish and report; do not start over")
+                || worker_prompts[0].contains("Finish and report; do not start over"),
+            "the re-park prompt must tell the agent to finish and report, not start \
+             over; got:\n{}",
+            worker_prompts[0]
+        );
+    }
+
+    // The four tests below drive `PriorFailure::summary()`/`block()` directly with a
+    // single field set, rather than through the whole `run()` flow. Checkin stage
+    // (spec 91 first live sweep, GateVerdict recorded at event-store position
+    // 3101592): the whole-spec mutation sweep found these 5 mutants MISSED, every
+    // one inside `PriorFailure::summary`/`block` (lines 1216-1314) - none of the
+    // flow-level tests above isolate a single field, so none of them can tell "the
+    // right text" from "some other text that happens to contain the one substring
+    // each test checks for".
+
+    #[test]
+    fn prior_failure_summary_names_only_the_halted_commit_when_it_is_the_sole_failure() {
+        // Kills two missed mutants: line 1244 (summary()'s whole body replaced with
+        // a stub literal - any exact-match assertion catches a wholesale swap) and
+        // line 1254 (the halted_commit branch's `!` deleted, so this arm is skipped
+        // precisely when halted_commit IS set, leaving summary() empty instead).
+        let prior = PriorFailure {
+            halted_commit: "deadbeef".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            prior.summary(),
+            "recovered a halted spawn's tree as commit deadbeef",
+            "summary() must report exactly the halted-commit sentence, and nothing \
+             else, when halted_commit is the only failure-specific field set"
+        );
+    }
+
+    #[test]
+    fn prior_failure_block_names_only_the_halted_commit_when_it_is_the_sole_failure() {
+        // Kills the missed mutant at line 1271 (the halted_commit branch's `!`
+        // deleted in block(), the block() counterpart of the summary() mutant
+        // above): this arm would be skipped precisely when halted_commit IS set.
+        // a_halted_spawns_uncommitted_tree_is_captured_as_a_wip_commit_and_named_in_the_next_prompt
+        // above only asserts two substrings are present in the full grounded prompt;
+        // this isolates block()'s own exact return value instead.
+        let prior = PriorFailure {
+            halted_commit: "deadbeef".into(),
+            ..Default::default()
+        };
+        let expected = format!(
+            "A prior incarnation of this spawn was halted before it could report; \
+             its uncommitted work is captured as commit {} on your branch. Finish \
+             and report; do not start over.\n\n",
+            "deadbeef"
+        );
+        assert_eq!(
+            prior.block(),
+            expected,
+            "block() must contain exactly the halted-commit sentence, with no \
+             gate/review preamble, when halted_commit is the only field set"
+        );
+    }
+
+    #[test]
+    fn prior_failure_block_adds_the_generic_preamble_for_review_reject_or_contradiction_alone() {
+        // Kills two missed mutants sharing one preamble condition (block()'s
+        // `!gate_evidence.is_empty() || !review_reason.. || !contradiction ..`):
+        // line 1283 (the first `||`, between the gate and review clauses,
+        // replaced with `&&`) and line 1284 (the second `||`, between the
+        // combined gate/review result and the contradiction clause, replaced
+        // with `&&`). One assertion per mutant, folded into a single function so
+        // the near-identical bodies don't themselves become a fresh duplicate
+        // the audit would need to catalog. Every existing test that sets
+        // review_reason or contradiction only asserts the PER-FIELD line pushed
+        // further down (unconditional, outside this compound condition), never
+        // the generic preamble the condition actually guards.
+        const PREAMBLE: &str = "Your previous attempt failed the checks below. Fix exactly \
+                                 these - do not start over:\n";
+        let review_only = PriorFailure {
+            review_reason: "REJECT_REASON_x".into(),
+            ..Default::default()
+        };
+        assert!(
+            review_only.block().starts_with(PREAMBLE),
+            "block() must open with the generic preamble when review_reason alone \
+             failed (kills the line-1283 `||`-to-`&&` mutant); got:\n{}",
+            review_only.block()
+        );
+        let contradiction_only = PriorFailure {
+            contradiction: "a later unit proved this wrong".into(),
+            ..Default::default()
+        };
+        assert!(
+            contradiction_only.block().starts_with(PREAMBLE),
+            "block() must open with the generic preamble when contradiction alone \
+             failed (kills the line-1284 `||`-to-`&&` mutant); got:\n{}",
+            contradiction_only.block()
+        );
+    }
+
     #[test]
     fn review_worktree_dir_and_branch_derive_from_stage_and_attempt() {
         // Spec 06:48: review worktrees derive from stage + attempt (not a per-process
@@ -10268,6 +14001,11 @@ mod tests {
         /// threaded into SpawnOpts for each agent - used to prove a spawn carries its
         /// criterion so the thin driver narrates the WORK, not just `<unit>:<stage>`.
         titles_by_agent: Mutex<HashMap<String, String>>,
+        /// The routed review roster (spec 67, criterion 4) the conductor threaded into
+        /// SpawnOpts for each agent - used to prove an adversary/adjudicator spawn
+        /// carries the unit's ACTUALLY-routed lens roster (plus the adversary, for the
+        /// adjudicator), never a guessed or stale one.
+        reviews_by_agent: Mutex<HashMap<String, Vec<String>>>,
         /// Every prompt each agent was spawned with, in order, keyed by agent id.
         /// Used to assert the cross-tier findings block (item 1) and the prior-failure
         /// block on a retry (items 3 + 5) reached the right agent's prompt.
@@ -10288,6 +14026,26 @@ mod tests {
         /// tier's spawn found the worktree ensure-on-park restored, not the gone dir a
         /// PRIOR tier's own deletion left behind (spec 64 criterion 3, round 4).
         dir_existed_at_spawn: Mutex<HashMap<String, Vec<bool>>>,
+        /// Per-agent list of (relative path, content) pairs (spec 88, criterion 4 - PLAN
+        /// AMENDMENTS LAND): on spawn, EACH pair is written into the worktree dir and
+        /// immediately committed as its OWN real git commit - mirroring a planner
+        /// agent's own direct git access (it commits a spec amendment itself; the
+        /// conductor never sweeps a producer's dirty tree the way it does an
+        /// implementer's). Isolation-guarded like `write_file`: a no-op on an empty
+        /// `opts.dir`. A `git commit` that finds nothing new (the same path/content
+        /// already committed, e.g. a remediation retry that changed nothing) is
+        /// silently absorbed - the PRIOR commit still stands, exactly as a real agent's
+        /// repeated identical commit would be.
+        commits_by_agent: HashMap<String, Vec<(String, String)>>,
+        /// Per-agent relative path (spec 88, criterion 4): on spawn, the named agent
+        /// reads THIS path from its OWN worktree dir, recording what it found into
+        /// `read_results` - so a test can prove a LATER stage's worktree (branched off
+        /// the run branch after a producer's commits landed) actually sees them.
+        read_file_by_agent: HashMap<String, String>,
+        /// What each `read_file_by_agent` reader actually found, keyed by agent id.
+        /// Absent when the agent never ran, its file was never landed, or `opts.dir`
+        /// was empty.
+        read_results: Mutex<HashMap<String, String>>,
     }
     impl Stub {
         fn new() -> Self {
@@ -10309,10 +14067,14 @@ mod tests {
                 dirs_by_agent: Mutex::new(HashMap::new()),
                 system_prompt_by_agent: Mutex::new(HashMap::new()),
                 titles_by_agent: Mutex::new(HashMap::new()),
+                reviews_by_agent: Mutex::new(HashMap::new()),
                 prompts_by_agent: Mutex::new(HashMap::new()),
                 call_order: Mutex::new(Vec::new()),
                 delete_dir_by_agent: std::collections::HashSet::new(),
                 dir_existed_at_spawn: Mutex::new(HashMap::new()),
+                commits_by_agent: HashMap::new(),
+                read_file_by_agent: HashMap::new(),
+                read_results: Mutex::new(HashMap::new()),
             }
         }
 
@@ -10350,6 +14112,12 @@ mod tests {
         /// for the named agent, or None if it was never spawned.
         fn title_for(&self, agent_id: &str) -> Option<String> {
             self.titles_by_agent.lock().unwrap().get(agent_id).cloned()
+        }
+
+        /// The routed review roster (spec 67, criterion 4) the conductor threaded to the
+        /// driver for the named agent, or None if it was never spawned.
+        fn reviews_for(&self, agent_id: &str) -> Option<Vec<String>> {
+            self.reviews_by_agent.lock().unwrap().get(agent_id).cloned()
         }
 
         /// Every spawn's deterministic id, in spawn order (Gap-18 tests assert the exact
@@ -10419,6 +14187,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .insert(a.id.clone(), opts.title.clone());
+            self.reviews_by_agent
+                .lock()
+                .unwrap()
+                .insert(a.id.clone(), opts.reviews.clone());
             self.prompts_by_agent
                 .lock()
                 .unwrap()
@@ -10461,6 +14233,41 @@ mod tests {
             if let Some(f) = self.write_file_by_agent.get(&a.id) {
                 if !opts.dir.is_empty() {
                     let _ = std::fs::write(Path::new(&opts.dir).join(f), "periphery\n");
+                }
+            }
+            // Spec 88 criterion 4 (PLAN AMENDMENTS LAND): a producer's own git commits,
+            // made with the agent's own git access - never swept/committed BY the
+            // conductor the way an implementer's dirty tree is. Isolation-guarded like
+            // `write_file` above.
+            if let Some(commits) = self.commits_by_agent.get(&a.id) {
+                if !opts.dir.is_empty() {
+                    for (path, content) in commits {
+                        let full = Path::new(&opts.dir).join(path);
+                        if let Some(parent) = full.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::write(&full, content);
+                        let _ = std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&opts.dir)
+                            .args(["add", "-A"])
+                            .output();
+                        let _ = std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&opts.dir)
+                            .args(["commit", "-q", "-m", &format!("agent amend {path}")])
+                            .output();
+                    }
+                }
+            }
+            if let Some(path) = self.read_file_by_agent.get(&a.id) {
+                if !opts.dir.is_empty() {
+                    if let Ok(content) = std::fs::read_to_string(Path::new(&opts.dir).join(path)) {
+                        self.read_results
+                            .lock()
+                            .unwrap()
+                            .insert(a.id.clone(), content);
+                    }
                 }
             }
             for (t, v) in &self.emits {
@@ -10786,6 +14593,80 @@ mod tests {
     }
 
     #[test]
+    fn a_stage_needing_the_fan_out_template_becomes_ready_once_every_criterion_unit_integrates() {
+        // Spec 91, criterion 1, rule 1: the fan-out implement TEMPLATE is a template,
+        // not a unit - `run` REMOVES it from `stages` the moment it expands into
+        // per-criterion baseline units (see `conductor_creates_one_baseline_unit_per_
+        // criterion` just above), so a downstream stage's literal `needs: ["implement"]`
+        // could never be satisfied: "implement" never again appears in `integrated`.
+        // A `needs` entry naming the TEMPLATE must instead be satisfied once EVERY unit
+        // the template expanded into has integrated - proven end to end here through the
+        // real `run()` wiring (baseline-decomposition -> fanout_criteria -> ready_stages),
+        // not just the pure-function level.
+        let criteria = ["the first slice lands", "the second slice lands"];
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        cfg.workflow.stages.insert(
+            "checkin".into(),
+            Stage {
+                name: "checkin".into(),
+                agent: "worker".into(),
+                needs: vec!["implement".into()],
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: criteria.iter().map(|c| c.to_string()).collect(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            !rs.units.contains_key("implement"),
+            "the fan-out template is a template, not a unit"
+        );
+        for c in criteria {
+            let unit = rs
+                .units
+                .values()
+                .find(|u| u.spec_criterion == c)
+                .unwrap_or_else(|| panic!("a unit must cover criterion {c:?}"));
+            assert_eq!(
+                unit.status,
+                ledger::Status::Integrated,
+                "every criterion unit must integrate before checkin can be ready"
+            );
+        }
+        assert_eq!(
+            rs.units["checkin"].status,
+            ledger::Status::Integrated,
+            "a stage needing the fan-out template must become ready and integrate once \
+             every unit expanded from it has integrated"
+        );
+    }
+
+    #[test]
     fn producer_prompt_carries_the_criteria_and_plan_protocol_grounded_on_the_spec() {
         // A `produces: dag` planner stage must be wired: its prompt carries the spec's
         // acceptance criteria AND the PLAN_PROTOCOL (the refine-protocol), and it
@@ -11084,6 +14965,93 @@ mod tests {
                 "criterion {c:?} must be served by exactly one unit, got {n}"
             );
         }
+    }
+
+    #[test]
+    fn a_planner_supersede_of_a_fan_out_member_still_satisfies_its_downstream_needs_edge() {
+        // THE round-1 REJECT regression (adj-u91c1-verdict-reject, upholding
+        // arch-u91c1-fanout-members-orphans-a-superseded-baseline / sdet-u91c1-confirms-
+        // fanout-orphan-live-repro / adv-u91c1-confirms-fanout-orphan-by-independent-
+        // execution): `harvest_proposed`'s pre-existing supersede fold (spec 18/72, the
+        // designed and routine planner-refinement path exercised by
+        // `planner_unit_supersedes_the_matching_baseline` above) removes a fan-out
+        // baseline's `stages` entry - a unit-id-keyed membership snapshot built once at
+        // decomposition time would never see the SUPERSEDING unit's different id
+        // integrate, permanently orphaning any downstream `needs: [<template>]` stage.
+        // The outer wave loop's `if ready.is_empty() { break; }` reads that as ordinary
+        // convergence: no escalation, no error, no lesson - the run silently finishes
+        // without ever running `checkin` (this spec's own deliverable class). Proves the
+        // fix end to end through the REAL `run()`/`harvest_proposed` wiring, not just the
+        // pure `ready_stages` level: a `checkin` stage needing the fan-out template must
+        // still become ready and integrate once the SUPERSEDING unit (a different id,
+        // the same criterion) integrates.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let crit_b = "criterion B: the stats endpoint is implemented";
+        let mut cfg = supersede_cfg();
+        cfg.workflow.stages.insert(
+            "checkin".into(),
+            Stage {
+                name: "checkin".into(),
+                agent: "worker".into(),
+                needs: vec!["implement".into()],
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        // The planner supersedes criterion A's baseline with its own unit, under a
+        // DIFFERENT id than the baseline `run` would otherwise have synthesized for it.
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "planner-unit-a",
+                    "agent": "worker",
+                    "criterion": crit_a,
+                    "gates": ["ok"],
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string(), crit_b.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // The supersede happened exactly as `planner_unit_supersedes_the_matching_
+        // baseline` already proves: criterion A's baseline is gone, the planner's unit
+        // covers it instead.
+        let a_baseline = baseline_id(1, crit_a);
+        assert!(
+            !rs.units.contains_key(&a_baseline),
+            "criterion A's baseline must be superseded (removed), not run"
+        );
+        assert_eq!(
+            rs.units["planner-unit-a"].status,
+            ledger::Status::Integrated,
+            "the superseding unit must integrate"
+        );
+
+        // THE ASSERTION THAT WAS RED before the fix: checkin needs the fan-out
+        // template, whose live owner for criterion A is now "planner-unit-a" - an id
+        // that never existed at the moment the template was consumed. A frozen unit-id
+        // snapshot could never see it integrate; checkin would never even appear in
+        // `rs.units` (the run silently converges one wave early instead).
+        assert_eq!(
+            rs.units.get("checkin").map(|u| u.status),
+            Some(ledger::Status::Integrated),
+            "checkin must become ready and integrate once every criterion's CURRENT \
+             live owner has integrated, even when a planner supersede changed which \
+             unit id owns a criterion; got units: {:?}",
+            rs.units.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -14830,6 +18798,107 @@ mod tests {
         );
     }
 
+    /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): `empty_structural_boundary_event`'s
+    /// payload is CONSTANT per `(file, lang)` - it carries no content-derived field at all - so
+    /// re-excluding the SAME file within one long-lived process hashes to the IDENTICAL replay
+    /// key as its first exclusion. Unless `emit_keyed_batch` retires a stale generation's own
+    /// keys before the ordinary per-key dedup runs, the second exclusion's boundary event is
+    /// silently dropped as an already-seen key, stranding whatever entity the file's MIDDLE
+    /// (real) generation defined live in the graph forever - falsifying criterion 3's own
+    /// Done-when on a re-exclusion within one process, exactly the review/rework-round shape
+    /// this very run puts every unit through.
+    ///
+    /// Four generations on ONE `RunCtx`: real (defines `target_symbol`), excluded (an in-file
+    /// `#[cfg(test)]` module wraps it - the structural sentinel, boundary-only), real again with
+    /// a DIFFERENT symbol name (`target_symbol_v2` - not a byte-identical revert to generation
+    /// 1, so this is not the already-known content-revert collision), excluded again (the SAME
+    /// constant sentinel bytes, and so the SAME replay key, as generation 2). The fix must retire
+    /// `target_symbol_v2`'s structural edges on this fourth ingest even though its own boundary
+    /// event's key collides with generation 2's.
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn re_excluding_the_same_file_twice_in_one_process_retires_its_middle_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let target = root.join("src/target.rs");
+        let root_str = root.to_str().unwrap().to_string();
+
+        let st_store = Store::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        let grounder = StubGrounder {
+            by_query: HashMap::new(),
+        };
+        let deps = Deps {
+            store: &st_store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: root_str.clone(),
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let is_live = |name: &str| -> bool {
+            graph
+                .subgraph(&["src/target.rs".to_string()], 2)
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|n| {
+                    n.kind == contextgraph::KIND_CODE_ENTITY
+                        && n.attrs.get("name").map(String::as_str) == Some(name)
+                })
+        };
+
+        // Generation 1: real, defines target_symbol.
+        std::fs::write(&target, "pub fn target_symbol() {}\n").unwrap();
+        ctx.ingest_project_batches();
+        assert!(is_live("target_symbol"), "gen 1 must fold live");
+
+        // Generation 2: excluded (in-file #[cfg(test)]) - the constant structural sentinel.
+        std::fs::write(
+            &target,
+            "#[cfg(test)]\nmod hidden {\n    pub fn target_symbol() {}\n}\n",
+        )
+        .unwrap();
+        ctx.ingest_project_batches();
+        assert!(
+            !is_live("target_symbol"),
+            "gen 2's exclusion must retire gen 1's entity"
+        );
+
+        // Generation 3: real again, a DIFFERENT symbol - not a byte-identical revert to gen 1.
+        std::fs::write(&target, "pub fn target_symbol_v2() {}\n").unwrap();
+        ctx.ingest_project_batches();
+        assert!(is_live("target_symbol_v2"), "gen 3 must fold live");
+
+        // Generation 4: excluded again - the SAME constant sentinel bytes (and so the SAME
+        // replay key) as generation 2. Without the fix this key collides with generation 2's,
+        // silently drops, and gen 3's entity stays live forever.
+        std::fs::write(
+            &target,
+            "#[cfg(test)]\nmod hidden {\n    pub fn target_symbol_v2() {}\n}\n",
+        )
+        .unwrap();
+        ctx.ingest_project_batches();
+        assert!(
+            !is_live("target_symbol_v2"),
+            "gen 4's exclusion must retire gen 3's entity even though its own boundary event's \
+             replay key collides with generation 2's - this is exactly the defect \
+             adv-u86c3-boundary-sentinel-key-collides-across-an-in-process-exclude-cycle names"
+        );
+        assert_eq!(
+            graph.retired_code_entity_count().unwrap(),
+            2,
+            "both target_symbol (gen 1) and target_symbol_v2 (gen 3) end up retired - neither \
+             is silently stranded live"
+        );
+    }
+
     /// Spec 60 criterion 1 (UNCHANGED-TREE RUNS APPEND NOTHING): the derived index is a PROJECT
     /// fact, not a run fact - a file's content hash does not change because a new run started. So a
     /// SECOND run, under its own fresh `RunStarted` (whose current-run slice carries none of the
@@ -16665,7 +20734,8 @@ mod tests {
             sanitize_for_path(unit_id),
             &uuid::Uuid::new_v4().to_string()[..8]
         ));
-        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch).unwrap();
+        let wt =
+            crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch, "").unwrap();
         std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
         let committed = wt.commit("rigger: prior window work").unwrap();
         assert!(!committed.is_empty(), "the prior window must commit work");
@@ -16883,7 +20953,8 @@ mod tests {
             sanitize_for_path(branch),
             &uuid::Uuid::new_v4().to_string()[..8]
         ));
-        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), branch).unwrap();
+        let wt =
+            crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), branch, "").unwrap();
         std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
         let committed = wt.commit("rigger: prior window work").unwrap();
         assert!(!committed.is_empty(), "the prior window must commit work");
@@ -17053,7 +21124,8 @@ mod tests {
         // `cargo-target-*` sibling the reclaim path is responsible for).
         let dir = parent.path().join("rigger-wt-lingering");
         let branch = unit_branch(unit_id);
-        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch).unwrap();
+        let wt =
+            crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), &branch, "").unwrap();
         std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
         let committed = wt
             .commit("rigger: prior window work (worktree left lingering)")
@@ -17275,6 +21347,454 @@ mod tests {
         assert!(
             branch_present(&repo_path, &unit_branch("stuck")),
             "the escalated unit's branch must be retained as the human's evidence"
+        );
+    }
+
+    #[test]
+    fn branch_gc_fences_reclaim_behind_an_in_flight_straggler_spawn_and_reclaims_once_it_answers() {
+        // Spec 83, criterion 1 (THE FENCE), round 2 fix for
+        // `adj-u83c1-constraints-recheck-fails-gc2`: `gc_integrated_branches` is a THIRD
+        // worktree-reclaim authority (alongside `sweep_terminal`/`current_run_units`), and
+        // must consult the identical `spawn_fence` before reclaiming an `Integrated` unit's
+        // branch/worktree - a straggler spawn for the same unit (a slower confirmatory
+        // review lens dispatched AFTER the deciding verdict already integrated it) must
+        // fence the reclaim off here exactly as it already does for `sweep_terminal`, and
+        // the reclaim must proceed once that spawn answers with a real result. This is the
+        // fast, crate-internal counterpart to the periphery suite's real-process-boundary
+        // test (`tests/worktree_liveness_fence_periphery.rs::step_worktree_sweep_
+        // discriminates_in_flight_hung_and_terminal_spawns_across_real_process_boundaries`),
+        // driving the identical shape directly through the public `run()` resume seam.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        commit_on_unit_branch(&repo_path, "fenced", "fenced.rs", "fn fenced() {}\n");
+        assert!(
+            branch_present(&repo_path, &unit_branch("fenced")),
+            "precondition: the integrated unit's branch exists before the run"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "fenced", "agent": "worker", "branch": unit_branch("fenced")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    serde_json::to_vec(&json!({"id": "fenced", "commit": "f00"})).unwrap(),
+                ),
+                spawn::SpawnRequest::new("fenced", "fenced", "adversary", 0, "verify")
+                    .to_event()
+                    .unwrap(),
+            ],
+        );
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["fenced"].status, ledger::Status::Integrated);
+        assert!(
+            branch_present(&repo_path, &unit_branch("fenced")),
+            "an in-flight latest spawn must fence the branch off THIS resume-path reclaim \
+             entirely, even though the unit's own ledger status already reads Integrated"
+        );
+
+        // The straggler now answers, exactly as a review lens finishing late would.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[spawn::SpawnResult::ok("fenced/adversary#0", "approve")
+                .to_event()
+                .unwrap()],
+        )
+        .unwrap();
+
+        let rs2 = run(&cfg, &deps).unwrap();
+        assert_eq!(rs2.units["fenced"].status, ledger::Status::Integrated);
+        assert!(
+            !branch_present(&repo_path, &unit_branch("fenced")),
+            "once its latest spawn has a real result the fence's own check no longer blocks \
+             the pre-existing reclaim - the branch must be gone exactly as it was before \
+             THE FENCE existed"
+        );
+    }
+
+    #[test]
+    fn gc_integrated_branches_logged_prints_kept_evidence_for_an_in_flight_straggler_spawn() {
+        // Spec 83, criterion 1 (THE FENCE) Design text: "each sweep decision is
+        // attributable from the log with its evidence" - this governs `gc_integrated_
+        // branches` too, not only `sweep_terminal`. Drives `gc_integrated_branches_logged`
+        // directly (the DI seam), bypassing the public `run()` resume path entirely, so no
+        // OTHER reclaim authority (`sweep_terminal` is a `main.rs::cmd_step` concept
+        // `conductor::run` never reaches) can mask this authority's OWN evidence text -
+        // mirrors `worktree::sweep_terminal_prints_evidence_for_a_kept_decision_but_not_
+        // for_a_removed_no_spawn_one`'s identical precedent for the sibling reclaim
+        // authority. Round-2 addition: `branch_gc_fences_reclaim_behind_an_in_flight_
+        // straggler_spawn_and_reclaims_once_it_answers` above only pins WHETHER the
+        // branch survives, never the log text, so a flipped log condition (caught live as
+        // mutant `src/conductor.rs:6984:24: delete ! in gc_integrated_branches_logged`,
+        // TIMEOUT on an unrelated `cargo tree` package-cache lock contention, not a real
+        // kill) passed it undetected.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        commit_on_unit_branch(&repo_path, "fenced", "fenced.rs", "fn fenced() {}\n");
+
+        let events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(
+                    &json!({"id": "fenced", "agent": "worker", "branch": unit_branch("fenced")}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "fenced", "commit": "f00"})).unwrap(),
+            ),
+            spawn::SpawnRequest::new("fenced", "fenced", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+        ];
+        let rs = ledger::project(&events).unwrap();
+        let stages: BTreeMap<String, Stage> = BTreeMap::new();
+
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut lines: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            lines.push(l.to_string())
+        });
+
+        assert!(
+            branch_present(&repo_path, &unit_branch("fenced")),
+            "an in-flight latest spawn must fence the branch off this reclaim authority too"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("kept") && l.contains("fenced") && l.contains("in flight")),
+            "the kept decision must be attributable from the log: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn gc_integrated_branches_logged_prints_removing_evidence_for_a_terminal_spawns_decision() {
+        // The counterpart, mirroring `worktree::sweep_terminal_prints_evidence_for_a_
+        // removed_terminal_spawn_decision`'s own reasoning verbatim: a flipped log
+        // condition that prints on the WRONG arm still passes the "kept" test above (an
+        // in-flight spawn never reaches this arm at all - `permits_reclaim()` is false),
+        // so this pins the REMOVING arm specifically, closing the exact gap the live
+        // TIMEOUT mutant at `gc_integrated_branches_logged`'s log-condition line exposed.
+        //
+        // Round 3 fix for `sdet-u83c1r2-removing-evidence-repeats-forever-after-real-
+        // removal` (UPHELD): the "removing" line is now gated on the worktree still being
+        // PHYSICALLY REGISTERED (mirroring `sweep_terminal_logged`'s own `git worktree
+        // list --porcelain`-driven candidate set), so this test deliberately does NOT use
+        // `commit_on_unit_branch` (which `wt.remove()`s its seed worktree, modeling the
+        // dominant graceful path where the fresh-half teardown already removed both the
+        // worktree and the branch together) - it instead leaves the worktree REGISTERED,
+        // modeling the actual steady state this THIRD reclaim authority backstops: a step
+        // process crashed strictly between its own graceful teardown's two back-to-back
+        // calls (`w.remove()` immediately followed by `Worktree::delete_branch`, e.g.
+        // conductor.rs:3459-3470), so on a later resume BOTH the branch and its worktree
+        // are still fully present for `gc_integrated_branches` to find and reclaim itself,
+        // as the sole authority that ever touches this unit's branch/worktree.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let seed_dir = std::env::temp_dir().join(format!(
+            "rigger-seed-{}-{}",
+            sanitize_for_path("answered"),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let seed_wt = crate::worktree::Worktree::create(
+            &repo_path,
+            seed_dir.to_str().unwrap(),
+            &unit_branch("answered"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            Path::new(&seed_wt.dir).join("answered.rs"),
+            "fn answered() {}\n",
+        )
+        .unwrap();
+        let committed = seed_wt.commit("rigger: prior window work").unwrap();
+        assert!(!committed.is_empty(), "the prior window must commit work");
+
+        let events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(
+                    &json!({"id": "answered", "agent": "worker", "branch": unit_branch("answered")}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "answered", "commit": "a11"})).unwrap(),
+            ),
+            spawn::SpawnRequest::new("answered", "answered", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+            spawn::SpawnResult::ok("answered/adversary#0", "approve")
+                .to_event()
+                .unwrap(),
+        ];
+        let rs = ledger::project(&events).unwrap();
+        let stages: BTreeMap<String, Stage> = BTreeMap::new();
+
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut lines: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            lines.push(l.to_string())
+        });
+
+        assert!(
+            !branch_present(&repo_path, &unit_branch("answered")),
+            "a terminal (answered) latest spawn must not block this reclaim authority"
+        );
+        assert!(
+            !Path::new(&seed_wt.dir).exists(),
+            "the still-registered worktree must be reclaimed too, not only the branch ref"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("removing")
+                && l.contains("answered")
+                && l.contains("terminal")),
+            "the removed decision must be attributable from the log when this call is the \
+             one genuinely performing the removal: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn gc_integrated_branches_logged_stays_silent_for_an_already_gone_worktree_but_still_reclaims_an_orphaned_branch(
+    ) {
+        // Round 3 fix for `sdet-u83c1r2-removing-evidence-repeats-forever-after-real-
+        // removal` (UPHELD in ADJUDICATION u83c1 round 2, cause genuine-defect): the
+        // DOMINANT graceful path (e.g. conductor.rs:3459-3470) removes a unit's worktree
+        // and deletes its branch back-to-back in the SAME call, so by the time a LATER
+        // `conductor::run` examines this unit, `commit_on_unit_branch`'s own `wt.remove()`
+        // models exactly that - the worktree is already gone, and only a lingering branch
+        // ref remains (either a rarer crash strictly between those two teardown lines, or
+        // - the periphery suite's `hung` arm - `worktree::sweep_terminal` already reclaimed
+        // the worktree moments earlier in the SAME `rigger step`, per `main.rs::cmd_step`
+        // running it BEFORE `conductor::run`). Before this fix, `gc_integrated_branches_
+        // logged` printed a false "removing branch" claim in BOTH cases regardless of
+        // physical presence, either forever (the ledger's `Integrated` set never shrinks)
+        // or as a duplicate of `sweep_terminal`'s own line for the identical vanish. The
+        // fix gates the LOG on the worktree still being registered, mirroring `sweep_
+        // terminal_logged`'s own live-git-state candidate set - so this scenario now stays
+        // silent, while the best-effort `Worktree::delete_branch` call underneath still
+        // reclaims the orphaned branch exactly as before (idempotent, unconditional, per
+        // the required fix's own explicit carve-out for the reclaim calls themselves).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        commit_on_unit_branch(&repo_path, "settled", "settled.rs", "fn settled() {}\n");
+        assert!(
+            branch_present(&repo_path, &unit_branch("settled")),
+            "precondition: the branch survives its own worktree's removal"
+        );
+
+        let events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(
+                    &json!({"id": "settled", "agent": "worker", "branch": unit_branch("settled")}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "settled", "commit": "5e77"})).unwrap(),
+            ),
+            spawn::SpawnRequest::new("settled", "settled", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+            spawn::SpawnResult::ok("settled/adversary#0", "approve")
+                .to_event()
+                .unwrap(),
+        ];
+        let rs = ledger::project(&events).unwrap();
+        let stages: BTreeMap<String, Stage> = BTreeMap::new();
+
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut lines: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            lines.push(l.to_string())
+        });
+
+        assert!(
+            !branch_present(&repo_path, &unit_branch("settled")),
+            "the orphaned branch must still be silently reclaimed - only the log emission \
+             is gated, never the underlying best-effort delete"
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("removing") && l.contains("settled")),
+            "no removing evidence may be printed for a branch whose worktree is already \
+             gone - it is either a re-claim of a removal that already happened (the \
+             forever-repeat defect) or a duplicate of `sweep_terminal`'s own line for the \
+             identical vanish moments earlier in the same step: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn gc_integrated_branches_logged_does_not_repeat_removing_evidence_once_the_real_removal_already_happened(
+    ) {
+        // The direct regression pin for `sdet-u83c1r2-removing-evidence-repeats-forever-
+        // after-real-removal` / `adv-u83c1r2-uphold-removing-evidence-repeats-forever-own-
+        // repro` (both UPHELD): `rs.units` is a ledger-projected, monotonic, never-
+        // shrinking `Integrated` set folded fresh on EVERY `conductor::run` (every `rigger
+        // step`), so a unit that reads `Integrated` on step N still reads `Integrated` on
+        // every step after it - and, pre-fix, `gc_integrated_branches_logged` re-printed a
+        // false "removing branch" claim on every one of those future steps, forever, long
+        // after the real removal already happened on step N. This drives the SAME call
+        // TWICE over the IDENTICAL `rs`/`events` - exactly what a later `rigger step`
+        // resolves for such a unit - and pins that only the FIRST call (the one that
+        // genuinely finds the worktree still registered and reclaims it) logs "removing";
+        // the second call, over the same never-shrinking `Integrated` set, must stay
+        // silent because the branch and worktree are already gone.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let seed_dir = std::env::temp_dir().join(format!(
+            "rigger-seed-{}-{}",
+            sanitize_for_path("repeat"),
+            &uuid::Uuid::new_v4().to_string()[..8]
+        ));
+        let seed_wt = crate::worktree::Worktree::create(
+            &repo_path,
+            seed_dir.to_str().unwrap(),
+            &unit_branch("repeat"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            Path::new(&seed_wt.dir).join("repeat.rs"),
+            "fn repeat() {}\n",
+        )
+        .unwrap();
+        let committed = seed_wt.commit("rigger: prior window work").unwrap();
+        assert!(!committed.is_empty(), "the prior window must commit work");
+
+        let events = vec![
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                serde_json::to_vec(
+                    &json!({"id": "repeat", "agent": "worker", "branch": unit_branch("repeat")}),
+                )
+                .unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "repeat", "commit": "2e97"})).unwrap(),
+            ),
+            spawn::SpawnRequest::new("repeat", "repeat", "adversary", 0, "verify")
+                .to_event()
+                .unwrap(),
+            spawn::SpawnResult::ok("repeat/adversary#0", "approve")
+                .to_event()
+                .unwrap(),
+        ];
+        let rs = ledger::project(&events).unwrap();
+        let stages: BTreeMap<String, Stage> = BTreeMap::new();
+
+        let st = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let mut first: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            first.push(l.to_string())
+        });
+        assert!(
+            !branch_present(&repo_path, &unit_branch("repeat")),
+            "the first call must genuinely reclaim the branch"
+        );
+        assert!(
+            first
+                .iter()
+                .any(|l| l.contains("removing") && l.contains("repeat")),
+            "the first, REAL removal must be attributable from the log: {first:?}"
+        );
+
+        // Second call: SAME `rs` (same ledger-projected `RunState`) and SAME `events` -
+        // exactly what a later `rigger step` resolves for this unit, since `rs.units` never
+        // shrinks. The branch and worktree are already fully gone from the first call.
+        let mut second: Vec<String> = Vec::new();
+        ctx.gc_integrated_branches_logged(&rs, &stages, &events, &mut |l| {
+            second.push(l.to_string())
+        });
+        assert!(
+            !second
+                .iter()
+                .any(|l| l.contains("removing") && l.contains("repeat")),
+            "a real vanish must be logged exactly once across the whole campaign - never \
+             re-claimed on every future step after the branch/worktree are already gone: \
+             {second:?}"
         );
     }
 
@@ -18193,7 +22713,10 @@ mod tests {
             ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
+            prior_resume_bound: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
+            #[cfg(feature = "symbols")]
+            replayed_generations: Mutex::new(HashMap::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),
@@ -18201,6 +22724,9 @@ mod tests {
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
             compensated_commits: Mutex::new(HashSet::new()),
+            conflict_regenerate_pending: Mutex::new(HashMap::new()),
+            integrate_attempted: HashSet::new(),
+            pending_landing: Mutex::new(HashMap::new()),
             taxonomy: failure::Taxonomy::default(),
         };
 
@@ -21697,6 +26223,825 @@ mod tests {
     }
 
     #[test]
+    fn plan_stage_commit_under_specs_reaches_the_run_branch_before_the_next_worktree() {
+        // PLAN AMENDMENTS LAND (spec 88, criterion 4): a planner's own git commit under
+        // `specs/` must reach the run branch at the producer's DAG-terminal integration
+        // point - BEFORE any later stage's worktree (branched off the run branch, like
+        // the plan-critique gate's throwaway review worktree) is created. Without this,
+        // a committed amendment reaches no branch (Goal item 4: the b6a471c amendment)
+        // and a later critique never sees it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.agents.insert("checker".into(), agent("checker"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        // Stands in for the next plan-critique worktree: a standalone review stage that
+        // needs the producer, so its throwaway worktree is created AFTER "plan" reaches
+        // Integrated - branched off whatever the run branch holds at that moment.
+        cfg.workflow.stages.insert(
+            "critique".into(),
+            Stage {
+                name: "critique".into(),
+                agents: vec!["checker".into()],
+                needs: vec!["plan".into()],
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"approve"}"#.into(),
+            commits_by_agent: HashMap::from([(
+                "planner".to_string(),
+                vec![("specs/90-foo.md".to_string(), "amendment\n".to_string())],
+            )]),
+            read_file_by_agent: HashMap::from([(
+                "checker".to_string(),
+                "specs/90-foo.md".to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan"].status,
+            ledger::Status::Integrated,
+            "a producer with a landed amendment must still reach Integrated"
+        );
+        assert_ne!(
+            rs.units["plan"].commit, REVIEW_ONLY_NO_ARTIFACT,
+            "a landed specs/ commit replaces the review-only marker"
+        );
+        assert_ne!(rs.units["plan"].commit, "");
+
+        // The amendment is on the run branch itself.
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("specs").join("90-foo.md")).unwrap(),
+            "amendment\n",
+            "the plan-stage commit must reach the run branch"
+        );
+
+        // The load-bearing ordering claim: the NEXT stage's worktree (branched off the
+        // run branch after "plan" integrated) saw the amendment.
+        assert_eq!(
+            driver.read_results.lock().unwrap().get("checker").cloned(),
+            Some("amendment\n".to_string()),
+            "a later worktree branched off the run branch must already see the landed amendment"
+        );
+    }
+
+    #[test]
+    fn plan_stage_commit_outside_specs_fails_the_stage_naming_the_path() {
+        // PLAN AMENDMENTS LAND (spec 88, criterion 4): a plan-stage commit may touch
+        // ONLY `specs/`. A commit touching any other path must fail the stage loudly,
+        // naming the offending path, and never reach the run branch.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            commits_by_agent: HashMap::from([(
+                "planner".to_string(),
+                vec![("src/sneaky.rs".to_string(), "// scope creep\n".to_string())],
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan"].status,
+            ledger::Status::Escalated,
+            "an out-of-scope plan-stage commit must never integrate; it escalates \
+             (the same violation recurs every retry, since nothing fixes it)"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        // Cause wire (spec 69, criterion 3): a scope violation is the same kind of
+        // refusal a review verdict is, so it is stamped the existing CAUSE_REJECT tag,
+        // never a fabricated new one.
+        let failed = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .expect("an out-of-scope commit must record a UnitFailed");
+        assert!(
+            String::from_utf8_lossy(&failed.data).contains("\"cause\":\"reject\""),
+            "an out-of-scope plan-stage commit is stamped CAUSE_REJECT"
+        );
+        // "Fails the stage LOUDLY, naming the offending path": the retry prompt (the
+        // planner's own next attempt) and the escalation lesson both carry it.
+        let prompts = driver.prompts_for("planner");
+        assert!(
+            prompts.iter().any(|p| p.contains("src/sneaky.rs")),
+            "the retry prompt must name the offending path; prompts: {prompts:?}"
+        );
+        let lesson = events
+            .iter()
+            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .expect("the escalation must record a lesson naming the violation");
+        assert!(
+            String::from_utf8_lossy(&lesson.data).contains("src/sneaky.rs"),
+            "the escalation lesson must name the offending path"
+        );
+        assert!(
+            !repo.path().join("src").join("sneaky.rs").exists(),
+            "the out-of-scope content must never reach the run branch"
+        );
+    }
+
+    #[test]
+    fn plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_stage() {
+        // adv-u88c4-scope-check-nets-the-diff-not-each-commit: `integrate_plan_commits`
+        // scope-checked only the AGGREGATE three-dot diff (`changed_since_base`), never
+        // each individual commit in `shas`. A LATER commit in the same producer attempt
+        // that reverts an EARLIER commit's own non-specs touch nets that path clean in
+        // the aggregate, so the violation must still be caught PER COMMIT - a
+        // producer's git access must never be allowed to touch anything outside
+        // `specs/`, however transiently, and land anyway. This scope check is the ONLY
+        // safety boundary a producer commit crosses before landing permanently on the
+        // shared run branch (`PlanCommitOutcome::Landed` is never `review_unit`'d).
+        //
+        // The offending-path retry-prompt naming is already pinned by the sibling
+        // `plan_stage_commit_outside_specs_fails_the_stage_naming_the_path`; this test
+        // proves only its OWN distinct claim - the per-commit check where the aggregate
+        // one would wrongly clear the sequence.
+        let touched_path = "docs/existing.md";
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // Pre-seed the path on the run branch BEFORE the producer worktree branches
+        // off, so reverting it back is a real, in-history no-op relative to base -
+        // not merely deleting a file base never had.
+        std::fs::create_dir_all(repo.path().join("docs")).unwrap();
+        std::fs::write(repo.path().join(touched_path), "seed\n").unwrap();
+        run_git(&repo_path, &["add", "-A"]);
+        run_git(&repo_path, &["commit", "-q", "-m", "seed docs/existing.md"]);
+
+        // Two commits touching the SAME path, built via a loop rather than a literal
+        // list: content "scope creep" then back to "seed" - the second undoes the
+        // first, so the aggregate base...HEAD diff for this path is empty even
+        // though each commit individually touched it.
+        let mut touches = Vec::new();
+        for content in ["scope creep\n", "seed\n"] {
+            touches.push((touched_path.to_string(), content.to_string()));
+        }
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            commits_by_agent: HashMap::from([("planner".to_string(), touches)]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan"].status,
+            ledger::Status::Escalated,
+            "a commit sequence that touches a non-specs path and later reverts it must \
+             still fail - the per-commit scope check, not only the aggregate diff"
+        );
+
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let Some(failed) = events.iter().find(|e| e.type_ == ledger::TYPE_UNIT_FAILED) else {
+            panic!("the reverted-but-still-touched commit must record a UnitFailed");
+        };
+        assert!(
+            String::from_utf8_lossy(&failed.data).contains("\"cause\":\"reject\""),
+            "a per-commit scope violation is stamped the same cause tag the aggregate check uses"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(touched_path)).unwrap(),
+            "seed\n",
+            "the run branch's copy of the path must never be touched by the rejected sequence"
+        );
+    }
+
+    #[test]
+    fn plan_stage_commit_conflicting_with_a_concurrent_specs_change_escalates() {
+        // CONSTRAINTS WALK (spec 88, criterion 4): a plan amendment that conflicts with
+        // a concurrent operator commit under `specs/` must escalate to a human rather
+        // than silently drop the amendment - never a clean (wrong) auto-resolution.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // A PRIOR window's planner already committed a specs/ amendment onto the
+        // deterministic `rigger/u/plan` branch (mirrors Goal item 4's b6a471c) - via a
+        // throwaway worktree, never touching the run branch's own checkout.
+        let seed_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let seed =
+            worktree::Worktree::create(&repo_path, seed_dir.to_str().unwrap(), "rigger/u/plan", "")
+                .unwrap();
+        std::fs::create_dir_all(seed_dir.join("specs")).unwrap();
+        std::fs::write(seed_dir.join("specs").join("90-foo.md"), "planner amend\n").unwrap();
+        run_git(seed_dir.to_str().unwrap(), &["add", "-A"]);
+        run_git(
+            seed_dir.to_str().unwrap(),
+            &["commit", "-q", "-m", "planner amend"],
+        );
+        seed.remove().unwrap(); // only the transient DIR goes; the branch persists.
+
+        // Meanwhile the run branch independently gains a CONFLICTING concurrent
+        // operator edit to the same spec path.
+        std::fs::create_dir_all(repo.path().join("specs")).unwrap();
+        std::fs::write(
+            repo.path().join("specs").join("90-foo.md"),
+            "operator edit\n",
+        )
+        .unwrap();
+        run_git(&repo_path, &["add", "-A"]);
+        run_git(&repo_path, &["commit", "-q", "-m", "operator edit"]);
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        // The planner's fresh spawn commits nothing new this run - the ALREADY-adopted
+        // branch (from the prior window) is what conflicts.
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(
+            rs.units["plan"].status,
+            ledger::Status::Escalated,
+            "a conflicting plan amendment must escalate to a human, never integrate"
+        );
+        // The run branch is untouched - the conflict never landed.
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("specs").join("90-foo.md")).unwrap(),
+            "operator edit\n",
+            "the conflicting amendment must never overwrite the concurrent operator edit"
+        );
+    }
+
+    #[test]
+    fn integrate_plan_commits_is_idempotent_on_a_resumed_already_landed_worktree() {
+        // RULING ITEM 4, crash points "after landing but before emit" AND "after
+        // emit" (op-u88c4-next-round-plan-commit-landing-is-log-carried-and-
+        // idempotent): a crash between a successful cherry-pick landing and the
+        // `UnitIntegrated` that would have recorded it means a resumed process calls
+        // `integrate_plan_commits` a SECOND (or third - the "after emit" point,
+        // since a bug reintroducing a call post-emit must be just as safe) time
+        // against the SAME worktree, recomputing the SAME `commits_since_base()`
+        // (identity-based reachability cannot see the already-landed cherry-picked
+        // equivalent). Every call must resolve WITHOUT propagating a hard `Err`
+        // through the caller's `?` - which would halt the WHOLE step/wave, not
+        // merely re-fail this one stage - and (adv-u88c4-r4-resumed-none-landing-is-
+        // permanently-uncompensable) it must still carry the REAL, permanent,
+        // revertible commit the first call actually landed, recovered via the
+        // durable `plan-landed:<unit>` record [`RunCtx::read_plan_landed`] writes -
+        // never discard it as a bare no-artifact marker, which would make that
+        // commit uncompensable forever.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            worktree::Worktree::create(&repo_path, wt_dir.to_str().unwrap(), "rigger/u/plan", "")
+                .unwrap();
+        std::fs::create_dir_all(wt_dir.join("specs")).unwrap();
+        std::fs::write(wt_dir.join("specs").join("90-foo.md"), "amend\n").unwrap();
+        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        // A FIXED, deliberately old author/committer date on the original commit -
+        // never the wall-clock "now" a bare `git commit` would use - so the fresh
+        // cherry-pick below (which stamps its OWN committer time as real "now")
+        // cannot coincidentally reproduce a byte-identical commit object (the rare
+        // same-committer-second case `CherryPickOutcome::Picked`'s own doc comment
+        // names). Without this, a fast test run risks the pre-landing sha and the
+        // landed sha being the SAME object, which would make `commits_since_base`
+        // already read empty on the second call via plain identity - never
+        // exercising the patch-id recovery path this test exists to prove, the
+        // REALISTIC shape being a real crash-and-later-resume spanning
+        // wall-clock seconds, so the two dates would never coincide in production.
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt_dir.to_str().unwrap())
+            .args(["commit", "-q", "-m", "amend"])
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "fixed-date commit failed");
+
+        let store = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // FIRST call: a real, fresh landing (the pre-crash attempt) - never itself
+        // recorded via `UnitIntegrated`, mirroring the crash-before-emit window.
+        let first_shas = match ctx.integrate_plan_commits("plan", Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(shas) => {
+                assert_eq!(shas.len(), 1);
+                shas
+            }
+            PlanCommitOutcome::None => panic!("expected a fresh landing, got None"),
+            PlanCommitOutcome::OutOfScope(paths) => {
+                panic!("expected a fresh landing, got OutOfScope({paths:?})")
+            }
+            PlanCommitOutcome::Conflict(detail) => {
+                panic!("expected a fresh landing, got Conflict({detail})")
+            }
+        };
+
+        // SECOND call against the SAME worktree - the "after landing but before
+        // emit" crash point. Nothing NEW lands (the git-level work already
+        // happened), but the REAL commit the first call landed must still come
+        // back, recovered - never a bare no-artifact marker that would make it
+        // uncompensable forever. No NEW git mutation happens either: the durable
+        // record alone answers it.
+        let head_after_first = run_git(&repo_path, &["rev-parse", "HEAD"]);
+        let second = ctx.integrate_plan_commits("plan", Some(&wt));
+        assert!(
+            second.is_ok(),
+            "a resumed already-landed worktree must resolve, never hard-error and halt the step"
+        );
+        match second.unwrap() {
+            PlanCommitOutcome::Landed(shas) => assert_eq!(
+                shas, first_shas,
+                "the resumed call must recover the SAME real commit the first call landed"
+            ),
+            PlanCommitOutcome::None => panic!(
+                "a resumed already-landed worktree must recover its real commit, not \
+                 discard it as a bare no-artifact marker (uncompensable forever)"
+            ),
+            PlanCommitOutcome::OutOfScope(paths) => {
+                panic!("an already-landed resume must never read as OutOfScope({paths:?})")
+            }
+            PlanCommitOutcome::Conflict(detail) => {
+                panic!("an already-landed resume must never read as a Conflict({detail})")
+            }
+        }
+        assert_eq!(
+            run_git(&repo_path, &["rev-parse", "HEAD"]),
+            head_after_first,
+            "the resumed call must not mutate the run branch again - the durable record alone \
+             answers it"
+        );
+
+        // THIRD call - the "after emit" crash point: even once a caller has (in the
+        // real conductor) already recorded `UnitIntegrated` from the second call's
+        // outcome, a stray re-entry must resolve exactly the same way, not diverge.
+        match ctx.integrate_plan_commits("plan", Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(shas) => assert_eq!(
+                shas, first_shas,
+                "a third, post-emit call must still recover the SAME real commit"
+            ),
+            PlanCommitOutcome::None => {
+                panic!("a third, post-emit call must still resolve to Landed, got None")
+            }
+            PlanCommitOutcome::OutOfScope(paths) => {
+                panic!("a third, post-emit call must still resolve to Landed, got OutOfScope({paths:?})")
+            }
+            PlanCommitOutcome::Conflict(detail) => {
+                panic!(
+                    "a third, post-emit call must still resolve to Landed, got Conflict({detail})"
+                )
+            }
+        }
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn integrate_plan_commits_tolerates_a_pre_existing_intent_record_with_no_git_mutation_yet() {
+        // RULING ITEM 4, crash point "after the intent record but before git" (op-u88c4-
+        // next-round-plan-commit-landing-is-log-carried-and-idempotent): a crash strictly
+        // between `record_plan_intent` returning and `cherry_pick_onto_run_branch` ever
+        // running leaves a durable `plan-intent:<unit>` record with NO corresponding
+        // `plan-landed:<unit>` confirmation and NO git-level change at all. A resumed call
+        // must land normally - the pre-existing intent record is purely an audit trail,
+        // never consulted for the landing decision itself (only `plan-landed` is), so its
+        // presence changes nothing observable.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            worktree::Worktree::create(&repo_path, wt_dir.to_str().unwrap(), "rigger/u/plan", "")
+                .unwrap();
+        std::fs::create_dir_all(wt_dir.join("specs")).unwrap();
+        std::fs::write(wt_dir.join("specs").join("90-foo.md"), "amend\n").unwrap();
+        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        run_git(wt_dir.to_str().unwrap(), &["commit", "-q", "-m", "amend"]);
+        let shas = wt.commits_since_base().unwrap();
+        assert_eq!(shas.len(), 1);
+
+        let store = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // Simulate the crash point directly: the intent record exists, but no
+        // `plan-landed` confirmation and no git mutation ever happened.
+        ctx.record_plan_intent("plan", &shas).unwrap();
+        assert!(
+            ctx.read_plan_landed("plan").unwrap().is_empty(),
+            "precondition: no confirmation exists yet"
+        );
+
+        match ctx.integrate_plan_commits("plan", Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(landed) => assert_eq!(
+                landed.len(),
+                1,
+                "a resumed call must land normally despite a pre-existing intent record"
+            ),
+            PlanCommitOutcome::None => {
+                panic!("a non-empty, in-scope intent must never resolve to None")
+            }
+            PlanCommitOutcome::OutOfScope(paths) => {
+                panic!("expected a fresh landing, got OutOfScope({paths:?})")
+            }
+            PlanCommitOutcome::Conflict(detail) => {
+                panic!("expected a fresh landing, got Conflict({detail})")
+            }
+        }
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn integrate_plan_commits_keeps_the_earlier_commits_identity_when_the_worktree_grows_between_calls(
+    ) {
+        // adv-u88c4-r6-partial-landing-with-a-grown-shas-drops-the-first-commit-identity:
+        // a resumed call whose worktree GAINED an additional commit since a prior landing
+        // (a re-spawned planner committing a SECOND amendment in a later round) must never
+        // drop the FIRST commit's identity from `shas` - the round-6 defect, reachable
+        // through the untouched non-empty `CherryPickOutcome::Picked` arm, which the
+        // durable `plan-landed` record now closes: the first commit's landed identity is
+        // read back from the record, not re-derived from this call's own (empty, since
+        // already-applied) cherry-pick result.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            worktree::Worktree::create(&repo_path, wt_dir.to_str().unwrap(), "rigger/u/plan", "")
+                .unwrap();
+        std::fs::create_dir_all(wt_dir.join("specs")).unwrap();
+        std::fs::write(wt_dir.join("specs").join("90-first.md"), "amend 1\n").unwrap();
+        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        // A FIXED, deliberately old author/committer date - never the wall-clock "now"
+        // a bare `git commit` would use - so the cherry-pick below (which stamps its
+        // OWN committer time as real "now") cannot coincidentally reproduce a
+        // byte-identical commit object in the rare same-committer-second case (see the
+        // sibling idempotency tests' identical guard) - which would collapse `first`'s
+        // original and landed shas into the SAME object and defeat this test's whole
+        // premise (a distinguishable original vs. landed identity).
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt_dir.to_str().unwrap())
+            .args(["commit", "-q", "-m", "amend 1"])
+            .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
+            .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "fixed-date commit failed");
+
+        let store = Store::open(":memory:").unwrap();
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        // FIRST call: lands the first commit for real and records its confirmation.
+        let first = match ctx.integrate_plan_commits("plan", Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(shas) => {
+                assert_eq!(shas.len(), 1);
+                shas
+            }
+            other => panic!("expected a fresh single-commit landing, got {other:?}"),
+        };
+
+        // MEANWHILE: a re-spawned planner commits a SECOND amendment onto the SAME
+        // worktree - the shape a re-spawn across review rounds naturally produces.
+        std::fs::write(wt_dir.join("specs").join("91-second.md"), "amend 2\n").unwrap();
+        run_git(wt_dir.to_str().unwrap(), &["add", "-A"]);
+        run_git(wt_dir.to_str().unwrap(), &["commit", "-q", "-m", "amend 2"]);
+
+        // SECOND call: `commits_since_base` now returns BOTH commits (grown). The
+        // first must keep its already-confirmed identity; the second lands fresh.
+        match ctx.integrate_plan_commits("plan", Some(&wt)).unwrap() {
+            PlanCommitOutcome::Landed(shas) => {
+                assert_eq!(
+                    shas.len(),
+                    2,
+                    "both commits must be present, not just the new one"
+                );
+                assert_eq!(
+                    shas[0], first[0],
+                    "the FIRST commit's identity must be preserved, never dropped"
+                );
+                assert_ne!(
+                    shas[1], first[0],
+                    "the second entry must be the genuinely new commit, not a repeat"
+                );
+            }
+            other => panic!("expected a two-commit Landed outcome, got {other:?}"),
+        }
+        wt.remove().unwrap();
+    }
+
+    /// An [`EventStore`] wrapper that fails ONE specific append - any batch containing
+    /// an event whose JSON payload contains `fail_containing` - and delegates every
+    /// other call straight to `inner` (the real store), so a test can force a hard
+    /// Err out of exactly one internal write ([`RunCtx::record_plan_intent`]'s
+    /// `plan-intent:<unit>` `DecisionMade`, in the tests below) without disturbing
+    /// anything else the run does.
+    struct FailingStore<'a> {
+        inner: &'a dyn EventStore,
+        fail_containing: &'static str,
+    }
+    impl EventStore for FailingStore<'_> {
+        fn append(
+            &self,
+            stream: &str,
+            expected: ExpectedRevision,
+            events: &[Event],
+        ) -> Result<Appended, crate::eventstore::Error> {
+            if events
+                .iter()
+                .any(|e| String::from_utf8_lossy(&e.data).contains(self.fail_containing))
+            {
+                return Err(crate::eventstore::Error::Backend(format!(
+                    "simulated store failure appending an event containing {:?}",
+                    self.fail_containing
+                )));
+            }
+            self.inner.append(stream, expected, events)
+        }
+        fn read_stream(
+            &self,
+            stream: &str,
+            from: crate::eventstore::Revision,
+            dir: Direction,
+        ) -> Result<Vec<Event>, crate::eventstore::Error> {
+            self.inner.read_stream(stream, from, dir)
+        }
+        fn read_all(
+            &self,
+            from: crate::eventstore::Position,
+            dir: Direction,
+            filter: &Filter,
+        ) -> Result<Vec<Event>, crate::eventstore::Error> {
+            self.inner.read_all(from, dir, filter)
+        }
+        fn subscribe_all(
+            &self,
+            from: crate::eventstore::Position,
+            filter: &Filter,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            self.inner.subscribe_all(from, filter)
+        }
+        fn subscribe_stream(
+            &self,
+            stream: &str,
+            from: crate::eventstore::Revision,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            self.inner.subscribe_stream(stream, from)
+        }
+    }
+
+    #[test]
+    fn integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker() {
+        // adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-fault-marker: EVERY
+        // hard Err `integrate_plan_commits` can produce - a `record_plan_intent`/
+        // `record_plan_landed` store-append failure, a `find_landed_by_patch_id`/
+        // `patch_id_of` subprocess failure, an unresolvable leftover cherry-pick
+        // state, or any other git-level surprise - is a CONDUCTOR-SIDE
+        // infrastructure fault around landing the producer's own commits, never the
+        // unit's own defect, so it must carry PLAN_LANDING_MARKER (recognized by
+        // `is_plan_landing_failed`) through the ONE wrapping boundary every call site
+        // shares, rather than each internal `?` needing its own bespoke wrap. Forced
+        // here via a store double that fails specifically the `plan-intent:<unit>`
+        // `DecisionMade` write `record_plan_intent` makes BEFORE any git mutation -
+        // proving the wrap covers an INTERNAL call site, not just a git failure.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/u/plan", "").unwrap();
+        std::fs::create_dir_all(wt_path.join("specs")).unwrap();
+        std::fs::write(wt_path.join("specs").join("90-a.md"), "amend\n").unwrap();
+        run_git(wt_path.to_str().unwrap(), &["add", "-A"]);
+        run_git(wt_path.to_str().unwrap(), &["commit", "-q", "-m", "amend"]);
+
+        let real_store = Store::open(":memory:").unwrap();
+        let store = FailingStore {
+            inner: &real_store,
+            fail_containing: "plan-intent:",
+        };
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let err = match ctx.integrate_plan_commits("plan", Some(&wt)) {
+            Ok(outcome) => panic!("expected a hard error from the failing store, got {outcome:?}"),
+            Err(e) => e,
+        };
+        assert!(
+            is_plan_landing_failed(&err),
+            "a hard Err out of integrate_plan_commits must carry PLAN_LANDING_MARKER so \
+             run_wave routes it through the no-lesson infra-fault arm, not the generic \
+             wave-collapse arm: {:?}",
+            err.0
+        );
+        assert!(
+            err.0.contains("\"plan\""),
+            "the wrapped error must still name the unit: {:?}",
+            err.0
+        );
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn a_plan_landing_infra_fault_halts_the_run_loudly_with_no_per_unit_lesson_or_attempt() {
+        // adv-u88c4-r7-plan-commit-errors-still-carry-no-infra-fault-marker, bundled
+        // fix: end-to-end through the real `run()` loop, a plan-stage commit-landing
+        // infra fault (here, the SAME forced `record_plan_intent` store failure as
+        // the focused test above) must halt the run LOUDLY (an Err out of `run`,
+        // marker stripped) while recording NEITHER a per-unit lesson NOR a charged
+        // attempt (no UnitFailed/UnitEscalated) - exactly the treatment the
+        // pre-existing degenerate-reviewer and verdict-channel-mismatch halts
+        // already get, proving the new arm is actually reached from the real
+        // producer call site (conductor.rs `run_single_stage` -> `run_wave`), not
+        // just from a direct unit-level call.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let real_store = Store::open(":memory:").unwrap();
+        let store = FailingStore {
+            inner: &real_store,
+            fail_containing: "plan-intent:",
+        };
+        let driver = Stub {
+            commits_by_agent: HashMap::from([(
+                "planner".to_string(),
+                vec![("specs/90-foo.md".to_string(), "amendment\n".to_string())],
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!("a plan-landing infra fault must halt the run, not succeed"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("\"plan\""),
+            "the halt must name the producer unit: {:?}",
+            err.0
+        );
+        assert!(
+            !err.0.contains(PLAN_LANDING_MARKER),
+            "the operator-facing halt must not carry the internal sentinel marker: {:?}",
+            err.0
+        );
+
+        let events = real_store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a plan-landing infra-fault halt must not charge the unit an attempt \
+             (no UnitFailed)"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
+            "a plan-landing infra-fault halt must not escalate the unit either"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
+            "a plan-landing infra-fault halt must record NO per-unit lesson - it would \
+             misattribute a conductor/git-plumbing fault to the producer unit"
+        );
+    }
+
+    #[test]
     fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
         // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
         // failure: it blocks THAT unit's integration and remediates, escalating after
@@ -22031,6 +27376,207 @@ mod tests {
             worker_spawns,
             safety::MAX_RETRIES,
             "an absent max_retries must give exactly the historical three attempts; spawns were {worker_spawns}"
+        );
+    }
+
+    #[test]
+    fn a_resumed_unit_gets_exactly_its_granted_extra_attempts_before_re_escalating() {
+        // Spec 88, criterion 3 (ESCALATION RESUMES): `rigger resume-unit`'s
+        // `UnitResumed` widens THIS unit's remediation bound to attempts-at-resume +
+        // attempts_granted - it must neither re-escalate on the very next attempt
+        // (the bug a naive `Failed` revert without a bound override would produce,
+        // since the global `max_retries` is already spent) nor retry forever. A
+        // perpetually-rejecting adjudicator can only ever escalate, so counting
+        // worker spawns across BOTH `run()` calls pins the exact widened depth.
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adversary".into(), agent("adversary"));
+        cfg.agents.insert("adj".into(), agent("adj"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.defaults.review = config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adj".into(),
+            tiers: None,
+        };
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.workflow.stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: r#"{"verdict":"reject","issues":[]}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        // First window: escalates after exactly the configured 2 attempts.
+        let rs1 = run(&cfg, &deps).unwrap();
+        assert_eq!(rs1.units["implement"].status, ledger::Status::Escalated);
+        assert_eq!(rs1.units["implement"].attempts, 2);
+
+        // The operator grants 2 more attempts, exactly `rigger resume-unit
+        // implement --attempts 2` would append.
+        let resumed = crate::eventstore::Event::new(
+            ledger::TYPE_UNIT_RESUMED,
+            serde_json::to_vec(
+                &json!({"unit": "implement", "attempts_granted": 2, "by": "operator"}),
+            )
+            .unwrap(),
+        );
+        st.append(
+            STREAM,
+            crate::eventstore::ExpectedRevision::Any,
+            std::slice::from_ref(&resumed),
+        )
+        .unwrap();
+
+        // Second window (a fresh `rigger step`/`rigger run` resume): the unit must
+        // re-enter remediation and get EXACTLY 2 more attempts (4 total) before it
+        // escalates a second time - not 0 (re-escalating immediately on the stale
+        // global bound) and not unbounded.
+        let rs2 = run(&cfg, &deps).unwrap();
+        let order = driver.call_order.lock().unwrap().clone();
+        let worker_spawns = order.iter().filter(|a| *a == "worker").count() as u32;
+        assert_eq!(
+            worker_spawns, 4,
+            "a resumed unit must get exactly its granted 2 extra attempts on top of \
+             the 2 it already spent, 4 total across both windows; spawns were {order:?}"
+        );
+        assert_eq!(
+            rs2.units["implement"].status,
+            ledger::Status::Escalated,
+            "a perpetually-rejecting adjudicator still escalates once the widened \
+             bound is spent - the grant loosens depth, never the review bar"
+        );
+        assert_eq!(
+            rs2.units["implement"].attempts, 4,
+            "the final folded attempt count must reach the widened bound"
+        );
+        // Exactly two UnitEscalated in the whole log - one per window - never a
+        // third, and the second window's grant banner is retired by the second
+        // escalation (spec 88: "final again until the next resume").
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let escalations = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED)
+            .count();
+        assert_eq!(escalations, 2, "the unit escalates exactly once per window");
+        assert_eq!(
+            rs2.units["implement"].resumed, None,
+            "the second escalation must retire the first resume's display banner"
+        );
+    }
+
+    #[test]
+    fn max_retries_for_widens_only_the_resumed_unit_never_a_sibling() {
+        // Spec 88, criterion 3: the override is keyed by unit id - a resume grant on
+        // one unit must never leak into a sibling's bound, which stays the plain
+        // configured `max_retries`.
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 2;
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let mut ctx = RunCtx::for_test(&cfg, &deps);
+        let no_override = Stage::default();
+        ctx.prior_resume_bound.insert("resumed-unit".into(), 4);
+        assert_eq!(
+            ctx.max_retries_for("resumed-unit", &no_override),
+            4,
+            "a granted bound above the configured max_retries widens this unit's bound"
+        );
+        assert_eq!(
+            ctx.max_retries_for("sibling-unit", &no_override),
+            2,
+            "a unit with no resume grant reads the plain configured max_retries, \
+             unaffected by another unit's grant"
+        );
+        // A grant that ended up BELOW the configured bound (a pathological small
+        // --attempts on a unit that escalated early) never LOWERS the bound below
+        // what every other unit already gets.
+        ctx.prior_resume_bound.insert("small-grant-unit".into(), 1);
+        assert_eq!(
+            ctx.max_retries_for("small-grant-unit", &no_override),
+            2,
+            "a resume bound must never lower the effective bound below the plain \
+             configured max_retries"
+        );
+    }
+
+    #[test]
+    fn a_stages_own_max_retries_overrides_the_run_default_for_its_units() {
+        // Spec 91, criterion 1, rule 2: a stage may set its own `max_retries`, and it
+        // overrides `defaults.max_retries` for the units that stage governs. Unset (`0`,
+        // the `Stage` default) still inherits `defaults.max_retries` exactly as before -
+        // a stage that says nothing about it must not change any existing behavior.
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 2;
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let overriding = Stage {
+            max_retries: 5,
+            ..Default::default()
+        };
+        assert_eq!(
+            ctx.max_retries_for("checkin-unit", &overriding),
+            5,
+            "a stage's own max_retries overrides the run-wide defaults.max_retries"
+        );
+
+        let unset = Stage::default();
+        assert_eq!(
+            ctx.max_retries_for("plain-unit", &unset),
+            2,
+            "a stage that leaves max_retries at 0 (unset) still inherits \
+             defaults.max_retries, unaffected by another stage's override"
+        );
+
+        // The resume-grant ceiling still wins over EITHER bound when it is higher (spec
+        // 88, criterion 3), so a stage override never shrinks an operator's grant.
+        let mut ctx = ctx;
+        ctx.prior_resume_bound.insert("resumed-unit".into(), 9);
+        assert_eq!(
+            ctx.max_retries_for("resumed-unit", &overriding),
+            9,
+            "an operator's resume grant still widens the bound above a stage override"
         );
     }
 
@@ -23840,6 +29386,311 @@ mod tests {
         );
     }
 
+    /// REVIEW TIERS NAME THEIR TARGETS (spec 67, criterion 4): the adversary's spawn is
+    /// stamped with the unit's routed lens roster, rendered as the same `lens:<id>`
+    /// attribution tokens a `ReviewFinding.by` already carries - never a bare agent id,
+    /// never a guess.
+    #[test]
+    fn the_adversarys_spawn_is_stamped_with_the_units_lens_roster() {
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        for a in ["worker", "lensA", "lensB", "adversary", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                // Repo-less: the adjudicator approves and `on_pass: none` stops before
+                // integrate, so no git repo is needed - `reviewed` still emits.
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lensA".into(), "lensB".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                // A substantive result for each so the Gap-18 respawn loop never trips.
+                ("lensA".to_string(), "reviewed: no blocker".to_string()),
+                ("lensB".to_string(), "reviewed: no blocker".to_string()),
+                ("adversary".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert_eq!(
+            driver.reviews_for("adversary"),
+            Some(vec!["lens:lensA".to_string(), "lens:lensB".to_string()]),
+            "the adversary's SpawnOpts.reviews is the unit's lens roster, as lens:<id> tokens"
+        );
+    }
+
+    /// The adjudicator's roster is the SAME lens roster PLUS the adversary's role token
+    /// (spec 67, criterion 4: "the adjudicator's with lenses plus adversary") - the
+    /// literal `"adversary"` attribution token, not the agent id or a title-cased form.
+    #[test]
+    fn the_adjudicators_spawn_is_stamped_with_lenses_plus_adversary() {
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        for a in ["worker", "lensA", "lensB", "adversary", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lensA".into(), "lensB".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lensA".to_string(), "reviewed: no blocker".to_string()),
+                ("lensB".to_string(), "reviewed: no blocker".to_string()),
+                ("adversary".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert_eq!(
+            driver.reviews_for("judge"),
+            Some(vec![
+                "lens:lensA".to_string(),
+                "lens:lensB".to_string(),
+                "adversary".to_string()
+            ]),
+            "the adjudicator's SpawnOpts.reviews is the lens roster plus the adversary token"
+        );
+    }
+
+    /// "never a fabricated or stale roster": a panel with lenses but NO adversary must
+    /// never invent an `"adversary"` entry in the adjudicator's roster.
+    #[test]
+    fn a_panel_with_no_adversary_never_fabricates_one_in_the_adjudicators_roster() {
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        for a in ["worker", "lensA", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lensA".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lensA".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert!(
+            !driver.spawned("adversary"),
+            "a panel with no adversary configured must spawn none"
+        );
+        assert_eq!(
+            driver.reviews_for("judge"),
+            Some(vec!["lens:lensA".to_string()]),
+            "with no adversary tier, the adjudicator's roster is the lens roster alone - \
+             never a fabricated adversary entry"
+        );
+    }
+
+    /// The roster reflects the panel the conductor ACTUALLY routed to (spec 03 / spec 13
+    /// unit 4 risk-tiered depth), not a static declaration of the full panel: a unit
+    /// routed to the reduced LIGHT tier must stamp the light panel's own (smaller) lens
+    /// roster - never the full panel's wider one, and never the adversary the light tier
+    /// does not name. This is the exact defect class the Design calls out: "a driver
+    /// guess would miss a replayed lens".
+    #[test]
+    fn the_roster_reflects_the_actually_routed_light_panel_not_the_full_one() {
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        for a in ["worker", "lensA", "lensB", "adversary", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        let light = crate::config::ReviewPanel {
+            lenses: vec!["lensA".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                coverage: "s".into(),
+                on_pass: "none".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lensA".into(), "lensB".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    tiers: Some(Box::new(crate::config::ReviewDepth {
+                        light,
+                        // One grounded file, well under threshold, no high-risk path: every
+                        // signal routes LIGHT on this unit's first attempt (flapped false).
+                        threshold: 5,
+                        high_risk_paths: Vec::new(),
+                    })),
+                },
+                ..Default::default()
+            },
+        );
+        let grounder = StubGrounder {
+            by_query: HashMap::from([("s".to_string(), vec!["src/f.rs".to_string()])]),
+        };
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lensA".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grounder),
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert!(
+            !driver.spawned("lensB") && !driver.spawned("adversary"),
+            "a light-routed unit must spawn neither the full-only lens nor the adversary"
+        );
+        assert_eq!(
+            driver.reviews_for("judge"),
+            Some(vec!["lens:lensA".to_string()]),
+            "the stamped roster must match the ACTUALLY-routed light panel, never the \
+             full panel's wider lens set or its adversary"
+        );
+    }
+
+    /// sdet-u67c4-fanout-and-plancritique-roster-untested (round 2 fix): the FOUR tests
+    /// above all drive `review_unit` (the per-unit review path, reached through a stage
+    /// carrying an `agent`) - they never exercise `run_fan_out_review_loop`, the
+    /// STANDALONE three-tier review stage's OWN call site (`is_fan_out`: no `agent`, a
+    /// populated `agents` lens list). It calls the identical `run_adversary`/
+    /// `run_adjudicator` helpers, but is a second, independent wiring the mutation
+    /// accounting cannot see (cargo-mutants mutates function bodies, not which caller
+    /// passes which argument) - a swapped or dropped roster argument at THIS call site
+    /// would pass every other gate silently. This test drives it end to end and reads the
+    /// REAL `SpawnOpts.reviews` the driver received, mirroring the review_unit-path
+    /// assertions above on the fan-out path.
+    #[test]
+    fn the_fan_out_review_loops_adversary_and_adjudicator_spawns_are_stamped_with_the_routed_roster(
+    ) {
+        let mut cfg = Config::default();
+        for a in ["lensA", "lensB", "adversary", "judge"] {
+            cfg.agents.insert(a.into(), agent(a));
+        }
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                // No `agent` + a populated `agents` lens list routes this to the
+                // STANDALONE fan-out review path (`is_fan_out`), never `review_unit`.
+                agents: vec!["lensA".into(), "lensB".into()],
+                adversary: "adversary".into(),
+                adjudicator: "judge".into(),
+                // Repo-less: the adjudicator approves and `on_pass: none` stops before
+                // integrate, so no git repo is needed - `reviewed` still emits.
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("lensA".to_string(), "reviewed: no blocker".to_string()),
+                ("lensB".to_string(), "reviewed: no blocker".to_string()),
+                ("adversary".to_string(), "reviewed: no blocker".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert_eq!(
+            driver.reviews_for("adversary"),
+            Some(vec!["lens:lensA".to_string(), "lens:lensB".to_string()]),
+            "run_fan_out_review_loop's adversary spawn must carry fan_out_lenses(st), \
+             exactly like review_unit's does"
+        );
+        assert_eq!(
+            driver.reviews_for("judge"),
+            Some(vec![
+                "lens:lensA".to_string(),
+                "lens:lensB".to_string(),
+                "adversary".to_string()
+            ]),
+            "run_fan_out_review_loop's adjudicator spawn must carry the lens roster plus \
+             the adversary token"
+        );
+    }
+
     #[test]
     fn stage_autonomy_override_seeds_the_gate() {
         // A stage with `autonomy: silent` seeds its gate's ratchet at Silent, so the
@@ -23888,7 +29739,10 @@ mod tests {
             ingested: std::sync::atomic::AtomicBool::new(false),
             prior_status: HashMap::new(),
             prior_attempts: HashMap::new(),
+            prior_resume_bound: HashMap::new(),
             replayed_keys: Mutex::new(HashSet::new()),
+            #[cfg(feature = "symbols")]
+            replayed_generations: Mutex::new(HashMap::new()),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: Mutex::new(HashMap::new()),
             stale_units: Mutex::new(HashSet::new()),
@@ -23896,6 +29750,9 @@ mod tests {
             compensation_feedback: Mutex::new(HashMap::new()),
             compensation_attempts: Mutex::new(HashMap::new()),
             compensated_commits: Mutex::new(HashSet::new()),
+            conflict_regenerate_pending: Mutex::new(HashMap::new()),
+            integrate_attempted: HashSet::new(),
+            pending_landing: Mutex::new(HashMap::new()),
             taxonomy: failure::Taxonomy::default(),
         };
         ctx.record_gate("ok", gate::Kind::Core, GateRatchet::CleanPass, "silent");
@@ -24072,6 +29929,129 @@ mod tests {
                 "unit {name} must build into {want}, got {targets:?}"
             );
         }
+    }
+
+    #[test]
+    fn two_units_gate_environments_never_share_a_mutants_root() {
+        // Spec 91, THE GATE ENVIRONMENT: the identical isolation proof as
+        // `two_units_gate_environments_never_share_a_target_dir` above, for the `checkin`
+        // stage's unit-keyed `$MUTANTS` root instead of `CARGO_TARGET_DIR` - registered
+        // ALONGSIDE it (per the spec's own Design), so it must reach every gate command with
+        // the same per-unit isolation: DISTINCT, both NON-EMPTY, and each the
+        // `cargo-mutants-<unit-slug>` sibling of that unit's worktree under the run's scratch
+        // root.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        for name in ["alpha", "beta"] {
+            cfg.workflow.stages.insert(
+                name.into(),
+                Stage {
+                    name: name.into(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    on_pass: "none".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = UnitDistinctWriter;
+        let runner = RecordingRunner::new(&[]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        let mutants_dirs = runner.mutants_dirs();
+        assert_eq!(
+            mutants_dirs.len(),
+            2,
+            "each of the two units ran its one gate exactly once: {mutants_dirs:?}"
+        );
+        assert!(
+            mutants_dirs.iter().all(|m| !m.is_empty()),
+            "a gate inside a unit worktree must get a per-unit $MUTANTS root, never the empty \
+             (inherit-shared) one: {mutants_dirs:?}"
+        );
+        let unique: HashSet<&String> = mutants_dirs.iter().collect();
+        assert_eq!(
+            unique.len(),
+            2,
+            "the two units' gate mutants roots must DIFFER - never one shared root: {mutants_dirs:?}"
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        for name in ["alpha", "beta"] {
+            let want =
+                crate::worktree::unit_mutants_sibling(&unit_worktree_dir(&scratch, name)).unwrap();
+            assert!(
+                mutants_dirs.contains(&want),
+                "unit {name} must get mutants root {want}, got {mutants_dirs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_implement_stage_gate_round_creates_no_mutants_directory() {
+        // Spec 91, criterion 3 (NO SWEEP IN THE LOOP): an ordinary `implement` round's gate
+        // list never includes `mutation` - only the `checkin` stage (spec 91 criterion 2)
+        // does - so its real gate commands never run `rm -rf "$MUTANTS" && mkdir -p
+        // "$MUTANTS"` (the `mutation` gate's OWN command, the only place that ever
+        // materializes it - see `worktree::unit_mutants_sibling`'s own doc comment: "this
+        // crate never creates it"). Proven with a REAL `ExecRunner` (never `RecordingRunner`,
+        // which only records the env VALUE `two_units_gate_environments_never_share_a_
+        // mutants_root` above proves is non-empty, and could never distinguish "set" from
+        // "materialized"): the stage's one real gate command asserts, LIVE, mid-round, that
+        // its own non-empty $MUTANTS path does not exist on disk - immune to whatever
+        // unit-terminus cleanup runs afterward, which would otherwise make a post-hoc
+        // filesystem check pass vacuously regardless of whether the round itself ever
+        // created it.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert(
+            "no-mutants-dir-yet".into(),
+            gate_def(r#"test -n "$MUTANTS" && test ! -e "$MUTANTS""#),
+        );
+        cfg.workflow.stages.insert(
+            "implement-like".into(),
+            Stage {
+                name: "implement-like".into(),
+                agent: "worker".into(),
+                gates: vec!["no-mutants-dir-yet".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = UnitDistinctWriter;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path,
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_ne!(
+            rs.units["implement-like"].status,
+            ledger::Status::Escalated,
+            "an implement-shaped stage's real gate command found its own $MUTANTS path \
+             already materialized on disk (or unset) mid-round: {:?}",
+            rs.units["implement-like"].status
+        );
     }
 
     /// A driver that records the `SpawnOpts.env` handed to each spawn (spec 65) - lets a
@@ -25502,6 +31482,190 @@ mod tests {
     }
 
     #[test]
+    fn a_resumed_reviewed_units_genuine_unresolved_conflict_reaches_the_idempotent_merge_path() {
+        // Spec 89, criterion 1, round 2 fix (arch-u89c1-halted-commit-guard-preempts-resumed-
+        // conflict-idempotency / adv-u89c1-conflict-idempotency-preemption-empirically-
+        // confirmed): `run_single_stage`'s halted-commit capture used to call `Worktree::commit`
+        // UNCONDITIONALLY at the very top, before this `ResumePhase::Reviewed` branch ever ran -
+        // so a resumed unit whose worktree ALREADY carries a genuine, still-unresolved merge
+        // conflict (a prior window's OWN `integrate_and_emit` call started the merge and was
+        // interrupted - a liveness sweep, a crash - before conflict resolution ever ran) tripped
+        // `commit`'s conflict-marker refusal (spec 89's OWN "never commit a half-merge" guard,
+        // aimed at an ORDINARY implementer's abandoned edit, not a legitimate in-progress merge)
+        // instead of ever reaching `merge_into_worktree`, whose OWN `merge_in_progress` check
+        // (spec 88, criterion 1's crash-resume idempotency) is the thing actually equipped to
+        // pick this up: read the worktree's already-recorded conflict state back
+        // (`conflicting_paths`) rather than blindly re-attempting the merge command. The
+        // conflict here is over a REGISTERED REGENERABLE path, so once genuinely reached, this
+        // resolves with NO spawn at all - the same "no lifecycle spawns" shape this file's own
+        // sibling resumed-reviewed tests pin, proving the merge conflict was handled by its real
+        // owner, not silently papered over some other way.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        // The unit's OWN deterministic worktree/branch - created directly at the SAME dir/branch
+        // `stage_worktree`'s adopt-by-path-lookup would derive, exactly like this file's own
+        // `a_halted_spawns_uncommitted_tree_is_captured_as_a_wip_commit_and_named_in_the_next_
+        // prompt` - and, critically, left ON DISK (never `.remove()`d) with a merge already
+        // started and unresolved, so `run()`'s very first `stage_worktree` call for "s" ADOPTS
+        // this exact state rather than a fresh checkout `commit_on_unit_branch`'s temp-dir/
+        // remove shape would give it.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "s");
+        let unit_wt =
+            crate::worktree::Worktree::create(&repo_path, &dir, &unit_branch("s"), &scratch)
+                .unwrap();
+        std::fs::write(Path::new(&dir).join("shared.rs"), "UNIT VERSION\n").unwrap();
+        let approved = unit_wt.commit("rigger: prior window work").unwrap();
+        assert!(
+            !approved.is_empty(),
+            "the prior window must commit the approved work"
+        );
+
+        // The checked-out repo independently gains a DIFFERENT version of the SAME path since -
+        // exactly what an already-integrated batch-mate would have landed onto the run branch
+        // by the time this unit's own merge finally runs. An add/add divergence (the common
+        // ancestor has no such file at all) conflicts unconditionally.
+        std::fs::write(Path::new(&repo_path).join("shared.rs"), "RUN VERSION\n").unwrap();
+        for args in [
+            &["add", "shared.rs"][..],
+            &[
+                "commit",
+                "-q",
+                "-m",
+                "a batch-mate's own conflicting change",
+            ][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+
+        // Simulate the interruption directly: a PRIOR incarnation's own `integrate_and_emit`
+        // already called exactly this - `merge_into_worktree` merges the checked-out repo's
+        // current tip into the unit's worktree - and was killed before conflict resolution ever
+        // ran, leaving MERGE_HEAD and literal conflict-marker text sitting in `shared.rs`
+        // untouched, on disk, right where the next process's `stage_worktree` adopts it.
+        match unit_wt
+            .merge_into_worktree("rigger: integrate s (interrupted before this ever finished)")
+            .unwrap()
+        {
+            worktree::MergeOutcome::Conflict(paths) => {
+                assert_eq!(
+                    paths,
+                    ["shared.rs"],
+                    "setup must conflict on shared.rs alone"
+                )
+            }
+            worktree::MergeOutcome::Ready(_) => {
+                panic!("setup premise: the divergent shared.rs edits must conflict")
+            }
+        }
+        assert!(
+            unit_wt.merge_in_progress(),
+            "setup must leave a genuine merge in progress, unresolved"
+        );
+        let conflicted_before = std::fs::read_to_string(Path::new(&dir).join("shared.rs")).unwrap();
+        assert!(
+            conflicted_before.contains("<<<<<<<"),
+            "setup must leave real conflict-marker text in place: {conflicted_before:?}"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(
+                        &json!({"id": "s", "agent": "worker", "branch": unit_branch("s")}),
+                    )
+                    .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        // "shared.rs" is a REGISTERED REGENERABLE path (spec 88, criterion 1): once the merge
+        // conflict is genuinely reached, the conductor resolves it itself, deterministically,
+        // with no agent spawn - the cleanest possible proof that control reached the real
+        // conflict-handling machinery rather than erroring out earlier.
+        cfg.workflow.regenerate = vec![crate::config::RegenerateRule {
+            paths: vec!["shared.rs".into()],
+            run: "printf 'REGENERATED\\n' > shared.rs".into(),
+        }];
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        // The core regression: before the fix, `run_single_stage`'s unconditional
+        // halted-commit capture calls `Worktree::commit` on this exact merge-in-progress,
+        // marker-laden worktree before the `ResumePhase::Reviewed` branch below ever runs,
+        // and `commit`'s own conflict-marker refusal (correct for an ORDINARY abandoned edit)
+        // turns this into a hard `Err` here - never reaching `merge_into_worktree` at all.
+        let rs = run(&cfg, &deps).expect(
+            "a resumed unit's own already-in-progress merge conflict must reach the idempotent \
+             merge_into_worktree/merge_in_progress path, never trip the halted-commit capture's \
+             conflict-marker refusal first",
+        );
+
+        assert!(
+            !driver.spawned("worker") && !driver.spawned("lens") && !driver.spawned("judge"),
+            "the conflict is confined to a registered regenerable path: it must resolve with NO \
+             lifecycle spawn at all, proving the real conflict-handling path (not some other \
+             fallback) ran"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the genuinely-conflicted, regenerable resume must still integrate"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("shared.rs")).unwrap(),
+            "REGENERATED\n",
+            "the run branch must carry the real regeneration, not a discarded or half-merged tree"
+        );
+    }
+
+    #[test]
     fn a_live_approved_unit_restores_a_worktree_the_integrate_door_exhaustive_gate_deleted() {
         // Spec 64 criterion 3, adjudication round 2 (adv-u3c3-ensure-present-covers-only-one-
         // of-three-same-function-windows, UPHELD, window 2 of 2). The main loop's
@@ -26873,6 +33037,7 @@ mod tests {
             _g: &Gate,
             _dir: &str,
             _target: &str,
+            _mutants: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
@@ -27951,6 +34116,10 @@ mod tests {
         /// The CARGO_TARGET_DIR (`target_dir`) handed to each run, in invocation order -
         /// lets a test assert two units' gate environments never share a target (Gap 19).
         targets: Mutex<Vec<String>>,
+        /// The `$MUTANTS` unit-keyed mutants root (`mutants_dir`) handed to each run, in
+        /// invocation order (spec 91, THE GATE ENVIRONMENT) - lets a test assert two units'
+        /// gate environments never share a mutants root, mirroring `targets` above.
+        mutants_dirs: Mutex<Vec<String>>,
         /// The resolved [`gate::BuildEnv`] vars handed to each run, in invocation order
         /// (spec 65) - lets a test assert the ONE build-environment authority reaches
         /// every gate build.
@@ -27991,6 +34160,7 @@ mod tests {
             RecordingRunner {
                 calls: Mutex::new(Vec::new()),
                 targets: Mutex::new(Vec::new()),
+                mutants_dirs: Mutex::new(Vec::new()),
                 build_envs: Mutex::new(Vec::new()),
                 store_fences: Mutex::new(Vec::new()),
                 build_cache_guards: Mutex::new(Vec::new()),
@@ -28023,6 +34193,9 @@ mod tests {
         fn targets(&self) -> Vec<String> {
             self.targets.lock().unwrap().clone()
         }
+        fn mutants_dirs(&self) -> Vec<String> {
+            self.mutants_dirs.lock().unwrap().clone()
+        }
         fn build_envs(&self) -> Vec<Vec<(String, String)>> {
             self.build_envs.lock().unwrap().clone()
         }
@@ -28042,6 +34215,7 @@ mod tests {
             g: &Gate,
             dir: &str,
             target: &str,
+            mutants_dir: &str,
             build_cache_dir: &str,
             build_cache_guard: &str,
             store_fence: &str,
@@ -28050,6 +34224,10 @@ mod tests {
         ) -> gate::GateResult {
             self.calls.lock().unwrap().push(g.id.clone());
             self.targets.lock().unwrap().push(target.to_string());
+            self.mutants_dirs
+                .lock()
+                .unwrap()
+                .push(mutants_dir.to_string());
             self.build_cache_dirs
                 .lock()
                 .unwrap()
@@ -28195,6 +34373,7 @@ mod tests {
             g: &Gate,
             _dir: &str,
             _target: &str,
+            _mutants: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
@@ -30244,6 +36423,176 @@ mod tests {
     }
 
     #[test]
+    fn commits_to_compensate_reverts_every_sha_a_multi_commit_landing_recorded() {
+        // arch-u88c4-multicommit-landing-breaks-compensation-single-commit-contract: a
+        // plan-stage `UnitIntegrated` (spec 88, criterion 4) can carry MULTIPLE landed
+        // commits in `shas` (the full ordered list) - `commit` alone is only the
+        // NEWEST, a single-sha PROJECTION kept for every OTHER unit's single-commit
+        // contract. Compensating such a unit must revert every commit it actually
+        // landed, not just the newest, or a rollback silently leaves the older ones on
+        // the run branch.
+        let store = Store::open(":memory:").unwrap();
+        let seed = |data: Value| {
+            store
+                .append(
+                    STREAM,
+                    ExpectedRevision::Any,
+                    std::slice::from_ref(&Event::new(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        serde_json::to_vec(&data).unwrap(),
+                    )),
+                )
+                .unwrap();
+        };
+        // A plan-stage unit that landed three commits in one attempt: `commit` is only
+        // the newest (c3), `shas` carries the full oldest-first list.
+        seed(json!({"id": "plan", "commit": "c3", "shas": ["c1", "c2", "c3"]}));
+        // An ordinary (non-producer) unit's single-commit UnitIntegrated - no `shas`
+        // field at all - must still work exactly as before (back-compat).
+        seed(json!({"id": "ordinary", "commit": "o1"}));
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        assert_eq!(
+            ctx.commits_to_compensate("plan"),
+            vec!["c3".to_string(), "c2".to_string(), "c1".to_string()],
+            "every landed commit must be queued for revert, newest first"
+        );
+        assert_eq!(
+            ctx.commits_to_compensate("ordinary"),
+            vec!["o1".to_string()],
+            "a shas-less (single-commit) UnitIntegrated still compensates its one commit"
+        );
+    }
+
+    #[test]
+    fn commits_to_compensate_dedupes_a_repeated_sha_and_skips_an_already_compensated_one() {
+        // The fold over `UnitIntegrated` events reads the RAW event log (untyped
+        // `Value`), whose own duplication is a real, acknowledged class of issue in
+        // this store (`rigger reset --derived`'s own doc comment: "the duplication a
+        // log accreted before the ingest dedup") - independent of whether the CURRENT
+        // writer can itself produce a repeat. Two guards defend the fold against that:
+        // a commit already reverted by an earlier compensation cycle
+        // (`self.compensated_commits`, seeded from `META_COMPENSATED` on a resume) must
+        // never be queued again, and a commit appearing more than once across the raw
+        // events for the same unit must be queued exactly once. Neither guard is
+        // exercised by `commits_to_compensate_reverts_every_sha_a_multi_commit_landing_
+        // recorded` above (its three shas are pairwise distinct and nothing is
+        // pre-compensated), so both conditions in the skip's `||` chain can flip to
+        // `&&` there with no observable effect.
+        let store = Store::open(":memory:").unwrap();
+        let seed = |data: Value| {
+            store
+                .append(
+                    STREAM,
+                    ExpectedRevision::Any,
+                    std::slice::from_ref(&Event::new(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        serde_json::to_vec(&data).unwrap(),
+                    )),
+                )
+                .unwrap();
+        };
+        // c1 landed, then the SAME landing's event reappears in the raw log (a
+        // pre-ingest-dedup duplicate) - the fold must still count c1 exactly once.
+        seed(json!({"id": "plan", "commit": "c1", "shas": ["c1"]}));
+        seed(json!({"id": "plan", "commit": "c1", "shas": ["c1"]}));
+        seed(json!({"id": "plan", "commit": "c2", "shas": ["c2"]}));
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        // c2 was already reverted by an earlier compensation cycle this process ran
+        // (the resume-seeded guard) - re-deriving must exclude it, leaving only the
+        // deduplicated c1.
+        ctx.compensated_commits
+            .lock()
+            .unwrap()
+            .insert("c2".to_string());
+
+        assert_eq!(
+            ctx.commits_to_compensate("plan"),
+            vec!["c1".to_string()],
+            "a duplicated raw event must not double-queue its commit, and an \
+             already-compensated commit must never be queued again"
+        );
+    }
+
+    #[test]
+    fn commits_to_compensate_excludes_the_review_only_marker_even_alongside_a_real_sha() {
+        // Mutation-efficacy (spec 88 c4 round 5): `commit == REVIEW_ONLY_NO_ARTIFACT` is
+        // its OWN disjunct in the skip condition, independent of `commit.is_empty()` -
+        // the marker is a non-empty string, so an `||`-to-`&&` mutation on this specific
+        // clause is undetectable by any fixture that only ever seeds an EMPTY commit
+        // alongside it (empty-and-marker can never both be true, so the two clauses look
+        // interchangeable unless the marker is exercised on its own, non-empty). A real
+        // producer's non-artifact `UnitIntegrated` (the historical review-only path)
+        // carries exactly this shape - `commit: REVIEW_ONLY_NO_ARTIFACT`, no `shas` field -
+        // and must never be queued for compensation, alongside a SEPARATE unit's genuine
+        // landed sha, which must still be queued normally.
+        let store = Store::open(":memory:").unwrap();
+        let seed = |data: Value| {
+            store
+                .append(
+                    STREAM,
+                    ExpectedRevision::Any,
+                    std::slice::from_ref(&Event::new(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        serde_json::to_vec(&data).unwrap(),
+                    )),
+                )
+                .unwrap();
+        };
+        seed(json!({"id": "review-only", "commit": REVIEW_ONLY_NO_ARTIFACT}));
+        seed(json!({"id": "ordinary", "commit": "o1"}));
+
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        assert_eq!(
+            ctx.commits_to_compensate("review-only"),
+            Vec::<String>::new(),
+            "a review-only marker commit must never be queued for compensation - there is \
+             nothing on the run branch to revert"
+        );
+        assert_eq!(
+            ctx.commits_to_compensate("ordinary"),
+            vec!["o1".to_string()],
+            "a genuine landed sha from a DIFFERENT unit must still compensate normally"
+        );
+    }
+
+    #[test]
     fn pending_compensations_from_log_re_derives_only_undrained_marks() {
         // spec 12, unit 4 (crash-resume recovery): a durable compensation-queued mark
         // (META_COMPENSATE_TARGET) that has NOT been drained (no matching UnitFailed +
@@ -31057,6 +37406,804 @@ mod tests {
         );
     }
 
+    /// A driver for the spec 88, criterion 1 (INTEGRATE-CONFLICT MERGES) fixture: `unit-a` and
+    /// `unit-b` are two batch-mates with NO dependency, both editing the SAME LINE of `c.rs` off
+    /// the same base - a genuine textual conflict (unlike [`MergeBreakDriver`]'s non-overlapping
+    /// prepend/append, which auto-merges cleanly). The barrier makes both worktrees branch from
+    /// the same base before either writes, guaranteeing the overlap. The unit that loses the
+    /// integrate-lock race conflicts; its OWN implementer is re-parked under a `~retry{n}` id
+    /// (never a fresh `attempts` bump) to resolve it, which this driver simulates by overwriting
+    /// the conflicted file with fixed, recognizable content and committing on the SAME branch.
+    struct ConflictDriver {
+        repo: String,
+        /// Every spawn id this driver was called with, in order - lets a test prove
+        /// WHETHER (and how many times) an implementer was re-parked, independent of
+        /// event-log stamping details.
+        calls: Mutex<Vec<String>>,
+        /// Whether a `~retry` re-park actually resolves the conflict (the ordinary case,
+        /// every existing test). `false` simulates a real implementer that keeps failing to
+        /// resolve it, so [`RunCtx::integrate_and_emit`]'s conflict-loop bound (`CONFLICT_RESOLVE_BOUND`)
+        /// is exhausted for real - the one path that DOES charge a remediation attempt.
+        resolve_on_retry: bool,
+    }
+    impl AgentDriver for ConflictDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.calls.lock().unwrap().push(opts.id.clone());
+            let unit = opts.id.split('/').next().unwrap_or_default();
+            if opts.id.contains("/implementer#") {
+                if opts.id.contains("~retry") {
+                    assert!(
+                        !opts.dir.is_empty(),
+                        "a conflict re-park must still run in the unit's own worktree"
+                    );
+                    if !self.resolve_on_retry {
+                        // Simulates a real implementer that fails to resolve it: leave the
+                        // conflict markers exactly as they are, commit nothing. Every
+                        // `~retry{n}` call gets this same non-resolution.
+                        return Ok(AgentResult::default());
+                    }
+                    // The conflict-resolution re-park: resolve the conflict for real and
+                    // commit on the CURRENT branch, exactly as spec 88 criterion 1's design
+                    // instructs a real implementer to.
+                    std::fs::write(Path::new(&opts.dir).join("c.rs"), "RESOLVED\n").unwrap();
+                    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "resolve"][..]] {
+                        std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&opts.dir)
+                            .args(args)
+                            .output()
+                            .unwrap();
+                    }
+                    return Ok(AgentResult::default());
+                }
+                if !opts.dir.is_empty() {
+                    // Barrier: both branches must exist (neither has integrated yet) before
+                    // either writes, so both cut their worktree from the SAME base - the
+                    // unpredicted-overlap precondition.
+                    for _ in 0..400 {
+                        let n = std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&self.repo)
+                            .args(["branch", "--list", "rigger/u/*"])
+                            .output()
+                            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+                            .unwrap_or(0);
+                        if n >= 2 {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    let content = if unit == "unit-a" { "A\n" } else { "B\n" };
+                    std::fs::write(Path::new(&opts.dir).join("c.rs"), content).unwrap();
+                }
+                return Ok(AgentResult::default());
+            }
+            if opts.id.contains("/adjudicator#") {
+                return Ok(AgentResult {
+                    output: r#"{"verdict":"approve"}"#.into(),
+                    resolved_model: String::new(),
+                });
+            }
+            Ok(AgentResult {
+                output: "reviewed the diff".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn the_post_merge_re_gate_gets_the_units_mutants_root_though_it_runs_in_the_repo() {
+        // Spec 91, THE GATE ENVIRONMENT, at the post-merge re-gate (spec 12, unit 5): the
+        // second of two batch-mates merges into a tree its own gate never saw, so its re-gate
+        // MISSES the content cache and RUNS - in the repo's own checkout, never a
+        // `rigger-wt-<slug>` worktree. A `checkin` stage's `mutation` gate there runs
+        // `rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`, so an EMPTY `$MUTANTS` fails the gate
+        // (`mkdir: cannot create directory ''`) and blocks the integration of a green unit -
+        // exactly what spec 89's own check-in hit (2026-09-13). The re-gate must export the
+        // SAME unit-keyed root the pre-merge sweep used: keyed by the unit's worktree name,
+        // not by the directory the gate happens to run in.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
+        for args in [
+            &["add", "m.rs"][..],
+            &["commit", "-q", "-m", "base m.rs"][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+        // Every gate run appends "<physical cwd> <$MUTANTS>" to a log OUTSIDE the repo (an
+        // untracked file inside it would dirty the very tree the integrate lock guards).
+        let log_dir = tempfile::tempdir().unwrap();
+        let log = log_dir.path().join("mutants-seen.log");
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert(
+            "g".into(),
+            gate_def(&format!(
+                "printf '%s %s\\n' \"$(pwd -P)\" \"$MUTANTS\" >> '{}'",
+                log.display()
+            )),
+        );
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec![],
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
+        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = MergeBreakDriver {
+            repo: repo_path.clone(),
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        for u in ["unit-a", "unit-b"] {
+            assert_eq!(
+                rs.units[u].status,
+                ledger::Status::Integrated,
+                "{u}: the gate only records its environment, so both merges land"
+            );
+        }
+
+        let seen = std::fs::read_to_string(&log).unwrap();
+        let repo_physical = std::fs::canonicalize(&repo_path).unwrap();
+        let in_repo: Vec<&str> = seen
+            .lines()
+            .filter(|l| l.split(' ').next() == repo_physical.to_str())
+            .collect();
+        assert!(
+            !in_repo.is_empty(),
+            "the second integrator's post-merge re-gate must RUN in the repo checkout (a \
+             content-cache miss over the merged two-MARK tree); gate runs seen:\n{seen}"
+        );
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let unit_roots: HashSet<String> = ["unit-a", "unit-b"]
+            .iter()
+            .map(|u| {
+                crate::worktree::unit_mutants_sibling(&unit_worktree_dir(&scratch, u)).unwrap()
+            })
+            .collect();
+        for line in &in_repo {
+            let root = line.split_once(' ').map(|(_, r)| r).unwrap_or_default();
+            assert!(
+                unit_roots.contains(root),
+                "a post-merge re-gate in the repo must get the integrating unit's own \
+                 unit-keyed $MUTANTS root (one of {unit_roots:?}), never an empty or \
+                 foreign one; got {root:?} in:\n{seen}"
+            );
+        }
+    }
+
+    #[test]
+    fn conflict_regenerate_pending_from_log_re_derives_the_union_keyed_by_unit_and_attempt() {
+        // spec 88, criterion 1, round 2 (crash-resume recovery for adv-u88c1r1-crash-resume-
+        // permanently-skips-regeneration): mirrors `pending_compensations_from_log_re_derives_
+        // only_undrained_marks`'s own direct-fold test shape for its identical "durable
+        // UnitStatus mark, no new event type" precedent (`STATUS_COMPENSATION_QUEUED`) - a
+        // conductor-level `run()` test can only ever seed this fold with an EMPTY `prior_events`
+        // (every existing spec-88 test starts a fresh `Store::open(":memory:")`), so it alone
+        // can never exercise a NON-EMPTY re-derivation; only a direct fold test over
+        // hand-built events can.
+        let marker = |unit: &str, attempt: u64, paths: &str| {
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({
+                    "id": unit,
+                    "status": STATUS_INTEGRATE_CONFLICT_REGEN,
+                    "attempt": attempt,
+                    "evidence": {"regenerate": paths},
+                }))
+                .unwrap(),
+            )
+        };
+
+        // No marks at all - a fresh run, or a unit whose conflict never touched a regenerable
+        // path - re-derives nothing.
+        assert!(conflict_regenerate_pending_from_log(&[]).is_empty());
+
+        // ONE marker, ONE path: the basic re-derivation.
+        let one =
+            conflict_regenerate_pending_from_log(&[marker("unit-a", 0, "docs/audit/report.md")]);
+        assert_eq!(
+            one.get("unit-a#0"),
+            Some(&vec!["docs/audit/report.md".to_string()]),
+            "a single marker re-derives its one path under the unit#attempt key"
+        );
+
+        // TWO DISTINCT paths accumulated ACROSS TWO marker events for the SAME unit+attempt
+        // (mirrors a mixed conflict needing more than one implementer retry, each retry
+        // staging a different regenerable path before the source side finally clears) -
+        // both must survive, in the order first seen, never just the latest.
+        let two_events = conflict_regenerate_pending_from_log(&[
+            marker("unit-b", 1, "c.rs"),
+            marker("unit-b", 1, "docs/audit/report.md"),
+        ]);
+        assert_eq!(
+            two_events.get("unit-b#1"),
+            Some(&vec![
+                "c.rs".to_string(),
+                "docs/audit/report.md".to_string()
+            ]),
+            "distinct paths from separate rounds of the SAME episode accumulate, in order"
+        );
+
+        // The SAME path repeated across two marker events (a replayed/idempotent step re-
+        // recording the same evidence) is deduplicated, not doubled.
+        let deduped = conflict_regenerate_pending_from_log(&[
+            marker("unit-c", 0, "c.rs"),
+            marker("unit-c", 0, "c.rs"),
+        ]);
+        assert_eq!(
+            deduped.get("unit-c#0"),
+            Some(&vec!["c.rs".to_string()]),
+            "a repeated marker for the identical path never duplicates it"
+        );
+
+        // Multiple comma-joined paths in ONE marker's own evidence string.
+        let comma_joined =
+            conflict_regenerate_pending_from_log(&[marker("unit-d", 0, "a.rs,b.rs")]);
+        assert_eq!(
+            comma_joined.get("unit-d#0"),
+            Some(&vec!["a.rs".to_string(), "b.rs".to_string()]),
+            "one marker's comma-joined evidence splits into its distinct paths"
+        );
+
+        // Keyed by (unit, attempt) - never by unit alone: a DIFFERENT attempt for the SAME
+        // unit id is an entirely separate episode, never merged with another attempt's paths
+        // (the doc comment's own "a fresh attempt starts this fold empty" guarantee).
+        let per_attempt = conflict_regenerate_pending_from_log(&[
+            marker("unit-e", 0, "attempt0.rs"),
+            marker("unit-e", 1, "attempt1.rs"),
+        ]);
+        assert_eq!(
+            per_attempt.get("unit-e#0"),
+            Some(&vec!["attempt0.rs".to_string()])
+        );
+        assert_eq!(
+            per_attempt.get("unit-e#1"),
+            Some(&vec!["attempt1.rs".to_string()])
+        );
+
+        // Every OTHER event shape this fold must ignore rather than mis-fold: a non-UnitStatus
+        // event, a UnitStatus with a real (unrelated) status, one missing the evidence field
+        // entirely, and unparseable JSON - none contributes, and none of them corrupts the ONE
+        // genuine marker sitting right alongside them in the same stream.
+        let noise_then_real = conflict_regenerate_pending_from_log(&[
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                serde_json::to_vec(&json!({"id": "unit-f", "commit": "deadbeef"})).unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({"id": "unit-f", "status": "building"})).unwrap(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&json!({
+                    "id": "unit-f",
+                    "status": STATUS_INTEGRATE_CONFLICT_REGEN,
+                    "attempt": 0,
+                }))
+                .unwrap(),
+            ),
+            Event::new(ledger::TYPE_UNIT_STATUS, b"not json".to_vec()),
+            marker("unit-f", 0, "real.rs"),
+        ]);
+        assert_eq!(
+            noise_then_real.get("unit-f#0"),
+            Some(&vec!["real.rs".to_string()]),
+            "unrelated event types, an unrelated status, a missing evidence field, and \
+             malformed JSON are all ignored - only the genuine marker contributes"
+        );
+    }
+
+    /// Builds the two-batch-mate conflict fixture ([`ConflictDriver`]) shared by all three of
+    /// spec 88 criterion 1's conductor-level tests below; `regenerate` seeds
+    /// `cfg.workflow.regenerate` (empty for the general re-park and exhausted-bound cases, a
+    /// `c.rs`-matching rule for the confined-regenerable case). `resolve_on_retry` selects
+    /// whether the driver's `~retry` re-park actually resolves the conflict (`true`, every
+    /// ordinary case) or keeps failing to (`false`, the exhausted-bound case).
+    fn conflict_fixture(
+        regenerate: Vec<crate::config::RegenerateRule>,
+        resolve_on_retry: bool,
+    ) -> (tempfile::TempDir, String, Store, ConflictDriver) {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::write(Path::new(&repo_path).join("c.rs"), "LINE\n").unwrap();
+        for args in [
+            &["add", "c.rs"][..],
+            &["commit", "-q", "-m", "base c.rs"][..],
+        ] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = ConflictDriver {
+            repo: repo_path.clone(),
+            calls: Mutex::new(Vec::new()),
+            resolve_on_retry,
+        };
+        let _ = regenerate;
+        (repo, repo_path, store, driver)
+    }
+
+    #[test]
+    fn integrate_conflict_re_parks_the_implementer_with_no_attempt_charged_and_both_units_land() {
+        // Spec 88, criterion 1, Done-when: "a unit whose integration conflicts is re-parked with
+        // the run branch merged into its worktree, its branch keeps every prior commit, no
+        // attempt is charged". Two batch-mates edit the SAME line off the same base: the first
+        // to win the integrate lock merges cleanly; the second's merge CONFLICTS, is re-parked
+        // (never reset, never charged an attempt), resolves, and lands too - BOTH units
+        // integrate, unlike the semantic post-merge-break case where the loser escalates.
+        let (repo, repo_path, store, driver) = conflict_fixture(Vec::new(), true);
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec![],
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
+        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
+
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // BOTH units integrate - the loser's textual conflict is resolved, never escalated.
+        assert_eq!(
+            rs.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "unit-a must integrate"
+        );
+        assert_eq!(
+            rs.units["unit-b"].status,
+            ledger::Status::Integrated,
+            "unit-b must integrate (its conflict is resolved, not a dead end)"
+        );
+        // No attempt is charged for the conflict round: neither unit's folded `attempts`
+        // (from the latest UnitFailed) ever advanced past 0, because no UnitFailed is ever
+        // recorded for a conflict - it resolves within the SAME integration call.
+        assert_eq!(
+            rs.units["unit-a"].attempts, 0,
+            "no remediation attempt is charged to unit-a"
+        );
+        assert_eq!(
+            rs.units["unit-b"].attempts, 0,
+            "no remediation attempt is charged to unit-b (a conflict is not a defect)"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a conflict that resolves within the same call never records a UnitFailed"
+        );
+        // The re-parked implementer ran under a `~retry` id (spec 07's established free-
+        // respawn shape), never a fresh `attempts` bump.
+        let calls = driver.calls.lock().unwrap();
+        assert!(
+            calls.iter().any(|id| id.contains("/implementer#0~retry1")),
+            "the conflicting unit's implementer must be re-parked under a ~retry id; got {calls:?}"
+        );
+        // The run branch carries the RESOLVED content - the re-parked implementer's own
+        // commit, proving the merge landed via ITS resolution, not a discarded rebuild.
+        let merged = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+        assert_eq!(
+            merged, "RESOLVED\n",
+            "the run branch carries the conflict-resolving commit's content"
+        );
+        drop(repo);
+    }
+
+    #[test]
+    fn integrate_conflict_confined_to_a_regenerable_path_resolves_with_no_spawn() {
+        // Spec 88, criterion 1, Done-when: "a conflict confined to a registered regenerable
+        // path is resolved by regeneration with no spawn." Same two-batch-mate textual
+        // conflict as above, but `c.rs` is registered regenerable: the conductor must resolve
+        // it ITSELF (running the registered command and committing) - the loser's implementer
+        // is never re-parked a second time at all.
+        let (repo, repo_path, store, driver) = conflict_fixture(
+            vec![crate::config::RegenerateRule {
+                paths: vec!["c.rs".into()],
+                run: "printf 'REGENERATED\\n' > c.rs".into(),
+            }],
+            true,
+        );
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.workflow.regenerate = vec![crate::config::RegenerateRule {
+            paths: vec!["c.rs".into()],
+            run: "printf 'REGENERATED\\n' > c.rs".into(),
+        }];
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec![],
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
+        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
+
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+        assert_eq!(
+            rs.units["unit-b"].status,
+            ledger::Status::Integrated,
+            "the regenerable-confined conflict still lands"
+        );
+        assert_eq!(rs.units["unit-a"].attempts, 0);
+        assert_eq!(rs.units["unit-b"].attempts, 0);
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a regenerable-confined conflict never records a UnitFailed either"
+        );
+        // NO SPAWN AT ALL for the conflict: no `~retry` implementer id anywhere the driver
+        // was ever called with.
+        let calls = driver.calls.lock().unwrap();
+        assert!(
+            !calls.iter().any(|id| id.contains("~retry")),
+            "a conflict confined to a registered regenerable path resolves with NO spawn; got {calls:?}"
+        );
+        // The conductor's OWN regeneration command produced and committed the content.
+        let merged = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
+        assert_eq!(
+            merged, "REGENERATED\n",
+            "the conductor's registered regeneration command resolved the conflict"
+        );
+        drop(repo);
+    }
+
+    #[test]
+    fn integrate_conflict_exhausted_after_the_bound_charges_a_real_attempt_with_the_unresolved_evidence(
+    ) {
+        // Spec 88, criterion 1's ONE attempt-charging fallback: `CONFLICT_RESOLVE_BOUND`
+        // implementer re-parks that never resolve the conflict must still converge through
+        // ORDINARY remediation (a real, evidence-bearing block) rather than spin forever. Same
+        // two-batch-mate textual conflict as the other two tests, but the driver's `~retry`
+        // re-park never fixes it - proves the `Integration { blocked: Some(evidence), .. }`
+        // arm actually carries the exhaustion evidence (not silently dropped to the `None`
+        // default) and that a real remediation attempt IS charged this time, unlike the
+        // resolves-cleanly and confined-to-regenerable cases above.
+        let (repo, repo_path, store, driver) = conflict_fixture(Vec::new(), false);
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 1;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        let mk = |name: &str| Stage {
+            name: name.into(),
+            agent: "worker".into(),
+            gates: vec!["g".into()],
+            on_pass: "merge".into(),
+            needs: vec![],
+            review: panel.clone(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert("unit-a".into(), mk("unit-a"));
+        cfg.workflow.stages.insert("unit-b".into(), mk("unit-b"));
+
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        // Exactly one of the two batch-mates loses the integrate-lock race and hits the
+        // never-resolving conflict; the other (never conflicting) integrates normally.
+        let statuses: Vec<_> = ["unit-a", "unit-b"]
+            .iter()
+            .map(|u| (*u, rs.units[*u].status))
+            .collect();
+        let integrated = statuses
+            .iter()
+            .filter(|(_, s)| *s == ledger::Status::Integrated)
+            .count();
+        assert_eq!(
+            integrated, 1,
+            "exactly one batch-mate integrates cleanly; got {statuses:?}"
+        );
+        let (loser, _) = statuses
+            .iter()
+            .find(|(_, s)| *s != ledger::Status::Integrated)
+            .expect("one batch-mate must fail to integrate");
+
+        // A REAL remediation attempt is charged - unlike the other two conflict tests, where
+        // `attempts` stays 0. (If `Integration.blocked` were silently dropped to `None`, this
+        // unit would instead have been wrongly folded into the `integrated == 1` count above,
+        // and no UnitFailed would exist at all - so this and the assertion above are the two
+        // halves that pin `blocked: Some(evidence)` actually surviving the return.)
+        assert!(
+            rs.units[*loser].attempts >= 1,
+            "the exhausted conflict charges a real remediation attempt to {loser}"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let failed_causes: Vec<String> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .filter_map(|e| {
+                let v: Value = serde_json::from_slice(&e.data).ok()?;
+                if v.get("id")?.as_str()? != *loser {
+                    return None;
+                }
+                Some(v.get("cause")?.as_str()?.to_string())
+            })
+            .collect();
+        assert!(
+            !failed_causes.is_empty() && failed_causes.iter().all(|c| c == "integrate-conflict"),
+            "every recorded UnitFailed for {loser} must carry cause \"integrate-conflict\" \
+             (set only on the `Some(evidence)` arm the exhausted-bound return feeds); got \
+             {failed_causes:?}"
+        );
+        // Exactly CONFLICT_RESOLVE_BOUND (3) re-park attempts were made for the loser, all
+        // under `~retry` ids (never a fresh `attempts` bump) - retry1, retry2, retry3.
+        let calls = driver.calls.lock().unwrap();
+        for n in 1..=3 {
+            assert!(
+                calls
+                    .iter()
+                    .any(|id| id.contains(&format!("{loser}/implementer#0~retry{n}"))),
+                "expected a ~retry{n} re-park for {loser}; got {calls:?}"
+            );
+        }
+        drop(repo);
+    }
+
+    #[test]
+    fn integrate_conflict_records_regenerate_pending_before_the_accept_incoming_mutation_that_can_fail(
+    ) {
+        // adv-u88c1r2-accept-incoming-precedes-durable-record-crash-window (round 2 REJECT,
+        // upheld): the mixed-conflict arm ran `Worktree::accept_incoming` (a real git
+        // mutation, staged to disk) BEFORE `record_regenerate_pending` (the durable log
+        // write) - so a crash between the two left the regenerable path's obligation
+        // unrecorded forever, even after the source side later cleared for real (the log's
+        // `regenerate_pending_for` came back empty on the call that finally landed a
+        // `Merged` outcome). Fixed by reordering: record FIRST, mutate second.
+        //
+        // Proven here WITHOUT any timing/permission trick, deterministically: a genuine
+        // modify/delete git conflict on the regenerable path makes `accept_incoming`'s own
+        // `git checkout --theirs` fail for real (theirs - the run branch - deleted the path,
+        // so there is no "theirs" version to check out at all). Under the OLD (buggy) order
+        // that failure's `?` unwinds the call before `record_regenerate_pending` is ever
+        // reached, so the durable marker never lands - this test is RED against that order.
+        // Under the FIXED order the record already happened before the mutation was even
+        // attempted, so the marker survives the very same failure - GREEN.
+        //
+        // The run branch's "already landed" state is constructed DIRECTLY by this single
+        // unit's own driver callback (never a race with a second live unit): deterministic,
+        // not flaky, and it still reaches the exact same code path a genuine sibling landing
+        // first would have left behind.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
+        std::fs::write(Path::new(&repo_path).join("gen.txt"), "BASE_GEN\n").unwrap();
+        for args in [&["add", "-A"][..], &["commit", "-q", "-m", "base"][..]] {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(args)
+                .output()
+                .unwrap();
+        }
+
+        struct Driver {
+            repo: String,
+        }
+        impl AgentDriver for Driver {
+            fn spawn(
+                &self,
+                _a: &AgentDef,
+                _prompt: &str,
+                opts: &SpawnOpts,
+                _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+            ) -> Result<AgentResult, Error> {
+                if opts.id.contains("/implementer#") {
+                    assert!(
+                        !opts.id.contains("~retry"),
+                        "accept_incoming must fail and abort the whole call BEFORE any \
+                         conflict-resolution re-park is ever spawned; got {}",
+                        opts.id
+                    );
+                    // Simulate "a sibling already landed on the run branch" deterministically:
+                    // delete gen.txt and edit c.rs directly on the run branch itself, right
+                    // here, before this unit's own merge ever runs against it.
+                    std::fs::remove_file(Path::new(&self.repo).join("gen.txt")).unwrap();
+                    std::fs::write(Path::new(&self.repo).join("c.rs"), "OTHER_C\n").unwrap();
+                    for args in [
+                        &["add", "-A"][..],
+                        &["commit", "-q", "-m", "other landed"][..],
+                    ] {
+                        std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&self.repo)
+                            .args(args)
+                            .output()
+                            .unwrap();
+                    }
+                    // This unit's OWN worktree: keeps (modifies) gen.txt, edits c.rs
+                    // differently - theirs (the run branch, above) deleted gen.txt; ours
+                    // (this branch) modified it - a genuine modify/delete conflict on the
+                    // regenerable path, alongside an ordinary content conflict on c.rs (the
+                    // source path).
+                    std::fs::write(Path::new(&opts.dir).join("c.rs"), "MINE_C\n").unwrap();
+                    std::fs::write(Path::new(&opts.dir).join("gen.txt"), "MINE_GEN\n").unwrap();
+                    return Ok(AgentResult::default());
+                }
+                Ok(AgentResult {
+                    output: r#"{"verdict":"approve"}"#.into(),
+                    resolved_model: String::new(),
+                })
+            }
+        }
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver {
+            repo: repo_path.clone(),
+        };
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.workflow.regenerate = vec![RegenerateRule {
+            paths: vec!["gen.txt".into()],
+            run: "printf 'REGENERATED\\n' > gen.txt".into(),
+        }];
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        cfg.workflow.stages.insert(
+            "unit-b".into(),
+            Stage {
+                name: "unit-b".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                needs: vec![],
+                review: panel,
+                ..Default::default()
+            },
+        );
+
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!(
+                "the modify/delete conflict on the regenerable path must make \
+                 accept_incoming fail for real - there is no \"theirs\" version to check out"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("checkout") || err.0.contains("their version"),
+            "must fail for the SIMULATED git reason (accept_incoming's own failing checkout), \
+             not some other defect; got: {}",
+            err.0
+        );
+
+        // The durable regenerate-pending marker must ALREADY be on the log despite the
+        // mutation it was about to precede failing right after - proving
+        // `record_regenerate_pending` runs BEFORE `Worktree::accept_incoming`, never after.
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data)
+                        .contains("integrate-conflict-regenerate-pending")
+                    && String::from_utf8_lossy(&e.data).contains("gen.txt")
+            }),
+            "the still-owed regeneration for gen.txt must be durably recorded BEFORE \
+             accept_incoming's own git mutation runs, so a crash exactly there never loses \
+             it; events: {events:?}"
+        );
+        drop(repo);
+    }
+
     #[test]
     fn a_deferred_gate_runs_once_at_the_phase_boundary_not_inline() {
         // A stage with both an inline (core) gate and a deferred gate. The deferred
@@ -31219,6 +38366,7 @@ mod tests {
             g: &Gate,
             _dir: &str,
             _target: &str,
+            _mutants: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
@@ -32135,6 +39283,26 @@ mod tests {
         );
     }
 
+    /// Run a git command in `dir`, returning combined stdout+stderr, trimmed. Panics
+    /// (naming the command and its output) on a non-zero exit - a test-only setup
+    /// convenience for building git state directly, alongside this module's existing
+    /// `std::process::Command` calls.
+    fn run_git(dir: &str, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} in {dir} failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
     /// The current HEAD commit hash of a git repo, for asserting a lens produced no
     /// commit.
     fn git_head(repo: &str) -> String {
@@ -32180,6 +39348,7 @@ mod tests {
             _g: &Gate,
             dir: &str,
             _target: &str,
+            _mutants: &str,
             _build_cache_dir: &str,
             _build_cache_guard: &str,
             _store_fence: &str,
@@ -33375,6 +40544,63 @@ mod tests {
         );
     }
 
+    /// sdet-u67c4-fanout-and-plancritique-roster-untested (round 2 fix): `plan_critique_loop`
+    /// is a THIRD, independent call site for the same roster-stamp mechanism - it bypasses
+    /// `run_adversary`/`run_adjudicator` entirely and calls `run_reviewer` directly, with a
+    /// hardcoded `&[]` for the adversary (the DAG-level critique names no lens tier of its
+    /// own) and `adjudicator_roster(&[], &gate_st.adversary)` for the adjudicator. Neither the
+    /// clean mutation accounting nor the `review_unit`/`run_fan_out_review_loop` tests above
+    /// cover this wiring - a swapped or dropped argument here would pass every other gate
+    /// silently. `CritiqueDriver` (used by every OTHER plan-critique test in this file) ignores
+    /// `opts.reviews` entirely, so this uses `Stub` instead to read the REAL `SpawnOpts` the
+    /// gate's adversary/adjudicator spawns actually received.
+    #[test]
+    fn the_plan_critique_gates_adversary_and_adjudicator_spawns_are_stamped_correctly() {
+        let cfg = critique_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits_by_agent: HashMap::from([(
+                "planner".to_string(),
+                vec![(
+                    TYPE_UNIT_PROPOSED.to_string(),
+                    json!({
+                        "id": "u-a",
+                        "agent": "worker",
+                        "criterion": "the widget renderer is implemented",
+                        "needs": ["plan-critique"],
+                    }),
+                )],
+            )]),
+            output_by_agent: HashMap::from([
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                ("adversary".to_string(), "reviewed the dag".to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+        assert_eq!(
+            driver.reviews_for("adversary"),
+            Some(Vec::new()),
+            "the plan-critique gate names no lens tier: its adversary's roster must be the \
+             honest empty one, never a fabricated lens"
+        );
+        assert_eq!(
+            driver.reviews_for("judge"),
+            Some(vec!["adversary".to_string()]),
+            "the plan-critique gate's adjudicator roster is adjudicator_roster(&[], adversary) \
+             - the bare adversary token, since the DAG-level critique names no lenses"
+        );
+    }
+
     #[test]
     fn a_rule_7_or_8_defect_rejects_then_releases_on_the_revision() {
         // The gate's REAL value: a cross-unit ownership (rule 7) or open-disposition (rule
@@ -33601,16 +40827,252 @@ mod tests {
         integrated.insert("plan".to_string());
         let terminal: HashSet<String> = integrated.clone();
 
-        let raw = ready_stages(&stages, &integrated, &terminal);
+        let no_fanout = HashMap::new();
+        let raw = ready_stages(&stages, &integrated, &terminal, &no_fanout);
         assert!(
             raw.iter().any(|n| n == "plan-critique"),
             "precondition: the raw ready set must surface the gate for this pin to bite; got {raw:?}"
         );
         let gate = critique_gate_name(&stages);
-        let wave = wave_ready(&stages, &integrated, &terminal, gate.as_deref());
+        let wave = wave_ready(&stages, &integrated, &terminal, gate.as_deref(), &no_fanout);
         assert!(
             !wave.iter().any(|n| n == "plan-critique"),
             "the critique gate must never be wave-scheduled; got {wave:?}"
+        );
+    }
+
+    /// Shared scaffold for the pure `ready_stages`/`wave_ready` fan-out-template-needs
+    /// tests: a `checkin` stage needing `["implement"]`, plus two criterion-owning
+    /// stages (criterion "c1", whose owner's NAME the caller supplies, and "u2" owning
+    /// "c2"), and the `fanout_criteria` table naming `implement` -> {"c1", "c2"}. The
+    /// caller-supplied owner name lets the ordinary case (`"u1"`) and the supersede-
+    /// shaped case (a differently-named live owner) share one fixture instead of two
+    /// near-identical ones.
+    fn fan_out_needs_template_fixture(
+        c1_owner: &str,
+    ) -> (BTreeMap<String, Stage>, HashMap<String, HashSet<String>>) {
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        stages.insert(
+            "checkin".into(),
+            Stage {
+                name: "checkin".into(),
+                needs: vec!["implement".into()],
+                ..Default::default()
+            },
+        );
+        stages.insert(
+            c1_owner.into(),
+            Stage {
+                name: c1_owner.into(),
+                criterion_id: "c1".into(),
+                ..Default::default()
+            },
+        );
+        stages.insert(
+            "u2".into(),
+            Stage {
+                name: "u2".into(),
+                criterion_id: "c2".into(),
+                ..Default::default()
+            },
+        );
+        let mut fanout_criteria = HashMap::new();
+        fanout_criteria.insert(
+            "implement".to_string(),
+            HashSet::from(["c1".to_string(), "c2".to_string()]),
+        );
+        (stages, fanout_criteria)
+    }
+
+    #[test]
+    fn a_downstream_stage_needing_the_fan_out_template_stays_unready_until_every_member_integrates()
+    {
+        // Spec 91, criterion 1, rule 1, at the pure `ready_stages`/`wave_ready` level: a
+        // `needs` entry naming a fan-out TEMPLATE resolves against `fanout_criteria`
+        // (criterion ids), each looked up LIVE in `stages` for its current owner - never
+        // a literal (now-removed) template stage entry. "implement" is deliberately
+        // ABSENT from `stages` here, exactly as `run` leaves it once expanded; "u1" and
+        // "u2" ARE present (as `run` leaves the criterion units it expanded the template
+        // into), each carrying the criterion id `fanout_criteria` names. The edge stays
+        // unsatisfied while any member is merely open, or has reached a
+        // terminal-but-not-integrated state (escalated / failed-terminal) - the run's
+        // escalated fixpoint must stay loud, never silently satisfied by a partial
+        // fan-out.
+        let (stages, fanout_criteria) = fan_out_needs_template_fixture("u1");
+        let empty: HashSet<String> = HashSet::new();
+
+        assert!(
+            !ready_stages(&stages, &empty, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "no member has integrated yet: the needs edge must stay unsatisfied"
+        );
+
+        let mut integrated = HashSet::new();
+        integrated.insert("u1".to_string());
+        assert!(
+            !ready_stages(&stages, &integrated, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "a partially-integrated template must not satisfy the needs edge"
+        );
+
+        // u2 ESCALATED: terminal, but never integrated. Still unready.
+        let mut terminal = HashSet::new();
+        terminal.insert("u2".to_string());
+        assert!(
+            !ready_stages(&stages, &integrated, &terminal, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "an escalated (terminal, non-integrated) member must never satisfy the \
+             needs edge"
+        );
+
+        // Both members integrated: ready, and wave_ready (no critique gate here) agrees.
+        integrated.insert("u2".to_string());
+        assert!(
+            ready_stages(&stages, &integrated, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "once every expanded member has integrated the needs edge is satisfied"
+        );
+        assert!(
+            wave_ready(&stages, &integrated, &empty, None, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "wave_ready must agree with ready_stages when no critique gate is wired"
+        );
+
+        // Round 2 fix for adj-u91c1-verdict-reject / arch-u91c1-fanout-members-orphans-
+        // a-superseded-baseline, same fixture shape but a DIFFERENT c1 owner name: proves
+        // `fanout_criteria` resolves each criterion id against WHICHEVER unit currently
+        // owns it in `stages` - never a frozen unit-id snapshot. "u1-old" (which would
+        // have owned criterion "c1" under the ordinary naming above) is deliberately
+        // ABSENT from this second fixture entirely - exactly the state
+        // `harvest_proposed`'s `stages.remove(&owner)` supersede fold leaves - and a
+        // differently-named "u1-new" owns "c1" instead, exactly as `harvest_proposed`
+        // stamps a superseding proposal with the SAME criterion_id (conductor.rs
+        // `criterion_id: resolved_criterion_id`). The needs edge must track "c1"'s
+        // CURRENT live owner, not any unit id `fanout_criteria` was ever built against
+        // (it was never built against a unit id at all).
+        let (stages, fanout_criteria) = fan_out_needs_template_fixture("u1-new");
+        let mut integrated = HashSet::new();
+        integrated.insert("u2".to_string());
+        assert!(
+            !ready_stages(&stages, &integrated, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "c1's live owner (u1-new) has not integrated yet: still unready"
+        );
+
+        integrated.insert("u1-new".to_string());
+        assert!(
+            ready_stages(&stages, &integrated, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "the id fanout_criteria was originally built against (u1-old) never \
+             appears anywhere in stages or integrated - c1's CURRENT live owner \
+             (u1-new) integrating must still satisfy the needs edge"
+        );
+    }
+
+    #[test]
+    fn a_real_split_pair_must_both_integrate_not_just_the_btreemap_key_first_sibling() {
+        // Spec 91 criterion 1 rule 1, round 3 fix for adj-u91c1-r2-verdict-reject
+        // (arch-u91c1-r2-need-satisfied-ignores-real-split-siblings, corroborated live
+        // by sdet-u91c1-r2-confirms-split-sibling-orphan and
+        // adv-u91c1-r2-confirms-split-sibling-reverse-direction): a REAL SPLIT (spec
+        // 31/72's guarantee - `harvest_proposed`'s same-episode-sibling fold never reaps
+        // a genuinely-new sibling, so TWO live `stages` entries can share one
+        // criterion_id at once, proven live above by
+        // `a_same_id_refine_survives_its_own_episodes_sibling_add_walked_first`,
+        // asserting `serving.len() == 2` for one criterion_id) is a designed, reachable
+        // shape the round-2 fix's own doc comment wrongly assumed away ("a criterion
+        // always has exactly one live owner"). Round 2's `.find()`-first-match
+        // resolution locked onto whichever live entry sharing a criterion_id sorts
+        // first by BTreeMap key ("split-a-1" here) and never even inspected the other
+        // ("split-a-2") - so the needs edge silently satisfied the instant the
+        // key-first sibling alone integrated, regardless of whether its split partner
+        // was still open or had permanently escalated. `need_satisfied` must require
+        // EVERY live entry sharing a criterion_id to be integrated.
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        stages.insert(
+            "checkin".into(),
+            Stage {
+                name: "checkin".into(),
+                needs: vec!["implement".into()],
+                ..Default::default()
+            },
+        );
+        // The real split: two live stages entries, both citing criterion "c1" -
+        // exactly the shape a same-episode planner split leaves behind.
+        stages.insert(
+            "split-a-1".into(),
+            Stage {
+                name: "split-a-1".into(),
+                criterion_id: "c1".into(),
+                ..Default::default()
+            },
+        );
+        stages.insert(
+            "split-a-2".into(),
+            Stage {
+                name: "split-a-2".into(),
+                criterion_id: "c1".into(),
+                ..Default::default()
+            },
+        );
+        // An unrelated, un-split criterion "c2" with its own single owner, proving the
+        // fix leaves the ordinary single-owner case byte-for-byte unaffected.
+        stages.insert(
+            "u2".into(),
+            Stage {
+                name: "u2".into(),
+                criterion_id: "c2".into(),
+                ..Default::default()
+            },
+        );
+        let mut fanout_criteria = HashMap::new();
+        fanout_criteria.insert(
+            "implement".to_string(),
+            HashSet::from(["c1".to_string(), "c2".to_string()]),
+        );
+        let empty: HashSet<String> = HashSet::new();
+
+        // Direction 1 (sdet's repro): the BTreeMap-key-first sibling (split-a-1)
+        // integrates while its split partner (split-a-2) is still merely open. A
+        // `.find()`-first-match resolution locks onto split-a-1 alone and reports the
+        // criterion satisfied - checkin must NOT become ready this early.
+        let mut integrated = HashSet::new();
+        integrated.insert("split-a-1".to_string());
+        integrated.insert("u2".to_string());
+        assert!(
+            !ready_stages(&stages, &integrated, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "split-a-2 (a real split sibling under the same criterion_id as the \
+             BTreeMap-key-first split-a-1) has not integrated yet: the needs edge \
+             must stay unsatisfied even though split-a-1 has"
+        );
+
+        // Direction 2 (adv's reverse repro): the BTreeMap-key-first sibling
+        // (split-a-1) integrates while its split partner (split-a-2) has permanently
+        // ESCALATED (terminal, never integrated). A `.find()`-first-match resolution
+        // still locks onto split-a-1 alone and reports the criterion satisfied,
+        // silently ignoring the escalated sibling entirely - no error, no lesson, the
+        // exact silent-failure shape round 1 was rejected for. checkin must stay
+        // unready.
+        let mut terminal = HashSet::new();
+        terminal.insert("split-a-2".to_string());
+        assert!(
+            !ready_stages(&stages, &integrated, &terminal, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "split-a-2 escalated without ever integrating: the needs edge must stay \
+             unsatisfied even though the BTreeMap-key-first sibling split-a-1 \
+             integrated"
+        );
+
+        // Once BOTH real-split siblings have integrated (split-a-2 recovers here
+        // instead of the hypothetical escalation above), the needs edge is satisfied -
+        // same as the ordinary single-owner case.
+        integrated.insert("split-a-2".to_string());
+        assert!(
+            ready_stages(&stages, &integrated, &empty, &fanout_criteria)
+                .contains(&"checkin".to_string()),
+            "once EVERY real-split sibling sharing criterion_id c1 (and c2's single \
+             owner) has integrated, the needs edge is satisfied"
         );
     }
 

@@ -42,6 +42,13 @@ CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);
 CREATE TABLE IF NOT EXISTS aliases (alias TEXT PRIMARY KEY, canonical_id TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS applied (position INTEGER PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS pending_proof (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project TEXT NOT NULL DEFAULT '',
+  name TEXT NOT NULL,
+  evidence TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pending_proof_name ON pending_proof(project, name);
 ";
 
 /// Projector is the SQLite-backed Projection.
@@ -457,6 +464,49 @@ impl Projector {
             line,
             degree,
         })
+    }
+
+    /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE, VALIDATE ADVISORY): the count of
+    /// `code-entity` nodes this project's graph currently holds that are RETIRED - reachable by NO
+    /// live edge at all, in either direction, though each DID at some point carry a live `CONTAINS`
+    /// edge from its own file (proving it was once a genuine, reachable graph member, never a
+    /// dangling placeholder [`ensure_node`] creates for an unresolved cross-file reference that
+    /// simply has not resolved yet - such a placeholder never had a `CONTAINS` edge to lose, live
+    /// or historical, so it is never counted here).
+    ///
+    /// This is exactly the shape the migration's supersession leaves behind (spec 86 Design): a
+    /// re-ingest of a store that predates criterion 1's exclusion rule retires a legacy
+    /// test-entity's own structural edges via `supersede_file_edges` - on either the
+    /// empty-after-exclusion structural sentinel (a whole `tests/`-dir file, the central case) or
+    /// the ordinary re-extraction boundary (an in-file `#[cfg(test)] mod tests` item, retired the
+    /// SAME way the moment its own file next re-extracts) - and adds nothing back for the excluded
+    /// entity, so it falls out of every live traversal though its node row and every historical
+    /// edge persist (never a store wipe - node rows are never deleted here, spec 29a section 6.4).
+    /// `rigger validate` reads this once per run to report the migration's shrink to the operator
+    /// (`main::retired_entities_advisory_for`).
+    ///
+    /// Read-only; never mutates. Project-scoped like every other read here.
+    pub fn retired_code_entity_count(&self) -> Result<usize, Error> {
+        let conn = self.conn.lock().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM nodes n
+                  WHERE n.kind = ?1 AND n.project = ?2
+                    AND NOT EXISTS (
+                      SELECT 1 FROM edges e
+                       WHERE e.valid_to IS NULL AND e.project = ?2
+                         AND (e.from_id = n.id OR e.to_id = n.id)
+                    )
+                    AND EXISTS (
+                      SELECT 1 FROM edges e
+                       WHERE e.valid_to IS NOT NULL AND e.project = ?2
+                         AND e.to_id = n.id AND e.rel = ?3
+                    )",
+                params![KIND_CODE_ENTITY, self.project, REL_CONTAINS],
+                |r| r.get(0),
+            )
+            .map_err(be)?;
+        Ok(n as usize)
     }
 
     /// The DOWN direction of [`Projection::calls`] (spec 52 criterion 1): the execution path out of
@@ -1137,11 +1187,31 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // so those findings are now resolved. The adjudicator's earlier SpawnResult marked
             // each upheld finding-of-this-unit (disposition=upheld, unit=<this unit>); expire
             // them now through the same shared authority the discard trigger uses. A finding
-            // upheld for a DIFFERENT unit, or upheld here but re-raised under a later run (a
-            // re-raise re-runs ensure_node, which COALESCE-overwrites the whole attrs and so
-            // clears the marker), carries no matching mark and is untouched - keeping the
-            // invalidation run-scoped by construction. Collect the marked ids deterministically
-            // (ORDER BY id) before mutating so the fold order never varies.
+            // upheld for a DIFFERENT unit, or upheld here but re-raised under a later run, carries
+            // no matching mark and is untouched - keeping the invalidation run-scoped by
+            // construction. Collect the marked ids deterministically (ORDER BY id) before
+            // mutating so the fold order never varies.
+            //
+            // Corrected (spec 86 criterion 2 round 3, arch-u86c2-r2-ensure-node-merge-silently-
+            // narrows-spec25-disposition-mark-erasure): a re-raise no longer clears the mark via a
+            // whole-blob COALESCE-replace - `ensure_node`'s `ON CONFLICT` now `json_patch`-MERGES
+            // (spec 86 criterion 2 round 2, so evidence attrs survive an unrelated structural
+            // re-fold). The run-scoping guarantee above ("upheld here but re-raised under a later
+            // run... carries no matching mark") still holds, but for a DIFFERENT, more fragile
+            // reason: `TYPE_REVIEW_FINDING`'s own `ensure_node` call (below) unconditionally
+            // re-supplies `unit` (production's `ReviewFinding.unit` defaults to an empty string) on
+            // EVERY fold including a re-raise, and json_patch OVERWRITES a key the incoming attrs
+            // DO mention - so the re-raise still knocks this SELECT's `unit = ?2` out of matching.
+            // `disposition` itself, which that same call never mentions, is NOT cleared any more
+            // (json_patch preserves a key the incoming attrs leave unmentioned) and persists on the
+            // node forever after a single upheld mark - harmless today only because nothing else
+            // ever reads `$.disposition` (grepped), so a re-raised finding that later integrates
+            // still correctly stays LIVE (the `unit` mismatch alone already prevents this SELECT
+            // from matching it). If a future change ever narrows `TYPE_REVIEW_FINDING`'s own
+            // `ensure_node` attrs to drop the near-always-empty `unit` key, this protection
+            // disappears silently with every gate still green - see
+            // `an_upheld_mark_never_expires_the_same_finding_re_raised_before_its_unit_integrates`'s
+            // own updated doc below for the regression this guards.
             let marked: Vec<String> = {
                 let mut stmt = tx
                     .prepare(
@@ -1297,6 +1367,12 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 ],
             )
             .map_err(be)?;
+            // Spec 86 criterion 2's convergent half: any TEST-ORIGIN evidence staged before this
+            // definition existed (a forward reference to a file the sorted ingest had not yet
+            // reached) names it now - transfer it onto `entity` and clear the stage. Same
+            // convergence point as the tier upgrade just above (this definition folding is what
+            // makes both resolvable), never a second timing authority.
+            reconcile_pending_proof(tx, &entity, &c.name, project)?;
         }
         TYPE_EDGE_INFERRED => {
             // Spec 29a criterion 1: one reference the extraction pass emitted. Fold it into a
@@ -1310,12 +1386,40 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // alias-resolved like the artifact-producing arms, so the referencing file node is the
             // SAME one-graph node (see the definition arm above).
             let r: super::EdgeInferred = serde_json::from_slice(&e.data).map_err(be)?;
+            // Spec 86 criterion 2 (PROOF LANDS ON THE CARD): a TEST-ORIGIN reference is EVIDENCE,
+            // not a structural fact - checked FIRST, before any of the structural folding below,
+            // so it takes NEITHER the `file` KIND_FILE node NOR the REFERENCES/CALLS edge:
+            // criterion 1's "never a node and never an edge on the canvas" promise extends to
+            // evidence exactly as it holds for the exclusion itself. See `fold_test_evidence`'s own
+            // doc for the target-resolution and merge-not-replace mechanics.
+            if r.is_test {
+                return fold_test_evidence(tx, &r, project);
+            }
             let file = resolve_in_tx(tx, &r.file);
-            // Supersede-on-re-extract (criterion 3): a refs-only file (no definitions) carries the
-            // batch boundary on its first reference; retire the file's prior structural edges before
-            // folding this one, so the two fold arms share one supersede authority.
+            // Supersede-on-re-extract (spec 29a criterion 3): a refs-only file (no definitions)
+            // carries the batch boundary on its first reference; retire the file's prior
+            // structural edges before folding this one, so the two fold arms share one supersede
+            // authority.
             if r.fresh {
                 supersede_file_edges(tx, &file, at, project)?;
+            }
+            // Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE): an EMPTY `r.name` marks
+            // `grounder::symbols::events::extract_events`'s own empty-after-exclusion structural
+            // sentinel ([`crate::grounder::symbols::events`]'s `empty_structural_boundary_event`) -
+            // the file's WHOLE structural batch when its surviving definition/reference set drops
+            // to zero (a whole `tests/`-dir file, the central migration case, or any file an edit
+            // left with nothing to extract). The supersede call above (which ran unconditionally on
+            // `r.fresh`, independent of what else this event carries) IS this sentinel's entire
+            // job: it retires every LIVE structural edge this file's PRIOR extraction left - a
+            // legacy test-entity node's own CONTAINS/REFERENCES/CALLS edge included - so a re-ingest
+            // of a store that predates criterion 1's exclusion rule genuinely shrinks, never by a
+            // store wipe (node rows are never deleted; only their reachability is retired). There is
+            // no real reference here and no file content to contain - `""` is never a genuine
+            // reference name - so this returns immediately rather than falling through to
+            // `ensure_node` a `KIND_FILE` container for an excluded file: criterion 1's "never a
+            // node and never an edge on the canvas" promise holds through the migration too.
+            if r.name.is_empty() {
+                return Ok(());
             }
             ensure_node(tx, &file, KIND_FILE, &[("lang", &r.lang)], project)?;
             let target = code_entity_id(&file, &r.name);
@@ -2234,6 +2338,320 @@ fn reference_tier(
     }
 }
 
+/// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): fold one TEST-ORIGIN reference (`r.is_test`)
+/// entirely as evidence, never as a structural fact. When `r.fresh` marks this as the FIRST
+/// is_test reference of the referencing file's own batch, first retract that file's own PRIOR
+/// evidence contribution via [`supersede_file_proof`] (round 2,
+/// adv-u86c2-r-test-file-re-extraction-double-counts-its-own-unchanged-references) - this
+/// criterion's OWN supersession boundary for evidence, mirroring `supersede_file_edges`'s boundary
+/// for structural edges, never criterion 3's mechanism. Then resolves the PRODUCT entity `r` is
+/// evidence FOR via [`resolve_proof_target`] (same-file first, else the UNIQUE cross-file name
+/// match) and, when found, folds the evidence onto it via [`record_proof`]; when not yet
+/// resolvable (a forward reference to a file the sorted ingest has not reached, or an ambiguous
+/// name), stages it in `pending_proof` via [`stage_pending_proof`] for the
+/// `TYPE_CODE_ENTITY_EXTRACTED` arm's [`reconcile_pending_proof`] to pick up the moment a matching,
+/// UNAMBIGUOUS definition folds. Deliberately creates NO `file` node and NO edge of any kind -
+/// unlike the ordinary `TYPE_EDGE_INFERRED` arm, this reference's own referencing file is never
+/// even alias-resolved into a graph node beyond what supersession needs, because criterion 1's
+/// "never a node and never an edge on the canvas" promise for excluded/test-origin content extends
+/// to its evidence too.
+///
+/// Round 3 (adv-u86c2-r2-deleted-test-reference-strands-proof-forever): an EMPTY `r.name` marks
+/// [`crate::grounder::symbols::events::proof_events`]'s own empty-boundary sentinel - the file's
+/// WHOLE evidence batch when its is_test reference set drops to zero. The supersede above (which
+/// runs on `r.fresh`, unconditionally of `r.name`) IS that sentinel's entire job: it retracts this
+/// file's own stale `proof_evidence` contribution, exactly as it does on an ordinary re-extraction.
+/// There is no real reference here to resolve or stage - `""` is never a genuine symbol name - so
+/// this returns immediately after the supersede rather than falling through to
+/// `resolve_proof_target`/`stage_pending_proof`, which would otherwise stage a bogus pending row
+/// under the empty name for `reconcile_pending_proof` to later hand to whichever entity happens to
+/// (mis)fold with an empty name of its own.
+fn fold_test_evidence(
+    tx: &Transaction,
+    r: &super::EdgeInferred,
+    project: &str,
+) -> Result<(), Error> {
+    let file = resolve_in_tx(tx, &r.file);
+    if r.fresh {
+        supersede_file_proof(tx, &file, project)?;
+    }
+    if r.name.is_empty() {
+        return Ok(());
+    }
+    let evidence = format!("{file}:{}", r.line);
+    let same_file = code_entity_id(&file, &r.name);
+    match resolve_proof_target(tx, &same_file, &r.name, project)? {
+        Some(id) => record_proof(tx, &id, &evidence, project),
+        None => stage_pending_proof(tx, &r.name, &evidence, project),
+    }
+}
+
+/// Spec 86 criterion 2, round 2 (adv-u86c2-r-test-file-re-extraction-double-counts-its-own-
+/// unchanged-references): supersede-on-re-extract for EVIDENCE, mirroring
+/// [`supersede_file_edges`]'s per-file boundary discipline but over node ATTRS - evidence has no
+/// edge of its own to invalidate (criterion 1's "never a node and never an edge" promise holds for
+/// it too). Runs on the FIRST test-origin reference of a re-extracted file's own batch
+/// (`EdgeInferred::fresh`, stamped by [`crate::grounder::symbols::events::proof_events`]), BEFORE
+/// any evidence from the new batch folds: retracts every `<file>:<line>` entry THIS file
+/// previously contributed to any entity's `proof_evidence` - recomputing `proven_by` from the
+/// remaining list's length (never a naive decrement, so a count that ever drifted from the list
+/// can't drift further) - and drops any of this file's still-`pending_proof` rows the same way.
+/// The read-then-write per entity mirrors [`record_proof`]'s own documented reason for avoiding a
+/// nested `json_set`/`json_insert` write (a subtype-tagged json1 return value would store a bare
+/// array where a JSON-STRING is required).
+///
+/// A re-extraction of an UNCHANGED reference set therefore nets to the SAME `proven_by`/
+/// `proof_evidence` it started with (retract, then re-add via the fold below), and a reference an
+/// edit REMOVED simply stops being counted - never accretes, never lingers. A no-op on a file's
+/// very first extraction (nothing to retract yet).
+fn supersede_file_proof(tx: &Transaction, file: &str, project: &str) -> Result<(), Error> {
+    let prefix = format!("{file}:");
+    let rows: Vec<(String, String)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, json_extract(attrs, '$.proof_evidence')
+                   FROM nodes
+                  WHERE kind = ?1 AND project = ?2
+                    AND json_extract(attrs, '$.proof_evidence') IS NOT NULL",
+            )
+            .map_err(be)?;
+        let out = stmt
+            .query_map(params![KIND_CODE_ENTITY, project], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(be)?;
+        out.collect::<Result<_, _>>().map_err(be)?
+    };
+    for (id, evidence_json) in rows {
+        let list: Vec<String> = serde_json::from_str(&evidence_json).unwrap_or_default();
+        let had = list.len();
+        let keep: Vec<String> = list
+            .into_iter()
+            .filter(|e| !e.starts_with(&prefix))
+            .collect();
+        if keep.len() != had {
+            let count = keep.len().to_string();
+            let list_json = serde_json::to_string(&keep).map_err(be)?;
+            tx.execute(
+                "UPDATE nodes SET attrs = json_set(
+                     attrs, '$.proven_by', ?2, '$.proof_evidence', ?3
+                 ) WHERE id = ?1 AND project = ?4",
+                params![id, count, list_json, project],
+            )
+            .map_err(be)?;
+        }
+    }
+    // This file's own still-unresolved forward-staged evidence (substr-prefix match, mirroring
+    // the community/concept grain-scoped supersession idiom elsewhere in this file - never a
+    // LIKE/GLOB whose wildcards a path could carry).
+    tx.execute(
+        "DELETE FROM pending_proof
+          WHERE project = ?1 AND substr(evidence, 1, length(?2)) = ?2",
+        params![project, prefix],
+    )
+    .map_err(be)?;
+    Ok(())
+}
+
+/// Spec 86 criterion 2: resolve the entity a test-origin reference named `name` (from `same_file`,
+/// the referencing file's own would-be `<file>::<name>` id) is evidence FOR. Same-file first - the
+/// overwhelmingly common `#[cfg(test)] mod tests` idiom, where `same_file` already carries a
+/// `name` attr because a product file's own definitions fold before its own test module's
+/// references (defs emit before refs, spec 29a) - else the UNIQUE OTHER code-entity anywhere in
+/// `project` that defines this exact name. `None` when no definition is known YET (a forward
+/// reference to a file the sorted ingest has not reached, or a name genuinely undefined anywhere)
+/// OR when the name is AMBIGUOUS (2+ candidates) - honest by construction, never confidently
+/// wrong: this never manufactures a placeholder entity merely to carry evidence about something
+/// that may not exist, and never picks an arbitrary winner among several.
+///
+/// Round 2 (adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity): the
+/// original cross-file fallback mirrored [`reference_tier`]'s own `LIMIT 1` lookup verbatim, but
+/// the consequences differ in kind, not just degree. `reference_tier` only ever nudges a per-edge
+/// CONFIDENCE TIER - each reference keeps its own identity, and an under-confident tier is merely
+/// a weaker signal, never a wrong one. This fold AGGREGATES a count and an evidence list onto ONE
+/// shared node identity: two same-named entities in unrelated files could make the LIMIT-1 pick
+/// hand real credit to an unreferenced entity while the entity a test genuinely reaches renders
+/// the spec's own "no test reaches this entity" state - a confidently WRONG answer criterion 2's
+/// Done-when forbids. So this fold does NOT reuse `reference_tier`'s pattern: it requires the name
+/// to be UNIQUE among all project code-entities before resolving cross-file, staying unresolved
+/// (via `stage_pending_proof`, [`reconcile_pending_proof`]'s own ambiguity guard) rather than ever
+/// guessing.
+fn resolve_proof_target(
+    tx: &Transaction,
+    same_file: &str,
+    name: &str,
+    project: &str,
+) -> Result<Option<String>, Error> {
+    let same_file_def = tx
+        .query_row(
+            "SELECT 1 FROM nodes
+              WHERE id = ?1 AND project = ?2 AND json_extract(attrs, '$.name') IS NOT NULL",
+            params![same_file, project],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(be)?
+        .is_some();
+    if same_file_def {
+        return Ok(Some(same_file.to_string()));
+    }
+    let mut stmt = tx
+        .prepare(
+            "SELECT id FROM nodes
+              WHERE kind = ?1 AND project = ?2 AND json_extract(attrs, '$.name') = ?3",
+        )
+        .map_err(be)?;
+    let mut candidates = stmt
+        .query_map(params![KIND_CODE_ENTITY, project, name], |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(be)?
+        .collect::<Result<Vec<String>, _>>()
+        .map_err(be)?;
+    Ok(if candidates.len() == 1 {
+        candidates.pop()
+    } else {
+        None
+    })
+}
+
+/// Spec 86 criterion 2: fold one test-origin reference's evidence onto entity `id`'s attrs -
+/// INCREMENT `proven_by` and APPEND `evidence` (a `file:line` string) to its `proof_evidence` list -
+/// by reading the current values, computing the new ones IN RUST, then writing them back via
+/// `json_set` MERGED over the node's EXISTING attrs, never `ensure_node`'s whole-attrs
+/// COALESCE-REPLACE (which would silently wipe the entity's `name`/`kind`/`line` the moment a
+/// SECOND test proved it, since `ensure_node` replaces the whole attrs blob rather than merging one
+/// key). Mirrors the SAME merge-not-replace idiom the `ReviewFinding` upheld-disposition mark
+/// already uses (`json_set(COALESCE(attrs, '{}'), ...)`).
+///
+/// Both `proven_by` and `proof_evidence` are written as JSON STRINGS (a decimal-digit string, and a
+/// JSON-array-shaped string respectively) - NEVER a bare JSON number or array - because
+/// `Node::attrs` is `BTreeMap<String, String>` (spec 29a) and [`row_to_node`] deserializes the
+/// WHOLE attrs blob through that map in ONE `serde_json::from_str` call: a single non-string value
+/// anywhere in the object fails that deserialize and `.ok()` silently degrades to an EMPTY map,
+/// erasing every OTHER attr the entity carries (`name`, `kind`, `line`, ...), not just this new one.
+///
+/// The read-then-write (rather than one `json_set(attrs, '$.k', json_insert(...))` statement) is
+/// deliberate, not merely simpler: SQLite's json1 functions tag their OWN return value with an
+/// internal JSON subtype, and `json_set` embeds a subtype-tagged VALUE argument AS JSON
+/// (unquoted) rather than treating it as a plain scalar to quote - so nesting `json_insert(...)`
+/// directly as `json_set`'s value silently stores a BARE JSON ARRAY, not the JSON-STRING this
+/// function's own contract requires. A plain Rust-computed `String` bound as an ordinary parameter
+/// carries no such subtype tag, so `json_set` correctly quotes it - which is what makes the
+/// round-trip through [`Card`](crate::dash::Card)'s own `usize`/`Vec<String>` parse (`str::parse`,
+/// `serde_json::from_str`) symmetric with how it is written here.
+fn record_proof(tx: &Transaction, id: &str, evidence: &str, project: &str) -> Result<(), Error> {
+    let existing: Option<(Option<i64>, Option<String>)> = tx
+        .query_row(
+            "SELECT CAST(json_extract(attrs, '$.proven_by') AS INTEGER),
+                    json_extract(attrs, '$.proof_evidence')
+             FROM nodes WHERE id = ?1 AND project = ?2",
+            params![id, project],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(be)?;
+    let (count, evidence_json) = existing.unwrap_or((None, None));
+    let new_count = (count.unwrap_or(0) + 1).to_string();
+    let mut list: Vec<String> = evidence_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    list.push(evidence.to_string());
+    let list_json = serde_json::to_string(&list).map_err(be)?;
+    tx.execute(
+        "UPDATE nodes SET attrs = json_set(
+             COALESCE(attrs, '{}'),
+             '$.proven_by', ?2,
+             '$.proof_evidence', ?3
+         )
+         WHERE id = ?1 AND project = ?4",
+        params![id, new_count, list_json, project],
+    )
+    .map_err(be)?;
+    Ok(())
+}
+
+/// Spec 86 criterion 2: stage a test-origin reference's evidence whose target definition has not
+/// folded yet - the SAME eventual-consistency shape [`reference_tier`]'s `AMBIGUOUS` tier already
+/// accepts for structural edges (spec 29a criterion 2's convergent upgrade), so proof completeness
+/// is never bound to fold order. Reconciled by [`reconcile_pending_proof`] the moment a matching
+/// definition folds. A plain append-only row, never a node - `pending_proof` is fold-internal
+/// bookkeeping, never returned by `subgraph`/`resolve` and never itself "on the canvas".
+fn stage_pending_proof(
+    tx: &Transaction,
+    name: &str,
+    evidence: &str,
+    project: &str,
+) -> Result<(), Error> {
+    tx.execute(
+        "INSERT INTO pending_proof (project, name, evidence) VALUES (?1, ?2, ?3)",
+        params![project, name, evidence],
+    )
+    .map_err(be)?;
+    Ok(())
+}
+
+/// Spec 86 criterion 2: the convergent half of [`stage_pending_proof`] - called from the
+/// `TYPE_CODE_ENTITY_EXTRACTED` arm the moment `entity` (whose defined name is `name`) folds,
+/// right beside that arm's OWN `AMBIGUOUS`->`INFERRED` tier convergence (spec 29a criterion 2), so
+/// a forward-referenced test's evidence is never silently lost to fold order. Every staged row for
+/// this name transfers onto `entity` (via [`record_proof`], preserving the merge-not-replace
+/// discipline) and is removed from the stage - UNLESS `name` is currently AMBIGUOUS (round 2,
+/// adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity): this fires on
+/// EVERY fold of a matching definition, including a LATER re-extraction of one that already
+/// exists, so without this guard it would blindly hand a still-pending, genuinely ambiguous
+/// evidence entry to whichever same-named definition happens to (re-)fold next - reopening the
+/// exact misattribution [`resolve_proof_target`]'s OWN ambiguity guard refuses on the resolved
+/// path. Applies the SAME uniqueness rule: claim only when `entity` is the ONE code-entity of this
+/// name in `project` right now (checked by querying for any OTHER `id`), leaving the stage
+/// untouched otherwise. A no-op (nothing queried, nothing deleted) when no evidence is pending for
+/// `name`, the overwhelming common case.
+fn reconcile_pending_proof(
+    tx: &Transaction,
+    entity: &str,
+    name: &str,
+    project: &str,
+) -> Result<(), Error> {
+    let ambiguous: bool = tx
+        .query_row(
+            "SELECT 1 FROM nodes
+              WHERE kind = ?1 AND project = ?2 AND id != ?3
+                AND json_extract(attrs, '$.name') = ?4
+              LIMIT 1",
+            params![KIND_CODE_ENTITY, project, entity, name],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(be)?
+        .is_some();
+    if ambiguous {
+        return Ok(());
+    }
+    let evidences: Vec<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT evidence FROM pending_proof WHERE project = ?1 AND name = ?2 ORDER BY id",
+            )
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(params![project, name], |r| r.get::<_, String>(0))
+            .map_err(be)?;
+        rows.collect::<Result<_, _>>().map_err(be)?
+    };
+    for evidence in &evidences {
+        record_proof(tx, entity, evidence, project)?;
+    }
+    if !evidences.is_empty() {
+        tx.execute(
+            "DELETE FROM pending_proof WHERE project = ?1 AND name = ?2",
+            params![project, name],
+        )
+        .map_err(be)?;
+    }
+    Ok(())
+}
+
 fn ensure_node(
     tx: &Transaction,
     id: &str,
@@ -2266,10 +2684,46 @@ fn ensure_node(
     // space, and every other kind keeps first-writer-wins (their ids are distinct slug spaces -
     // decision / unit / agent / gate ids - that never collide with a path). This is the single
     // node-mutation authority, so the reconciliation lives here rather than in a second UPDATE path.
+    //
+    // MERGE, never whole-blob replace (spec 86 criterion 2 round 2:
+    // sdet-u86c2-r-fresh-refold-wipes-cross-file-proof). Before this fix, incoming non-empty attrs
+    // fully REPLACED the stored blob (`COALESCE(excluded.attrs, nodes.attrs)`), which silently
+    // erased whatever `record_proof`/`supersede_file_proof` had written directly onto a
+    // code-entity's attrs (`proven_by`/`proof_evidence`) the moment that SAME entity's own
+    // structural fields (`name`/`kind`/`line`/`lang`) re-asserted on a later, unrelated
+    // re-extraction of its file - the TYPE_CODE_ENTITY_EXTRACTED arm's `ensure_node` call carries
+    // only those four keys, never the evidence ones. `json_patch` (RFC 7396 merge) keeps every
+    // existing key the incoming attrs do not mention and overwrites only the ones they do, so a
+    // structural re-fold still updates `line` when a definition moves while leaving a DIFFERENT
+    // file's accumulated proof untouched - the two mutation paths (this one and
+    // `record_proof`/`supersede_file_proof`'s own merge-via-`json_set`) now compose instead of
+    // racing. Every OTHER caller of `ensure_node` passes attrs whose OWN keys are either
+    // all-or-nothing stable across refolds (a decision's `summary`, a finding's
+    // `summary`/`by`/`unit`, a design-intent concept's `title`/`doc`) or empty, so none of THEM
+    // relied on the old whole-blob-replace semantics to drop one of THEIR OWN stale keys - this is
+    // a pure widening for `ensure_node`'s own callers, not a behavior change for any other fold
+    // arm's OWN attrs.
+    //
+    // Narrower than it first reads, corrected (spec 86 criterion 2 round 3, arch-u86c2-r2-
+    // ensure-node-merge-silently-narrows-spec25-disposition-mark-erasure): that claim covers only
+    // keys `ensure_node`'s OWN callers write. A DIFFERENT writer - the spec-25 disposition-expiry
+    // mark (`$.disposition`/`$.unit`, set by a raw `json_set` UPDATE outside `ensure_node`
+    // entirely, on the SAME `KIND_FINDING` node `TYPE_REVIEW_FINDING`'s `ensure_node` call also
+    // writes) - DID rely on the old whole-blob-replace to get cleared on a re-raise. Under this
+    // merge it is not silently WRONG (the `TYPE_UNIT_INTEGRATED` fold arm's own doc above works
+    // out why the run-scoping guarantee it protects still holds, for a narrower and more fragile
+    // reason), but the widening is not the "no other fold arm relies on the old semantics" pure
+    // case this paragraph's own claim implies - a second writer sharing a node with an
+    // `ensure_node` caller is exactly the composability seam to check before widening this
+    // function again. When the incoming attrs are empty (`excluded.attrs IS NULL`, a
+    // bare/defensive `ensure_node`), the existing attrs are left untouched exactly as before.
     tx.execute(
         "INSERT INTO nodes (id, kind, attrs, project) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT(id, project) DO UPDATE SET
-             attrs = COALESCE(excluded.attrs, nodes.attrs),
+             attrs = CASE
+                 WHEN excluded.attrs IS NULL THEN nodes.attrs
+                 ELSE json_patch(COALESCE(nodes.attrs, '{}'), excluded.attrs)
+             END,
              kind = CASE
                  WHEN nodes.kind = ?5 AND excluded.kind IN (?6, ?7, ?8, ?9, ?10)
                      THEN excluded.kind
@@ -2895,6 +3349,40 @@ mod tests {
 
     fn apply_edge_inferred(p: &Projector, pos: u64, file: &str, name: &str, lang: &str) {
         let payload = serde_json::json!({ "file": file, "name": name, "lang": lang });
+        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    /// Spec 86 criterion 2: one TEST-ORIGIN reference evidence event, built by hand (no
+    /// `proof_events` dependency) so the fold is proven in isolation. Constructed as raw JSON
+    /// (mirroring [`apply_edge_inferred`]'s own style), never through the [`super::EdgeInferred`]
+    /// struct, so this exercises the exact wire shape a real emitter produces.
+    fn apply_edge_inferred_evidence(p: &Projector, pos: u64, file: &str, name: &str, line: u32) {
+        let payload = serde_json::json!({ "file": file, "name": name, "lang": "rust", "line": line, "is_test": true });
+        let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
+    /// A test-origin evidence event carrying an explicit `fresh` (round 2, spec 86 criterion 2):
+    /// marks this event as the FIRST is_test reference of the referencing file's own batch,
+    /// mirroring [`apply_batch_ref`]'s structural `fresh` for evidence's own supersession
+    /// boundary (`supersede_file_proof`). Written independently of
+    /// [`apply_edge_inferred_evidence`] (never delegating to/from it) so each keeps its own
+    /// distinct shape.
+    fn apply_edge_inferred_evidence_fresh(
+        p: &Projector,
+        pos: u64,
+        file: &str,
+        name: &str,
+        line: u32,
+        fresh: bool,
+    ) {
+        let payload = serde_json::json!({
+            "file": file, "name": name, "lang": "rust", "line": line, "is_test": true,
+            "fresh": fresh,
+        });
         let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
         e.position = pos;
         p.apply(&e).unwrap();
@@ -5768,14 +6256,22 @@ mod tests {
         // Spec 25, criterion 3 (disposition-expiry, RUN-SCOPING - the UPHELD-AND-ADDRESSED
         // trigger): a finding UPHELD for unit u1 under run A is MARKED (disposition=upheld,
         // unit=u1) and expires only when u1 INTEGRATES. If a LATER run B re-raises the SAME
-        // finding between the mark and the integrate, that re-raise re-runs ensure_node, whose
-        // ON CONFLICT COALESCE(excluded.attrs, nodes.attrs) overwrites the whole attrs and so
-        // CLEARS the stale mark, and appends fresh valid_to-NULL edges. So when u1 integrates,
-        // the run-B re-raised finding no longer matches the marked-for-u1 SELECT and stays LIVE,
-        // while a sibling still-marked finding (never re-raised) is correctly expired. This
-        // proves run A's upheld disposition never over-invalidates a run B re-raise (the
-        // cross-run over-invalidation guard). This criterion OWNS that run-scoping guarantee; it
-        // does NOT own the upheld-and-addressed trigger (criterion 2 does).
+        // finding between the mark and the integrate, that re-raise re-runs ensure_node (the
+        // TYPE_REVIEW_FINDING arm's own call, which unconditionally re-supplies `unit` -
+        // production's `ReviewFinding.unit` defaults to an empty string). Corrected (spec 86
+        // criterion 2 round 3, arch-u86c2-r2-ensure-node-merge-silently-narrows-spec25-
+        // disposition-mark-erasure): `ensure_node`'s `ON CONFLICT` no longer whole-blob-replaces
+        // via COALESCE - it `json_patch`-MERGES (spec 86 criterion 2 round 2) - so this re-raise
+        // does NOT clear the mark wholesale; it overwrites only the ONE key it re-supplies
+        // (`unit`, back to empty), which is enough on its own to knock the marked-for-u1 SELECT's
+        // `unit = ?2` out of matching (`disposition` survives untouched, unread anywhere else).
+        // Either way the finding no longer matches when u1 integrates and stays LIVE, while a
+        // sibling still-marked finding (never re-raised) is correctly expired. This proves run
+        // A's upheld disposition never over-invalidates a run B re-raise (the cross-run
+        // over-invalidation guard) - true under BOTH the old and the new `ensure_node` mechanism,
+        // for two different reasons; see the `TYPE_UNIT_INTEGRATED` fold arm's own updated doc
+        // for the fragility the NEW reason carries. This criterion OWNS that run-scoping
+        // guarantee; it does NOT own the upheld-and-addressed trigger (criterion 2 does).
         let p = Projector::open(":memory:", "test").unwrap();
 
         // Run A raises two findings about a.rs, both upheld for u1: f-reraised (which run B will
@@ -5796,8 +6292,9 @@ mod tests {
             r#"{"verdict":"approve","upheld":["f-control","f-reraised"]}"#,
         );
 
-        // A LATER run B re-raises ONLY f-reraised. The re-raise COALESCE-overwrites its attrs,
-        // clearing the disposition=upheld mark, and appends fresh live edges.
+        // A LATER run B re-raises ONLY f-reraised. The re-raise's ensure_node call json_patch-
+        // merges its attrs, overwriting `unit` (back to empty) while leaving `disposition`
+        // untouched, and appends fresh live edges.
         apply_review_finding(
             &p,
             4,
@@ -5816,8 +6313,8 @@ mod tests {
         assert!(
             after.nodes.iter().any(|n| n.id == "f-reraised"),
             "the finding re-raised under a later run B stays LIVE when u1 integrates - the \
-             re-raise cleared the stale upheld mark, so run A's disposition never over-invalidates \
-             a B re-raise"
+             re-raise's own ensure_node call overwrote the mark's unit token, so run A's \
+             disposition never over-invalidates a B re-raise"
         );
         assert!(
             after
@@ -7316,5 +7813,602 @@ mod tests {
             plan.iter().any(|d| d.contains("idx_edges_live_rel_from")),
             "the relationship-scoped forward scan uses the partial idx_edges_live_rel_from; plan was {plan:?}"
         );
+    }
+
+    /// Spec 86 criterion 2 (PROOF LANDS ON THE CARD): the `TYPE_EDGE_INFERRED` fold's `is_test`
+    /// branch. Proven directly against the fold (via [`apply_edge_inferred_evidence`]/
+    /// [`apply_code_entity`]), never through the extraction pass - the emit half's own contract
+    /// (`proof_events`) is proven separately in `grounder::symbols::events`.
+    mod proof_evidence_c2 {
+        use super::*;
+
+        fn proven_by(g: &Graph, id: &str) -> usize {
+            g.nodes
+                .iter()
+                .find(|n| n.id == id)
+                .and_then(|n| n.attrs.get("proven_by"))
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0)
+        }
+
+        fn proof_evidence(g: &Graph, id: &str) -> Vec<String> {
+            g.nodes
+                .iter()
+                .find(|n| n.id == id)
+                .and_then(|n| n.attrs.get("proof_evidence"))
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default()
+        }
+
+        #[test]
+        fn a_same_file_test_reference_increments_proven_by_and_records_its_evidence() {
+            // The overwhelmingly common `#[cfg(test)] mod tests` idiom: `product.rs::product_fn` is
+            // defined, then a test in the SAME file references it. proven_by lands on the
+            // definition's OWN id directly - no bare placeholder, no second node.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 2, "product.rs", "product_fn", 7);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                1,
+                "one test-origin reference proves the entity once; got {:?}",
+                g.nodes
+            );
+            assert_eq!(
+                proof_evidence(&g, "product.rs::product_fn"),
+                vec!["product.rs:7".to_string()],
+                "the evidence list names the reference's own file:line"
+            );
+        }
+
+        #[test]
+        fn two_test_references_accumulate_proven_by_to_2_with_both_evidence_entries() {
+            // Spec 86 criterion 2's own literal Done-when example: "a product entity referenced by
+            // two test functions carries proven_by: 2 with both file:line's". One same-file, one
+            // cross-file (a `tests/` integration test), proving accumulation is not same-file-only.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 2, "product.rs", "product_fn", 7);
+            apply_edge_inferred_evidence(&p, 3, "tests/integration.rs", "product_fn", 4);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                2,
+                "two test-origin references accumulate to proven_by: 2; got {:?}",
+                g.nodes
+            );
+            assert_eq!(
+                proof_evidence(&g, "product.rs::product_fn"),
+                vec![
+                    "product.rs:7".to_string(),
+                    "tests/integration.rs:4".to_string()
+                ],
+                "both file:line evidence entries are recorded, in fold order"
+            );
+        }
+
+        #[test]
+        fn an_is_test_edge_creates_no_file_node_and_no_edge_of_any_kind() {
+            // Criterion 1's "never a node and never an edge on the canvas" promise extends to
+            // evidence: the referencing file (a tests/ integration file here) gets no KIND_FILE
+            // node, and NOTHING folds a REFERENCES/CALLS edge from it - only the target entity's
+            // attrs change.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 2, "tests/integration.rs", "product_fn", 4);
+            let g = p
+                .subgraph(
+                    &["product.rs".to_string(), "tests/integration.rs".to_string()],
+                    2,
+                )
+                .unwrap();
+            assert!(
+                !g.nodes
+                    .iter()
+                    .any(|n| n.kind == KIND_FILE && n.id == "tests/integration.rs"),
+                "a test-origin reference's own file never becomes a KIND_FILE node; got {:?}",
+                g.nodes
+            );
+            assert!(
+                !g.edges.iter().any(|e| e.from == "tests/integration.rs"),
+                "a test-origin reference never folds an edge of any kind; got {:?}",
+                g.edges
+            );
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                1,
+                "the evidence still landed on the product entity"
+            );
+        }
+
+        #[test]
+        fn recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs() {
+            // record_proof MERGES via json_set/json_insert, never ensure_node's whole-attrs
+            // COALESCE-REPLACE - guards against a regression that would silently erase name/kind/
+            // line the moment a test proves the entity (see record_proof's own doc for why this
+            // matters: Node::attrs is BTreeMap<String,String>, and row_to_node's single
+            // serde_json::from_str over the whole blob fails SILENTLY to an empty map on any
+            // non-string value).
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 2, "product.rs", "product_fn", 7);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            let n = g
+                .nodes
+                .iter()
+                .find(|n| n.id == "product.rs::product_fn")
+                .expect("the entity still exists");
+            assert_eq!(n.attrs.get("name").map(String::as_str), Some("product_fn"));
+            assert_eq!(n.attrs.get("kind").map(String::as_str), Some("function"));
+            assert_eq!(n.attrs.get("line").map(String::as_str), Some("1"));
+            assert_eq!(n.attrs.get("lang").map(String::as_str), Some("rust"));
+        }
+
+        #[test]
+        fn a_cross_file_test_reference_resolves_by_name_when_the_definition_already_exists() {
+            // No same-file definition exists under the evidence's OWN referencing-file id
+            // ("other_tests.rs::product_fn" carries no name attr); resolution falls through to the
+            // first code-entity anywhere in the project carrying this exact name - mirroring
+            // reference_tier's own cross-file lookup.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 2, "other_tests.rs", "product_fn", 9);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(proven_by(&g, "product.rs::product_fn"), 1);
+            assert!(
+                !g.nodes.iter().any(|n| n.id == "other_tests.rs::product_fn"),
+                "no placeholder entity is ever manufactured under the referencing file's own \
+                 namespace; got {:?}",
+                g.nodes
+            );
+        }
+
+        #[test]
+        fn an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds()
+        {
+            // A FORWARD reference: the evidence event folds BEFORE any matching definition exists
+            // anywhere (a test file that sorts before the file it tests, e.g. "aaa_tests.rs" before
+            // "zzz_product.rs"). It must not be lost - the SAME eventual-consistency shape
+            // reference_tier's AMBIGUOUS tier already accepts for structural edges.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_edge_inferred_evidence(&p, 1, "aaa_tests.rs", "product_fn", 3);
+            // Before the definition exists, nothing is manufactured to carry the evidence.
+            let g = p.subgraph(&["aaa_tests.rs".to_string()], 1).unwrap();
+            assert!(
+                g.nodes.is_empty() && g.edges.is_empty(),
+                "an unresolvable test reference creates nothing while pending; got {:?} / {:?}",
+                g.nodes,
+                g.edges
+            );
+            // The definition folds later; reconciliation (from the TYPE_CODE_ENTITY_EXTRACTED arm)
+            // transfers the staged evidence onto it.
+            apply_code_entity(&p, 2, "zzz_product.rs", "product_fn", "function", 1, "rust");
+            let g = p.subgraph(&["zzz_product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "zzz_product.rs::product_fn"),
+                1,
+                "the forward-referenced evidence is reconciled onto the definition once it folds; \
+                 got {:?}",
+                g.nodes
+            );
+            assert_eq!(
+                proof_evidence(&g, "zzz_product.rs::product_fn"),
+                vec!["aaa_tests.rs:3".to_string()]
+            );
+        }
+
+        #[test]
+        fn reconciliation_is_a_no_op_when_nothing_is_pending_for_a_newly_defined_entity() {
+            // The overwhelming common case (no forward reference at all): defining an entity with
+            // nothing staged for its name must not error or fabricate evidence.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(proven_by(&g, "product.rs::product_fn"), 0);
+            assert!(proof_evidence(&g, "product.rs::product_fn").is_empty());
+        }
+
+        #[test]
+        fn re_extracting_an_edited_file_does_not_silently_drop_an_unrelated_files_accumulated_proof(
+        ) {
+            // sdet-u86c2-r-review: cross-file proof evidence must survive a LATER, UNRELATED
+            // re-extraction of the DEFINING file. The real pipeline (project_batches_paced /
+            // index_events) keys each file's batch on its own content hash, so an unchanged file
+            // (here, the test file that proved this entity) is never re-walked and its
+            // `proof_events` never re-emit merely because a SIBLING file changed - see
+            // grounder::symbols::events::project_batches's own doc: "an unchanged file is not
+            // re-ingested". `ensure_node`'s conflict clause is `attrs = COALESCE(excluded.attrs,
+            // nodes.attrs)` - a plain whole-blob REPLACE whenever the incoming attrs are non-empty,
+            // and the TYPE_CODE_ENTITY_EXTRACTED fold's own `ensure_node` call for the entity
+            // carries only its structural attrs (name/kind/line/lang), never proven_by/
+            // proof_evidence. So a `fresh` re-fold of the SAME entity (product.rs is edited
+            // elsewhere and re-extracts, unrelated to product_fn's own body) replaces product_fn's
+            // attrs wholesale - and nothing re-derives the CROSS-FILE evidence a different,
+            // untouched test file contributed, because that file's batch never re-runs. Editing any
+            // line of product.rs should never make an unrelated test's proof vanish from the card.
+            let p = Projector::open(":memory:", "test").unwrap();
+            // Initial extraction (fresh = the file's first-ever batch).
+            apply_batch_def(&p, 1, "product.rs", "product_fn", 10, true);
+            // A DIFFERENT, unchanged file proves it.
+            apply_edge_inferred_evidence(&p, 2, "tests/integration.rs", "product_fn", 4);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                1,
+                "sanity: the cross-file evidence landed before the re-extraction"
+            );
+            // product.rs is edited (something unrelated to product_fn) and re-extracts: the SAME
+            // entity re-folds with `fresh = true`, exactly as project_batches_paced's real batch
+            // composition would emit for a changed file. tests/integration.rs is NOT touched, so
+            // (matching the real pipeline) its proof_events never re-emit here.
+            apply_batch_def(&p, 3, "product.rs", "product_fn", 10, true);
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                1,
+                "re-extracting product.rs must not silently discard the proof an unrelated, \
+                 unchanged file already established; got attrs {:?}",
+                g.nodes
+                    .iter()
+                    .find(|n| n.id == "product.rs::product_fn")
+                    .map(|n| &n.attrs)
+            );
+            assert_eq!(
+                proof_evidence(&g, "product.rs::product_fn"),
+                vec!["tests/integration.rs:4".to_string()],
+                "the evidence entry itself must survive the re-extraction too"
+            );
+        }
+
+        #[test]
+        fn an_ambiguous_same_named_pair_never_gets_confident_credit_through_either_resolution_path()
+        {
+            // adv-u86c2-r-cross-file-name-match-misattributes-proof-to-the-wrong-entity (round
+            // 2): two UNRELATED files defining the identical name, then a cross-file is_test
+            // reference to that name from a third file with no local definition of its own - the
+            // shape that made `resolve_proof_target`'s old LIMIT-1 cross-file lookup pick an
+            // arbitrary winner, handing false credit to whichever entity the index happened to
+            // return first while the genuinely referenced one rendered the spec's own "no test
+            // reaches this entity" state. Ambiguous by name alone is honest by construction:
+            // neither candidate is ever confidently credited.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "helper", "function", 1, "rust");
+            apply_code_entity(&p, 2, "other.rs", "helper", "function", 1, "rust");
+            apply_edge_inferred_evidence(&p, 3, "tests/it.rs", "helper", 9);
+            let seeds = ["product.rs".to_string(), "other.rs".to_string()];
+            let before = p.subgraph(&seeds, 1).unwrap();
+            assert_eq!(
+                proven_by(&before, "product.rs::helper"),
+                0,
+                "an ambiguous name must not confidently credit either candidate via \
+                 resolve_proof_target; got {:?}",
+                before.nodes
+            );
+            assert_eq!(proven_by(&before, "other.rs::helper"), 0);
+
+            // Then the OTHER resolution path: product.rs is edited elsewhere and re-extracts
+            // (fresh), re-firing TYPE_CODE_ENTITY_EXTRACTED for "helper". Its own
+            // `reconcile_pending_proof` call must apply the SAME uniqueness discipline - it must
+            // NOT claim the still-pending, still-ambiguous evidence merely because it is the one
+            // refolding right now, reopening the misattribution the resolved path above just
+            // refused.
+            apply_batch_def(&p, 4, "product.rs", "helper", 1, true);
+            let after = p.subgraph(&seeds, 1).unwrap();
+            assert_eq!(
+                proven_by(&after, "product.rs::helper"),
+                0,
+                "a re-fold must not retroactively claim an ambiguous name's pending evidence via \
+                 reconcile_pending_proof; got {:?}",
+                after.nodes
+            );
+            assert_eq!(proven_by(&after, "other.rs::helper"), 0);
+        }
+
+        /// One step of [`re_extracting_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence`]'s
+        /// walk: `tests/integration.rs` re-extracts fresh, this time referencing `name` at `line`,
+        /// and the two named product entities must land at exactly `want_product`/`want_other`
+        /// afterward. Table-driven (rather than three near-identical inline blocks) so the walk
+        /// reads as ONE progression - first proof, an unchanged re-fold, an edit that swaps which
+        /// entity the file reaches - over a single shared `Projector`.
+        struct SupersessionStep {
+            name: &'static str,
+            line: u32,
+            want_product: usize,
+            want_other: usize,
+        }
+
+        #[test]
+        fn re_extracting_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence() {
+            // adv-u86c2-r-test-file-re-extraction-double-counts-its-own-unchanged-references
+            // (round 2): editing a TEST file (adding an unrelated test, fixing a comment)
+            // changes its content hash and re-extracts the whole file, re-emitting every is_test
+            // reference it still contains. Without a per-file supersession boundary for evidence,
+            // each re-fold would append a NEW evidence entry for a still-present reference,
+            // permanently inflating `proven_by`; `supersede_file_proof` retracts this file's own
+            // prior evidence before the new batch folds - so the walk below nets to the SAME
+            // count across an unchanged step, and to ZERO once a later step's edit removes the
+            // reference entirely.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_code_entity(&p, 2, "product.rs", "other_fn", "function", 5, "rust");
+
+            let walk = [
+                SupersessionStep {
+                    name: "product_fn",
+                    line: 4,
+                    want_product: 1,
+                    want_other: 0,
+                },
+                SupersessionStep {
+                    name: "product_fn",
+                    line: 4,
+                    want_product: 1,
+                    want_other: 0,
+                },
+                SupersessionStep {
+                    name: "other_fn",
+                    line: 9,
+                    want_product: 0,
+                    want_other: 1,
+                },
+            ];
+            for (step_idx, step) in walk.iter().enumerate() {
+                let pos = 3 + step_idx as u64;
+                apply_edge_inferred_evidence_fresh(
+                    &p,
+                    pos,
+                    "tests/integration.rs",
+                    step.name,
+                    step.line,
+                    true,
+                );
+                let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+                assert_eq!(
+                    proven_by(&g, "product.rs::product_fn"),
+                    step.want_product,
+                    "step {step_idx} (re-extracting with {:?}): product_fn; got {:?}",
+                    step.name,
+                    g.nodes
+                        .iter()
+                        .find(|n| n.id == "product.rs::product_fn")
+                        .map(|n| &n.attrs)
+                );
+                assert_eq!(
+                    proven_by(&g, "product.rs::other_fn"),
+                    step.want_other,
+                    "step {step_idx} (re-extracting with {:?}): other_fn",
+                    step.name
+                );
+                if step_idx == 1 {
+                    assert_eq!(
+                        proof_evidence(&g, "product.rs::product_fn"),
+                        vec!["tests/integration.rs:4".to_string()],
+                        "exactly one evidence entry survives the unchanged re-extraction, not two"
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn a_files_evidence_dropping_to_zero_retracts_its_own_stale_contribution_via_the_empty_boundary_sentinel(
+        ) {
+            // Round 3 (adv-u86c2-r2-deleted-test-reference-strands-proof-forever): a file whose
+            // evidence set drops to zero (the ordinary case of deleting or rewriting the one test
+            // that proved something) must still retract its own stale contribution, not strand it
+            // forever. `proof_events` now emits an empty-name `is_test` sentinel as the file's
+            // WHOLE evidence batch in that case (see its own doc and
+            // `grounder::symbols::events::tests::
+            // proof_events_on_a_file_with_no_test_evidence_returns_a_boundary_only_sentinel_never_an_empty_vec`
+            // for proof `proof_events` itself emits it). This test drives `fold_test_evidence`
+            // DIRECTLY with that exact sentinel shape (`apply_edge_inferred_evidence_fresh` with an
+            // empty name), bypassing `proof_events` itself, to pin the FOLD's own contract: the
+            // supersede runs, and the empty name resolves/records nothing.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_code_entity(&p, 1, "product.rs", "product_fn", "function", 1, "rust");
+            apply_edge_inferred_evidence_fresh(
+                &p,
+                2,
+                "tests/integration.rs",
+                "product_fn",
+                4,
+                true,
+            );
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                1,
+                "sanity: the test proves product_fn before its reference is retracted"
+            );
+
+            // The empty-name sentinel: the SAME shape proof_events now emits when
+            // tests/integration.rs's evidence set drops to zero.
+            apply_edge_inferred_evidence_fresh(&p, 3, "tests/integration.rs", "", 0, true);
+
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "product.rs::product_fn"),
+                0,
+                "the empty-boundary sentinel retracts this file's own stale contribution, not \
+                 merely leaves it uncounted; got {:?}",
+                g.nodes
+            );
+            assert!(
+                proof_evidence(&g, "product.rs::product_fn").is_empty(),
+                "the stale evidence entry is retracted from proof_evidence too; got {:?}",
+                g.nodes
+            );
+        }
+
+        #[test]
+        fn the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name(
+        ) {
+            // A companion to the retraction test above, isolating the OTHER half of the fold's
+            // contract: an empty-name sentinel must never itself create a `pending_proof` row or
+            // credit any entity - it is boundary-only. A same-named entity ("" is never a real
+            // symbol name, but this guards the guard) must see no effect, and nothing lingers in
+            // `pending_proof` for reconciliation to later misattribute.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_edge_inferred_evidence_fresh(&p, 1, "tests/only_sentinel.rs", "", 0, true);
+            let g = p
+                .subgraph(&["tests/only_sentinel.rs".to_string()], 1)
+                .unwrap();
+            assert!(
+                g.nodes.is_empty() && g.edges.is_empty(),
+                "a lone empty-boundary sentinel (a file's very first extraction, nothing to \
+                 supersede) creates nothing at all; got {:?} / {:?}",
+                g.nodes,
+                g.edges
+            );
+            // If the sentinel had wrongly staged evidence under the empty name, a LATER
+            // definition that happens to be named "" would wrongly inherit it. No production
+            // extraction ever names anything "" (see events.rs's own doc), but pinning this proves
+            // the fold guard, not merely the absence of a coincidental match.
+            apply_code_entity(&p, 2, "weird.rs", "", "function", 1, "rust");
+            let g = p.subgraph(&["weird.rs".to_string()], 1).unwrap();
+            assert_eq!(
+                proven_by(&g, "weird.rs::"),
+                0,
+                "the sentinel never staged pending evidence under its empty name; got {:?}",
+                g.nodes
+            );
+        }
+    }
+
+    /// Spec 86 criterion 3 (THE MIGRATION IS DELIBERATE). Proven directly against the fold (raw
+    /// `TYPE_EDGE_INFERRED` payloads), never through the extraction pass - the emit half's own
+    /// contract (`extract_events`'s empty-after-exclusion boundary) is proven separately in
+    /// `grounder::symbols::events`.
+    mod migration_c3 {
+        use super::*;
+
+        #[test]
+        fn the_empty_structural_boundary_sentinel_creates_no_node_and_no_edge_of_its_own() {
+            // The structural twin of proof_evidence_c2's own
+            // `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything`: a LONE
+            // empty-name structural sentinel (a file's very first extraction, nothing yet to
+            // supersede) must fold into nothing at all - no KIND_FILE container, no code-entity
+            // node, no edge. This is what keeps criterion 1's "never a node and never an edge on
+            // the canvas" promise true for an excluded file even through the boundary event this
+            // criterion adds.
+            let p = Projector::open(":memory:", "test").unwrap();
+            let payload = serde_json::json!({
+                "file": "tests/only_sentinel.rs", "name": "", "lang": "rust", "fresh": true,
+            });
+            let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&payload).unwrap());
+            e.position = 1;
+            p.apply(&e).unwrap();
+
+            let g = p
+                .subgraph(&["tests/only_sentinel.rs".to_string()], 1)
+                .unwrap();
+            assert!(
+                g.nodes.is_empty() && g.edges.is_empty(),
+                "a lone empty structural sentinel creates nothing at all; got {:?} / {:?}",
+                g.nodes,
+                g.edges
+            );
+        }
+
+        #[test]
+        fn re_ingesting_a_store_that_already_holds_test_entity_nodes_retires_them_through_supersession_and_leaves_product_entities_unchanged(
+        ) {
+            // Spec 86 criterion 3's own Done-when, end to end at the fold: simulate a store that
+            // predates the criterion-1 exclusion rule - a whole `tests/`-dir file already folded a
+            // real code-entity node, CONTAINed by its own file, exactly as a pre-spec-86 ingest
+            // would have, alongside an unrelated product entity. A re-ingest through the REAL
+            // current pipeline's own empty-after-exclusion structural sentinel (proven at the emit
+            // layer separately; applied here directly to isolate the fold) must retire the legacy
+            // node's structural edges via supersession - NEVER a store wipe - while the fold
+            // "yields the same product entities before and after".
+            let p = Projector::open(":memory:", "test").unwrap();
+
+            // "Before": the legacy, pre-criterion-1 state.
+            apply_batch_def(
+                &p,
+                1,
+                "tests/integration.rs",
+                "an_integration_test",
+                2,
+                true,
+            );
+            apply_batch_def(&p, 2, "product.rs", "product_fn", 1, true);
+            assert_eq!(
+                p.retired_code_entity_count().unwrap(),
+                0,
+                "precondition: nothing is retired yet - both entities are live"
+            );
+
+            // "After": tests/integration.rs re-extracts to nothing (criterion 1 now excludes it
+            // wholesale) and stamps the empty structural boundary instead of emitting nothing.
+            // product.rs is NOT touched by this re-ingest.
+            let boundary = serde_json::json!({
+                "file": "tests/integration.rs", "name": "", "lang": "rust", "fresh": true,
+            });
+            let mut e = Event::new(TYPE_EDGE_INFERRED, serde_json::to_vec(&boundary).unwrap());
+            e.position = 10;
+            p.apply(&e).unwrap();
+
+            // The legacy test entity is retired: `rigger validate`'s own counting authority now
+            // reports it, and no live edge reaches it - though its row and the superseded CONTAINS
+            // edge both remain in the store (never a wipe, never a delete).
+            assert_eq!(
+                p.retired_code_entity_count().unwrap(),
+                1,
+                "the migration retires exactly the one legacy test entity - this is what `rigger \
+                 validate` reports"
+            );
+            {
+                let conn = p.conn.lock().unwrap();
+                assert_eq!(
+                    one_hop_degree(&conn, "tests/integration.rs::an_integration_test", "test")
+                        .unwrap(),
+                    0,
+                    "the retired entity has no live edge left"
+                );
+            }
+            let raw = edges_from(&p, "tests/integration.rs");
+            assert!(
+                raw.iter().any(|(to, rel, valid_to)| {
+                    to == "tests/integration.rs::an_integration_test"
+                        && rel == REL_CONTAINS
+                        && valid_to.is_some()
+                }),
+                "the old CONTAINS edge is retained with valid_to stamped, never deleted; got {raw:?}"
+            );
+
+            // "the fold yields the same product entities before and after": product.rs::product_fn,
+            // untouched by this re-ingest, is still fully live and reachable, and the migration
+            // never touches criterion 1's own promise that the excluded file gains no KIND_FILE
+            // container from the boundary sentinel itself.
+            let g = p.subgraph(&["product.rs".to_string()], 1).unwrap();
+            assert!(
+                g.nodes.iter().any(|n| n.id == "product.rs::product_fn"),
+                "an unrelated product entity in the same store survives the migration untouched; \
+                 got {:?}",
+                g.nodes
+            );
+        }
+
+        #[test]
+        fn retired_code_entity_count_never_counts_a_placeholder_whose_only_reference_was_dropped() {
+            // A bare cross-file placeholder (its OWN file never CONTAINs it - `ensure_node` created
+            // it with an empty attr set purely to anchor a REFERENCES edge) that later loses even
+            // that reference (the referencing file re-extracts without it) ends up with NO live
+            // edge either - but it must never be counted as "retired": it never carried a live
+            // CONTAINS edge to lose, so it was never a genuine graph member, only ever a dangling
+            // guess that time proved wrong.
+            let p = Projector::open(":memory:", "test").unwrap();
+            apply_batch_ref(&p, 1, "src/a.rs", "undefined_symbol", true);
+            // src/a.rs re-extracts without the reference: its REFERENCES edge is retired via the
+            // ordinary supersede boundary, with nothing added back for `undefined_symbol`.
+            apply_batch_def(&p, 2, "src/a.rs", "something_else", 1, true);
+            assert_eq!(
+                p.retired_code_entity_count().unwrap(),
+                0,
+                "a placeholder that never had its own CONTAINS edge is never counted, even once \
+                 its only reference is gone"
+            );
+        }
     }
 }

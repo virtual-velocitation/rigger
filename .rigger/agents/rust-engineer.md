@@ -26,6 +26,12 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   `cargo clippy --all-targets -- -D warnings` must be clean. Keep rustfmt and
   clippy clean as you go, not as a final cleanup. CI is confirmation, never
   discovery.
+- Checkpoint before long work (spec 89). Before a mutation sweep or any full
+  lane suite, commit your current tree as `wip(<unit>): checkpoint before
+  <mutation sweep | lane suite>` - naming whichever applies - then squash that
+  checkpoint into your round's own commit when you report. A halt never
+  discards a tree: if you are interrupted mid-run, only the committed
+  checkpoint survives, so commit it before the long-running step, not after.
 - Process lifecycle is handle-bound. A process is ended ONLY through the
   `std::process::Child` handle that spawned it (`kill()` + `wait()`), or through
   the two sanctioned internal helpers: `reap::send_signal` in production and
@@ -38,42 +44,22 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   it. Why: a computed target that resolves too wide is `kill(-1, SIGKILL)` -
   every process the operator owns - and that has destroyed the operator's
   desktop session repeatedly (spec 78).
-- Mutation efficacy (when `build.mutation` is on). After your unit tests are
-  green and BEFORE the pre-gate commit, measure whether they can fail: write
-  your diff against the unit's merge-base with the run branch
-  (`git diff <BASE> -- '*.rs' > unit.diff`, worktree-relative so concurrent
-  workers never collide) and run
-  `TMPDIR="${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/<unit>_2fimplementer_23<attempt>"
-  cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2` on the
-  DEFAULT feature lane (this is your OWN spawn id, hex-escaped the same way
-  the reclaim authority encodes it: `<unit>` is your OWN unit id, e.g.
-  `u77c2`, `<attempt>` is the number after `#` in your OWN spawn id, and the
-  literal `_2fimplementer_23` in between is the fixed hex-escaped
-  `/implementer#` every implementer spawn id carries - so spawn
-  `u77c2/implementer#4` gives TMPDIR
-  `.../rigger-mutants/u77c2_2fimplementer_234` - the registered scratch root
-  every SPAWN gets its own dir under, so two CONCURRENT candidates of the
-  same speculating unit (`speculation_width > 1`, each its own `#<lane>`)
-  never collide on one shared root either; the `-j` cap stays inside your
-  unit's build-budget share; pre-delete that TMPDIR then mkdir -p it before
-  running - cargo-mutants copies the whole tree into it, and a killed earlier
-  attempt at THIS SAME spawn can leave one standing. The user cache dir,
-  NEVER the OS temp dir and NEVER anywhere inside the repo: a repo-nested
-  TMPDIR makes the copied
-  tree's own test runs create temp projects inside the real repo, where the
-  outermost-store walk binds and pollutes the REAL event store. This
-  spawn-scoped subdir is also what `rigger result` reclaims the moment your
-  result records, so a killed run's leak is bounded to your one tree either
-  way), reading
-  `mutants.out/outcomes.json` (never stdout). A
-  missed (surviving) mutant is either KILLED by a strengthened test or
-  JUSTIFIED with a concrete equivalence reason; an unjustified miss means the
-  unit is not done. Record the accounting as one DecisionMade (no new event
-  type), deterministically ordered, one entry per mutant with status
+- Checkin-stage kill-or-justify (spec 91). When you are spawned for the
+  `checkin` stage - after every unit from the `implement` fan-out has
+  integrated and its `mutation` gate has already swept the whole spec diff
+  once - read `mutants.out/outcomes.json` (never stdout). A missed
+  (surviving) mutant is either KILLED by a strengthened test or JUSTIFIED
+  with a concrete equivalence reason recorded as an `exclude_re` entry in
+  `.cargo/mutants.toml` with a one-line reason; an unjustified miss means
+  the checkin stage is not done. Commit, then record the accounting as one
+  `<unit>-mutation-accounting` DecisionMade (no new event type),
+  deterministically ordered, one entry per mutant with status
   caught | missed-killed (naming the killing test) | missed-justified (with
-  reason) | unviable | timeout, plus the diff base and the mutant total. A diff
-  touching no Rust file records a provably-empty accounting - never a skipped
-  step.
+  reason) | unviable | timeout, plus the diff base and the mutant total. A
+  diff touching no Rust file records a provably-empty accounting - never a
+  skipped step. This runs ONCE, for the whole spec diff, never per implement
+  round: the `mutation` gate itself owns running cargo-mutants - you never
+  invoke it directly.
 
 Read the live event log and context graph before you start - another agent may
 already have decided something that governs your files. Commit when the gates

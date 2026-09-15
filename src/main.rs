@@ -32,8 +32,8 @@ use rigger::eventstore::{
     Direction, Event, EventStore, ExpectedRevision, Filter,
 };
 use rigger::gate::{
-    resolve_build_layer, resolve_mutation_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate,
-    GateResult, Runner, STORE_FENCE_ENV,
+    resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateResult, Runner,
+    MUTATION_GATE_ID, STORE_FENCE_ENV,
 };
 use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
@@ -1092,14 +1092,27 @@ fn definition_hash(dir: &str) -> Result<String, Box<dyn std::error::Error>> {
 /// criterion 3), so `rigger status`/`rigger dash` later read the run's actual base from the
 /// log rather than re-resolving without the run's `--base` flag. On an ADOPTED (resumed) run
 /// it is ignored - the base its original start stamped stands.
+///
+/// `base_tip` is the run branch's tip commit sha this run anchored at (spec 91), persisted on
+/// a freshly-minted RunStarted alongside `base` so the checkin stage's `mutation` gate can
+/// later diff the whole spec against it via `$RIGGER_RUN_BASE`, never a `git merge-base` with
+/// the run branch. Mint-only, exactly like `base`.
+///
+/// `spec_path` is the spec file this run was launched with (spec 82, criterion 1), persisted
+/// on a freshly-minted RunStarted the same mint-only way as `base`, so the ready-to-release
+/// handoff can later derive this run's per-run-unique PR head name.
 fn enforce_definition_pin(
     store: &dyn EventStore,
     criteria: &[String],
     definition: &str,
     rebase: bool,
     base: &str,
+    base_tip: &str,
+    spec_path: &str,
 ) -> Res {
-    match runscope::ensure_started_pinned(store, criteria, definition, rebase, base)? {
+    match runscope::ensure_started_pinned(
+        store, criteria, definition, rebase, base, base_tip, spec_path,
+    )? {
         runscope::RunStart::Ready(_) => Ok(()),
         runscope::RunStart::Rebased {
             run,
@@ -1368,6 +1381,7 @@ fn migrate_identity_at(loc: &StoreLocation) -> Res {
 const SUBCOMMANDS: &[&str] = &[
     "run",
     "step",
+    "resume-unit",
     "reported",
     "prompt",
     "scratch",
@@ -1407,6 +1421,7 @@ fn main() {
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),
         "step" => cmd_step(&args[2..]),
+        "resume-unit" => cmd_resume_unit(&args[2..]),
         "reported" => cmd_reported(&args[2..]),
         "prompt" => cmd_prompt(&args[2..]),
         "scratch" => cmd_scratch(&args[2..]),
@@ -1660,28 +1675,73 @@ struct StoreWalk {
 ///
 /// The walk is BOUNDED at the main-repo root governing `start` (the parent of its git
 /// common dir): the sanctioned walk-up case is a courier inside a nested git worktree
-/// of THIS project, and an unbounded walk lets a courier in a storeless nested repo (an
-/// agent-scratch probe under `<repo>/.rigger/tmp`, say) bind to a PARENT project's
-/// store and write into a foreign run stream with exit-0 success (adversary finding
-/// adv9-walkup-cross-project, empirically proven). Outside any git context there is no
-/// sanctioned walk at all: only `start` itself counts. This unit changes only WHICH store
-/// within that unchanged scope is chosen (the outermost, not the nearest), never the
-/// boundary itself (landed unit-9 behavior).
+/// of THIS project, and an unbounded walk lets a courier in a storeless nested repo bind
+/// to a PARENT project's store and write into a foreign run stream with exit-0 success
+/// (adversary finding adv9-walkup-cross-project, empirically proven). Outside any git
+/// context there is no sanctioned walk at all: only `start` itself counts.
+///
+/// TWO shapes reach the boundary (spec 89, criterion 2 - SCRATCH IS OUTSIDE THE STORE
+/// TREE): `start` is a filesystem DESCENDANT of the boundary (the pre-relocation nested
+/// worktree, `<repo>/.rigger/tmp/rigger-wt-<slug>`, still reachable for a caller that
+/// configures scratch back under the repo) - the ORIGINAL plain `.parent()` climb,
+/// terminating the instant it reaches the boundary (inclusive), unchanged; or `start` is
+/// NOT a descendant at all (the relocated cache-home worktree a real spawn now runs its
+/// courier calls from) - climbing `start`'s own physical ancestors in that case would
+/// walk into cache-home territory with NO governing relationship to this repo (reopening
+/// the exact adv9-walkup-cross-project hazard the bound exists to close: an unrelated
+/// project's - or a leftover fixture's - store sitting at some ancestor of the cache
+/// home). The sanctioned set there is exactly `{start, boundary}` - no ancestors between
+/// them are ever consulted, mirroring the "outside git context" case's own "only `start`
+/// counts" discipline for the part of the path this repo does not govern.
 fn walk_stores_from(start: &Path) -> StoreWalk {
     let boundary = main_repo_root(start);
     let mut found: Vec<PathBuf> = Vec::new();
-    let mut cur = Some(start);
-    while let Some(dir) = cur {
-        let rigger = dir.join(RIGGER_DIR);
-        if rigger.join("events.db").is_file() {
-            found.push(rigger);
+    // The nested-vs-relocated classification needs an apples-to-apples comparison, but
+    // `main_repo_root` can return a path carrying literal `..` segments (a RELATIVE
+    // `git rev-parse --git-common-dir` output for a plain subdirectory of the SAME repo
+    // joined onto `start`, never resolved - harmless for that shape's own git-worktree
+    // admin files, which always store an ABSOLUTE common-dir, but not for this component-
+    // wise prefix check). Canonicalized ONLY for this decision, on throwaway copies -
+    // `main_repo_root`'s own return value (every other caller's `boundary`) is untouched,
+    // and the walk below still uses the original, uncanonicalized `start`/`boundary`
+    // throughout. A `start` that cannot be canonicalized (does not exist on disk) falls
+    // back to `nested = true`, the ORIGINAL unconditional ancestor climb every existing
+    // caller already relies on.
+    let nested = match (
+        start.canonicalize(),
+        boundary.as_deref().map(Path::canonicalize),
+    ) {
+        (Ok(s), Some(Ok(b))) => s.starts_with(&b),
+        _ => true,
+    };
+    if boundary.is_none() || nested {
+        let mut cur = Some(start);
+        while let Some(dir) = cur {
+            let rigger = dir.join(RIGGER_DIR);
+            if rigger.join("events.db").is_file() {
+                found.push(rigger);
+            }
+            match &boundary {
+                Some(root) if dir == root => break, // reached the sanctioned bound (inclusive)
+                None => break,                      // no git context: only `start` counts
+                _ => {}
+            }
+            cur = dir.parent();
         }
-        match &boundary {
-            Some(root) if dir == root => break, // reached the sanctioned bound (inclusive)
-            None => break,                      // no git context: only `start` counts
-            _ => {}
+    } else {
+        // `start` lives outside the boundary entirely: check it (a local shadow, e.g. a
+        // tracked-but-storeless `.rigger/`) and the boundary itself, nearest-first,
+        // touching nothing in between.
+        let start_rigger = start.join(RIGGER_DIR);
+        if start_rigger.join("events.db").is_file() {
+            found.push(start_rigger);
         }
-        cur = dir.parent();
+        if let Some(root) = &boundary {
+            let root_rigger = root.join(RIGGER_DIR);
+            if root_rigger.join("events.db").is_file() {
+                found.push(root_rigger);
+            }
+        }
     }
     // `found` is nearest-first, so the LAST entry is the outermost store in scope; the
     // earlier (nearer) ones are the bypassed shadows, kept nearest-first for the warning.
@@ -1726,6 +1786,130 @@ fn main_repo_root(start: &Path) -> Option<PathBuf> {
     abs.parent().map(|p| p.to_path_buf())
 }
 
+/// STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): `rigger step`, `rigger run`
+/// (both the default CLI driver and `--driver workflow`, i.e. `run_cli` and `run_workflow` -
+/// the latter also `rigger serve`'s sole implementation) and `rigger workflow` each call this
+/// at their own entry so a LINKED git worktree is refused up front, naming both trees, instead
+/// of silently proceeding on the linked tree's own toplevel
+/// and later failing deep inside branch setup with git's own opaque "'rigger-run' is already
+/// used by worktree ..." (a linked worktree cannot itself hold the run branch checked out - git
+/// already holds it there in the main tree). Evidence (2026-09-11): the driver stopped after 28
+/// waves for exactly this reason, when a courier's `rigger step` ran with its cwd drifted into
+/// a unit worktree.
+///
+/// Compares [`main_repo_root`] (the git-common-dir-derived main checkout, correct even from
+/// inside a linked worktree) against `cwd`'s own `git rev-parse --show-toplevel` (which returns
+/// the LINKED tree when run from inside one): equal - `cwd` already IS the main tree, return it
+/// unchanged; a real repo where they differ - refuse; no repo reachable at all -
+/// `Ok(String::new())`, preserving the existing repo-less unit-test path every caller already
+/// guards its own repo-only logic on.
+fn resolve_main_worktree_or_refuse(cwd: &Path, command: &str) -> Result<String, String> {
+    let toplevel = git_repo_at(cwd);
+    if toplevel.is_empty() {
+        return Ok(String::new());
+    }
+    let Some(main_root) = main_repo_root(cwd) else {
+        return Ok(toplevel);
+    };
+    let main_canon = std::fs::canonicalize(&main_root).unwrap_or_else(|_| main_root.clone());
+    let top_canon =
+        std::fs::canonicalize(Path::new(&toplevel)).unwrap_or_else(|_| PathBuf::from(&toplevel));
+    if main_canon == top_canon {
+        return Ok(toplevel);
+    }
+    Err(format!(
+        "{command}: refusing to run from inside a linked worktree ({linked}) - the main \
+         worktree is {main}. A linked worktree cannot itself hold the run branch checked out \
+         (git already holds it there in the main tree), so continuing here would fail deep \
+         inside branch setup with a raw git error instead of this one; re-run `{command}` from \
+         the main worktree ({main}).",
+        linked = top_canon.display(),
+        main = main_canon.display(),
+    ))
+}
+
+/// EXACTLY ONE ROOT (spec 89, criterion 4), `rigger step` only: refuses BEFORE any terminal
+/// sweep when the store this step is about to open, the repository `git` resolved for the
+/// same `cwd`, and the scratch root this step is about to sweep disagree on their owning
+/// root - a three-way check, not two.
+///
+/// LEG ONE (`cwd` vs `repo`): `RIGGER_DIR` is opened cwd-relative (never walked up), while
+/// `repo` can walk PAST a `.git`-less `cwd` to an ENCLOSING repository - the two diverge
+/// exactly when `cwd` has no `.git` of its own, e.g. a test fixture nested under a scratch
+/// root (u87c3, 2026-09-11): the fixture's own store held none of the real run's events,
+/// `git` resolved the REAL enclosing repository, and `sweep_terminal` went on to remove every
+/// live worktree of the run actually using that scratch root.
+///
+/// LEG TWO (`scratch_root` vs `repo`, round 2 adjudication
+/// `adv-u89c4-r2-one-root-check-is-two-of-three-scratch-root-never-compared`): leg one alone
+/// still lets a scratch root aimed at an unrelated real repository through unrefused.
+/// `RIGGER_TMPDIR` (read unconditionally by `worktree::scratch_root_from_env`, ahead of any
+/// repo-derived default) can point `scratch_root` anywhere; run from the real repository root
+/// (so leg one passes) with `RIGGER_TMPDIR` aimed at some OTHER real project's own scratch
+/// tree, this step's sweep would act on THAT project's real worktrees using this run's
+/// events - the same hazard leg one guards against, reached from the opposite direction.
+/// Resolved with the SAME "which repository does this path belong to" primitive leg one
+/// already trusts (`git_repo_at`, not raw path containment): a scratch root with NO
+/// enclosing git repository of its own - the common case for an arbitrary external tmp
+/// directory, e.g. `tests/cli.rs`'s
+/// `the_liveness_marker_path_follows_a_non_default_scratch_root` - is vacuously safe (there
+/// is no OTHER repository's worktrees to endanger, and the default `<repo>/.rigger/tmp`
+/// naturally resolves back to `repo` itself); only a scratch root whose OWN git toplevel
+/// resolves to a DIFFERENT repository than the one leg one just verified trips the refusal.
+///
+/// A repo-less `cwd` (`repo` empty) has nothing to cross-check, matching every other
+/// repo-gated branch in `cmd_step`.
+fn refuse_unless_one_root(
+    cwd: &Path,
+    repo: &str,
+    scratch_root: Option<&str>,
+) -> Result<(), String> {
+    if repo.is_empty() {
+        return Ok(());
+    }
+    let cwd_canon = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let repo_canon = std::fs::canonicalize(Path::new(repo)).unwrap_or_else(|_| PathBuf::from(repo));
+    if cwd_canon != repo_canon {
+        return Err(format!(
+            "rigger step: refusing - the store this step would open and the repository git \
+             resolved for this directory disagree on their root: git toplevel (and the scratch \
+             root it sweeps, {scratch}) is {repo}, but the store under {RIGGER_DIR} would be \
+             opened relative to the current directory {cwd} instead - a DIFFERENT root. This \
+             shape arises when the current directory has no `.git` of its own (e.g. a test \
+             fixture nested under a scratch root): `git rev-parse` then walks UP past it to an \
+             ENCLOSING repository while the store stays right here, so this step's sweep would \
+             act on that enclosing repository's real worktrees using THIS directory's own \
+             (unrelated) events. Re-run from the repository root.",
+            scratch = scratch_root.unwrap_or("(none)"),
+            cwd = cwd_canon.display(),
+        ));
+    }
+    if let Some(scratch) = scratch_root.map(str::trim).filter(|s| !s.is_empty()) {
+        let scratch_repo = git_repo_at(Path::new(scratch));
+        if !scratch_repo.is_empty() {
+            let scratch_repo_canon = std::fs::canonicalize(Path::new(&scratch_repo))
+                .unwrap_or_else(|_| PathBuf::from(&scratch_repo));
+            if scratch_repo_canon != repo_canon {
+                return Err(format!(
+                    "rigger step: refusing - the scratch root this step would sweep belongs to \
+                     a DIFFERENT repository than the one this step resolved: git toplevel (and \
+                     the store under {RIGGER_DIR}, opened relative to the current directory \
+                     {cwd}) is {repo}, but the scratch root {scratch} resolves to the \
+                     repository {scratch_repo} instead - a DIFFERENT root. This shape arises \
+                     when `RIGGER_TMPDIR` (or `defaults.workdir`) is pointed at another \
+                     project's own scratch tree: this step's sweep would then act on THAT \
+                     project's real worktrees using this run's events. Point the scratch root \
+                     back under {repo}, or re-run from the repository the scratch root belongs \
+                     to.",
+                    cwd = cwd_canon.display(),
+                    scratch_repo = scratch_repo_canon.display(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A resolved rigger store, as a store-opening COURIER (`emit`/`result`/`peers`/
 /// `reported`) must see it: the `.rigger` directory that actually holds the store (found
 /// by walking UP from the cwd, never fabricated), together with the identity that scopes
@@ -1763,6 +1947,50 @@ impl StoreLocation {
             None => project_identity(),
         }
     }
+
+    /// The repo root this store lives under (spec 83, criterion 2): the SAME OWNING root
+    /// [`identity`](Self::identity) binds to (the parent of the resolved `.rigger/`), NEVER
+    /// the process's raw cwd (`git_repo()`). A courier invoked from a nested unit worktree -
+    /// the documented, walk-up-supported shape [`require_store_dir`] exists for - has a
+    /// DIFFERENT git toplevel than the main repo a driver's `rigger step` (always run from the
+    /// repo root) stamped a spawn's liveness marker under; resolving the scratch root from
+    /// that raw cwd instead of this owning root is exactly how `rigger status`/`rigger watch`
+    /// used to read back "no marker" for an agent that was demonstrably alive and heartbeating
+    /// (spec 83's Problem statement). Empty when `dir` has no parent (pathological - the
+    /// resolved dir is always `<root>/.rigger`), mirroring [`identity`](Self::identity)'s own
+    /// fallback shape.
+    fn repo_root(&self) -> String {
+        self.dir
+            .parent()
+            .and_then(|p| p.to_str())
+            .map(String::from)
+            .unwrap_or_default()
+    }
+}
+
+/// The shared `defaults.workdir`/`defaults.max_retries` resolver EVERY production reader of
+/// those two fields delegates to (spec 83 criterion 2): [`cmd_status`], [`watch_poll`],
+/// [`reclaim_spawn_scratch`], and [`cmd_scratch`] (round 2 + round 3's `loc`, resolved by
+/// [`require_store_dir`]'s owning-root walk), plus [`cmd_dash`] and `cmd_replay` (round 3,
+/// each passing a `StoreLocation` built from ITS OWN pre-existing repo/cwd resolution -
+/// `cmd_dash`'s raw process cwd and `cmd_replay`'s [`git_repo`] - unchanged by this function;
+/// see each caller's own doc comment for why). Every caller reads via
+/// [`config::read_scratch_defaults`], NEVER [`config::load`]: `config::load` additionally
+/// requires a fully loadable `.rigger/agents/` fleet AND a passing [`config::Config::validate`]
+/// just to learn two string/int fields - this project's own committed `.rigger/workflow.yml`
+/// sets `build.mutation: on`, which `validate` rejects whenever `cargo-mutants` is off PATH,
+/// so ANY environment invoking one of these commands without it on PATH used to silently lose
+/// a configured `defaults.workdir` (and `defaults.max_retries`) via each call site's own
+/// `.unwrap_or_default()` over `config::load`'s `Err`. Separately, for the FOUR `loc`-from-
+/// `require_store_dir` callers, `loc.dir` is `<owning-root>/.rigger` - the SAME owning root
+/// [`StoreLocation::repo_root`] resolves the scratch root from, never a nested unit
+/// worktree's own cwd (round 1's original defect). [`config::read_scratch_defaults`] requires
+/// neither a loadable fleet nor a passing validate, so it can never regress on either axis.
+/// Absent/unreadable resolves to `("", 0)`, matching [`config::read_scratch_workdir`]'s own
+/// tolerant-absent contract.
+fn scratch_defaults(loc: &StoreLocation) -> (String, u32) {
+    let d = config::read_scratch_defaults(&loc.dir).unwrap_or_default();
+    (d.workdir, d.max_retries)
 }
 
 /// The [`StoreLocation`] a SERVER-backed project resolves to, anchored at `cwd`. The server
@@ -1953,7 +2181,7 @@ fn cmd_run(args: &[String]) -> Res {
     // `--driver workflow` is the equivalent of `rigger serve`: the in-Claude-Code
     // MCP-server path. `cli` (the default) keeps the standalone subprocess path.
     match parsed.driver {
-        DriverKind::Workflow => run_workflow(&parsed),
+        DriverKind::Workflow => run_workflow(&parsed, "rigger run --driver workflow"),
         DriverKind::Cli => run_cli(&parsed),
     }
 }
@@ -2043,6 +2271,107 @@ fn acquire_step_lock(rigger_dir: &Path) -> Result<std::fs::File, Box<dyn std::er
     Ok(f)
 }
 
+/// `rigger resume-unit <unit> [--attempts N]` (default `N`: 1) - spec 88, criterion 3
+/// (ESCALATION RESUMES). An escalated unit is otherwise final: this is the one operator
+/// lever that gives it another chance without replanning the whole spec. Appends
+/// [`ledger::TYPE_UNIT_RESUMED`] (`{unit, attempts_granted, by: "operator"}`) to the
+/// CURRENT run's stream; the ledger folds it back to a mid-remediation `Failed` unit
+/// with a widened per-unit bound ([`ledger::Unit::resume_bound`]), so the next `rigger
+/// step` re-parks the implementer on the unit's SAME durable branch (resume-continuity
+/// already treats `Failed` this way - no second resume path is introduced) and
+/// `rigger status` names the grant until it is spent or superseded by a fresh resume.
+///
+/// Refuses loudly, appending nothing, when: the unit is unknown to the current run; its
+/// status is not `Escalated` (only a unit that genuinely gave up may be resumed - a
+/// mid-remediation or already-landed unit has nothing to resume FROM); or its recorded
+/// durable branch no longer exists in the repo (deleted or reclaimed out of band) -
+/// named alongside a `git reflog` hint, per the spec's own constraints walk, since a
+/// resume with no branch to re-park the implementer on would strand the implementer on
+/// a fresh, empty checkout instead of the unit's actual prior work.
+fn cmd_resume_unit(args: &[String]) -> Res {
+    let mut unit_id: Option<&str> = None;
+    let mut attempts_granted: u32 = 1;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--attempts" => {
+                let raw = it.next().ok_or(
+                    "resume-unit: --attempts expects a number: \
+                     rigger resume-unit <unit> [--attempts N]",
+                )?;
+                attempts_granted =
+                    raw.parse::<u32>().ok().filter(|n| *n >= 1).ok_or_else(|| {
+                        format!("resume-unit: --attempts value {raw:?} must be a positive integer")
+                    })?;
+            }
+            other if unit_id.is_none() && !other.starts_with("--") => {
+                unit_id = Some(other);
+            }
+            other => {
+                return Err(format!(
+                    "resume-unit: unknown argument {other:?} \
+                     (usage: rigger resume-unit <unit> [--attempts N])"
+                )
+                .into());
+            }
+        }
+    }
+    let unit_id = unit_id
+        .ok_or("resume-unit: expected a unit id: rigger resume-unit <unit> [--attempts N]")?;
+
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let all = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let run_events = runscope::current_run(&all);
+    let run_id = runscope::current_run_id(&all).unwrap_or_default();
+    let rs = ledger::project(run_events)?;
+
+    let unit = rs
+        .units
+        .get(unit_id)
+        .ok_or_else(|| format!("resume-unit: no unit {unit_id:?} in the current run"))?;
+    if unit.status != ledger::Status::Escalated {
+        return Err(format!(
+            "resume-unit: unit {unit_id:?} is not escalated (status: {:?}) - only a unit \
+             that has genuinely given up (\"escalated (awaiting a human)\") can be resumed",
+            unit.status.as_str()
+        )
+        .into());
+    }
+    let branch = unit.branch.clone();
+    if !branch.is_empty() && !rigger::worktree::branch_exists(&loc.repo_root(), &branch) {
+        return Err(format!(
+            "resume-unit: unit {unit_id:?}'s durable branch {branch:?} is gone (deleted or \
+             reclaimed) - refusing to resume with nothing to re-park the implementer on. \
+             Check `git reflog` for its last commit and recreate the branch at that sha \
+             before retrying."
+        )
+        .into());
+    }
+
+    let mut ev = Event::new(
+        ledger::TYPE_UNIT_RESUMED,
+        serde_json::to_vec(
+            &serde_json::json!({"unit": unit_id, "attempts_granted": attempts_granted, "by": "operator"}),
+        )?,
+    );
+    if !run_id.is_empty() {
+        ev = ev.with_meta(runscope::META_RUN_ID, &run_id);
+    }
+    store.append(
+        conductor::STREAM,
+        ExpectedRevision::Any,
+        std::slice::from_ref(&ev),
+    )?;
+
+    println!(
+        "resumed unit {unit_id:?}: {attempts_granted} attempt(s) granted (by operator) - the \
+         next `rigger step` re-parks its implementer on {branch:?}"
+    );
+    Ok(())
+}
+
 fn cmd_step(args: &[String]) -> Res {
     let args = parse_step_args(args)?;
     // DISCOVERABILITY (spec 66, criterion 5, round 3): `rigger step` is the PRIMARY,
@@ -2062,12 +2391,54 @@ fn cmd_step(args: &[String]) -> Res {
             eprintln!("{}", spec_lint_next_step(spec));
         }
     }
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
+    // FIRST, before any config load, store touch or worktree mutation - a linked worktree
+    // gets a clear refusal naming both trees instead of wasting a config/criteria load only
+    // to fail deep inside branch setup with git's own opaque error.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger step")?;
     // Refuse a doomed run up front: a gating persona that never puts its verdict on the result
     // channel would stall the integration gate (spec 18, unit 2). This reuses unit 1's lint at
     // the run's config-load seam, before any unit is parked.
     let cfg = load_run_config(".")?;
     let criteria = load_criteria(args.spec.as_deref())?;
     std::fs::create_dir_all(RIGGER_DIR)?;
+
+    // Captured here (moved up from the pre-round-2 placement just before the terminal sweep) so
+    // `refuse_unless_one_root` immediately below can name it: the value is pure (only `repo` and
+    // `cfg.workflow.defaults.workdir`, both already resolved above), so hoisting the computation
+    // changes no answer it was ever going to give, only how early that answer is available. Kept
+    // alive for the rest of the function - the fixpoint/terminal teardown and the definition-pin
+    // HALT's own reclaim both still need it (spec 34, criterion 3).
+    let scratch_root = if repo.is_empty() {
+        None
+    } else {
+        Some(rigger::worktree::scratch_root_from_env(
+            &repo,
+            &cfg.workflow.defaults.workdir,
+        ))
+    };
+
+    // EXACTLY ONE ROOT (spec 89, criterion 4, round 2): refuse BEFORE any GIT/worktree
+    // mutation - not merely before the terminal sweep - when the store this step is about to
+    // open, the repository `git` resolved for this cwd, and the scratch root this step is
+    // about to sweep disagree on their root (three-way as of round 2's own adjudication; see
+    // `refuse_unless_one_root`'s doc comment for the added leg). "Any GIT/worktree mutation",
+    // precisely: the `std::fs::create_dir_all(RIGGER_DIR)` two lines above this comment still
+    // precedes this refusal, but it only ever creates an empty local `.rigger/` under THIS
+    // process's own cwd - never the enclosing repository the hazard below is about - so it is
+    // not the mutation this ordering guards against. Round 1 placed this call
+    // just before the sweep, AFTER the run-branch anchor block below (`ensure_run_branch`
+    // creates and checks out `RUN_BRANCH` in whatever `repo` resolved to - a real mutation of
+    // that repository); a nested git-less fixture whose `repo` resolves to an ENCLOSING real
+    // repository would have that repository's branch switched to `rigger-run` before this
+    // refusal ever fired (u87c3-adjacent regression, confirmed live via `tests/
+    // step_root_resolution_periphery.rs`'s
+    // `step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_enclosing_repos_
+    // checked_out_branch`). Moved here, before `acquire_step_lock` and the anchor block, so a
+    // step that is going to refuse never mutates any repository first - see
+    // `refuse_unless_one_root`'s own doc comment for the full u87c3 incident this closes.
+    refuse_unless_one_root(&cwd, &repo, scratch_root.as_deref())?;
 
     // Serialize concurrent `rigger step` invocations so the run advances ONE step at a time
     // (spec 51 relies on that invariant). A step checks out the run branch and branches unit
@@ -2083,7 +2454,13 @@ fn cmd_step(args: &[String]) -> Res {
     // off HEAD. Guarded on a real repo so the repo-less unit-test path is untouched. A
     // failure here aborts the step (with a clear, actionable error) rather than driving
     // the conductor on the wrong branch - isolation is a precondition, not best-effort.
-    let repo = git_repo();
+    // The run branch's tip commit sha AT THIS STEP'S ANCHOR (spec 91): resolved right after
+    // `ensure_run_branch` below, BEFORE the conductor ever branches a unit worktree off it or
+    // advances it - so a mint further down (a `--fresh` boundary, or a new campaign inside
+    // `enforce_definition_pin`) persists the tip the run genuinely started at, never a value
+    // some later step's own re-anchor could shift. `""` on the repo-less path: the checkin
+    // stage never runs without a real repo to diff against anyway.
+    let mut base_tip = String::new();
     if !repo.is_empty() {
         // Refuse an obviously-wrong base BEFORE the run branch is anchored (spec 18, criterion
         // 7). Gating on the PLANNED anchor (a side-effect-free peek) - not on the created branch
@@ -2104,6 +2481,7 @@ fn cmd_step(args: &[String]) -> Res {
             )
         })?;
         warn_on_run_branch_divergence("rigger step", setup, &args.base, args.base_explicit);
+        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
 
     // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
@@ -2133,24 +2511,37 @@ fn cmd_step(args: &[String]) -> Res {
     // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
     // driver parses. See `runscope::start_fresh`.
     if args.fresh {
-        // Persist the resolved run-branch base on the fresh boundary (spec 38, criterion 3):
-        // `args.base` is the base this step anchored the run branch on, so `rigger status`/dash
-        // name the same base in the ready-to-release handoff.
-        let run = runscope::start_fresh(&store, &criteria, &definition, &args.base)?;
+        // Persist the resolved run-branch base, and the launching spec path (spec 82,
+        // criterion 1), on the fresh boundary (spec 38, criterion 3): `args.base` is the base
+        // this step anchored the run branch on, so `rigger status`/dash name the same base
+        // and derive the per-run-unique PR head name in the ready-to-release handoff.
+        let run = runscope::start_fresh(
+            &store,
+            &criteria,
+            &definition,
+            &args.base,
+            &base_tip,
+            args.spec.as_deref().unwrap_or(""),
+        )?;
         eprintln!("rigger step: --fresh: began a new run {run} (the prior run stays in the log)");
     }
 
-    // Captured before `repo` moves into Deps: the fixpoint/terminal teardown below needs it, and
-    // computed BEFORE the definition-pin check so a definition-drift HALT can reclaim run-level
-    // scratch on its way out (spec 34, criterion 3).
-    let scratch_root = if repo.is_empty() {
-        None
-    } else {
-        Some(rigger::worktree::scratch_root_from_env(
-            &repo,
-            &cfg.workflow.defaults.workdir,
-        ))
-    };
+    // The currently loaded workflow's own declared unit branches (spec 89, criterion 1, round
+    // 2 fix): config, never the event log, so it stays populated even at this project's very
+    // first step, before a single event has ever been recorded. Both step-start worktree
+    // sweeps below narrow their own "spare a dirty candidate" exception to a unit THIS run's
+    // definition actually declares - see `sweep_terminal`'s and `reclaim_orphan_scratch`'s own
+    // doc comments - so a genuinely dead, unrelated branch that happens to also be dirty is
+    // still reclaimed exactly as before this criterion. (`scratch_root` itself is NOT
+    // recomputed here - u89c4 round 2 already hoisted that single binding above, before
+    // `refuse_unless_one_root`; see its doc comment there. Both step-start sweeps below use
+    // that one binding.)
+    let declared_units: std::collections::HashSet<String> = cfg
+        .workflow
+        .stages
+        .keys()
+        .map(|slug| conductor::unit_branch(slug))
+        .collect();
 
     // The maintenance half of Gap 14, made liveness-aware (spec 64, criterion 4): every step
     // starts by sweeping the scratch root's terminal worktrees (integrated units, review
@@ -2174,11 +2565,32 @@ fn cmd_step(args: &[String]) -> Res {
     // call itself stays INLINE here (not pulled into that helper) because
     // `worktree_sweep_completes_before_any_add_within_one_step` (spec 51, criterion 5) pins its
     // presence and lock->sweep->add ordering directly in `cmd_step`'s own source text.
+    //
+    // Spec 83, criterion 1: THE FENCE. `sweep_terminal` additionally consults the unit's
+    // LATEST requested spawn (`worktree::spawn_fence`) before removing an already-merged,
+    // ledger-terminal branch - a second, INDEPENDENT read of the same stream, scoped the same
+    // way `current_run_units` scopes its own fold, so a straggler spawn for a unit
+    // `current_run_units` already read as terminal still fences off its worktree. An
+    // unreadable second read degrades to an EMPTY events slice, under which `spawn_fence`
+    // reads every candidate as `NoSpawn` - the pre-spec-83 rule alone, never a NEW way to
+    // block a reclaim - so the degrade costs nothing beyond forgoing this step's extra
+    // protection, exactly like `live_branches_for_sweep`'s own read one line above.
     if let Some(root) = &scratch_root {
         if let Some(live_branches) =
             live_branches_for_sweep(store.read_stream(conductor::STREAM, 0, Direction::Forward))
         {
-            match rigger::worktree::sweep_terminal(&repo, root, RUN_BRANCH, &live_branches) {
+            let fence_events = store
+                .read_stream(conductor::STREAM, 0, Direction::Forward)
+                .map(|evs| runscope::current_run(&evs).to_vec())
+                .unwrap_or_default();
+            match rigger::worktree::sweep_terminal(
+                &repo,
+                root,
+                RUN_BRANCH,
+                &live_branches,
+                &declared_units,
+                &fence_events,
+            ) {
                 Ok(0) => {}
                 Ok(n) => eprintln!("rigger step: swept {n} terminal worktree(s) from {root}"),
                 Err(e) => eprintln!("rigger step: scratch sweep skipped: {e}"),
@@ -2196,6 +2608,8 @@ fn cmd_step(args: &[String]) -> Res {
         &definition,
         args.rebase_definition,
         &args.base,
+        &base_tip,
+        args.spec.as_deref().unwrap_or(""),
     ) {
         // A definition-drift HALT is a terminal state for this run process (spec 34, criterion
         // 3): reclaim the run-level shared scratch before propagating the loud halt, so a halted
@@ -2312,7 +2726,7 @@ fn cmd_step(args: &[String]) -> Res {
         match store.read_stream(conductor::STREAM, 0, Direction::Forward) {
             Ok(events) => {
                 let run_units = current_run_units(&events);
-                let removed = reclaim_orphan_scratch(&repo, root, &run_units);
+                let removed = reclaim_orphan_scratch(&repo, root, &run_units, &declared_units);
                 if removed > 0 {
                     eprintln!(
                         "rigger step: reclaimed {removed} orphaned scratch entr{} under {root}",
@@ -2855,9 +3269,14 @@ fn cmd_scratch(args: &[String]) -> Res {
         .parent()
         .and_then(|p| p.to_str())
         .ok_or("scratch: could not resolve the project root")?;
-    let workdir = config::load(repo)
-        .map(|c| c.workflow.defaults.workdir)
-        .unwrap_or_default();
+    // `workdir` via the SAME shared, validate-independent `scratch_defaults` resolver
+    // `reclaim_spawn_scratch` uses (spec 83 criterion 2, round 3) - never `config::load`,
+    // which additionally requires a fully loadable `.rigger/agents/` fleet AND a passing
+    // `Config::validate` just to learn this one string field, and previously left this
+    // function diverging from the reaper it must stay byte-identical to (see this
+    // function's own doc comment) whenever `Config::validate` failed for an unrelated
+    // reason (arch-u83c3-cmd-scratch-diverges-from-reclaim-after-asymmetric-fix).
+    let (workdir, _max_retries) = scratch_defaults(&loc);
     let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
     let run_id = runscope::current_run_id(&prior).unwrap_or_default();
     match spawn_scratch_path(&scratch_root, &run_id, id) {
@@ -3154,6 +3573,11 @@ fn run_cli(parsed: &RunArgs) -> Res {
             println!("{}", spec_lint_next_step(spec));
         }
     }
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
+    // FIRST, mirroring `cmd_step`'s own placement - see `resolve_main_worktree_or_refuse`'s
+    // doc comment.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger run")?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -3165,7 +3589,11 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // for `rigger step`; the effective base is the flag, then the `RIGGER_BASE` env override
     // (how `rigger workflow` threads its `--base` through the shim), then `origin/main`.
     // Guarded on a real repo, so the repo-less path is untouched.
-    let repo = git_repo();
+    // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
+    // `anchor_run_branch` below, before the conductor branches any unit worktree off it -
+    // threaded to `fresh_run_if_requested` so a mint persists the tip the run genuinely
+    // started at. `""` on the repo-less path.
+    let mut base_tip = String::new();
     if !repo.is_empty() {
         let (base, base_explicit) = resolve_run_base(
             parsed.base.as_deref(),
@@ -3181,6 +3609,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
         refuse_when_base_unreachable(&repo, "rigger run", &base, planned)?;
         refuse_when_base_lacks_spec_paths(&repo, "rigger run", &base, planned, &criteria)?;
         anchor_run_branch(&repo, "rigger run", &base, base_explicit)?;
+        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
     // The boxed backend and its namespaced wrapper both live here, in this stack
     // frame, for the whole run: the decorator borrows the concrete store, and both
@@ -3206,7 +3635,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // `runscope::start_fresh` - the evented restart for a terminal escalation on an
     // unchanged spec. `false`: this is the standalone CLI path, so stdout is the normal
     // human-facing channel and the `--fresh` notice belongs there, unchanged.
-    fresh_run_if_requested(parsed, &store, &criteria, false)?;
+    fresh_run_if_requested(parsed, &store, &criteria, false, &base_tip)?;
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = cli::Driver::default();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
@@ -3274,11 +3703,18 @@ fn run_cli(parsed: &RunArgs) -> Res {
 /// passes `false`: stdout is the normal human-facing channel there and must keep printing.
 /// `run_workflow` passes `true`, mirroring the reminder's own `eprintln!` three lines above its
 /// call site - ONE shared implementation, not a second parallel copy per caller.
+///
+/// `base_tip` is the run branch's tip commit sha the caller anchored at (spec 91), resolved via
+/// [`worktree::branch_tip`] right after its own `anchor_run_branch` call - BEFORE the conductor
+/// (or anything else) advances that branch - so this always names the tip AT run start, never a
+/// live re-resolution. Persisted only on a mint, exactly like `base`; `""` from a repo-less path
+/// leaves the checkin stage (which never runs without a real repo anyway) nothing to diff.
 fn fresh_run_if_requested(
     parsed: &RunArgs,
     store: &dyn EventStore,
     criteria: &[String],
     fresh_notice_to_stderr: bool,
+    base_tip: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let definition = definition_hash(".")?;
     // The resolved run-branch base to persist on the RunStarted this mints (spec 38, criterion
@@ -3291,7 +3727,14 @@ fn fresh_run_if_requested(
         std::env::var("RIGGER_BASE").ok().as_deref(),
     );
     if parsed.fresh {
-        let run = runscope::start_fresh(store, criteria, &definition, &base)?;
+        let run = runscope::start_fresh(
+            store,
+            criteria,
+            &definition,
+            &base,
+            base_tip,
+            parsed.spec.as_deref().unwrap_or(""),
+        )?;
         let notice =
             format!("rigger: --fresh: began a new run {run} (the prior run stays in the log)");
         if fresh_notice_to_stderr {
@@ -3306,6 +3749,8 @@ fn fresh_run_if_requested(
         &definition,
         parsed.rebase_definition,
         &base,
+        base_tip,
+        parsed.spec.as_deref().unwrap_or(""),
     )?;
     Ok(())
 }
@@ -3315,7 +3760,14 @@ fn fresh_run_if_requested(
 /// serves the MCP bridge over stdio. The store is selected by flag and wrapped in
 /// the per-project namespace decorator before it is injected into BOTH the
 /// conductor and the side-car (§5.1.1, R9).
-fn run_workflow(parsed: &RunArgs) -> Res {
+///
+/// `command` is the ACTUALLY-INVOKED command line (`"rigger serve"` from [`cmd_serve`],
+/// `"rigger run --driver workflow"` from [`cmd_run`]) - threaded through rather than a
+/// literal `"rigger serve"` here, so [`resolve_main_worktree_or_refuse`]'s refusal names
+/// the command the operator actually typed instead of always naming `rigger serve` even
+/// when reached via `rigger run --driver workflow` (spec 89 criterion 4, round 2
+/// adjudication `adv-u89c4-r2-serve-command-name-hardcoded-for-both-entry-points`).
+fn run_workflow(parsed: &RunArgs, command: &str) -> Res {
     // DISCOVERABILITY (spec 66, criterion 5): `rigger serve <spec>` / the shim-driven
     // workflow path is a REAL pre-launch surface holding the spec path - the one the
     // /rigger workflow itself runs through, and the omission this unit was rejected for
@@ -3330,6 +3782,23 @@ fn run_workflow(parsed: &RunArgs) -> Res {
             eprintln!("{}", spec_lint_next_step(spec));
         }
     }
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4, round 2): resolved and
+    // refused-or-not FIRST, before any config load, store touch or worktree mutation -
+    // mirroring `run_cli`'s and `cmd_step`'s own placement. `run_workflow` is `run_cli`'s
+    // sibling `DriverKind` dispatched from the same `cmd_run` (and is `rigger serve`'s sole
+    // implementation, via `cmd_serve` below) - round 1 of this criterion guarded `run_cli`
+    // and the Node-shim-launching `cmd_workflow` but missed THIS entry point, which every
+    // one of its repo-reading call sites called bare `git_repo()` with no refusal wired in
+    // at all: a `rigger serve` (the shape the shim's driver actually spawns on the
+    // automated `/rigger` path) invoked from a linked worktree drove straight into
+    // `anchor_run_branch` and failed with git's own opaque "already used by worktree"
+    // error, never this refusal. `repo` is resolved ONCE here and reused for the rest of
+    // this function (the branch anchor, instance registration, scratch root and the
+    // conductor's `Deps`) instead of a `git_repo()` re-read at each site, so there is one
+    // resolution authority for the whole call, never several that could in principle
+    // disagree with each other or with this guard.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, command)?;
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(".")?;
@@ -3341,24 +3810,26 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // env (the shim spawns this `rigger serve` with the inherited environment); an explicit
     // `--base` on `rigger serve` / `rigger run --driver workflow` takes precedence. Guarded
     // on a real repo, so the repo-less path is untouched.
-    {
-        let repo = git_repo();
-        if !repo.is_empty() {
-            let (base, base_explicit) = resolve_run_base(
-                parsed.base.as_deref(),
-                std::env::var("RIGGER_BASE").ok().as_deref(),
-            );
-            // Refuse an obviously-wrong base BEFORE anchoring (spec 18, criterion 7), gating on
-            // the side-effect-free planned anchor so no wrong-base run branch is ever created and
-            // the corrected `--base` retry re-anchors fresh.
-            let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
-            // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base
-            // (an unresolvable base AND no HEAD to fall back to) loudly rather than minting a run
-            // branch that branches from nowhere.
-            refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
-            refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
-            anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
-        }
+    // The run branch's tip commit sha AT THIS ANCHOR (spec 91): resolved right after
+    // `anchor_run_branch` below, threaded to `fresh_run_if_requested` so a mint persists the
+    // tip the run genuinely started at. `""` on the repo-less path.
+    let mut base_tip = String::new();
+    if !repo.is_empty() {
+        let (base, base_explicit) = resolve_run_base(
+            parsed.base.as_deref(),
+            std::env::var("RIGGER_BASE").ok().as_deref(),
+        );
+        // Refuse an obviously-wrong base BEFORE anchoring (spec 18, criterion 7), gating on
+        // the side-effect-free planned anchor so no wrong-base run branch is ever created and
+        // the corrected `--base` retry re-anchors fresh.
+        let planned = Worktree::planned_run_branch_setup(&repo, RUN_BRANCH, &base);
+        // Loop-readiness gate (spec 38, criterion 2): refuse a run with no reachable base
+        // (an unresolvable base AND no HEAD to fall back to) loudly rather than minting a run
+        // branch that branches from nowhere.
+        refuse_when_base_unreachable(&repo, "rigger workflow", &base, planned)?;
+        refuse_when_base_lacks_spec_paths(&repo, "rigger workflow", &base, planned, &criteria)?;
+        anchor_run_branch(&repo, "rigger workflow", &base, base_explicit)?;
+        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
     // One-time spec-09 identity migration before opening the run backend (local-sqlite only).
     let selection = store_selection(parsed.store, parsed.conn.as_deref())?;
@@ -3368,16 +3839,17 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2). Like
     // `rigger run`, the served conductor drives the whole run in-process (on the background thread
     // in the scope below), so the held guard's heartbeat thread keeps the entry live for the whole
-    // MCP session; it is dropped when `run_workflow` returns. `repo` was resolved in a scoped block
-    // above, so read it once more here for the registration root. Best-effort - it never blocks.
-    let _registration = register_run_instance(&git_repo(), &selection);
+    // MCP session; it is dropped when `run_workflow` returns. Reuses the `repo` this function
+    // resolved once above - see that resolution's own comment for why a second `git_repo()`
+    // re-read is never taken here any more. Best-effort - it never blocks.
+    let _registration = register_run_instance(&repo, &selection);
     let backend = resolve_store(&selection, &db_path("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before the conductor thread starts, so its `ensure_started`
     // adopts this boundary rather than the latest (possibly wedged) run. `true`: this is the
     // MCP-serving path, so the notice must land on stderr, mirroring the reminder three lines
     // above (spec 66, criterion 5 escalation remedy round 2) - stdout stays the pure MCP wire.
-    fresh_run_if_requested(parsed, &store, &criteria, true)?;
+    fresh_run_if_requested(parsed, &store, &criteria, true, &base_tip)?;
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = rigger::driver::workflow::Driver::new();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
@@ -3390,13 +3862,12 @@ fn run_workflow(parsed: &RunArgs) -> Res {
     // the run store, regardless of the run store's backend.
     let prog_backend = Store::open(&db_path("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &project_identity());
-    let scratch_root = {
-        let repo = git_repo();
-        if repo.is_empty() {
-            String::new()
-        } else {
-            rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
-        }
+    // Reuses the `repo` resolved once at this function's entry (see its own comment) rather
+    // than a second `git_repo()` re-read.
+    let scratch_root = if repo.is_empty() {
+        String::new()
+    } else {
+        rigger::worktree::scratch_root_from_env(&repo, &cfg.workflow.defaults.workdir)
     };
 
     // Always-on dash (spec 19b, unit 1): auto-start a `rigger dash` serving this run for the
@@ -3414,7 +3885,9 @@ fn run_workflow(parsed: &RunArgs) -> Res {
                 store: &store,
                 driver: &driver,
                 gates: &ExecRunner,
-                repo: git_repo(),
+                // Reuses the `repo` this function resolved once at entry via
+                // `resolve_main_worktree_or_refuse`, rather than a second `git_repo()` re-read.
+                repo: repo.clone(),
                 grounder: Some(grounder.as_ref()),
                 graph: Some(&graph),
                 criteria,
@@ -3446,7 +3919,7 @@ fn cmd_serve(args: &[String]) -> Res {
     // the same composition path - it just forces the workflow driver.
     let mut parsed = parse_run_args(args)?;
     parsed.driver = DriverKind::Workflow;
-    run_workflow(&parsed)
+    run_workflow(&parsed, "rigger serve")
 }
 
 /// Parse `rigger workflow`'s arguments: an optional positional spec path and an optional
@@ -3507,7 +3980,20 @@ fn cmd_workflow(args: &[String]) -> Res {
             println!("{}", spec_lint_next_step(spec));
         }
     }
-    let shim = locate_shim(Path::new("."))?;
+    // STEP RESOLVES THE MAIN WORKTREE (spec 89, criterion 4): resolved and refused-or-not
+    // BEFORE locating or launching the Node shim - a linked worktree is refused up front
+    // instead of (at best) failing to find a per-project shim only ever provisioned in the
+    // main checkout, or (at worst) driving a stray one. See
+    // `resolve_main_worktree_or_refuse`'s doc comment. Empty (repo-less) resolves to "." -
+    // the existing behavior every prior caller of `locate_shim` already relied on.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let repo = resolve_main_worktree_or_refuse(&cwd, "rigger workflow")?;
+    let shim_root = if repo.is_empty() {
+        PathBuf::from(".")
+    } else {
+        PathBuf::from(&repo)
+    };
+    let shim = locate_shim(&shim_root)?;
     // The shim spawns `rigger serve` itself; point it at THIS binary so the driver
     // and the served conductor are always the same build (no PATH ambiguity).
     let rigger_bin = std::env::current_exe()
@@ -5169,10 +5655,20 @@ fn cmd_replay(args: &[String]) -> Res {
         .filter(|r| !r.is_empty())
         .unwrap_or_else(|| run_id.clone());
 
-    // 2. Materialize the candidate config at <rev> in a throwaway checkout.
-    let workdir = config::load(".")
-        .map(|c| c.workflow.defaults.workdir)
-        .unwrap_or_default();
+    // 2. Materialize the candidate config at <rev> in a throwaway checkout. `workdir` is read
+    //    via the SAME shared, validate-independent `scratch_defaults` resolver
+    //    `cmd_status`/`watch_poll`/`reclaim_spawn_scratch`/`cmd_scratch`/`cmd_dash` all use
+    //    (spec 83 criterion 2, round 3) - never `config::load`, which additionally requires a
+    //    fully loadable `.rigger/agents/` fleet AND a passing `Config::validate` just to learn
+    //    this one string field; `adv-u83c3r2-cmd-replay-fourth-unmigrated-site` found this was
+    //    the fourth call site still on the old pattern, silently zeroing a configured
+    //    `defaults.workdir` (this THROWAWAY scratch placement, never the candidate's own
+    //    config at `<rev>`, which `materialize_config_at_rev` loads separately below) whenever
+    //    `Config::validate` failed for an unrelated reason. Anchored at `repo` (the resolved
+    //    git top-level, not raw cwd), matching `StoreLocation::dir`'s own convention.
+    let (workdir, _max_retries) = scratch_defaults(&StoreLocation {
+        dir: Path::new(&repo).join(RIGGER_DIR),
+    });
     let scratch_root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
     std::fs::create_dir_all(&scratch_root)?;
     let (candidate_cfg, candidate_definition) =
@@ -5198,8 +5694,8 @@ fn cmd_replay(args: &[String]) -> Res {
         )?;
         let iso = Namespaced::new(iso_backend.as_ref(), "rigger-replay");
         // An offline replay re-fold over an isolated store: no run branch, no PR, so no base
-        // to persist (spec 38, criterion 3).
-        runscope::start_fresh(&iso, &criteria, &candidate_definition, "")?;
+        // or spec path to persist (spec 38, criterion 3; spec 82, criterion 1).
+        runscope::start_fresh(&iso, &criteria, &candidate_definition, "", "", "")?;
         let trajectory = conductor::replay_trajectory(baseline);
         iso.append(conductor::STREAM, ExpectedRevision::Any, &trajectory)?;
 
@@ -5245,6 +5741,13 @@ fn cmd_replay(args: &[String]) -> Res {
     //    the `.db` plus its `.db-wal` / `.db-shm` sidecars - in one call, so no sqlite file
     //    leaks under the scratch root. Best-effort (the diff is already computed), so a
     //    cleanup failure never fails the command.
+    //
+    //    reap-exempt (spec 79, criterion 2): `replay_dir` is created and removed entirely
+    //    within this function, and the ONLY thing ever run against it in between is the
+    //    offline `ReplayDriver`/`ReplayRunner` pairing constructed just above (`deps.gates:
+    //    &ReplayRunner`, whose own module doc states it never shells out - a candidate-config
+    //    re-drive is a pure in-process re-fold over the seeded trajectory) - no subprocess is
+    //    ever spawned with a cwd inside it, so nothing can be rooted there to reap.
     let _ = std::fs::remove_dir_all(&replay_dir);
 
     for line in format_stats_diff(&baseline_id, &rev, &baseline_metrics, &candidate_metrics) {
@@ -5436,6 +5939,10 @@ fn materialize_config_at_rev(
                 .map(|def| (cfg, def))
                 .map_err(|e| format!("rigger replay: candidate definition hash at {rev:?}: {e}"))
         });
+    // reap-exempt (spec 79, criterion 2): `checkout_str` is created and removed entirely
+    // within this one function, and the ONLY things ever run against it in between are
+    // `config::load` and `definition_hash` (just above) - both pure `std::fs` readers with
+    // no subprocess spawned inside the checkout - so nothing can be rooted there to reap.
     let _ = Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -5475,6 +5982,7 @@ impl Runner for ReplayRunner {
         g: &Gate,
         _dir: &str,
         _target_dir: &str,
+        _mutants_dir: &str,
         _build_cache_dir: &str,
         _build_cache_guard: &str,
         _store_fence: &str,
@@ -6129,10 +6637,23 @@ fn cmd_dash(args: &[String]) -> Res {
     // either leaves it empty and the view omits ages (see the resolution below for why an
     // explicit override still resolves without a repo).
     // The configured remediation bound (same config) sets the `#n/max` on a current-blocker
-    // `reject-recurrence` line so the dashboard and `rigger status` agree.
-    let (workdir, max_retries) = config::load(".")
-        .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
-        .unwrap_or_default();
+    // `reject-recurrence` line so the dashboard and `rigger status` agree. Read via the SAME
+    // shared, validate-independent `scratch_defaults` resolver `cmd_status`/`watch_poll`/
+    // `reclaim_spawn_scratch`/`cmd_scratch`/`cmd_replay` all use (spec 83 criterion 2, round 3)
+    // - never `config::load`, which additionally requires a fully loadable `.rigger/agents/`
+    // fleet AND a passing `Config::validate` just to learn these two fields; `arch-u83c3-dash-
+    // scratch-defaults-not-migrated` found `cmd_dash` was left on the old pattern, silently
+    // losing a configured `defaults.workdir`/`defaults.max_retries` (and every agent's
+    // liveness age on the dashboard with it) whenever `Config::validate` failed for an
+    // unrelated reason. Anchored at the process's raw cwd (`RIGGER_DIR` alone, exactly what
+    // `config::load(".")` resolved before), matching this function's own pre-existing
+    // `git_repo()`-based `scratch_root` resolution below and its documented repo-less degrade
+    // (`cmd_dash`, unlike the courier commands, is deliberately never routed through
+    // `require_store_dir`'s owning-root walk) - only the VALIDATE-INDEPENDENCE axis changes
+    // here, not the anchor.
+    let (workdir, max_retries) = scratch_defaults(&StoreLocation {
+        dir: PathBuf::from(RIGGER_DIR),
+    });
     let scratch_root = {
         let repo = git_repo();
         // An empty `repo` alone must NOT force an empty scratch root: `RIGGER_TMPDIR` (or a
@@ -7076,6 +7597,46 @@ fn cmd_progress(args: &[String]) -> Res {
     Ok(())
 }
 
+/// Every currently in-flight spawn's liveness-marker age (spec 14; spec 83 criterion 2): the
+/// ONE authority `cmd_status` and `watch_poll` both call, so the two surfaces can never
+/// disagree about who is still alive - no second, independently re-derived copy of this loop
+/// to drift out of step with the first.
+///
+/// `repo` MUST be the store's resolved OWNING root ([`StoreLocation::repo_root`]), never a raw
+/// `git_repo()` cwd read: a courier invoked from a nested unit worktree (the documented,
+/// walk-up-supported shape [`require_store_dir`] exists for) has a DIFFERENT git toplevel than
+/// the main repo a driver's `rigger step` (which always runs from the repo root) stamped the
+/// marker under, so resolving the scratch root from the raw cwd silently looks in a tree
+/// nothing ever wrote to - an alive, heartbeating agent then reads back with NO liveness age
+/// at all, exactly spec 83's own Problem statement ("the per-spawn liveness marker the sweep
+/// would consult is absent even while the agent is demonstrably alive"). An empty `repo` (no
+/// owning root resolved at all) degrades to no ages, mirroring every other repo-less reader.
+fn liveness_ages_for_wave(
+    repo: &str,
+    workdir: &str,
+    run_id: &str,
+    wave: &[spawn::WaveItem],
+    now: std::time::SystemTime,
+) -> std::collections::BTreeMap<String, u64> {
+    let mut ages = std::collections::BTreeMap::new();
+    if repo.is_empty() {
+        return ages;
+    }
+    let root = rigger::worktree::scratch_root_from_env(repo, workdir);
+    for w in wave {
+        let Some(path) = rigger::liveness::marker_path(&root, run_id, &w.id) else {
+            continue;
+        };
+        if let Ok(age) = std::fs::metadata(&path)
+            .and_then(|md| md.modified())
+            .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
+        {
+            ages.insert(w.id.clone(), age);
+        }
+    }
+    ages
+}
+
 /// `rigger status [--json]` - present the live per-agent view of the current run (spec 14,
 /// unit 2). Rigger CONSOLIDATES its three signals for every in-flight spawn - the run-stream
 /// milestone, the latest progress report, and the liveness-marker age it reads in Rust here
@@ -7123,28 +7684,15 @@ fn cmd_status(args: &[String]) -> Res {
 
     // Liveness ages: rigger stats each in-flight spawn's marker IN RUST here (this is what
     // the JS driver's haiku probe was reconstructing by proxy - unit 3 retires it). The
-    // configured remediation bound is read from the SAME config so the current-blocker
-    // classifier's `#n/max` line matches the depth the run actually escalates at.
-    let (workdir, max_retries) = config::load(".")
-        .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
-        .unwrap_or_default();
-    let repo = git_repo();
-    let mut liveness_ages: std::collections::HashMap<String, u64> =
-        std::collections::HashMap::new();
-    if !repo.is_empty() {
-        let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
-        for w in &spawn::step_result(run_events)?.wave {
-            let Some(path) = rigger::liveness::marker_path(&root, &run_id, &w.id) else {
-                continue;
-            };
-            if let Ok(age) = std::fs::metadata(&path)
-                .and_then(|md| md.modified())
-                .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
-            {
-                liveness_ages.insert(w.id.clone(), age);
-            }
-        }
-    }
+    // configured remediation bound is read from the SAME config (via the shared
+    // `scratch_defaults`, spec 83 criterion 2 round 2) so the current-blocker classifier's
+    // `#n/max` line matches the depth the run actually escalates at.
+    let (workdir, max_retries) = scratch_defaults(&loc);
+    let wave = spawn::step_result(run_events)?.wave;
+    let liveness_ages: std::collections::HashMap<String, u64> =
+        liveness_ages_for_wave(&loc.repo_root(), &workdir, &run_id, &wave, now)
+            .into_iter()
+            .collect();
 
     let view = progress::consolidate(run_events, &prog_events, &liveness_ages, now)?;
 
@@ -7211,8 +7759,10 @@ fn cmd_status(args: &[String]) -> Res {
         println!("{line}");
     }
 
-    // Readable table. The blackout is visible as `last store event` age >> activity age.
-    let short = |s: &str| s.chars().take(12).collect::<String>();
+    // Readable table. The blackout is visible as `last store event` age >> activity age. The
+    // truncation is `ledger::short_run_id` (spec 82, criterion 1's shared authority) so the run
+    // id printed here always matches the one the release-ready PR head is derived from below.
+    let short = ledger::short_run_id;
     if view.is_empty() && blocker_lines.is_empty() {
         println!("run {}: no agents in flight", short(&run_id));
         for line in &release_lines {
@@ -7352,9 +7902,10 @@ fn parse_watch_args(args: &[String]) -> Result<WatchArgs, Box<dyn std::error::Er
 /// carried one step further: a watchdog armed unattended must also outlive a TRANSIENT fault
 /// in the very store it reads (a torn read racing a concurrent writer, a momentarily locked
 /// file) rather than itself becoming the thing that silently stops monitoring. Matches every
-/// other fallible read [`watch_poll`] already performs beyond the store (`config::load`, the
-/// step-lock probe, the liveness-marker stat, the dash-marker read) - all deliberately
-/// fail-soft; only the store reads used to be the exception.
+/// other fallible read [`watch_poll`] already performs beyond the store (the shared
+/// `scratch_defaults` config probe, the step-lock probe, the liveness-marker stat, the
+/// dash-marker read) - all deliberately fail-soft; only the store reads used to be the
+/// exception.
 fn cmd_watch(args: &[String]) -> Res {
     let WatchArgs {
         once,
@@ -7432,28 +7983,14 @@ fn watch_poll(
     let step_lock_free = acquire_step_lock(&loc.dir).is_ok();
 
     // Each currently-parked spawn's heartbeat-marker age, exactly as `cmd_status`
-    // computes `liveness_ages` (spec 19a) - the SAME "live agent processes" reading
-    // both surfaces show, so they can never disagree on who is still working.
-    let (workdir, _max_retries) = config::load(".")
-        .map(|c| (c.workflow.defaults.workdir, c.workflow.defaults.max_retries))
-        .unwrap_or_default();
-    let repo = git_repo();
-    let mut wave_liveness_ages: std::collections::BTreeMap<String, u64> =
-        std::collections::BTreeMap::new();
-    if !repo.is_empty() {
-        let root = rigger::worktree::scratch_root_from_env(&repo, &workdir);
-        for w in &spawn::step_result(&run_events)?.wave {
-            let Some(path) = rigger::liveness::marker_path(&root, &run_id, &w.id) else {
-                continue;
-            };
-            if let Ok(age) = std::fs::metadata(&path)
-                .and_then(|md| md.modified())
-                .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
-            {
-                wave_liveness_ages.insert(w.id.clone(), age);
-            }
-        }
-    }
+    // computes `liveness_ages` (spec 19a) - the SAME "live agent processes" reading both
+    // surfaces show, so they can never disagree on who is still working. `watch_poll` never
+    // reads `max_retries` (only `cmd_status`'s blocker-line rendering needs it), so the
+    // second half of the shared `scratch_defaults` pair is deliberately discarded here.
+    let (workdir, _max_retries) = scratch_defaults(loc);
+    let wave = spawn::step_result(&run_events)?.wave;
+    let wave_liveness_ages =
+        liveness_ages_for_wave(&loc.repo_root(), &workdir, &run_id, &wave, now);
 
     // Dash liveness: prefer the per-project MARKER (port + pid) when one exists,
     // verified with the same real serve probe `dash_serving_on` uses - a marker naming
@@ -8780,18 +9317,18 @@ fn cmd_result(args: &[String]) -> Res {
 /// [`reap_then_remove_dir`] reaps any process still rooted under the scratch (spec 23) before
 /// removing it, so a build a hung worker left running never outlives its now-deleted cwd.
 fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
-    let Some(repo) = loc.dir.parent().and_then(|p| p.to_str()) else {
+    let repo = loc.repo_root();
+    if repo.is_empty() {
         return;
-    };
+    }
     // The run's scratch root by the SAME precedence the run assigned the path with
     // (`scratch_root_from_env`: RIGGER_TMPDIR > `defaults.workdir` > the `<repo>/.rigger/tmp`
-    // default). The courier inherits the run's `RIGGER_TMPDIR`; `workdir` loads best-effort,
-    // falling back to the repo default when the config is momentarily unreadable (the
-    // overwhelming common placement). The read-only `_path_` resolver never conjures a root.
-    let workdir = config::load(repo)
-        .map(|c| c.workflow.defaults.workdir)
-        .unwrap_or_default();
-    let scratch_root = rigger::worktree::scratch_root_path_from_env(repo, &workdir);
+    // default). The courier inherits the run's `RIGGER_TMPDIR`; `workdir` reads best-effort
+    // via the shared `scratch_defaults` (spec 83 criterion 2 round 2), falling back to the
+    // repo default when the config is momentarily unreadable (the overwhelming common
+    // placement). The read-only `_path_` resolver never conjures a root.
+    let (workdir, _max_retries) = scratch_defaults(loc);
+    let scratch_root = rigger::worktree::scratch_root_path_from_env(&repo, &workdir);
     let run_id = runscope::current_run_id(prior).unwrap_or_default();
     reclaim_spawn_registered_scratch(&scratch_root, &run_id, spawn_id);
 }
@@ -8935,17 +9472,18 @@ fn cmd_validate(args: &[String]) -> Res {
             Ok(w) => w,
             Err(e) => return Err(e.to_string().into()),
         };
-    // Mutation-efficacy step SURFACE (spec 73): a `build.mutation: on` with no `cargo-mutants`
-    // resolvable already failed above (`config::load`'s `Config::validate` rejects it at run
-    // start, before `cfg` could exist), so by this point resolution can only succeed - reads
-    // through the SAME `resolve_mutation_layer` authority `Config::validate` uses, never a
-    // second, independently re-derived check.
-    let mutation_enabled = match resolve_mutation_layer(&cfg.workflow.build.mutation) {
-        Ok(m) => m,
-        Err(e) => return Err(e.to_string().into()),
-    };
-    for line in build_environment_report(wrapper.as_deref(), &cfg.workflow.build, mutation_enabled)
-    {
+    // Mutation gate SURFACE (spec 91, moved from the retired `build.mutation` switch): a
+    // declared `mutation` gate with no `cargo-mutants` resolvable already failed above
+    // (`config::load`'s `Config::validate` rejects it at run start, before `cfg` could
+    // exist), so by this point declaring the gate at all means it is resolvable - the
+    // report reads the SAME gates-map signal `Config::validate` keys its refusal on, never
+    // a second, independently re-derived check.
+    let mutation_gate_declared = cfg.workflow.gates.contains_key(MUTATION_GATE_ID);
+    for line in build_environment_report(
+        wrapper.as_deref(),
+        &cfg.workflow.build,
+        mutation_gate_declared,
+    ) {
         println!("{line}");
     }
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
@@ -9028,6 +9566,17 @@ fn cmd_validate(args: &[String]) -> Res {
             eprintln!("{advisory}");
         }
     }
+    // RETIRED CODE-ENTITY advisory (spec 86 criterion 3, THE MIGRATION IS DELIBERATE): report,
+    // once, how many code-entity nodes the graph's own supersession has retired since their last
+    // extraction - what makes the test-exclusion migration's shrink VISIBLE to the operator
+    // rather than a silent internal bookkeeping fact (`rigger::contextgraph::sqlite::Projector::
+    // retired_code_entity_count` is the one counting authority; this never re-derives it). `None`
+    // on every reason there is nothing honest to report (see `retired_entities_advisory_for`'s own
+    // doc), so this never fails validate.
+    if let Some(advisory) = retired_entities_advisory_for(&db_path("graph.db"), &project_identity())
+    {
+        eprintln!("{advisory}");
+    }
     // Docs-drift GATE (spec 20, unit 2): the committed `using-rigger` skill and handbook
     // discipline chapter are generated by `rigger docs` from the same code facts this binary
     // runs on. When a source fact or a template changes, a fresh render diverges from the
@@ -9057,19 +9606,21 @@ fn cmd_validate(args: &[String]) -> Res {
 ///   configured, so an operator sees it even with the wrapper off. `0` is the documented
 ///   unlimited convention (mirrors `defaults.budget`), reported in words rather than a
 ///   bare, easily-misread `0`.
-/// - the mutation-efficacy step setting, ALWAYS (spec 73): `on` or `off`, given the ALREADY-
-///   RESOLVED `mutation_enabled` (through the SAME `resolve_mutation_layer` authority
-///   `Config::validate`'s run-start check uses - a `build.mutation: on` with no
-///   `cargo-mutants` on PATH already failed before this could be reached, so by the time
-///   this prints, `on` in config and `mutation_enabled: true` always agree).
+/// - the checkin-stage mutation gate, ALWAYS (spec 91, moved from the retired
+///   `build.mutation` switch): `declared` or `not configured`, given whether the workflow's
+///   `gates:` map names [`MUTATION_GATE_ID`] - the SAME gates-map signal `Config::validate`'s
+///   run-start check keys its cargo-mutants-on-PATH refusal on, so a declared gate with the
+///   binary absent already failed before this could be reached; by the time this prints,
+///   `declared` and "cargo-mutants resolvable" always agree.
 ///
 /// Pure formatting over already-resolved values, so it is unit-tested without touching
-/// PATH or the filesystem; the effectful wrapper/mutation resolution stays at the
-/// `cmd_validate` edge that calls this.
+/// PATH or the filesystem; the effectful wrapper resolution stays at the `cmd_validate`
+/// edge that calls this (the mutation gate's presence is a plain, already-in-hand `bool`,
+/// nothing to resolve).
 fn build_environment_report(
     wrapper: Option<&str>,
     build: &config::BuildConfig,
-    mutation_enabled: bool,
+    mutation_gate_declared: bool,
 ) -> Vec<String> {
     let mut lines = Vec::new();
     match wrapper {
@@ -9091,8 +9642,12 @@ fn build_environment_report(
         }
     ));
     lines.push(format!(
-        "build mutation: {}",
-        if mutation_enabled { "on" } else { "off" }
+        "mutation gate ({MUTATION_GATE_ID:?}): {}",
+        if mutation_gate_declared {
+            "declared"
+        } else {
+            "not configured"
+        }
     ));
     lines
 }
@@ -9222,6 +9777,40 @@ fn bloat_advisory_for(path: &str, project: &str) -> Option<String> {
         .measure_derived_duplication(&prefix, &rigger::ingest::derived_index_identity())
         .ok()?;
     bloat_advisory(&measured)
+}
+
+/// The RETIRED CODE-ENTITY advisory line (spec 86 criterion 3, THE MIGRATION IS DELIBERATE),
+/// rendered from an already-measured count - pure formatting, separate from the gathering in
+/// [`retired_entities_advisory_for`]. `None` when nothing has been retired: the steady-state
+/// case, and the honest answer before any re-ingest has excluded or removed anything.
+fn retired_entities_advisory(n: usize) -> Option<String> {
+    if n == 0 {
+        return None;
+    }
+    let noun = if n == 1 { "entity" } else { "entities" };
+    Some(format!(
+        "{n} code-{noun} retired (no longer reachable by any live edge; history stays in the \
+         log, never a store wipe)"
+    ))
+}
+
+/// Gather + measure the RETIRED CODE-ENTITY advisory's input (spec 86 criterion 3): open the graph
+/// at `graph_db`, scoped to `project`, and read
+/// [`rigger::contextgraph::sqlite::Projector::retired_code_entity_count`] - the ONE counting
+/// authority the migration's supersession backs (never a second, shadow count). The context graph
+/// is always a local sqlite file regardless of `--eventstore` (unlike the event log this mirrors
+/// the shape of, `Projector` is the only [`Projection`] this binary ever opens), so this needs no
+/// backend-selection guard. `None`, never an error, on every reason there is nothing honest to
+/// report: no `graph.db` file YET - checked BEFORE opening anything, because `Projector::open`
+/// (like every store open here) creates a missing file, and a read-only advisory must never have
+/// that side effect - or any read error after that point, exactly like the log-bloat and
+/// index-staleness advisories above swallow one.
+fn retired_entities_advisory_for(graph_db: &str, project: &str) -> Option<String> {
+    if !Path::new(graph_db).exists() {
+        return None;
+    }
+    let graph = Projector::open(graph_db, project).ok()?;
+    retired_entities_advisory(graph.retired_code_entity_count().ok()?)
 }
 
 /// Whether the `/rigger` workflow installed at `<root>/.claude/workflows/rigger.js` has
@@ -9732,7 +10321,20 @@ fn current_run_units(events: &[Event]) -> RunUnits {
         ..RunUnits::default()
     };
     for u in run.units.values() {
-        if run.is_terminal(&u.id) {
+        // Spec 83, criterion 1: THE FENCE. A unit the ledger reads terminal can still have
+        // a STRAGGLER spawn working the same unit id (a slower confirmatory review lens
+        // still running after the deciding verdict already integrated it - the observed
+        // `u81c1` bug); `spawn_fence` closes that gap by consulting the unit's LATEST
+        // requested spawn directly, so `dead_slugs`/`live_branches` stay the ONE liveness
+        // authority every consumer (`sweep_terminal`, `reclaim_orphan_scratch` via
+        // `worktree_belongs_to_live`) already reads, rather than leaving a second notion of
+        // "in flight" for callers to reconcile themselves.
+        let fenced_live = run.is_terminal(&u.id)
+            && matches!(
+                rigger::worktree::spawn_fence(scoped, &u.id),
+                rigger::worktree::SpawnFence::InFlight { .. }
+            );
+        if run.is_terminal(&u.id) && !fenced_live {
             if let Some(slug) = u.branch.strip_prefix("rigger/u/") {
                 if !slug.is_empty() {
                     out.dead_slugs.insert(slug.to_string());
@@ -9788,9 +10390,21 @@ fn live_slugs(
 /// `CARGO_TARGET_DIR`). Those are run-level scratch reclaimed by the run's fixpoint/teardown
 /// once no spawn is live, never by this per-step backstop, so it can never delete a target a
 /// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
+///
+/// `declared_units` (spec 89, criterion 1, round 2 fix) is the CURRENTLY loaded workflow's own
+/// `rigger/u/<slug>` stages - config, never the event log, the SAME set `cmd_step` also hands
+/// `sweep_terminal` - narrowing this backstop's own dirty-spare exception (see the worktree arm
+/// below) to a unit this run's definition actually declares.
+///
 /// Returns how many entries were reclaimed.
-fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize {
+fn reclaim_orphan_scratch(
+    repo: &str,
+    root: &str,
+    run_units: &RunUnits,
+    declared_units: &std::collections::HashSet<String>,
+) -> usize {
     let live = live_slugs(&run_units.live_branches);
+    let declared_slugs = live_slugs(declared_units);
     let root_path = std::path::Path::new(root);
     let mut removed = 0;
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -9807,7 +10421,42 @@ fn reclaim_orphan_scratch(repo: &str, root: &str, run_units: &RunUnits) -> usize
             // A leftover unit worktree no live unit owns. Reap any process still rooted in it
             // (a leaked build) BEFORE removing it, and deregister it from git if a killed step
             // left it registered.
-            if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) {
+            //
+            // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), round 2 fix
+            // (sdet-u89c1-sweep-terminal-discards-halted-tree, generalized): this backstop is a
+            // SECOND worktree-disposition authority alongside `sweep_terminal` - both run from
+            // `cmd_step`, strictly before `conductor::run` ever gets a chance to capture a
+            // halted spawn's abandoned edit as its own `wip` commit - and `reap_then_remove_
+            // worktree`'s own `git worktree remove --force` "also tolerates a dirty tree" (its
+            // doc comment), i.e. force-discards one. "Not live-owned" alone is exactly the
+            // shape a store/worktree desync (a restored snapshot, or this project's very first
+            // step) leaves a genuine, not-yet-recorded unit in, so a STILL-DIRTY candidate whose
+            // slug this workflow DECLARES is spared here too, regardless of liveness - mirroring
+            // `sweep_terminal_logged`'s identical guard. Gated on `declared_slugs`: dirtiness
+            // alone is not evidence of a halted spawn - a genuinely dead, undeclared branch that
+            // happens to also carry untracked content is still reclaimed exactly as before this
+            // criterion. The status read is scoped to a REAL linked worktree only
+            // (`path.join(".git")` present) - a bare directory git never tracked has no `.git`
+            // of its own, and running `git status` from inside one climbs to whatever repo
+            // happens to enclose `root` (the "act on the enclosing repository" hazard spec 89's
+            // own STEP-RESOLVES-ONE-ROOT criterion names), reading unrelated content as "dirty" -
+            // falling back, for that shape, to the ORIGINAL unconditional reclaim, unchanged.
+            //
+            // The status read itself now goes through [`rigger::worktree::path_is_dirty`]
+            // (round 3 fix, `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`)
+            // instead of a second, independently-hardcoded `Command::new("git")` call: round 2's
+            // own inline version collapsed ANY spawn failure or non-zero git exit to `dirty =
+            // false` (fail OPEN, reclaim/discard), the exact opposite of `sweep_terminal_logged`'s
+            // `unwrap_or(false)` (which, negated into this same `dirty` polarity, fails CLOSED -
+            // spare) on the identical unreadable-status error, despite this comment already
+            // claiming the two mirror each other. Sharing the one primitive - and picking the
+            // same `unwrap_or(true)` fail-closed direction the sibling call site now also picks
+            // explicitly - makes that divergence structurally impossible to reintroduce.
+            let slug = name.trim_start_matches(rigger::worktree::UNIT_WORKTREE_PREFIX);
+            let dirty = declared_slugs.contains(slug)
+                && path.join(".git").exists()
+                && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
+            if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
                 reap_then_remove_worktree(repo, &path, root_path);
                 removed += 1;
             }
@@ -12369,7 +13018,13 @@ wrapper: auto\n\
 gates:                    # a reusable library of commands, referenced by name\n  \
 build: { run: \"echo build ok; true\", kind: core }\n  \
 test:  { run: \"echo test ok; true\",  kind: core }\n  \
-lint:  { run: \"echo lint ok; true\",  kind: elevated }\n\
+lint:  { run: \"echo lint ok; true\",  kind: elevated }\n  \
+# The check-in-stage mutation sweep (spec 91): runs ONCE, after every implement\n  \
+# unit has integrated - never per implementer round. Replace with a real\n  \
+# `cargo mutants --in-diff` invocation for a Rust project (see this crate's own\n  \
+# .rigger/workflow.yml for the worked example); declaring a gate under this\n  \
+# exact id requires `cargo-mutants` on PATH (rigger validate checks at run start).\n  \
+mutation: { run: \"echo mutation ok; true\", kind: core }\n\
 \n\
 stages:\n  \
 # The conductor creates one baseline implement unit per acceptance criterion (the\n  \
@@ -12402,7 +13057,21 @@ strategy: fan-out       # one worker per ready unit, in isolated worktrees\n    
 partition: by-blast-radius\n    \
 gates: [build, test, lint]  # red -> green enforced around the change\n    \
 on_pass: merge          # land + reindex + record, per unit, once reviewed\n    \
-coverage: \"each unit is implemented, reviews itself, and integrates green\"\n";
+coverage: \"each unit is implemented, reviews itself, and integrates green\"\n\
+\n  \
+# 3. Check in ONCE, after every implement unit has integrated (spec 91): a\n  \
+# `needs` entry naming the fan-out `implement` TEMPLATE is satisfied exactly when\n  \
+# every unit it expanded into has integrated - never per implementer round, and\n  \
+# never before every unit has landed. Re-verifies the whole gate suite against\n  \
+# the merged tree, then sweeps mutants; one remediation round (max_retries: 2),\n  \
+# then integrate or escalate with the accounting already on record.\n  \
+checkin:\n    \
+needs: [implement]\n    \
+agent: rust-engineer\n    \
+max_retries: 2          # attempt bound: the sweep, one remediation round, the sweep again\n    \
+gates: [build, test, lint, mutation]\n    \
+on_pass: merge\n    \
+coverage: \"mutation efficacy of the whole spec diff\"\n";
 
 /// The agents the scaffolded workflow references - a fresh-repo SEED template, not a
 /// frozen canonical fleet. Every entry is referenced by [`SCAFFOLD_WORKFLOW`] and every
@@ -14711,10 +15380,19 @@ mod tests {
     /// NOT done surfaces no release-ready signal. Proven over the production render seam
     /// (`release_ready_lines`) `cmd_status` prints, so the surface cannot silently drift from
     /// the one authority.
+    ///
+    /// Spec 82, criterion 1 (the status handoff is unique): the PR command is the two-command
+    /// unique-head flow - the head derived from the run's OWN RunStarted (spec stem +
+    /// run-short-id), never the literal run branch as `--head`.
     #[test]
     fn release_ready_lines_surface_only_on_a_done_run() {
         // A done run: one integrated unit, no failed deferred gate.
         let done = [
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"7ad52031-01f1-4d37-aa19-ad48090f84a5","spec":"specs/82-unique-pr-heads.md"}"#
+                    .to_vec(),
+            ),
             Event::new(ledger::TYPE_UNIT_STARTED, br#"{"id":"u1"}"#.to_vec()),
             Event::new(
                 ledger::TYPE_UNIT_INTEGRATED,
@@ -14732,10 +15410,21 @@ mod tests {
             text.contains("1 unit"),
             "names the integrated-unit count: {text}"
         );
-        // `origin/main` is stripped to the release-target branch in the PR command.
+        // `origin/main` is stripped to the release-target branch in the PR command, and the
+        // head is the per-run-unique `pr/<spec-stem>-<run-short-id>` branch - never the run
+        // branch itself.
+        let head = "pr/82-unique-pr-heads-7ad52031-01f";
         assert!(
-            text.contains("gh pr create --base main --head rigger-run"),
+            text.contains(&format!("git push origin {RUN_BRANCH}:{head}")),
+            "names the push command: {text}"
+        );
+        assert!(
+            text.contains(&format!("gh pr create --base main --head {head}")),
             "names the PR command: {text}"
+        );
+        assert!(
+            !text.contains("--head rigger-run"),
+            "the literal `--head <run_branch>` form must never appear: {text}"
         );
 
         // A run with a still-un-integrated unit surfaces NO release-ready signal.
@@ -14803,10 +15492,12 @@ mod tests {
         assert_ne!(status_base, DEFAULT_BASE_REF);
 
         // Every surface renders through `release_ready`, so the PR command names the run's
-        // actual base - not `main`.
+        // actual base - not `main` - while the head (unaffected by base) is this run's
+        // per-run-unique `pr/<run-short-id>` branch (no spec was seeded, so the head degrades
+        // to the run-short-id alone).
         let text = release_ready_lines(&events, RUN_BRANCH, &status_base).join("\n");
         assert!(
-            text.contains("gh pr create --base release/2.0 --head rigger-run"),
+            text.contains("gh pr create --base release/2.0 --head pr/r1"),
             "the PR command targets the run's persisted base: {text}"
         );
 
@@ -15330,6 +16021,40 @@ mod tests {
         }
     }
 
+    // --- Spec 91 checkin round 4 (op-checkin-round-4-hang-class-mutants-fail-fast-or-justify):
+    // a direct, zero-wait contract test for `resolve_main_worktree_or_refuse`'s SUCCESS return
+    // value - the whole-diff mutation sweep's own machinery (cargo-mutants --in-diff, spec 91)
+    // reported this mutant (line 1807, both String-literal stubs) reachable ONLY through the
+    // real-subprocess suite in tests/cli.rs, whose narrowest existing coverage
+    // (`serve_from_a_linked_worktree_refuses_naming_both_trees`) exercises only the REFUSAL
+    // arm - never the plain, non-linked, single-root SUCCESS arm every other real-subprocess
+    // test relies on implicitly. A wholesale body swap there (`Ok("xyzzy".into())` /
+    // `Ok(String::new())`) is invisible to every test that merely asserts on a DOWNSTREAM
+    // side effect (a store file, a branch, an exit code) reachable via many other paths too;
+    // this pins the function's OWN contract directly, in-process, with no subprocess and no
+    // wall-clock wait, so a wrong return value fails on the spot rather than only surfacing (if
+    // ever) as one of many bounded-wait real-subprocess tests whose CUMULATIVE waits are what
+    // exhausted the mutation gate's per-mutant timeout budget (op-checkin-mutation-budget-3x-
+    // 95cfdd0) instead of ever reaching a fast, deterministic failure.
+    #[test]
+    fn resolve_main_worktree_or_refuse_returns_exactly_git_rev_parse_show_toplevel() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "README.md", "seed\n");
+        let expected = git_repo_at(root);
+        assert!(
+            !expected.is_empty(),
+            "the fixture is a real git repo, so git_repo_at must resolve a real toplevel"
+        );
+        let got = resolve_main_worktree_or_refuse(root, "test-cmd")
+            .expect("a plain, non-linked worktree must never refuse");
+        assert_eq!(
+            got, expected,
+            "resolve_main_worktree_or_refuse must return EXACTLY `git rev-parse --show-toplevel`'s \
+             own output for a plain (non-linked) worktree, not a stand-in value"
+        );
+    }
+
     #[test]
     fn refuse_when_base_lacks_spec_paths_refuses_on_total_absence_and_names_a_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -15640,6 +16365,75 @@ mod tests {
         assert_eq!(run.live_branches, slugs(["rigger/u/unit-6"]));
         assert_eq!(live_slugs(&run.live_branches), slugs(["unit-6"]));
         assert_eq!(run.dead_slugs, slugs(["unit-old", "unit-gone"]));
+    }
+
+    #[test]
+    fn current_run_units_spares_a_terminal_units_branch_whose_latest_spawn_is_still_in_flight() {
+        // Spec 83, criterion 1: THE FENCE. `unit-old` reads TERMINAL by the ledger alone
+        // (Integrated), the pre-spec-83 signal `dead_slugs` used exclusively - but a
+        // straggler spawn for the SAME unit (a slower review lens still working after the
+        // deciding verdict already integrated it) is still unanswered. The fence must keep
+        // its branch OUT of `dead_slugs` and IN `live_branches`, so neither
+        // `sweep_terminal`'s ancestry sweep nor `reclaim_orphan_scratch`'s backstop
+        // (`worktree_belongs_to_live`, keyed off these exact two sets) can remove its
+        // worktree out from under the straggler.
+        let events = [
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"r1","criteria":["new"]}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"unit-old","commit":"abc"}"#.to_vec(),
+            ),
+            // The straggler: requested AFTER integration, still unanswered.
+            spawn::SpawnRequest::new("unit-old", "review", "adversary", 1, "p")
+                .to_event()
+                .unwrap(),
+        ];
+        let run = current_run_units(&events);
+        assert_eq!(
+            run.live_branches,
+            slugs(["rigger/u/unit-old"]),
+            "the fenced unit's branch must be LIVE despite the ledger reading it terminal"
+        );
+        assert!(
+            run.dead_slugs.is_empty(),
+            "a fenced unit must not ALSO appear dead - the two sets stay a partition"
+        );
+    }
+
+    #[test]
+    fn current_run_units_still_retires_a_terminal_unit_once_its_latest_spawn_answers() {
+        // The counterpart: once that same straggler spawn answers (any result, including a
+        // liveness fault), the unit reverts to dead exactly as it always has.
+        let events = [
+            Event::new(
+                runscope::TYPE_RUN_STARTED,
+                br#"{"run":"r1","criteria":["new"]}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_STARTED,
+                br#"{"id":"unit-old","branch":"rigger/u/unit-old"}"#.to_vec(),
+            ),
+            Event::new(
+                ledger::TYPE_UNIT_INTEGRATED,
+                br#"{"id":"unit-old","commit":"abc"}"#.to_vec(),
+            ),
+            spawn::SpawnRequest::new("unit-old", "review", "adversary", 1, "p")
+                .to_event()
+                .unwrap(),
+            spawn::SpawnResult::ok("unit-old/adversary#1", "approve")
+                .to_event()
+                .unwrap(),
+        ];
+        let run = current_run_units(&events);
+        assert_eq!(run.dead_slugs, slugs(["unit-old"]));
+        assert!(run.live_branches.is_empty());
     }
 
     #[test]
@@ -16634,7 +17428,12 @@ mod tests {
         };
         // Empty repo -> the git-aware worktree deregister is skipped and a plain removal runs,
         // which is all the synthetic (non-registered) worktree dirs here need.
-        let removed = reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units);
+        let removed = reclaim_orphan_scratch(
+            "",
+            scratch.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(
             removed, 4,
             "exactly the four non-live-owned entries are reclaimed"
@@ -16682,9 +17481,124 @@ mod tests {
 
         // Idempotent: a re-run over the now-clean root reclaims nothing and errors on nothing.
         assert_eq!(
-            reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units),
+            reclaim_orphan_scratch(
+                "",
+                scratch.to_str().unwrap(),
+                &run_units,
+                &std::collections::HashSet::new(),
+            ),
             0,
             "the sweep is idempotent - a clean root reclaims nothing"
+        );
+    }
+
+    #[test]
+    fn reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty() {
+        // Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE), round 2 fix: this backstop is a
+        // SECOND, independent worktree-disposition authority alongside `sweep_terminal` (both
+        // run from `cmd_step`, before `conductor::run` ever gets a chance to capture a halted
+        // spawn's abandoned edit as its own `wip` commit) - so the SAME "never force-remove a
+        // dirty candidate" guard `sweep_terminal_logged` now carries must apply here too, or a
+        // unit's tree can still be discarded through this door alone. `reap_then_remove_worktree`
+        // itself runs `git worktree remove --force`, which "also tolerates a dirty tree" (its
+        // own doc comment) - i.e. force-discards it. Not-yet-live is exactly the "no spawn
+        // recorded yet" shape (a store/worktree desync, or this project's very first step): the
+        // worktree here is real, dirty, and NOT in `live_branches` at all.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+
+        let wt_dir = root.join("rigger-wt-halted-unit");
+        Worktree::create(repo, wt_dir.to_str().unwrap(), "rigger/u/halted-unit", "").unwrap();
+        write_file(&wt_dir.join("halted-work.txt"), b"abandoned mid-edit\n");
+
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs([]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        // Declared (round 3 fix): this workflow's own current definition still names
+        // "halted-unit" as one of its units - the signal that distinguishes it from
+        // `reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree` below's genuinely
+        // dead, undeclared one.
+        let declared_units = slugs(["rigger/u/halted-unit"]);
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 0,
+            "a dirty, non-live-owned, but DECLARED worktree is spared, never force-removed"
+        );
+        assert!(
+            wt_dir.join("halted-work.txt").exists(),
+            "the abandoned edit must survive the sweep untouched"
+        );
+
+        // The paired negative-space case: once the SAME worktree is clean (its work
+        // committed - exactly what the halt-recovery wip commit, or an ordinary landed unit,
+        // leaves behind) it is reclaimed exactly as before this fix - dirtiness, not mere
+        // non-liveness, is what changed.
+        Command::new("git")
+            .arg("-C")
+            .arg(&wt_dir)
+            .args(["add", "-A"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(&wt_dir)
+            .args(["commit", "-q", "-m", "resolved"])
+            .status()
+            .unwrap();
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 1,
+            "a CLEAN non-live-owned worktree is still reclaimed as before"
+        );
+        assert!(!wt_dir.exists(), "the clean worktree is gone");
+    }
+
+    #[test]
+    fn reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree() {
+        // Spec 89, criterion 1, round 3 fix: the negative-space twin of the test above.
+        // Dirtiness ALONE is not proof of a halted spawn - a genuinely dead, UNDECLARED branch
+        // (a prior run's leftover, a hand-made fixture) that happens to also carry untracked
+        // content is still reclaimed exactly as it was before this criterion, matching
+        // `sweep_terminal`'s own identical `declared_units` gate.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+
+        let wt_dir = root.join("rigger-wt-undeclared-orphan");
+        Worktree::create(
+            repo,
+            wt_dir.to_str().unwrap(),
+            "rigger/u/undeclared-orphan",
+            "",
+        )
+        .unwrap();
+        write_file(&wt_dir.join("stray.txt"), b"unrelated debris\n");
+
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs([]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        // Declares an UNRELATED unit only - never "undeclared-orphan".
+        let declared_units = slugs(["rigger/u/halted-unit"]);
+        let removed =
+            reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared_units);
+        assert_eq!(
+            removed, 1,
+            "a dirty, non-live-owned, and UNDECLARED worktree is still reclaimed"
+        );
+        assert!(
+            !wt_dir.exists(),
+            "the undeclared, unrelated worktree is gone"
         );
     }
 
@@ -16707,7 +17621,12 @@ mod tests {
         write_file(&scratch.join("cargo-target").join("live.rlib"), &[0u8; 8]);
 
         let run_units = RunUnits::default();
-        let removed = reclaim_orphan_scratch("", scratch.to_str().unwrap(), &run_units);
+        let removed = reclaim_orphan_scratch(
+            "",
+            scratch.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
         assert_eq!(removed, 1, "exactly the one stray tombstone is reclaimed");
         assert!(!tombstone.exists(), "the stray tombstone must be reaped");
         assert!(
@@ -17086,6 +18005,119 @@ mod tests {
             find_store_dir_from(&worktree),
             Some(root.join(RIGGER_DIR)),
             "must walk past the storeless worktree `.rigger/` to the repo's real store"
+        );
+    }
+
+    #[test]
+    fn find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it() {
+        // Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE): a unit's real
+        // git-linked worktree no longer nests under `<repo>/.rigger/tmp` - it lives
+        // wherever the relocated (cache-home) scratch root resolves, which is now OUTSIDE
+        // the repo's own directory tree entirely. A worker's own courier calls (`rigger
+        // prompt`/`result`/`emit`/`scratch`/`progress`/`peers`) run from INSIDE that
+        // worktree (each is documented as "invoked BY THE WORKER from inside its unit
+        // worktree"), so `find_store_dir_from` must still resolve the repo's real store
+        // even though a plain filesystem `.parent()` climb from the worktree never
+        // physically passes through the repo root any more - the exact regression a
+        // naive relocation would otherwise ship silently (every courier call from a real
+        // relocated worktree would refuse "no rigger store found").
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_init_quiet(root);
+        std::fs::write(root.join("README"), "x").unwrap();
+        assert!(Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+
+        // The worktree lives in a WHOLLY UNRELATED location - a sibling tempdir, never a
+        // descendant of `root` - mirroring the relocated cache-home default exactly.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let worktree = elsewhere.path().join("rigger-wt-x");
+        assert!(
+            Command::new("git")
+                .args(["worktree", "add", "-q"])
+                .arg(&worktree)
+                .args(["-b", "rigger/u/x"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success(),
+            "git worktree add must succeed for the fixture"
+        );
+
+        assert_eq!(
+            find_store_dir_from(&worktree),
+            Some(root.join(RIGGER_DIR)),
+            "a courier inside a worktree the relocated scratch root put OUTSIDE the repo \
+             must still resolve the repo's real store"
+        );
+    }
+
+    #[test]
+    fn find_store_dir_from_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store(
+    ) {
+        // The adv9-walkup-cross-project hazard, re-proven for the relocated (non-nested)
+        // case: when the worktree lives OUTSIDE the repo, this must NOT fall back to a
+        // plain unbounded ancestor climb from the worktree - that would let a courier
+        // inside a worktree parked under, say, `<cache-home>/rigger/<project>/rigger-wt-x`
+        // bind to a store an ancestor of the CACHE HOME happens to carry (an unrelated
+        // project's, or a leftover fixture's), exactly the cross-project escape the
+        // original bound was built to close. The sanctioned set for a relocated worktree
+        // is exactly {the worktree itself, the resolved repo root} - nothing between.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_init_quiet(root);
+        std::fs::write(root.join("README"), "x").unwrap();
+        assert!(Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(root.join(RIGGER_DIR).join("events.db")).unwrap();
+
+        // A FOREIGN store sitting at an ancestor of the relocated worktree - the exact
+        // shape a plain unbounded climb would wrongly bind to.
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(elsewhere.path().join(RIGGER_DIR)).unwrap();
+        std::fs::File::create(elsewhere.path().join(RIGGER_DIR).join("events.db")).unwrap();
+        let worktree = elsewhere.path().join("nested").join("rigger-wt-x");
+        std::fs::create_dir_all(worktree.parent().unwrap()).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["worktree", "add", "-q"])
+                .arg(&worktree)
+                .args(["-b", "rigger/u/y"])
+                .current_dir(root)
+                .status()
+                .unwrap()
+                .success(),
+            "git worktree add must succeed for the fixture"
+        );
+
+        assert_eq!(
+            find_store_dir_from(&worktree),
+            Some(root.join(RIGGER_DIR)),
+            "must resolve the REAL owning repo's store, never the foreign one sitting at an \
+             ancestor of the relocated worktree"
         );
     }
 
@@ -17584,11 +18616,13 @@ mod tests {
         // folded into the unit lifecycle (no integrator). None of the four generic
         // placeholder personas is seeded.
         assert_eq!(cfg.agents.len(), 6, "scaffold agent count");
-        // Three stages: plan -> plan-critique -> implement. The plan-critique gate
-        // (spec 10, Unit 1) reviews the proposed DAG before the fan-out releases.
-        assert_eq!(cfg.workflow.stages.len(), 3, "scaffold stage count");
-        // Three gates in the reusable library.
-        assert_eq!(cfg.workflow.gates.len(), 3, "scaffold gate count");
+        // Four stages: plan -> plan-critique -> implement -> checkin. The plan-critique
+        // gate (spec 10, Unit 1) reviews the proposed DAG before the fan-out releases; the
+        // checkin stage (spec 91) runs the mutation sweep once, after every implement unit
+        // has integrated.
+        assert_eq!(cfg.workflow.stages.len(), 4, "scaffold stage count");
+        // Four gates in the reusable library, including the checkin stage's `mutation` gate.
+        assert_eq!(cfg.workflow.gates.len(), 4, "scaffold gate count");
 
         // The scaffold exercises the per-unit shape: a producer, the plan-critique gate
         // between plan and implement, a fan-out implement stage that integrates on_pass:
@@ -17610,6 +18644,27 @@ mod tests {
             "the fan-out releases only after the plan-critique gate approves"
         );
         assert_eq!(implement.on_pass, "merge");
+        // The checkin stage (spec 91): needs the fan-out implement TEMPLATE (satisfied once
+        // every unit it expanded into has integrated - u91c1's generic conductor rule), runs
+        // the mutation gate exactly once, remediates once, and integrates on pass.
+        let checkin = &cfg.workflow.stages["checkin"];
+        assert_eq!(checkin.needs, ["implement"]);
+        assert_eq!(
+            checkin.max_retries, 2,
+            "an ATTEMPT bound like defaults.max_retries: the sweep, one remediation round, \
+             the sweep again - a value of 1 escalates on the first miss (spec 91)"
+        );
+        assert_eq!(
+            checkin.gates,
+            ["build", "test", "lint", "mutation"],
+            "checkin re-verifies the whole gate suite, THEN sweeps mutants"
+        );
+        assert_eq!(checkin.on_pass, "merge");
+        // A placeholder command, like the scaffold's other gates ("Replace the gate
+        // commands with your own") - the SHAPE (a `mutation`-id gate the checkin stage
+        // lists) is what this test proves, not a live cargo-mutants invocation.
+        let mutation_gate = &cfg.workflow.gates["mutation"];
+        assert_eq!(mutation_gate.kind, "core");
         let review = &cfg.workflow.defaults.review;
         assert_eq!(
             review.lenses,
@@ -20237,15 +21292,16 @@ mod tests {
     }
 
     /// The native `/rigger` workflow is a THIN driver over the Rust conductor: it couriers
-    /// each frontier via `rigger step`, spawns the returned wave natively in parallel with a
-    /// per-unit `opts.phase` label built from the wave item, lets each worker self-report via
+    /// each frontier via `rigger step`, spawns the returned wave natively in parallel with an
+    /// `opts.phase` label built from the wave item's ROLE, lets each worker self-report via
     /// `rigger result`, records a dead worker's failure on its behalf via `rigger result
     /// --if-absent --error`, and loops until the step reports `done`. Because `meta` MUST be a pure literal
     /// (statically extracted by the Workflow runtime - no computed values / no interpolation)
-    /// and unit ids are only known at runtime, the per-unit labels live in the runtime
-    /// `opts.phase` strings while `meta.phases` keeps the fixed stage set. This test pins the
-    /// thin-driver contract so a future edit cannot silently regress it; it supersedes the
-    /// fat-workflow `buildUnit`/`PH` structure this workflow replaced.
+    /// and unit ids are only known at runtime, the lifecycle-phase labels live in the runtime
+    /// `opts.phase` strings `phaseOf` derives from role, while `meta.phases` keeps the fixed
+    /// stage set. This test pins the thin-driver contract so a future edit cannot silently
+    /// regress it; it supersedes the fat-workflow `buildUnit`/`PH` structure this workflow
+    /// replaced.
     #[test]
     fn workflow_is_a_thin_courier_driver_with_per_unit_phase_labels() {
         let wf = RIGGER_WORKFLOW;
@@ -20254,9 +21310,11 @@ mod tests {
         // assertions run against the raw literal object body.
         let code = strip_line_comments(wf);
 
-        // 1. meta.phases keeps the FIXED stage set as a pure up-front literal.
+        // 1. meta.phases keeps the FIXED stage set as a pure up-front literal. (`Integrate`
+        //    was retired for `Drive` by spec 67 criterion 5 - pinned in its own dedicated
+        //    test below, not re-derived here.)
         let meta = meta_object_body(wf);
-        for stage in ["Plan", "Build", "Review", "Integrate"] {
+        for stage in ["Plan", "Build", "Review", "Drive"] {
             assert!(
                 meta.contains(&format!("title: '{stage}'")),
                 "meta.phases must declare the fixed stage '{stage}'"
@@ -20284,29 +21342,41 @@ mod tests {
             "the driver must read the wave and loop until the step reports done"
         );
 
-        // 4. It SPAWNS the wave natively in parallel, one agent per wave item.
+        // 4. It SPAWNS the wave natively, one agent per wave item - PIPELINED per unit (spec
+        //    89, criterion 5): each new item starts its own `runWorker` call and is tracked in
+        //    the `inFlight` set rather than every item being awaited together as one
+        //    `parallel(wave.map(...))` batch (the pre-criterion-5 shape this superseded), which
+        //    is exactly what lets a fast unit's result be couriered while a slow sibling in the
+        //    SAME wave is still running.
         assert!(
-            code.contains("parallel(") && code.contains("wave.map("),
-            "the driver must spawn the wave's agents natively in parallel"
+            code.contains("runWorker(req, fatal)") && code.contains("inFlight.set(req.id,"),
+            "the driver must spawn the wave's agents natively, one per item, tracked in the \
+             in-flight set"
         );
 
-        // 5. Per-unit progress groups are produced at runtime from the WAVE ITEM (unit +
-        //    stage), per the spawn::SpawnRequest contract, and every worker is labelled with it.
+        // 5. Lifecycle-phase progress groups are produced at runtime from the WAVE ITEM, and
+        //    every worker is labelled with one. `phaseOf`'s own role -> {Plan,Build,Review}
+        //    mapping (spec 67, criterion 1) is pinned in its own dedicated test below, not
+        //    re-derived here.
         assert!(
-            code.contains("function phaseOf(req)") && code.contains("`${req.unit}:${req.stage}`"),
-            "the driver must build each worker's opts.phase label from the wave item's unit + stage"
+            code.contains("function phaseOf(req)"),
+            "the driver must build each worker's opts.phase label from the wave item"
         );
         assert!(
             code.contains("phase: ph"),
-            "each spawned worker must label its progress group with the per-unit phase"
+            "each spawned worker must label its progress group with phaseOf's derived phase"
         );
-        // No bare global lifecycle phase markers: Build/Review/Integrate are per-unit (inside
-        // the conductor) now, so a global marker would re-imply a false "all units build, then
-        // all review" order.
-        for stage in ["Build", "Review", "Integrate"] {
+        // No bare global lifecycle phase markers survive at all now (spec 67, criterion 3):
+        // Build/Review/Integrate are per-unit (inside the conductor), and Plan's own global
+        // `phase('Plan')` call - which used to pin the courier steps under a fixed
+        // "orchestration pass" group for the run's whole duration - is retired outright. A
+        // global marker for any of these would re-imply a false "all units build, then all
+        // review" (or "everything is one Plan pass") order.
+        for stage in ["Plan", "Build", "Review", "Integrate"] {
             assert!(
                 !code.contains(&format!("phase('{stage}')")),
-                "the global phase('{stage}') marker must not exist - {stage} is per-unit now"
+                "the global phase('{stage}') marker must not exist - {stage} is per-unit or \
+                 retired now"
             );
             assert!(
                 !code.contains(&format!("phase: '{stage}'")),
@@ -20314,10 +21384,17 @@ mod tests {
                  every unit into one global progress group"
             );
         }
-        // Only Plan remains a genuine global phase marker (the orchestration/courier pass).
+        // No global phase(...) marker call of ANY kind survives - the couriers (which have no
+        // unit of their own) now group under the dedicated `Drive` orchestration lane instead,
+        // via the SAME per-spawn opts.phase literal mechanism every worker already uses.
         assert!(
-            code.contains("phase('Plan')"),
-            "the single global Plan pass must keep its phase('Plan') marker"
+            !code.contains("phase("),
+            "no global phase(...) marker call may survive anywhere in the driver - \
+             orchestration groups ride the per-spawn `phase: 'Drive'` opts literal instead"
+        );
+        assert!(
+            code.contains("phase: 'Drive'"),
+            "the step courier must group under the dedicated Drive orchestration lane"
         );
 
         // 6. Workers SELF-REPORT via `rigger result <id>`, and a worker that DIES without
@@ -20424,6 +21501,14 @@ mod tests {
             "the escalated-fixpoint `stop()` must precede the `done` completion break, or a \
              wedged terminus would resolve as a clean `run complete` before the wedge is checked"
         );
+        // 6f. Spec 88, criterion 3 (ESCALATION RESUMES): the wedge stop names the operator's
+        // own remedy - `rigger resume-unit` - not just the bare fact of the wedge, so an
+        // unattended run's failure output tells the operator exactly what to run next.
+        assert!(
+            code.contains("rigger resume-unit"),
+            "the escalated-fixpoint stop reason must name `rigger resume-unit` as the \
+             operator's remedy for a wedged unit"
+        );
 
         // 7. The workflow still parses: run `node --check` when node is on PATH (never a
         //    silent skip - assert the clear reason when it is not available).
@@ -20489,6 +21574,128 @@ mod tests {
             }
         }
         panic!("`{signature}` body is not brace-balanced");
+    }
+
+    /// Spec 67, criterion 1 (THIS unit OWNS phase derivation; courier placement - the Drive
+    /// lane call sites - is criterion 3's, a separate function, not this one's). `phaseOf`
+    /// must map every wave item to one of the fixed `meta.phases` groups by role, with the
+    /// two run-wide meta-stages special-cased ahead of any role read: a `plan`/`plan-critique`
+    /// item is `Plan` regardless of its OWN role (the planner spawns as an `implementer` role
+    /// and the critique gate spawns as `adversary`/`adjudicator` roles - unmapped, those would
+    /// fall into Build/Review and split the two meta-stages across three different groups,
+    /// exactly the bug this special-case prevents). Every other item is a per-criterion unit,
+    /// and the ROLE half of its deterministic spawn id (`<unit>/<role>#<attempt>`, spec 18)
+    /// decides the rest: the three review-tier roles (`lens:*`, `adversary`, `adjudicator`)
+    /// map to `Review`; `implementer` and every other role - INCLUDING one this mapping does
+    /// not recognize - map to `Build`, the fail-visible default the Design names (an unknown
+    /// role groups with ongoing work, never a dropped row).
+    #[test]
+    fn phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage() {
+        let code = strip_line_comments(RIGGER_WORKFLOW);
+        assert!(
+            code.contains("function phaseOf(req)"),
+            "the driver must define a phaseOf(req) function"
+        );
+        let body = js_function_body(&code, "function phaseOf(req) {");
+
+        // The two run-wide meta-stages are special-cased on the UNIT, ahead of any role
+        // read, and resolve straight to Plan.
+        assert!(
+            body.contains("req.unit === 'plan'") && body.contains("req.unit === 'plan-critique'"),
+            "phaseOf must special-case the plan and plan-critique meta-stages by unit, ahead \
+             of role-based mapping: {body}"
+        );
+        let stage_check = body
+            .find("req.unit === 'plan'")
+            .expect("plan-stage check must exist");
+        let stage_line_end = body[stage_check..]
+            .find('\n')
+            .map(|n| stage_check + n)
+            .unwrap_or(body.len());
+        assert!(
+            body[stage_check..stage_line_end].contains("'Plan'"),
+            "the plan/plan-critique special case must return 'Plan' on the SAME statement as \
+             the unit check, ahead of any role-based branch: {body}"
+        );
+
+        // The three review-tier roles - lens:* (tier-1), adversary, adjudicator - map to
+        // Review, named individually so a mapping that drops one of the three is caught.
+        assert!(
+            body.contains("adversary") && body.contains("adjudicator") && body.contains("lens"),
+            "phaseOf must name all three review-tier roles (lens:*, adversary, adjudicator): \
+             {body}"
+        );
+        assert!(
+            body.contains("'Review'"),
+            "phaseOf must map the review-tier roles to 'Review': {body}"
+        );
+
+        // implementer, and any role this mapping does not recognize, fall to the
+        // fail-visible Build default: the function's LAST statement is an unconditional
+        // `return 'Build'`, not one more conditional branch that could leave a role
+        // unmapped (falling off the end of the function -> undefined, a dropped row).
+        let last_stmt = body
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && *l != "}")
+            .unwrap_or("");
+        assert_eq!(
+            last_stmt, "return 'Build'",
+            "phaseOf's final, unconditional statement must be `return 'Build'` - the \
+             fail-visible default for implementer and any unrecognized role: {body}"
+        );
+    }
+
+    /// Spec 67, criterion 5 (THIS unit OWNS meta matching reality). `meta.phases` must
+    /// declare exactly the four groups a spawn can render under - `Plan`, `Build`, `Review`,
+    /// `Drive` - never the retired `Integrate` (conductor-only work: it spawns no agent of
+    /// its own, so it was never a group a WORKER rendered under; its detail folds onto
+    /// `Review` instead). And no prose anywhere in the template may still teach the
+    /// `<unit>:<stage>` per-unit construction criterion 1 retired: every spawn's `opts.phase`
+    /// group is now derived from its ROLE by `phaseOf` (Plan/Build/Review, shared across
+    /// units), never keyed on a unit+stage pair, so a leftover "per-unit progress group" /
+    /// "per-unit distinction" description would actively mislead a reader about how the
+    /// grouping actually works today.
+    #[test]
+    fn meta_matches_reality_drops_integrate_and_the_unit_stage_construction() {
+        let wf = RIGGER_WORKFLOW;
+        let meta = meta_object_body(wf);
+
+        for stage in ["Plan", "Build", "Review", "Drive"] {
+            assert!(
+                meta.contains(&format!("title: '{stage}'")),
+                "meta.phases must declare the fixed stage '{stage}': {meta}"
+            );
+        }
+        assert!(
+            !meta.contains("title: 'Integrate'"),
+            "meta.phases must drop the retired 'Integrate' phase - conductor-only work that \
+             spawns no agent, so it was never a group a worker rendered under; its detail \
+             folds onto 'Review': {meta}"
+        );
+
+        // Whitespace-normalize so a phrase wrapped across a `//` comment's line break is one
+        // contiguous, checkable string (this is prose scanning, not JS parsing).
+        let normalized = wf.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            !normalized.contains("<unit>:<stage>"),
+            "no detail line may still describe opts.phase groups as keyed on <unit>:<stage> - \
+             phaseOf (spec 67 c1) groups by ROLE-derived lifecycle phase, shared across units, \
+             not by a per-unit construction"
+        );
+        for stale in [
+            "own per-unit",
+            "per-unit progress group",
+            "per-unit distinction",
+        ] {
+            assert!(
+                !normalized.contains(stale),
+                "the template must not describe progress groups as per-unit (found {stale:?}) - \
+                 phaseOf (spec 67 c1) groups by lifecycle phase (Plan/Build/Review/Drive), \
+                 shared across units, never one group per unit"
+            );
+        }
     }
 
     /// Spec 69, criterion 6 ("the driver relays it" - THIS unit OWNS the relay; the wire
@@ -20572,25 +21779,30 @@ mod tests {
              wire stamp already decided what happened"
         );
 
-        // "At the wave it arrived": the relay call must precede the wave-spawn CONDITIONAL
-        // itself (`if (wave.length > 0)`), not merely its inner spawn-narration text - a
+        // "At the wave it arrived": the relay call must precede the wave-spawn CALL itself
+        // (`spawnNewItems(wave)`, spec 89 criterion 5's pipelined replacement for the old
+        // `if (wave.length > 0)` conditional), not merely its inner spawn-narration text - a
         // weaker check anchored on the log() line alone stays green even if a future edit
-        // nests the call inside that block (review u69c6 round 1, cause genuine-defect:
+        // nests the call inside that function (review u69c6 round 1, cause genuine-defect:
         // moving the shipped, unconditional call to the block's first line left every
         // periphery test and this test green, because the call still textually preceded the
-        // log() line while now running only when wave.length > 0). Anchoring on the `if`
-        // line itself catches that exact nesting: a step whose wave is empty - the
+        // log() line while now running only when something is spawned). Anchoring on the
+        // spawn-call line itself catches that exact nesting: a step whose wave is empty - the
         // escalated/halted/stalled-frontier "nothing left to spawn" case an unattended
         // operator most needs the narrator line for - must still get its attention relayed.
         let call_pos = code
             .rfind("relayAttention(step)")
             .expect("relayAttention(step) must be called");
+        // `rfind`, not `find`: the FIRST occurrence of "spawnNewItems(wave)" is the function's
+        // own declaration (`function spawnNewItems(wave) {`), which sits well before the loop
+        // and would wrongly anchor this check on the wrong position; the actual CALL site
+        // (inside the loop, after relayAttention) is the last occurrence.
         let wave_conditional_pos = code
-            .find("if (wave.length > 0)")
-            .expect("the driver must gate wave-spawning on a non-empty wave");
+            .rfind("spawnNewItems(wave)")
+            .expect("the driver must still spawn newly-parked wave items");
         assert!(
             call_pos < wave_conditional_pos,
-            "attention must be relayed for the step BEFORE the wave-spawn conditional \
+            "attention must be relayed for the step BEFORE the wave-spawn call \
              (\"at the wave it arrived\"), not nested inside it - a step with an empty wave \
              (escalated/halted/stalled-frontier) must still get its attention relayed"
         );
@@ -20750,17 +21962,19 @@ mod tests {
     /// Isolate the STEP-courier prompt (the agent that runs `rigger step` and relays the wave)
     /// from the surrounding driver source, so a structural assertion pins the RIGHT agent's
     /// instructions and not some other prompt that shares a word. The prompt is the template
-    /// string that opens with `Advance the run one frontier` and runs up to the `{ phase: 'Plan'`
-    /// options object that closes the `agent(...)` call. Asserted over comment-stripped source so
-    /// the phrases are checked in the actual prompt literal, not the file's documentation prose.
+    /// string that opens with `Advance the run one frontier` and runs up to the `{ phase:
+    /// 'Drive'` options object that closes the `agent(...)` call (spec 67, criterion 3: the
+    /// step courier's own progress group is the dedicated Drive orchestration lane, not the
+    /// retired global `Plan` marker). Asserted over comment-stripped source so the phrases are
+    /// checked in the actual prompt literal, not the file's documentation prose.
     fn step_courier_prompt(code: &str) -> &str {
         let at = code
             .find("Advance the run one frontier")
             .expect("the driver must still define the step-courier prompt");
         let end = code[at..]
-            .find("{ phase: 'Plan'")
+            .find("{ phase: 'Drive'")
             .map(|off| at + off)
-            .expect("the step-courier prompt must close with the `{ phase: 'Plan' }` options");
+            .expect("the step-courier prompt must close with the `{ phase: 'Drive' }` options");
         &code[at..end]
     }
 
@@ -21914,7 +23128,7 @@ mod tests {
                 "build wrapper: sccache".to_string(),
                 "build cache dir: /tmp/example-cache".to_string(),
                 "build budget: 4".to_string(),
-                "build mutation: off".to_string(),
+                "mutation gate (\"mutation\"): not configured".to_string(),
             ]
         );
     }
@@ -21938,7 +23152,7 @@ mod tests {
             vec![
                 "build wrapper: none".to_string(),
                 "build budget: 8".to_string(),
-                "build mutation: off".to_string(),
+                "mutation gate (\"mutation\"): not configured".to_string(),
             ]
         );
     }
@@ -21959,28 +23173,33 @@ mod tests {
         );
     }
 
-    /// Spec 73: `rigger validate` reports `build mutation: on` when the step is enabled -
-    /// given the ALREADY-RESOLVED bool, mirroring the wrapper report's own already-resolved
-    /// convention.
+    /// Spec 91: `rigger validate` reports the mutation gate as `declared` when the workflow's
+    /// `gates:` map names it - given the ALREADY-IN-HAND bool, mirroring the wrapper report's
+    /// own already-resolved convention.
     #[test]
-    fn build_environment_report_reports_mutation_on() {
+    fn build_environment_report_reports_mutation_gate_declared() {
         let build = config::BuildConfig::default();
         let lines = build_environment_report(None, &build, true);
         assert!(
-            lines.iter().any(|l| l == "build mutation: on"),
-            "a resolved-enabled mutation step must report on, got: {lines:?}"
+            lines
+                .iter()
+                .any(|l| l == "mutation gate (\"mutation\"): declared"),
+            "a declared mutation gate must report declared, got: {lines:?}"
         );
     }
 
-    /// The `off` counterpart of `build_environment_report_reports_mutation_on` - the default,
-    /// back-compat case for every workflow committed before this key existed.
+    /// The `not configured` counterpart of
+    /// `build_environment_report_reports_mutation_gate_declared` - the default case for every
+    /// workflow that never declares a `mutation` gate.
     #[test]
-    fn build_environment_report_reports_mutation_off() {
+    fn build_environment_report_reports_mutation_gate_not_configured() {
         let build = config::BuildConfig::default();
         let lines = build_environment_report(None, &build, false);
         assert!(
-            lines.iter().any(|l| l == "build mutation: off"),
-            "a resolved-disabled mutation step must report off, got: {lines:?}"
+            lines
+                .iter()
+                .any(|l| l == "mutation gate (\"mutation\"): not configured"),
+            "an undeclared mutation gate must report not configured, got: {lines:?}"
         );
     }
 
@@ -22145,22 +23364,100 @@ mod tests {
         );
     }
 
-    #[test]
-    fn bloat_advisory_for_never_fabricates_a_store_that_does_not_exist() {
-        // No `.rigger/events.db` at all: `bloat_advisory_for` must skip BEFORE opening
-        // anything (opening would create the file - a read-only advisory's forbidden side
-        // effect), and the file must genuinely stay absent afterwards.
+    /// Shared assertion for every `<x>_advisory_for` read-only gatherer's forbidden-side-effect
+    /// contract: with NO store file at `<tempdir>/.rigger/<filename>` at all, `advisory_for` must
+    /// return `None` BEFORE opening anything (opening would create the file - a read-only
+    /// advisory's forbidden side effect), and the file must genuinely stay absent afterwards.
+    /// `bloat_advisory_for` and `retired_entities_advisory_for` (spec 86 criterion 3) share this
+    /// exact contract and this exact test shape - one helper, never two near-identical bodies.
+    fn assert_advisory_for_never_fabricates_a_missing_store(
+        filename: &str,
+        advisory_for: impl Fn(&str, &str) -> Option<String>,
+    ) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".rigger").join("events.db");
+        let path = dir.path().join(".rigger").join(filename);
         assert_eq!(
-            bloat_advisory_for(path.to_str().unwrap(), "proj"),
+            advisory_for(path.to_str().unwrap(), "proj"),
             None,
-            "no store yet is not evidence of bloat"
+            "no store yet is not evidence of anything to report"
         );
         assert!(
             !path.exists(),
             "a read-only advisory must never create the store it found absent"
         );
+    }
+
+    #[test]
+    fn bloat_advisory_for_never_fabricates_a_store_that_does_not_exist() {
+        assert_advisory_for_never_fabricates_a_missing_store("events.db", bloat_advisory_for);
+    }
+
+    // --- Spec 86 criterion 3, THE MIGRATION IS DELIBERATE: the RETIRED CODE-ENTITY advisory ---
+
+    #[test]
+    fn retired_entities_advisory_is_none_at_zero_and_named_with_correct_pluralization() {
+        assert_eq!(
+            retired_entities_advisory(0),
+            None,
+            "nothing retired is not worth an operator's attention"
+        );
+        let one = retired_entities_advisory(1).expect("a count of one must still be reported");
+        assert!(one.contains('1'), "advisory: {one}");
+        assert!(
+            one.contains("entity") && !one.contains("entities"),
+            "singular wording for exactly one: {one}"
+        );
+        let many = retired_entities_advisory(3).expect("a count above one must be reported");
+        assert!(many.contains('3'), "advisory: {many}");
+        assert!(
+            many.contains("entities"),
+            "plural wording for more than one: {many}"
+        );
+    }
+
+    #[test]
+    fn retired_entities_advisory_for_never_fabricates_a_graph_that_does_not_exist() {
+        assert_advisory_for_never_fabricates_a_missing_store(
+            "graph.db",
+            retired_entities_advisory_for,
+        );
+    }
+
+    #[test]
+    fn retired_entities_advisory_for_reads_the_projectors_own_counting_authority() {
+        // An end-to-end check that the advisory's gathering half is wired to the SAME counting
+        // authority the fold-level migration tests exercise directly
+        // (`contextgraph::sqlite::migration_c3`), never a second, shadow count.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".rigger").join("graph.db");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        {
+            let p = Projector::open(path.to_str().unwrap(), "proj").unwrap();
+            // A legacy test-entity node, then the empty structural boundary that retires it -
+            // exactly the migration's own fold-level shape.
+            let def = serde_json::json!({
+                "file": "tests/integration.rs", "name": "an_integration_test", "kind": "function",
+                "line": 2, "lang": "rust", "fresh": true,
+            });
+            let mut e = Event::new(
+                contextgraph::TYPE_CODE_ENTITY_EXTRACTED,
+                serde_json::to_vec(&def).unwrap(),
+            );
+            e.position = 1;
+            p.apply(&e).unwrap();
+            let boundary = serde_json::json!({
+                "file": "tests/integration.rs", "name": "", "lang": "rust", "fresh": true,
+            });
+            let mut e = Event::new(
+                contextgraph::TYPE_EDGE_INFERRED,
+                serde_json::to_vec(&boundary).unwrap(),
+            );
+            e.position = 2;
+            p.apply(&e).unwrap();
+        }
+        let advisory = retired_entities_advisory_for(path.to_str().unwrap(), "proj")
+            .expect("the migration retired exactly one entity, so the advisory must fire");
+        assert!(advisory.contains('1'), "advisory: {advisory}");
     }
 
     /// The scaffolded workflow (`rigger init`/`setup` on a NEW project) declares
@@ -23216,6 +24513,107 @@ mod tests {
         (dir, loc, identity)
     }
 
+    // --- Spec 83, criterion 2: HEARTBEATS ARE VISIBLE AGAIN (write/read agreement) ---
+
+    /// `StoreLocation::repo_root` - the repo [`liveness_ages_for_wave`] resolves the scratch
+    /// root from - MUST be the store's resolved OWNING root, never the process's raw cwd. A
+    /// courier invoked from a nested unit worktree is the DOCUMENTED, walk-up-supported shape
+    /// [`require_store_dir`] exists for (see its own doc comment: "most plausibly a unit
+    /// worktree"), and that worktree's OWN git toplevel is a DIFFERENT directory than the main
+    /// repo a driver's `rigger step` (which always runs from the repo root) stamped the marker
+    /// under - so a cwd-based resolution looks for the marker in a scratch tree nothing ever
+    /// wrote to, while the real marker sits fresh under the actual owning root (spec 83's own
+    /// Problem statement: "the per-spawn liveness marker the sweep would consult is absent
+    /// even while the agent is demonstrably alive").
+    ///
+    /// This test never touches the process's real cwd (which would race every other parallel
+    /// test) - it points a fabricated `StoreLocation` at a tempdir wholly unrelated to wherever
+    /// `cargo test` itself runs from, so ANY cwd-based resolution (this crate's own
+    /// `git_repo()`) necessarily disagrees with it, exactly reproducing the divergence live
+    /// rigger hit - pinned at the real writer (`scratch_root_from_env` + `marker_path`, the
+    /// SAME functions `cmd_step` stamps a wave item's marker path with) and the real reader
+    /// (`liveness_ages_for_wave` via `StoreLocation::repo_root`), never a mock of either side.
+    #[test]
+    fn store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found(
+    ) {
+        let owning_root = tempfile::tempdir().unwrap();
+        let rigger_dir = owning_root.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        let loc = StoreLocation { dir: rigger_dir };
+
+        // The REAL writer computation - byte-identical to what `cmd_step` stamps onto a wave
+        // item's `marker_path` (the absolute path the thin driver frames the worker's `touch`
+        // instruction around): the scratch root resolved from the owning root, then the
+        // single marker-path authority.
+        let run_id = "r-seam";
+        let spawn_id = "u-seam/implementer#0";
+        let scratch_root =
+            rigger::worktree::scratch_root_from_env(owning_root.path().to_str().unwrap(), "");
+        let marker = rigger::liveness::marker_path(&scratch_root, run_id, spawn_id).unwrap();
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"heartbeat").unwrap();
+        let touched_at = std::fs::metadata(&marker).unwrap().modified().unwrap();
+
+        let wave = vec![spawn::WaveItem {
+            id: spawn_id.to_string(),
+            ..Default::default()
+        }];
+        let now = touched_at + std::time::Duration::from_secs(5);
+        let ages = liveness_ages_for_wave(&loc.repo_root(), "", run_id, &wave, now);
+
+        assert_eq!(
+            ages.get(spawn_id).copied(),
+            Some(5),
+            "the reader must resolve the SAME scratch root the writer stamped the marker \
+             under (the store's owning root), never a raw process-cwd read: {ages:?}"
+        );
+    }
+
+    /// Spec 83 criterion 2, ROUND 2 (the reject's own required fix - a half-applied fix left
+    /// standing): [`scratch_defaults`] - the shared resolver [`cmd_status`], [`watch_poll`],
+    /// and [`reclaim_spawn_scratch`] ALL now delegate to - must resolve `defaults.workdir`
+    /// AND `defaults.max_retries` from the store's OWNING root (`loc.dir`'s `workflow.yml`)
+    /// and must succeed even when that owning root has NO loadable `.rigger/agents/` fleet
+    /// at all (the exact shape `config::load` refuses outright, silently zeroing both fields
+    /// for any caller that `.unwrap_or_default()`s past that unrelated failure - the round-2
+    /// reject's second, independently-found axis of the same gap). This test never touches
+    /// the process's real cwd at all (it only ever hands `scratch_defaults` a fabricated
+    /// `StoreLocation`), which is itself part of the proof: the shared resolver has no cwd
+    /// input to leak through in the first place.
+    #[test]
+    fn scratch_defaults_reads_the_owning_roots_config_with_no_agents_fleet_present() {
+        let owning_root = tempfile::tempdir().unwrap();
+        let rigger_dir = owning_root.path().join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        std::fs::write(
+            rigger_dir.join("workflow.yml"),
+            "name: w\ndefaults:\n  workdir: \"/configured/scratch\"\n  max_retries: 5\n",
+        )
+        .unwrap();
+        // Fixture guard: no `.rigger/agents/` dir exists at all, so `config::load` (the
+        // buggy call site's own resolver) fails outright on this exact root - proving this
+        // test genuinely discriminates the validate-independent axis, not just field
+        // plumbing.
+        assert!(
+            config::load(owning_root.path().to_str().unwrap()).is_err(),
+            "fixture bug: config::load must fail on an agents-less root for this test to \
+             discriminate the lightweight resolver from the full one"
+        );
+
+        let loc = StoreLocation { dir: rigger_dir };
+        let (workdir, max_retries) = scratch_defaults(&loc);
+        assert_eq!(
+            workdir, "/configured/scratch",
+            "must read the owning root's configured workdir via the lightweight resolver, \
+             never silently defaulting to empty because config::load would have failed"
+        );
+        assert_eq!(
+            max_retries, 5,
+            "must read the owning root's configured max_retries via the lightweight \
+             resolver, never silently defaulting to 0 because config::load would have failed"
+        );
+    }
+
     #[test]
     fn watch_once_on_a_clean_store_reports_no_anomalies() {
         let (_dir, loc, identity) = watch_test_store();
@@ -23596,17 +24994,24 @@ mod tests {
         );
     }
 
-    /// Spec 73, criterion 1. The implementer persona (`.rigger/agents/rust-engineer.md`) is
-    /// OPERATOR CONFIGURATION seeded by the operator, not authored by any unit (spec 73
-    /// Design: "the grounder cannot ground non-code files, so no unit can own a Markdown
-    /// blast radius"). So this is a DRIFT GUARD, not a feature test: it pins the seeded
-    /// mutation-STEP contract - WHEN the instrument runs and HOW a missed mutant is resolved -
-    /// against the committed file, so an edit that drops or weakens that contract fails the
-    /// suite instead of silently drifting. The ACCOUNTING shape (the `DecisionMade` entry
-    /// format, the diff base, the total, the empty-diff case) is criterion 2's drift guard,
-    /// NOT this one's, and is deliberately not asserted here.
+    /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). Supersedes
+    /// `implementer_persona_pins_the_seeded_mutation_step_contract` (spec 73's persona pin) and
+    /// `implementer_persona_pins_the_seeded_mutation_scratch_root_registration_contract` (spec
+    /// 77's TMPDIR-registration pin) - both retired here: spec 91 Design decides "the
+    /// implementer persona's mutation block is removed together with its unit.diff/TMPDIR
+    /// choreography", so there is no more seeded per-round step, gating clause, or TMPDIR
+    /// template to pin. The kill-or-justify accounting contract those tests protected now
+    /// lives in the `checkin` stage's own task text (per `tests/cli.rs`'s
+    /// `rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_spec_91`,
+    /// spec 91 criterion 2's own drift guard, naming this as criterion 3's pin) - this
+    /// persona's prose for when it is spawned as the `checkin` stage, after every `implement`
+    /// unit has already integrated and the `mutation` gate (spec 91 criterion 2) has already
+    /// swept the whole spec diff once. This is a DRIFT GUARD, not a feature test: the
+    /// implementer persona (`.rigger/agents/rust-engineer.md`) is OPERATOR CONFIGURATION
+    /// seeded by the operator, not authored by any unit (spec 73 Design: "the grounder cannot
+    /// ground non-code files, so no unit can own a Markdown blast radius").
     #[test]
-    fn implementer_persona_pins_the_seeded_mutation_step_contract() {
+    fn implementer_persona_pins_the_checkin_stage_kill_or_justify_contract() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(RIGGER_DIR)
             .join("agents")
@@ -23614,50 +25019,26 @@ mod tests {
         let persona = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
         // Whitespace-normalize before matching (collapse newlines/indentation to single
-        // spaces), matching criterion 2's established drift-guard pattern (d-u73c2-accounting-
-        // drift-guard-approach): the committed persona wraps this paragraph across markdown
-        // list-continuation lines, so a raw substring match is fragile to a pure reflow
-        // (identical words, different line wrap) and would false-fail or false-pass around a
-        // line break.
+        // spaces), matching the retired tests' established drift-guard pattern: the
+        // committed persona wraps this paragraph across markdown list-continuation lines, so
+        // a raw substring match is fragile to a pure reflow (identical words, different line
+        // wrap) and would false-fail or false-pass around a line break.
         let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
 
         // One contiguous-phrase check, not two independently-satisfiable fragments: a
-        // decomposed persona that keeps "Mutation efficacy" and "build.mutation" as bare
-        // substrings in unrelated sentences (destroying the gating relation - the step
-        // runs only WHEN the config key is on) must fail this test, not pass it.
+        // decomposed persona that keeps "checkin" and "stage" as bare substrings in unrelated
+        // sentences (destroying the "this runs only when you are the checkin stage" gating
+        // relation) must fail this test, not pass it.
         assert!(
-            normalized.contains("Mutation efficacy (when `build.mutation` is on)"),
-            "the step must be gated on the build.mutation config key, as one contiguous \
-             gating clause, not two independently-satisfiable fragments; got:\n{normalized}"
-        );
-        // One contiguous-phrase check, not two independently-satisfiable fragments: a
-        // decomposed persona that keeps both bare substrings in unrelated sentences
-        // (destroying the after-tests-green-before-pre-gate-commit placement relation
-        // criterion 1's own Done-when bullet names) must fail this test, not pass it.
-        assert!(
-            normalized.contains("After your unit tests are green and BEFORE the pre-gate commit"),
-            "the step must run after unit-green and before the pre-gate commit, as one \
-             contiguous relational clause, not two independently-satisfiable fragments; \
+            normalized.contains("When you are spawned for the `checkin` stage"),
+            "the kill-or-justify step must be gated on being spawned for the checkin stage, \
+             as one contiguous clause, not two independently-satisfiable fragments; \
              got:\n{normalized}"
         );
         assert!(
-            normalized.contains("diff against the unit's merge-base with the run branch"),
-            "the mutants run must be scoped to a diff against the unit's merge-base with the \
-             run branch; got:\n{normalized}"
-        );
-        // One contiguous-phrase check, not two independently-satisfiable fragments: a
-        // decomposed persona that keeps "cargo mutants --in-diff" and "DEFAULT feature
-        // lane" as bare substrings while running the invocation on some OTHER lane (or
-        // every lane) would still satisfy two independent `contains` calls, so the
-        // invocation and the lane it runs on must be pinned as one relation.
-        assert!(
-            normalized.contains(
-                "cargo mutants --in-diff unit.diff --timeout-multiplier 1.5 -j 2` on the \
-                 DEFAULT feature lane"
-            ),
-            "the step must name the diff-scoped cargo-mutants invocation tied to running on \
-             the default feature lane, as one contiguous clause, not two independently- \
-             satisfiable fragments; got:\n{normalized}"
+            normalized.contains("read `mutants.out/outcomes.json`"),
+            "the checkin stage must read the mutation gate's own outcomes file, never \
+             stdout; got:\n{normalized}"
         );
         // One contiguous-phrase check naming the either-or relation itself, not two bare
         // keywords: a decomposed persona that keeps "KILLED" and "JUSTIFIED" as unrelated
@@ -23672,33 +25053,66 @@ mod tests {
              one contiguous either-or clause, not two independent bare keywords; \
              got:\n{normalized}"
         );
+        assert!(
+            normalized.contains("an `exclude_re` entry in `.cargo/mutants.toml`"),
+            "a justification must name the exclude_re mechanism a missed mutant is recorded \
+             equivalent through; got:\n{normalized}"
+        );
         // The consequence itself, not just the "unjustified miss" keyword: an inversion that
         // keeps the words "unjustified miss" but reverses the outcome (e.g. "is merely noted
-        // in the log, and the unit may still be marked done") must fail this test.
+        // in the log, and the checkin stage may still be marked done") must fail this test.
         assert!(
-            normalized.contains("an unjustified miss means the unit is not done"),
-            "an unjustified missed mutant must leave the unit not done - the consequence \
-             clause itself, not merely the presence of the words \"unjustified miss\"; \
-             got:\n{normalized}"
+            normalized.contains("an unjustified miss means the checkin stage is not done"),
+            "an unjustified missed mutant must leave the checkin stage not done - the \
+             consequence clause itself, not merely the presence of the words \"unjustified \
+             miss\"; got:\n{normalized}"
+        );
+        // The ACCOUNTING shape (spec 73's deterministic per-mutant DecisionMade format): one
+        // contiguous clause each for the id convention, the no-new-event-type + deterministic
+        // ordering, the exhaustive status vocabulary (in order), and the empty-diff case - a
+        // decomposed persona that keeps these as scattered bare words could satisfy
+        // independent substring checks while dropping the actual shape a downstream consumer
+        // parses against.
+        assert!(
+            normalized.contains("record the accounting as one `<unit>-mutation-accounting`"),
+            "the accounting must be recorded under the deterministic <unit>-mutation- \
+             accounting id (spec 73's shape); got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("DecisionMade (no new event type), deterministically ordered"),
+            "the accounting must be one DecisionMade, no new event type, deterministically \
+             ordered; got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains(
+                "caught | missed-killed (naming the killing test) | missed-justified (with \
+                 reason) | unviable | timeout"
+            ),
+            "the accounting's per-mutant status vocabulary must be exhaustive and in this \
+             order; got:\n{normalized}"
+        );
+        assert!(
+            normalized.contains("A diff touching no Rust file records a provably-empty accounting"),
+            "an empty-diff checkin must still record a provably-empty accounting, never skip \
+             the step; got:\n{normalized}"
+        );
+        // The scope boundary itself (spec 91 Design: "Nothing mutation-specific enters the
+        // conductor... no cargo-mutants path"): the agent must be told the `mutation` gate
+        // owns running cargo-mutants, so it never re-invokes the sweep by hand.
+        assert!(
+            normalized.contains("the `mutation` gate itself owns running cargo-mutants"),
+            "the persona must name the mutation gate as the sole cargo-mutants invoker, so \
+             the agent never re-runs it by hand; got:\n{normalized}"
         );
     }
 
-    /// Spec 77, criterion 2 (MUTATION SCRATCH IS REAPED). A sibling drift guard to
-    /// `implementer_persona_pins_the_seeded_mutation_step_contract` above, over the SAME
-    /// committed persona file, pinning the piece this criterion (not spec 73's) owns: the
-    /// mutation-efficacy step's `TMPDIR` names the SPAWN-SCOPED registered scratch root
-    /// (`driver::replay::mutation_scratch_path`'s `.../rigger-mutants/<spawn>`, not the old
-    /// shared `.../rigger-mutants` root every unit collided on, and not a bare `<unit>` root
-    /// every LANE of a speculating unit would collide on - round-7/8 review reject, spec 77
-    /// Design "mutation scratch is spawn-scoped, never unit-scoped") and PRE-DELETES it before
-    /// running (spec 77 Design: "The seeded persona invocation moves to its own spawn-scoped
-    /// subdir and pre-deletes it before running"). Both pinned as one contiguous phrase each,
-    /// not independently-satisfiable fragments, matching the sibling test's established
-    /// pattern: a decomposed persona that keeps the escaped template as a bare substring
-    /// elsewhere while TMPDIR still names the shared or bare-unit root, or that keeps
-    /// "pre-delete" and "mkdir -p" as unrelated words in either order, must fail this test.
+    /// Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): CHECKPOINT BEFORE LONG WORK.
+    /// The persona must carry the checkpoint rule literally, using the design's own
+    /// commit-message vocabulary ("mutation sweep", never the banned two-word invocation
+    /// phrase "cargo mutants" - see `no_persona_under_rigger_agents_invokes_cargo_mutants`
+    /// below, which spec 91 landed first and which this persona edit must not regress).
     #[test]
-    fn implementer_persona_pins_the_seeded_mutation_scratch_root_registration_contract() {
+    fn implementer_persona_pins_the_checkpoint_before_long_work_contract() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join(RIGGER_DIR)
             .join("agents")
@@ -23707,33 +25121,79 @@ mod tests {
             .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
         let normalized = persona.split_whitespace().collect::<Vec<_>>().join(" ");
 
+        // The trigger and the action as ONE contiguous clause - a decomposed persona
+        // that keeps "mutation sweep" and "commit" as unrelated bare words (dropping
+        // the "before long work, commit first" relation) must fail this test.
         assert!(
             normalized.contains(
-                "TMPDIR=\"${XDG_CACHE_HOME:-$HOME/.cache}/rigger-mutants/\
-                 <unit>_2fimplementer_23<attempt>\""
+                "Before a mutation sweep or any full lane suite, commit your current \
+                 tree"
             ),
-            "TMPDIR must point at the SPAWN-SCOPED mutation-scratch subdir (the injectively \
-             hex-escaped <unit>/implementer#<attempt>), not the old shared root every unit \
-             collided on and not a bare-unit root every speculation lane would collide on; \
+            "the checkpoint rule must fire on EITHER a mutation sweep or a full lane \
+             suite, as one contiguous clause; got:\n{normalized}"
+        );
+        // The exact commit-message template spec 89 Design specifies, verbatim.
+        assert!(
+            normalized.contains("`wip(<unit>): checkpoint before <mutation sweep | lane suite>`"),
+            "the checkpoint commit message template must be pinned verbatim; \
              got:\n{normalized}"
         );
         assert!(
-            normalized.contains("pre-delete that TMPDIR then mkdir -p it before running"),
-            "the invocation must PRE-DELETE its spawn-scoped TMPDIR before running, as one \
-             contiguous relational clause (not just an mkdir -p of a possibly-stale tree); \
+            normalized.contains(
+                "squash that checkpoint into your round's own commit \
+                 when you report"
+            ),
+            "the checkpoint must be squashed into the round commit on report, never \
+             left standing as a separate commit; got:\n{normalized}"
+        );
+        // Never the banned invocation phrase (spec 91): this persona edit must not
+        // regress the already-landed no-cargo-mutants-invocation drift guard.
+        assert!(
+            !normalized.contains("cargo mutants"),
+            "the checkpoint rule must use the design's own vocabulary (\"mutation \
+             sweep\"), never the literal invocation phrase \"cargo mutants\"; \
              got:\n{normalized}"
         );
-        // Round-7/8 review reject regression: the persona must tell the agent WHICH attempt
-        // ordinal to substitute (its own spawn id's trailing `#<n>`), not merely widen the
-        // TMPDIR template - a persona that pins the escaped template but never says where
-        // `<attempt>` comes from would leave every agent substituting the same value (e.g.
-        // always 0) and silently reopening the exact same-unit collision this criterion exists
-        // to close.
+    }
+
+    /// Spec 91, criterion 3 (NO SWEEP IN THE LOOP). The structural counterpart of
+    /// `implementer_persona_pins_the_checkin_stage_kill_or_justify_contract` above: no persona
+    /// under `.rigger/agents/` - implementer, reviewer, or the SDET author - may INVOKE
+    /// `cargo mutants` itself any more. Only the `checkin` stage's `mutation` GATE (spec 91
+    /// criterion 2, `.rigger/workflow.yml`) runs that command now; a persona merely reading or
+    /// discussing its output (`mutants.out/outcomes.json`, or the noun "cargo-mutants") is
+    /// fine, so this checks for the two-word INVOCATION phrase specifically, never the bare
+    /// words "cargo" and "mutants" appearing anywhere in unrelated sentences.
+    #[test]
+    fn no_persona_under_rigger_agents_invokes_cargo_mutants() {
+        let agents_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(RIGGER_DIR)
+            .join("agents");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&agents_dir)
+            .unwrap_or_else(|e| panic!("read committed {}: {e}", agents_dir.display()))
+        {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read committed {}: {e}", path.display()));
+            let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                !normalized.contains("cargo mutants"),
+                "{} must never invoke `cargo mutants` itself - only the checkin stage's \
+                 `mutation` gate does now (spec 91); got:\n{normalized}",
+                path.display()
+            );
+            checked += 1;
+        }
         assert!(
-            normalized.contains("`<attempt>` is the number after `#` in your OWN spawn id"),
-            "the persona must tell the agent to derive <attempt> from its OWN spawn id's \
-             trailing #<n>, or every speculation lane would substitute the same placeholder \
-             and collide again; got:\n{normalized}"
+            checked >= 7,
+            "expected to check every seeded persona file under {} (adjudicator, adversary, \
+             architecture-reviewer, planner, rust-engineer, sdet, sdet-author, plus any \
+             others); checked {checked}",
+            agents_dir.display()
         );
     }
 }

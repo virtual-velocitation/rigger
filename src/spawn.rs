@@ -299,6 +299,17 @@ pub struct SpawnRequest {
     /// exactly as before), so it is a purely additive, back-compatible field.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
+    /// The routed review roster a review-tier spawn (adversary/adjudicator) judges (spec 67,
+    /// criterion 4): the unit's lens role tokens (e.g. `["lens:sdet",
+    /// "lens:architecture-reviewer"]`) for the adversary, plus [`ROLE_ADVERSARY`] for the
+    /// adjudicator - stamped by the CONDUCTOR from the actually-routed panel (light or full),
+    /// never guessed by the driver, so a replayed or tier-reduced roster is never stale.
+    /// Carried onto [`WaveItem`] so the printed wave `rigger step` emits surfaces it for
+    /// `workflows/rigger.js` to render inside the action phrase. Omitted from the wire when
+    /// empty (a lens spawn, an empty panel, or an older conductor) - a purely additive,
+    /// back-compatible field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviews: Vec<String>,
 }
 
 impl SpawnRequest {
@@ -319,6 +330,7 @@ impl SpawnRequest {
             blast_radius: Vec::new(),
             max_wall_clock: None,
             title: String::new(),
+            reviews: Vec::new(),
         }
     }
 
@@ -355,6 +367,12 @@ impl SpawnRequest {
     /// Builder: set the live work-line title (the unit's criterion, see [`SpawnRequest::title`]).
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
+        self
+    }
+
+    /// Builder: set the routed review roster (see [`SpawnRequest::reviews`]).
+    pub fn with_reviews(mut self, reviews: Vec<String>) -> Self {
+        self.reviews = reviews;
         self
     }
 
@@ -784,6 +802,12 @@ pub struct WaveItem {
     /// to the historical slim manifest).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
+    /// The routed review roster, copied from [`SpawnRequest::reviews`] so it rides the SLIM
+    /// manifest the thin driver actually reads (the same title-copy seam this field mirrors -
+    /// spec 67, criterion 4). Omitted from the wire when empty (a lens spawn, an empty panel,
+    /// or an older conductor stays byte-identical to the historical slim manifest).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reviews: Vec<String>,
 }
 
 impl From<&SpawnRequest> for WaveItem {
@@ -804,6 +828,9 @@ impl From<&SpawnRequest> for WaveItem {
             // a `Vec<WaveItem>`, so the title MUST be copied here or `rigger.js` narrates
             // nothing (the false-green class this copy closes).
             title: req.title.clone(),
+            // Same seam, same reason: the routed review roster must ride the slim manifest or
+            // the driver has nothing to render inside the action phrase (spec 67, criterion 4).
+            reviews: req.reviews.clone(),
         }
     }
 }
@@ -1878,11 +1905,116 @@ mod tests {
             js.contains("starting ${req.id}"),
             "a log() narrator line must announce the worker's title (the work-line)"
         );
-        // Additive: the progress-GROUP label (phaseOf) is UNCHANGED - the work-line enriches the
-        // item and narrator, it never fragments a unit's shared `{unit}:{stage}` group.
+        // Additive: the progress-GROUP label (phaseOf) is a mechanism SEPARATE from the
+        // work-line built here - the work-line enriches the item and narrator, it never reads
+        // from or replaces the phase group. phaseOf's own role/stage -> {Plan,Build,Review}
+        // mapping (spec 67, criterion 1) is pinned in its own dedicated test, not re-derived
+        // here.
         assert!(
-            js.contains("`${req.unit}:${req.stage}`"),
-            "phaseOf stays the unit+stage group label; the work-line render is additive"
+            js.contains("const ph = phaseOf(req)") && js.contains("phase: ph"),
+            "the worker's progress group must still come from phaseOf(req), a mechanism \
+             distinct from the work-line label built here"
+        );
+    }
+
+    #[test]
+    fn spawn_request_carries_a_reviews_roster_via_builder_and_omits_it_when_empty() {
+        // REVIEW TIERS NAME THEIR TARGETS (spec 67, criterion 4): a review-tier spawn
+        // (adversary/adjudicator) carries the unit's routed lens roster it judges, so the
+        // thin driver can name it in the action phrase. The builder sets it; an empty roster
+        // (the back-compatible default - a lens spawn, or an older conductor) is omitted from
+        // the wire so a spawn that carries no roster serializes exactly as before.
+        let rostered = SpawnRequest::new("u", "u", ROLE_ADVERSARY, 1, "task").with_reviews(vec![
+            "lens:sdet".into(),
+            "lens:architecture-reviewer".into(),
+        ]);
+        assert_eq!(
+            rostered.reviews,
+            vec![
+                "lens:sdet".to_string(),
+                "lens:architecture-reviewer".to_string()
+            ],
+            "with_reviews sets the roster the driver renders"
+        );
+        let json = serde_json::to_value(&rostered).unwrap();
+        assert_eq!(
+            json.get("reviews").and_then(|v| v.as_array()).cloned(),
+            Some(vec![
+                Value::String("lens:sdet".into()),
+                Value::String("lens:architecture-reviewer".into())
+            ]),
+            "a set roster rides the wire so a wave read off the log carries it"
+        );
+
+        // The default (no builder call) leaves the roster empty and omits it from the wire: a
+        // roster-less spawn's SpawnRequested event is byte-for-byte the historical shape.
+        let unrostered = SpawnRequest::new("u", "u", ROLE_ADVERSARY, 1, "task");
+        assert!(
+            unrostered.reviews.is_empty(),
+            "the default reviews roster is empty"
+        );
+        let json = serde_json::to_value(&unrostered).unwrap();
+        assert!(
+            !json.as_object().unwrap().contains_key("reviews"),
+            "an empty roster is omitted from the wire (back-compatible)"
+        );
+    }
+
+    #[test]
+    fn wave_item_copies_the_request_reviews_roster() {
+        // The same false-green seam `title` closed above: the wave the thin driver actually
+        // reads is a `Vec<WaveItem>`, NOT the SpawnRequest, so a roster on the request alone
+        // renders NOTHING. `WaveItem::from` must copy the roster, and it must ride the printed
+        // wire, or `rigger.js` has nothing to render inside the action phrase.
+        let req = SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "task")
+            .with_reviews(vec!["lens:sdet".into(), "adversary".into()]);
+        let item = WaveItem::from(&req);
+        assert_eq!(
+            item.reviews,
+            vec!["lens:sdet".to_string(), "adversary".to_string()],
+            "WaveItem::from must copy the request's roster - the seam rigger.js reads"
+        );
+        let json = serde_json::to_value(&item).unwrap();
+        assert_eq!(
+            json.get("reviews").and_then(|v| v.as_array()).cloned(),
+            Some(vec![
+                Value::String("lens:sdet".into()),
+                Value::String("adversary".into())
+            ]),
+            "the roster rides the WaveItem wire so the printed wave carries it"
+        );
+
+        // A roster-less request yields a roster-less item, omitted from the slim manifest -
+        // the "an older conductor" case the driver must render gracefully.
+        let bare = WaveItem::from(&SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "task"));
+        assert!(
+            bare.reviews.is_empty(),
+            "a roster-less request yields a roster-less item"
+        );
+        let json = serde_json::to_value(&bare).unwrap();
+        assert!(
+            !json.as_object().unwrap().contains_key("reviews"),
+            "an empty roster is omitted from the slim manifest"
+        );
+    }
+
+    #[test]
+    fn step_wave_carries_the_reviews_roster_end_to_end() {
+        // The regression the title's false-green already demanded a guard for, mirrored here:
+        // assert on the PRINTED Step wave. A parked request carrying a roster, folded through
+        // `step_result` into the JSON `rigger step` prints, must surface the roster on the wave
+        // item - the exact wire `rigger.js` reads to render it inside the action phrase.
+        let store = Store::open(":memory:").unwrap();
+        let req = SpawnRequest::new("u", "u", ROLE_ADVERSARY, 0, "task")
+            .with_reviews(vec!["lens:sdet".into()]);
+        park(&store, &req).unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let step = step_result(&events).unwrap();
+        let json = serde_json::to_value(&step).unwrap();
+        assert_eq!(
+            json["wave"][0]["reviews"].as_array().cloned(),
+            Some(vec![Value::String("lens:sdet".into())]),
+            "the printed Step wave must carry each spawn's reviews roster end to end"
         );
     }
 

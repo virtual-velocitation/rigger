@@ -18,16 +18,39 @@ The mockup file is the visual contract for all of the below; it renders standalo
   `contains`, `creates`, `reads`), each labeled. Coupling communities are low-contrast
   tinted hulls BEHIND members with an uppercase label - a region, never a hub node. No file
   node, no bucket, no schema type name at any zoom. `view=calls` keeps its own layout.
+  Criterion 1 OWNS this storage-schema-name purity rule together with the default-zoom hull
+  treatment described here; it does not own the zoomed-out collapse below, which is criterion
+  6's exclusively (see the Overview zoom bullet).
 - **Files lens**: nodes are files, sized by contained-entity count, labeled with the
   repo-relative path; edges are `uses` weighted by coupling (label carries weight);
   directories are the same hull treatment. Entities never render as nodes here.
+  Criterion 3 OWNS this lens's storage-schema-name purity: no code-entity node and no
+  per-type bucket (nor any other storage schema name) ever renders as a node, hub, or
+  group label in this lens, at any zoom.
 - **Concepts lens**: nodes are concepts, sized by evidence weight; edges join concepts
   sharing evidence, labeled with the count. Entities and files stay in the card.
+  Criterion 4 OWNS this lens's storage-schema-name purity: no code-entity node, no file
+  node, and no per-type bucket (nor any other storage schema name) ever renders as a
+  node, hub, or group label in this lens, at any zoom.
 - **The metadata card** (all lenses): one hover-card anatomy everywhere: title row (kind dot
   + name), provenance row (file:line, degree, community), chip rows - FILE / CONCEPTS /
   MEMORY for a code subject, TOP ENTITIES for a file, TOP EVIDENCE for a concept. Hover
-  highlights direct neighbors, dims the rest. Chips are the LENS HANDOFF: a chip opens its
-  own taxonomy's lens with the clicked thing as subject. The card never occludes the node.
+  highlights direct neighbors, dims the rest. FILE and CONCEPTS chips are LENS HANDOFFS: a
+  chip opens its own taxonomy's lens (the Files lens / the Concepts lens respectively) with
+  the clicked thing as subject. MEMORY is not a lens handoff - this design names exactly
+  three lenses (Code, Files, Concepts) and no memory lens exists among them - it instead
+  opens criterion 5's docked memory rail (the same rail a plain node click already opens) for
+  the card's own subject, without switching lens or re-seeding the canvas to a different
+  subject. The card never occludes the node.
+  Criterion 2 OWNS proving this chip-to-lens handoff for EVERY card taxonomy named above - a
+  code subject's card (FILE/CONCEPTS chips hand off to their lenses, MEMORY opens criterion
+  5's rail), a file subject's card (TOP ENTITIES chip), and a concept subject's card (TOP
+  EVIDENCE chip) alike - not only a code subject's card. Criteria 3 and 4 own their own
+  lens's node/edge rendering and card content only; they own no handoff mechanics for any
+  card, matching the Files lens and Concepts lens bullets. Criterion 5 owns the rail-and-reseed
+  mechanism itself (unchanged, triggered by a plain node click too); criterion 2 owns only
+  wiring the card's MEMORY chip to invoke that existing mechanism for the card's own subject,
+  reusing it rather than building a second one.
 - **Subject view** (all lenses, on click): clicking focuses the node as subject - canvas
   re-seeds to its one-hop neighborhood (typed edges preserved), a breadcrumb names lens and
   subject with an escape route, and a MEMORY RAIL docks right listing the governing
@@ -35,7 +58,11 @@ The mockup file is the visual contract for all of the below; it renders standalo
   nodes and the layout never re-flows for it.
 - **Overview zoom** (code lens zoomed out): hulls collapse to COMMUNITY nodes sized by
   member count, labeled by community name, drill-down on click. Storage type names are
-  never a grouping key at any zoom.
+  never a grouping key at any zoom. Criterion 6 OWNS this zoomed-out collapse into community
+  super-nodes specifically. A community node here is a subject-taxonomy grouping (the
+  coupling community its members belong to), not a storage schema name like `file`,
+  `decision`, or a kind-fallback bucket - so this collapse does not violate criterion 1's
+  storage-schema-name purity rule above; it re-affirms that rule at the collapsed zoom.
 - **Data plumbing** (`src/dash.rs`, only as needed): payloads carry what the views consume -
   entity kind, typed edges, community id + label, per-file entity counts and coupling
   weights, concept evidence weights, the subject's governs-linked memory rows. Gaps close by
@@ -64,7 +91,24 @@ The mockup file is the visual contract for all of the below; it renders standalo
 - The dash charter holds: no external assets, all JS inline in `dash.html`, zero new
   dependencies, dash read-only over existing projections.
 - Lens purity is total: no lens renders another taxonomy's node, and no storage schema name
-  is ever user-visible as a node, hub, or group label.
+  is ever user-visible as a node, hub, or group label. Criterion 1 owns proving this for the
+  code lens (including the default-zoom hull treatment); criterion 6 owns proving it holds at
+  the zoomed-out collapse into community super-nodes specifically - a community node is a
+  subject-taxonomy grouping, not a storage schema name, so criterion 6's collapse satisfies
+  this rule rather than breaching it. Criterion 3 owns proving this same rule for the files
+  lens (no code-entity node, no per-type bucket, no storage schema name ever renders as a
+  node, hub, or group label in that lens); criterion 4 owns proving it for the concepts lens
+  (no code-entity node, no file node, no per-type bucket ever renders as a node, hub, or group
+  label in that lens) - each lens proves its own taxonomy's purity, none is left unowned.
+- Card handoff ownership is total: criterion 2 proves the chip-to-lens handoff for every card
+  taxonomy (a code subject's card, a file subject's card, and a concept subject's card alike),
+  never only a code subject's card. Criteria 3 and 4 exclude all handoff mechanics from their
+  own Done-when - they prove only their lens's own node/edge/card rendering. The MEMORY chip
+  is not a lens handoff (this design names exactly three lenses - Code, Files, Concepts - and
+  no memory lens exists): criterion 2 proves it opens criterion 5's docked memory rail for the
+  card's own subject instead, reusing criterion 5's rail-and-reseed mechanism rather than
+  building a second one. Criterion 5 owns that mechanism itself and needs no card to exist
+  first - the rail is triggered by a plain node click too, per criterion 5's own Done-when.
 
 ## Done when
 

@@ -1,0 +1,57 @@
+{
+  "spec": "87",
+  "criterion": "1 - THE COMPILER PASS LANDED FIRST",
+  "cargo_minify": {
+    "command": "cargo minify",
+    "kinds_checked": [
+      "FUNCTION",
+      "CONST",
+      "STATIC",
+      "STRUCT",
+      "ENUM",
+      "UNION",
+      "TYPE_ALIAS",
+      "ASSOCIATED_FUNCTION",
+      "MACRO_DEFINITION"
+    ],
+    "feature_lane": "default (symbols)",
+    "note": "cargo-minify has no --no-default-features flag; it always checks against the crate's own [features] default set. The light lane's own dead-code picture is covered separately below by the strict per-target build, which DOES take --no-default-features.",
+    "result": "no unused code that can be minified",
+    "items_removed": []
+  },
+  "strict_build": {
+    "mechanism": "cargo rustc --lib|--bin rigger [--no-default-features] -- -D dead_code -D unused_imports -D unused_variables -D unreachable_pub",
+    "mechanism_note": "cargo rustc's trailing flags apply ONLY to the named target's own rustc invocation, never to its dependencies and never to build.rs (a separate compilation unit for an unrelated concern, spec 74). A plain RUSTFLAGS env var was tried first and rejected: it also strict-lints build.rs, which fails on build/gitsemver.rs's pub items even though they are correctly pub for their OTHER three #[path] inclusion sites (src/main.rs, tests/gitsemver_derivation.rs, tests/gitsemver_worktree_periphery.rs) - an artifact of the blunt global instrument, not a real production defect in build.rs.",
+    "targets_checked": ["lib", "bin rigger"],
+    "feature_lanes_checked": ["default", "--no-default-features"],
+    "result": "clean on all 4 (target x lane) combinations, after the 2 visibility fixes below",
+    "visibility_fixes_applied": [
+      {
+        "file": "build/gitsemver.rs",
+        "line": 45,
+        "name": "UNVERSIONED_SUFFIX",
+        "from": "pub",
+        "to": "pub(crate)",
+        "lint": "unreachable_pub",
+        "reason": "compiler-proven: nothing outside this item's own defining crate ever reaches it at any of its 4 #[path] inclusion sites (build.rs's own crate, src/main.rs's bin crate, tests/gitsemver_derivation.rs's own test crate, tests/gitsemver_worktree_periphery.rs's own test crate) - each inclusion recompiles the same source text as part of a different crate, and pub(crate) is satisfied independently in all four since every consumer lives in the same crate that includes it. This is the compiler's own suggested fix (rustc: 'consider restricting its visibility: `pub(crate)`')."
+      },
+      {
+        "file": "build/gitsemver.rs",
+        "line": 129,
+        "name": "derive_version",
+        "from": "pub",
+        "to": "pub(crate)",
+        "lint": "unreachable_pub",
+        "reason": "same as UNVERSIONED_SUFFIX above - called from crate-root-level code at each of the 4 inclusion sites, never from outside the including crate."
+      }
+    ]
+  },
+  "delete_compiler": [],
+  "delete_compiler_note": "Zero items were provably dead in src/ under either instrument. This is the exact known blind spot spec 87's own Design section predicts: rustc's dead_code lint never fires on a pub item in a crate that is both a library and a binary, and unreachable_pub only catches items whose pub is provably pointless (unreachable from anywhere outside their own crate) - not items that are correctly exported but simply have zero real callers. That second, larger class is stage 2's job (criterion 2, the reference sweep), not stage 1's. This result is a genuine, verified negative, not an unexplored gap: 596 production functions in src/conductor.rs, src/main.rs and src/dash.rs were previously confirmed clean under a plain rebuild (spec 85's own section 4, instrument three), and cargo-minify's own kind-broad sweep (functions, consts, statics, structs, enums, unions, type aliases, associated functions, macro definitions) over the whole crate found nothing removable either.",
+  "no_os_kill_and_reap_audits": "green: tests/no_os_kill_audit.rs and tests/reap_before_removal_audit.rs both pass unchanged - this unit's only src/-adjacent change (build/gitsemver.rs's 2 visibility narrowings) touches no process-lifecycle code.",
+  "verification": {
+    "manual_run_by": "u87c1-compiler-pass-stage1/implementer#0",
+    "expensive_rebuild_gated_by": "RIGGER_COMPILER_PASS_VERIFY=1 cargo test --test compiler_pass_stage1_audit -- --ignored",
+    "why_gated": "4 cargo-rustc invocations (lib+bin x 2 feature lanes) each force a from-scratch-flags recompile of the whole rigger crate (RUSTFLAGS/extra-args changes invalidate the incremental fingerprint), adding real minutes to every default `cargo test` run for every future unit's gate cycle - the same reason RIGGER_AUDIT_WRITE=1 and cargo-mutants are opt-in in this codebase rather than wired into the default suite. The always-on tests in tests/compiler_pass_stage1_audit.rs instead assert the STATIC, cheap, directly-checkable facts this JSON records (the 2 visibility fixes are genuinely present in the source; this record's own shape is internally consistent) and always regenerate/verify this file matches when RIGGER_AUDIT_WRITE=1 is set."
+  }
+}

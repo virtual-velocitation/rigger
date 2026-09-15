@@ -2,12 +2,57 @@
 //! "Done-when" list the conductor's coverage gate checks every unit against. A
 //! spec with none is not loop-ready.
 
-/// ExtractCriteria returns the text of every markdown checkbox item ("- [ ] ...").
+/// ExtractCriteria returns the FULL text of every markdown checkbox item ("- [ ] ..."), not
+/// merely its first physical line. A checkbox's text runs from its marker to the start of
+/// the next checkbox item, a blank line, or a heading line, whichever comes first
+/// (`criterion_block_boundary`) - continuation lines, including a nested sub-bullet, have
+/// their leading indentation stripped and are joined onto the first line with single spaces
+/// (spec 80's JOINING RULE). This is load-bearing: `resolve_served_criterion`
+/// (src/conductor.rs) canonicalizes every proposal's coverage to exactly this text, so a
+/// criterion's continuation lines - most commonly an OWNS/exclusion sentence, per this
+/// repo's own Done-when convention - must survive extraction whole or every downstream
+/// consumer (unit titles, the grounding query, `UnitStarted.spec_criterion`, plan-critique's
+/// own prompt) silently serves the truncated stub instead.
 pub fn extract_criteria(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(checkbox_text)
-        .map(str::to_string)
-        .collect()
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some(first) = checkbox_text(lines[i]) {
+            let mut joined = first.to_string();
+            i += 1;
+            while i < lines.len() && !criterion_block_boundary(lines[i]) {
+                joined.push(' ');
+                joined.push_str(lines[i].trim());
+                i += 1;
+            }
+            out.push(joined);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// True when `line` ends an open checkbox item's text under [`extract_criteria`]'s JOINING
+/// RULE (spec 80): the start of the next checkbox item, a blank line, or a heading line.
+/// Any other line - indented or not, including a nested sub-bullet - is a continuation.
+fn criterion_block_boundary(line: &str) -> bool {
+    line.trim().is_empty() || heading_level(line).is_some() || checkbox_text(line).is_some()
+}
+
+/// Each checkbox item's FIRST PHYSICAL LINE ONLY - [`extract_criteria`]'s pre-spec-80
+/// reading, kept as its own helper so [`spec_shape_advisories`] can go on scanning exactly
+/// the text a planner verbatim-copies a criterion LABEL from. [`extract_criteria`]'s full
+/// text (spec 80's JOINING RULE) is real, load-bearing content for its actual consumers
+/// (`resolve_served_criterion` et al.) but is the wrong input for a SHAPE lint calibrated
+/// against `MAX_CRITERION_LEN` and clause-coordinator counts on committed spec prose - an
+/// OWNS/exclusion sentence on a continuation line routinely crosses the length threshold or
+/// adds a `"; "` coordinator, which is genuine required content, not a bundling/copyability
+/// defect. `spec_lint_self_clean_over_the_committed_corpus` (tests/spec_lint.rs) pins the
+/// shape lint's real-corpus total against this first-line calibration.
+fn checkbox_opening_lines(text: &str) -> Vec<&str> {
+    text.lines().filter_map(checkbox_text).collect()
 }
 
 /// The repo-relative, path-like tokens a spec's `criteria` reference (e.g. `src/main.rs`,
@@ -161,13 +206,15 @@ impl std::fmt::Display for ShapeAdvisory {
 ///
 /// Deliberately biased against FALSE POSITIVES so a clean single-behavior spec stays
 /// silent: false negatives (an unusual shape it misses) are acceptable. Advisories are
-/// returned in document order, grouped by criterion then by rule. Reuses
-/// [`extract_criteria`] for the criterion list, so indices align with it.
+/// returned in document order, grouped by criterion then by rule. Uses
+/// [`checkbox_opening_lines`] (not [`extract_criteria`]'s full JOINING-RULE text) for the
+/// criterion list - see that function's own doc for why - so indices align with it, not
+/// with `extract_criteria`.
 pub fn spec_shape_advisories(text: &str) -> Vec<ShapeAdvisory> {
-    let criteria = extract_criteria(text);
+    let criteria = checkbox_opening_lines(text);
     let sub_bullets = sub_bullet_criteria(text);
     let mut out = Vec::new();
-    for (i, criterion) in criteria.iter().enumerate() {
+    for (i, &criterion) in criteria.iter().enumerate() {
         let n = i + 1;
         if let Some(count) = multi_behavior_coordinators(criterion) {
             out.push(ShapeAdvisory {
@@ -224,16 +271,36 @@ fn multi_behavior_coordinators(criterion: &str) -> Option<usize> {
 /// is not a sub-bullet: it is its own criterion (`extract_criteria` counts it), so it
 /// opens a new scope rather than flagging its parent. Indices align with
 /// [`extract_criteria`] because both recognize a checkbox with the same [`checkbox_text`].
-/// Built on [`line_criterion`]'s block-boundary walk - the ONE place that walk lives -
-/// rather than re-deriving the same count/open/indent state machine a second time.
+/// Built on [`line_criterion`]'s block-boundary walk for which criterion a line falls
+/// under, PLUS this function's own layered indentation comparison (a candidate bullet's
+/// indent against its owning checkbox's own indent, tracked here) to tell a genuinely
+/// NESTED sub-bullet apart from a same-or-lesser-indent line that merely sits inside the
+/// criterion's full text block. These are deliberately two different questions -
+/// `line_criterion` (shared with [`criterion_blocks`]) answers "is this line part of the
+/// criterion's text at all", indent-agnostic per spec 80's JOINING RULE; only THIS function
+/// additionally asks "is it nested under the checkbox", which does depend on indent - so
+/// the indent comparison lives here, not in the shared walk.
 fn sub_bullet_criteria(text: &str) -> std::collections::BTreeMap<usize, String> {
     let owners = line_criterion(text);
+    let mut checkbox_indent: std::collections::BTreeMap<usize, usize> =
+        std::collections::BTreeMap::new();
     let mut out = std::collections::BTreeMap::new();
     for (line, owner) in text.lines().zip(owners) {
         let Some(idx) = owner else { continue };
+        let indent = line.len() - line.trim_start().len();
         if checkbox_text(line).is_some() {
             // The checkbox's own line (or a nested checkbox, which owns itself) - not a
-            // sub-bullet under a parent.
+            // sub-bullet under a parent. Record its indent so later lines under this idx
+            // can be compared against it.
+            checkbox_indent.entry(idx).or_insert(indent);
+            continue;
+        }
+        let Some(&cb_indent) = checkbox_indent.get(&idx) else {
+            continue;
+        };
+        if indent <= cb_indent {
+            // Same margin as the checkbox, or less: part of the criterion's full text
+            // block (line_criterion already counted it), but not NESTED under it.
             continue;
         }
         if let Some(bullet) = plain_bullet_text(line.trim_start()) {
@@ -303,9 +370,13 @@ impl std::fmt::Display for LintAdvisory {
 /// check against its neighbors. At three-plus Done-when criteria, a checkbox carrying
 /// neither "OWNS" nor "owner" is flagged a twin-risk. Silent below three criteria: an
 /// ownership collision needs at least two OTHER criteria to collide with. Scans each
-/// criterion's FULL block via [`criterion_blocks`] - never just [`extract_criteria`]'s
-/// first-physical-line text - so an OWNS sentence on a wrapped continuation line (this
-/// repo's own standard Done-when convention) is found.
+/// criterion's FULL block via [`criterion_blocks`], kept in lockstep with
+/// [`extract_criteria`]'s own JOINING RULE (round 1's regression: an earlier,
+/// independently-derived block walk here disagreed with it on two real input shapes - a
+/// same-indent continuation carrying an OWNS sentence, and prose reattached across a blank
+/// line - see [`line_criterion`]'s doc) - so an OWNS sentence anywhere in the criterion's
+/// real, load-bearing text, including a wrapped continuation line (this repo's own
+/// standard Done-when convention), is found.
 pub fn ownership_advisories(text: &str) -> Vec<LintAdvisory> {
     let criteria = extract_criteria(text);
     if criteria.len() < 3 {
@@ -326,10 +397,12 @@ pub fn ownership_advisories(text: &str) -> Vec<LintAdvisory> {
 }
 
 /// Map from 1-based criterion index to the FULL text of that criterion's block - the
-/// checkbox's own text plus every line inside its block ([`line_criterion`]'s boundary),
-/// joined with spaces. Unlike [`extract_criteria`] (first physical line only), this
-/// recovers text that sits on a wrapped continuation line or a sub-bullet, so a check like
-/// [`carries_owner_sentence`] sees the whole criterion, not just its opening line.
+/// checkbox's own text plus every line inside its block ([`line_criterion`]'s boundary,
+/// the SAME JOINING RULE [`extract_criteria`] uses), joined with spaces the same way
+/// `extract_criteria` joins them, so the two agree: `criterion_blocks(text)[&i]` is
+/// `extract_criteria(text)[i - 1]` for every well-formed criterion. This recovers text
+/// that sits on a wrapped continuation line or a sub-bullet, so a check like
+/// [`carries_owner_sentence`] sees the whole criterion, not just its checkbox's own line.
 fn criterion_blocks(text: &str) -> std::collections::BTreeMap<usize, String> {
     let owners = line_criterion(text);
     let mut out: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
@@ -758,32 +831,42 @@ fn strip_inline_code(line: &str) -> String {
         .collect()
 }
 
-/// For each line (0-based), the 1-based Done-when criterion whose checkbox block it falls
-/// inside (the checkbox's own line, or a more-indented line directly under it), or `None`
-/// for a line outside any checkbox (headings, Design/Notes/Global-constraints prose, blank
-/// lines). THE single block-boundary walk over the document: [`sub_bullet_criteria`] and
-/// [`criterion_blocks`] are both built on this, rather than each re-deriving their own
-/// count/open/indent state machine.
+/// For each line (0-based), the 1-based Done-when criterion whose FULL TEXT BLOCK it falls
+/// inside (the checkbox's own line, or any line up to the next checkbox, a blank line, or a
+/// heading - [`extract_criteria`]'s own JOINING RULE, spec 80), or `None` for a line outside
+/// any block. INDENT AGNOSTIC: shares its boundary test, [`criterion_block_boundary`], with
+/// `extract_criteria` itself, so this walk can never again silently diverge from the text
+/// `extract_criteria` actually returns. [`criterion_blocks`] (and through it
+/// [`ownership_advisories`]) is built directly on this. [`sub_bullet_criteria`] also starts
+/// here for which criterion a line belongs to, then layers its OWN indentation comparison
+/// on top to answer its different question (is this line NESTED under the checkbox, not
+/// merely inside its text block) - see that function's doc.
+///
+/// Round 1's regression, fixed here: an earlier version of this walk required a
+/// continuation line to be MORE indented than its checkbox (so a same-margin continuation
+/// carrying an OWNS sentence was wrongly excluded from [`ownership_advisories`]'s F1 scan -
+/// a false positive) and never reset its open block on a blank line (so unrelated prose
+/// after a blank line could wrongly reattach to the prior checkbox and mask a real missing
+/// OWNS sentence - a false negative). Both are pinned by
+/// `ownership_check_finds_an_owns_sentence_on_an_unindented_continuation_line` and
+/// `ownership_check_does_not_reattach_prose_after_a_blank_line_to_the_prior_criterion`.
 fn line_criterion(text: &str) -> Vec<Option<usize>> {
     let mut out = Vec::with_capacity(text.lines().count());
     let mut count = 0usize;
-    let mut open: Option<usize> = None;
+    let mut open = false;
     for line in text.lines() {
-        let trimmed = line.trim_start();
-        let indent = line.len() - trimmed.len();
         if checkbox_text(line).is_some() {
             count += 1;
-            open = Some(indent);
+            open = true;
             out.push(Some(count));
-        } else if trimmed.is_empty() {
+        } else if criterion_block_boundary(line) {
+            // A blank line or a heading (a checkbox line is already handled above, and
+            // `criterion_block_boundary` treats one as a boundary too) - always closes
+            // whatever block was open, matching `extract_criteria` exactly.
+            open = false;
             out.push(None);
-        } else if let Some(cb_indent) = open {
-            if indent > cb_indent {
-                out.push(Some(count));
-            } else {
-                open = None;
-                out.push(None);
-            }
+        } else if open {
+            out.push(Some(count));
         } else {
             out.push(None);
         }
@@ -811,6 +894,103 @@ mod tests {
     #[test]
     fn empty_when_no_criteria() {
         assert!(extract_criteria("# just prose\n\nno checkboxes").is_empty());
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Spec 80 (unit c1): the JOINING RULE - a checkbox item's text runs from its marker to
+    // the start of the next checkbox item, a blank line, or a heading line, whichever comes
+    // first; continuation lines (including nested sub-bullets) have leading indentation
+    // stripped and are joined with single spaces. Pinned at the src/spec.rs seam.
+    // -----------------------------------------------------------------------------------
+
+    /// A checkbox wrapping across three-plus physical lines, with an OWNS sentence on the
+    /// THIRD line, is returned as one single-spaced, indentation-stripped string - the
+    /// truncation this unit exists to fix (previously only the first physical line was
+    /// kept, silently dropping the OWNS sentence).
+    #[test]
+    fn extract_criteria_joins_a_three_line_wrap_including_the_owns_sentence_on_line_three() {
+        let text = "## Done when\n\n\
+            - [ ] a test proves something that wraps across\n\
+            \x20\x20three physical lines and needs a bit more room to make its\n\
+            \x20\x20point. This criterion OWNS the wrap boundary.\n\
+            - [ ] a short, single-line criterion\n";
+        assert_eq!(
+            extract_criteria(text),
+            [
+                "a test proves something that wraps across three physical lines and needs \
+                 a bit more room to make its point. This criterion OWNS the wrap boundary.",
+                "a short, single-line criterion",
+            ]
+        );
+    }
+
+    /// Adjacent checkboxes with NO blank line between them: a wrapped continuation line
+    /// belongs to the checkbox above it, but the next checkbox marker immediately ends that
+    /// block - the two criteria's text never bleeds into each other.
+    #[test]
+    fn extract_criteria_stops_a_wrap_at_the_next_checkbox_item_with_no_blank_line_between() {
+        let text = "## Done when\n\n\
+            - [ ] the first behaviour continues\n\
+            \x20\x20onto a second physical line\n\
+            - [ ] the second behaviour\n";
+        assert_eq!(
+            extract_criteria(text),
+            [
+                "the first behaviour continues onto a second physical line",
+                "the second behaviour",
+            ]
+        );
+    }
+
+    /// A blank line ends a checkbox's block: prose that follows a blank line - even prose
+    /// that reads as a natural continuation of the sentence above - is NOT joined into the
+    /// criterion above it.
+    #[test]
+    fn extract_criteria_stops_a_wrap_at_a_blank_line_and_excludes_the_prose_after_it() {
+        let text = "## Done when\n\n\
+            - [ ] the first behaviour\n\
+            \x20\x20wraps onto a second line\n\
+            \n\
+            some unrelated prose that must not be joined into criterion one\n";
+        assert_eq!(
+            extract_criteria(text),
+            ["the first behaviour wraps onto a second line"]
+        );
+    }
+
+    /// A heading line ends a checkbox's block, the same as a blank line does - text after
+    /// the heading is not joined into the criterion above it.
+    #[test]
+    fn extract_criteria_stops_a_wrap_at_a_following_heading() {
+        let text = "## Done when\n\n\
+            - [ ] the first behaviour\n\
+            \x20\x20wraps onto a second line\n\
+            ## Notes\n\
+            more prose here, not a criterion\n";
+        assert_eq!(
+            extract_criteria(text),
+            ["the first behaviour wraps onto a second line"]
+        );
+    }
+
+    /// A nested sub-bullet (a plain `-`/`*` line with no checkbox marker, indented under a
+    /// checkbox) is PART of that checkbox's text, joined the same way as any other
+    /// continuation line - the spec-shape lint discourages authors from writing this shape,
+    /// but the extractor must not silently drop what they wrote.
+    #[test]
+    fn extract_criteria_includes_a_nested_sub_bullet_as_part_of_the_criterion_text() {
+        let text = "## Done when\n\n\
+            - [ ] the first behaviour\n\
+            \x20\x20- a nested sub-bullet note\n\
+            \x20\x20- another nested sub-bullet\n\
+            - [ ] the second behaviour\n";
+        assert_eq!(
+            extract_criteria(text),
+            [
+                "the first behaviour - a nested sub-bullet note - another nested sub-bullet",
+                "the second behaviour",
+            ]
+        );
     }
 
     /// A clean single-behavior spec emits NO spec-shape advisory - the Unit-4 no-false
@@ -899,6 +1079,48 @@ mod tests {
         );
     }
 
+    /// `sub_bullet_criteria` (via `spec_shape_advisories`) flags an indented bullet nested
+    /// under its checkbox by genuine indent arithmetic (`line.len() - trimmed.len()`), not
+    /// by a length coincidence - a SHORT bullet nested under a much LONGER checkbox line is
+    /// still correctly seen as more-indented. This is the indent comparison that moved out
+    /// of `line_criterion` (now indent-agnostic, shared with `criterion_blocks`) and into
+    /// this function's own layered check.
+    #[test]
+    fn sub_bullet_detection_uses_genuine_indent_arithmetic_not_line_length() {
+        let text = "## Done when\n\n\
+            - [ ] the store passes the full end-to-end contract suite across every adapter\n\
+            \x20\x20- short\n\
+            - [ ] the graph supersedes an older decision\n";
+        let advisories = spec_shape_advisories(text);
+        assert!(
+            advisories
+                .iter()
+                .any(|a| a.rule == ShapeRule::SubBulletAsUnit && a.criterion == 1),
+            "a short nested bullet under a long checkbox must still be flagged; got: \
+             {advisories:?}"
+        );
+    }
+
+    /// A plain bullet back at the checkbox's OWN margin (not more indented) is part of the
+    /// criterion's full text block (`line_criterion` now includes it) but is NOT a nested
+    /// sub-bullet - `sub_bullet_criteria`'s own indent comparison must still exclude it, so
+    /// this shape draws no `sub-bullet-as-unit` advisory.
+    #[test]
+    fn a_same_margin_plain_bullet_is_not_flagged_as_a_sub_bullet() {
+        let text = "## Done when\n\n\
+            - [ ] the daemon writes a pidfile\n\
+            - not nested, same margin as the checkbox above\n\
+            - [ ] the store passes the contract suite\n\
+            - [ ] the graph supersedes an older decision\n";
+        let advisories = spec_shape_advisories(text);
+        assert!(
+            !advisories
+                .iter()
+                .any(|a| a.rule == ShapeRule::SubBulletAsUnit),
+            "a same-margin plain bullet is not nested under the checkbox; got: {advisories:?}"
+        );
+    }
+
     /// A criterion long enough that a verbatim planner copy is unreliable is flagged
     /// `over-long`, and a short criterion beside it is not.
     #[test]
@@ -915,6 +1137,59 @@ mod tests {
         assert!(
             !advisories.iter().any(|a| a.criterion == 1),
             "the short criterion 1 must stay silent; got: {advisories:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Spec 80 (unit c1): spec_shape_advisories must keep scanning a checkbox's FIRST
+    // PHYSICAL LINE ONLY (its pre-existing, corpus-calibrated behavior -
+    // tests/spec_lint.rs::spec_lint_self_clean_over_the_committed_corpus pins its
+    // corpus-wide total), never extract_criteria's new full-JOINING-RULE text - an
+    // OWNS/exclusion sentence on a continuation line is real content, not a shape defect,
+    // and routinely crosses MAX_CRITERION_LEN or adds a clause-coordinator that would
+    // false-positive over-long/multi-behavior if the shape lint scanned it too.
+    // -----------------------------------------------------------------------------------
+
+    /// A checkbox whose FIRST line is short stays silent on `over-long` even when its
+    /// continuation line (an OWNS sentence, this repo's own convention) pushes the FULL
+    /// joined text past MAX_CRITERION_LEN - the shape lint must not have started scanning
+    /// extract_criteria's new full text.
+    #[test]
+    fn spec_shape_advisories_ignores_length_added_by_a_continuation_line() {
+        let filler = "x".repeat(MAX_CRITERION_LEN);
+        let text = format!(
+            "## Done when\n\n\
+             - [ ] a short first line\n\
+             \x20\x20This criterion OWNS a great deal of following detail: {filler}\n\
+             - [ ] a second, unrelated criterion\n"
+        );
+        assert!(
+            !spec_shape_advisories(&text)
+                .iter()
+                .any(|a| a.rule == ShapeRule::OverLong),
+            "the checkbox's first physical line is short; length added by its continuation \
+             line must not trigger over-long; got: {:?}",
+            spec_shape_advisories(&text)
+        );
+    }
+
+    /// A checkbox whose FIRST line carries no clause coordinators stays silent on
+    /// `multi-behavior` even when its continuation lines (again, OWNS-sentence-shaped
+    /// prose) carry two or more `"; "` separators - the coordinator count must come from
+    /// the first physical line alone.
+    #[test]
+    fn spec_shape_advisories_ignores_coordinators_added_by_continuation_lines() {
+        let text = "## Done when\n\n\
+            - [ ] the daemon starts up cleanly\n\
+            \x20\x20and it writes a pidfile; it rotates the log; it emits a heartbeat too\n\
+            - [ ] a second, unrelated criterion\n";
+        assert!(
+            !spec_shape_advisories(text)
+                .iter()
+                .any(|a| a.rule == ShapeRule::MultiBehavior),
+            "the checkbox's first physical line carries no coordinators; coordinators added \
+             by continuation lines must not trigger multi-behavior; got: {:?}",
+            spec_shape_advisories(text)
         );
     }
 
@@ -1051,6 +1326,80 @@ mod tests {
                 .any(|a| a.criterion == Some(1)),
             "criterion 1's OWNS sentence sits on a wrapped continuation line, not the \
              checkbox's first physical line - it must still satisfy the ownership check; \
+             got: {:?}",
+            ownership_advisories(text)
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Spec 80 round 2 (adjudication REJECT, adj-u80c1-verdict-reject-dual-boundary-walk):
+    // `line_criterion` and `criterion_block_boundary` used to be two independently-derived
+    // block-boundary walks that silently disagreed on real input. These two tests pin the
+    // exact fixtures the review reproduced, and cross-check `criterion_blocks` against
+    // `extract_criteria` directly (not merely the pass/fail verdict `ownership_advisories`
+    // derives from it) so the fix is proven to make the two walks AGREE, not merely to
+    // relocate the discrepancy to a different symptom.
+    // -----------------------------------------------------------------------------------
+
+    /// FALSE POSITIVE fixture (round 2): a continuation line at the SAME margin as its
+    /// checkbox (no indentation at all) carries the OWNS sentence. `extract_criteria`
+    /// already joins it into criterion 1's real, load-bearing text (spec 80's JOINING RULE
+    /// is indent-agnostic); before this fix, `ownership_advisories` (built on the
+    /// indent-gated `line_criterion`) could not see it and false-fired F1 on a criterion
+    /// that genuinely carries an OWNS sentence.
+    #[test]
+    fn ownership_check_finds_an_owns_sentence_on_an_unindented_continuation_line() {
+        let text = "## Done when\n\n\
+            - [ ] the daemon writes a pidfile that is mode 0644\n\
+            and readable only by the service account. This criterion OWNS the pidfile \
+            permissions.\n\
+            - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+            path.\n";
+        // `criterion_blocks`'s text for criterion 1 must agree with `extract_criteria`'s -
+        // proof the two walks now see the identical block, not just a coincidentally
+        // matching verdict.
+        assert_eq!(
+            criterion_blocks(text).get(&1).cloned(),
+            extract_criteria(text).first().cloned(),
+            "criterion_blocks and extract_criteria must agree on criterion 1's full text"
+        );
+        assert!(
+            !ownership_advisories(text)
+                .iter()
+                .any(|a| a.criterion == Some(1)),
+            "criterion 1's OWNS sentence sits on an UNINDENTED continuation line - it must \
+             still satisfy the ownership check; got: {:?}",
+            ownership_advisories(text)
+        );
+    }
+
+    /// FALSE NEGATIVE fixture (round 2): a checkbox, then a BLANK LINE, then unrelated
+    /// indented prose that happens to contain "owns". `extract_criteria` correctly stops
+    /// the block at the blank line (spec 80's JOINING RULE: a blank line is a hard
+    /// boundary), so criterion 1's real text carries no OWNS sentence and MUST be flagged.
+    /// Before this fix, `line_criterion` never reset its open block on a blank line, so the
+    /// indented prose after it wrongly reattached to criterion 1 and suppressed the F1 hit.
+    #[test]
+    fn ownership_check_does_not_reattach_prose_after_a_blank_line_to_the_prior_criterion() {
+        let text = "## Done when\n\n\
+            - [ ] the daemon writes a pidfile\n\
+            \n\
+            \x20\x20Unrelated prose that just happens to mention who owns the roadmap.\n\
+            - [ ] the store passes the contract suite. This criterion OWNS the suite.\n\
+            - [ ] the graph supersedes an older decision. This criterion OWNS the supersede \
+            path.\n";
+        assert_eq!(
+            criterion_blocks(text).get(&1).cloned(),
+            extract_criteria(text).first().cloned(),
+            "criterion_blocks and extract_criteria must agree on criterion 1's full text"
+        );
+        assert!(
+            ownership_advisories(text)
+                .iter()
+                .any(|a| a.criterion == Some(1)),
+            "the blank line closes criterion 1's block before the prose that mentions \
+             \"owns\" - it must still be flagged F1 ownership, not silently suppressed; \
              got: {:?}",
             ownership_advisories(text)
         );
@@ -1805,27 +2154,30 @@ mod tests {
         assert_eq!(hit.criterion, Some(2));
     }
 
-    /// `line_criterion` attributes an INDENTED CONTINUATION line to its checkbox even when
-    /// the checkbox's own line is much LONGER than the continuation line - pinning genuine
-    /// indent arithmetic (`line.len() - trimmed.len()`) rather than a formula that happens
-    /// to agree with real indentation only when longer lines are also more indented (e.g.
-    /// `line.len() + trimmed.len()` would invert the block boundary here).
+    /// `line_criterion` attributes a continuation line to its checkbox regardless of
+    /// indentation - even a plain line back at the checkbox's own margin (no indent at
+    /// all), which the pre-fix version wrongly excluded. Pins the round-1 regression fix:
+    /// [`criterion_block_boundary`] (and therefore `line_criterion`, which now shares it)
+    /// never gates on indent - only a blank line, a heading, or the next checkbox closes a
+    /// block, matching [`extract_criteria`]'s own JOINING RULE exactly.
     #[test]
-    fn line_criterion_attributes_a_short_continuation_under_a_long_checkbox() {
-        let text = "- [ ] the store passes the full end-to-end contract suite across every \
-                     adapter\n\
-                     \x20\x20a short tail\n";
+    fn line_criterion_attributes_a_same_margin_continuation_line() {
+        let text = "- [ ] the store passes the contract suite\n\
+                     a line back at the same margin\n";
         assert_eq!(line_criterion(text), vec![Some(1), Some(1)]);
     }
 
-    /// `line_criterion` closes a checkbox's block on a DEDENT TO THE SAME indent, not only
-    /// on an outdent - pinning the strict `>` comparison (not `>=`) so a plain line back at
-    /// the checkbox's own margin is prose, not the block's continuation.
+    /// `line_criterion` closes a checkbox's block on a BLANK LINE, unconditionally - even
+    /// when the next non-blank line is indented enough that an indent-only rule would have
+    /// reattached it. Pins the round-1 regression fix: the pre-fix walk pushed `None` for
+    /// the blank line itself but never reset its `open` state, so an indented line after a
+    /// blank line could wrongly reattach to the prior checkbox.
     #[test]
-    fn line_criterion_closes_the_block_on_a_same_indent_line() {
+    fn line_criterion_closes_the_block_on_a_blank_line_even_before_an_indented_line() {
         let text = "- [ ] the store passes the contract suite\n\
-                     a line back at the same margin\n";
-        assert_eq!(line_criterion(text), vec![Some(1), None]);
+                     \n\
+                     \x20\x20unrelated indented prose, not part of the criterion\n";
+        assert_eq!(line_criterion(text), vec![Some(1), None, None]);
     }
 
     /// A markdown heading carries at most six `#`s (CommonMark); seven or more - even

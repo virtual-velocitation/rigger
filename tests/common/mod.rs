@@ -114,11 +114,115 @@ pub fn rigger_bin() -> PathBuf {
 /// `store_secrets.rs`) is unaffected: it re-sets `.env("KURRENTDB_CONN", ...)` on the
 /// returned `Command` after this call, and a later `.env()` call always wins over an earlier
 /// `.env_remove()` for the same key.
+///
+/// Also pins `XDG_CACHE_HOME` to [`test_cache_home`] - ONE throwaway directory shared by
+/// every subprocess the CURRENT TEST spawns (spec 89, criterion 2). The product's
+/// scratch-root DEFAULT now lives under `$XDG_CACHE_HOME/rigger/<encoded repo>` rather than
+/// inside each fixture's own `.rigger` (see [`rigger::worktree::scratch_root_path`]'s own
+/// doc comment); leaving `XDG_CACHE_HOME` at its real ambient value here would make every
+/// fixture repo's default-rooted scratch/worktrees land in the OPERATOR's real
+/// `~/.cache/rigger/` - one orphaned, never-reclaimed directory per fixture tempdir this
+/// suite has ever created, mirroring exactly why `run_rigger_envs` already defaults
+/// `XDG_STATE_HOME` the same way. A call site that wants to test HOMELESS behavior
+/// specifically (no `HOME`, no `XDG_CACHE_HOME`) still can: `.env_remove("XDG_CACHE_HOME")`
+/// chained on the returned `Command` wins, exactly like a later `.env()` override does.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
     cmd.env_remove(rigger::gate::STORE_FENCE_ENV);
     cmd.env_remove("KURRENTDB_CONN");
+    cmd.env("XDG_CACHE_HOME", test_cache_home());
     cmd
+}
+
+/// One throwaway `XDG_CACHE_HOME` shared by every `rigger` subprocess the CURRENT TEST
+/// spawns (spec 89, criterion 2) - PER TEST-OWNED THREAD, not a single directory for the
+/// whole test binary, and that distinction is load-bearing, not cosmetic.
+///
+/// This used to be `static HOME: OnceLock<TempDir>` - one directory for the entire process.
+/// That leaked every real byte a `rigger_courier()`-spawned subprocess ever wrote under it
+/// (worktrees, agent scratch, the shared build cache), on every single test run, because
+/// Rust NEVER drops a `'static`-storage-duration value - not at a normal return from `main`,
+/// and not at `std::process::exit`, which the built-in libtest harness calls at the end of
+/// every run regardless of pass/fail. No amount of `Drop` machinery hung off a `static` can
+/// ever fire; that is a property of `static` itself, not a bug in `TempDir` (round 5 reject:
+/// `adv-u89c2-test-cache-home-static-never-dropped-leaks-every-binary-run`, live-verified
+/// there against a compiled test binary run directly, bypassing cargo).
+///
+/// The fix is `thread_local!` instead of `static`, which is NOT the same leak wearing a
+/// different name: the built-in libtest harness spawns each `#[test]` fn on its OWN freshly
+/// created OS thread and joins it before returning - independently confirmed with a
+/// standalone probe binary before landing this, not assumed - so a `thread_local`'s `Drop`
+/// genuinely DOES run, deterministically, the moment the test that used it finishes,
+/// regardless of how the test binary's OWN process eventually exits. Every current call
+/// site in this suite (`rigger_courier`, `default_scratch_root`) is invoked synchronously
+/// from a test's own thread, never from a further-spawned worker thread (audited: no
+/// `std::thread::spawn` closure anywhere under `tests/` calls either), so one cache home per
+/// test-owning thread still gives every subprocess spawned WITHIN one test the same shared
+/// root - the only thing that changes is WHEN it is reclaimed (at that test's own thread
+/// exit, not "eventually, maybe, if something remembers to ask" - never, for a `static`).
+/// Distinct fixture repos still resolve to distinct directories under it
+/// ([`default_scratch_root`]/[`rigger::worktree::cache_scratch_root_from`]'s own injective
+/// repo-path encoding), so no two tests' scratch state can collide by sharing this root -
+/// true before this change and unaffected by it.
+fn test_cache_home() -> PathBuf {
+    thread_local! {
+        static HOME: std::cell::RefCell<Option<tempfile::TempDir>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    HOME.with(|cell| {
+        cell.borrow_mut()
+            .get_or_insert_with(|| {
+                tempfile::tempdir().expect("create a throwaway XDG_CACHE_HOME for tests")
+            })
+            .path()
+            .to_path_buf()
+    })
+}
+
+/// The scratch root a `rigger` subprocess spawned through [`rigger_courier`] against `root`
+/// (an otherwise-default fixture: no `defaults.workdir` configured, no `RIGGER_TMPDIR`
+/// override) resolves BY DEFAULT (spec 89, criterion 2: SCRATCH IS OUTSIDE THE STORE TREE).
+/// THE ONE derivation every suite that asserts on a default-rooted worktree/scratch path
+/// shares, so a hand-duplicated formula can never drift from the real resolver the way the
+/// old bare `root.join(".rigger").join("tmp")` literal used to (correctly, before this
+/// criterion moved the default off that path entirely).
+pub fn default_scratch_root(root: &Path) -> PathBuf {
+    rigger::worktree::cache_scratch_root_from(
+        root.to_str().expect("fixture root must be valid UTF-8"),
+        Some(test_cache_home().into_os_string()),
+        None,
+    )
+    .expect("a non-empty fixture root always resolves a cache-home scratch root")
+}
+
+/// The `defaults.workdir` value that nests a fixture repo's scratch/worktree DEFAULT back
+/// inside `repo`'s own unique tempdir (spec 89 criterion 2's governing operator ruling,
+/// item 2: the in-process `conductor::run()` sweep) - the in-process counterpart to
+/// [`rigger_courier`]'s `XDG_CACHE_HOME` pin for a SPAWNED subprocess.
+///
+/// WHY THIS EXISTS. [`rigger::worktree::scratch_root_path`]'s DEFAULT (third) precedence
+/// rung reads the REAL process `XDG_CACHE_HOME`/`HOME` whenever a caller's `defaults.workdir`
+/// (its SECOND rung) is empty - correct for the product, but a fixture that drives
+/// `conductor::run()` directly (never spawning the `rigger` binary, so `rigger_courier`'s own
+/// pin never applies) inherits that real ambient value too: every unit/review worktree such a
+/// test creates lands under the OPERATOR's real `~/.cache/rigger/`, one orphaned directory per
+/// fixture run, colliding with every other concurrently-running fixture and agent on the same
+/// machine - the exact class of litter `rigger_courier` was fixed (round 6) to keep a spawned
+/// courier out of. Handing this value to `cfg.workflow.defaults.workdir` wins the SECOND rung
+/// outright, so the resolver never reaches the third rung at all.
+///
+/// A plain `String` threaded through the caller's own `Config`, deliberately NOT an
+/// environment-variable pin: `cargo test` runs `#[test]` fns concurrently on separate
+/// threads, so mutating this process's own `XDG_CACHE_HOME`/`HOME` here would race every
+/// OTHER test reading it at the same moment (the exact hazard [`RestoreEnvVars`]'s own doc
+/// comment already treats as load-bearing in this same file); a value carried on this one
+/// call's own `Config` cannot race anything, since it never leaves that value.
+///
+/// Nested INSIDE `repo` on purpose, not a sibling of it: the directory disappears the moment
+/// the caller's own fixture `TempDir` drops, with no separate reclaim step required - never a
+/// second, independently-lived directory that could outlive `repo` and need its own guard.
+pub fn isolated_workdir(repo: &Path) -> String {
+    format!("{}/.rigger-test-scratch", repo.display())
 }
 
 /// Shared guard for every sanctioned test-side signal helper below (`terminate_pid`,

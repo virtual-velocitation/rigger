@@ -42,7 +42,7 @@ use std::process::Command;
 
 /// Appended to the bare crate semver whenever the real derivation is unavailable, so a
 /// reader can never mistake the fallback for a genuinely derived version.
-pub const UNVERSIONED_SUFFIX: &str = "+unversioned";
+pub(crate) const UNVERSIONED_SUFFIX: &str = "+unversioned";
 
 /// Resolve `dir`'s primary checkout root and its own `HEAD` commit via real `git`,
 /// exactly as `build.rs`'s `git_watch_paths` resolves a linked worktree's shared git
@@ -126,7 +126,7 @@ fn append_build_metadata(full_semver: &str, short_sha: &str) -> String {
 /// inside any git checkout at all, resolution yields `None` and `go-gitsemver` is
 /// invoked on `dir` directly, unassisted, so it reports the same "not a checkout"
 /// failure it always has.
-pub fn derive_version(bin: &str, dir: &Path) -> String {
+pub(crate) fn derive_version(bin: &str, dir: &Path) -> String {
     let (path, commit) = match resolve_repo(dir) {
         Some((repo_root, commit)) => (repo_root, Some(commit)),
         None => (dir.to_path_buf(), None),

@@ -15,10 +15,28 @@
 //! no node or edge ever folds for it, while a design/architecture doc is ingested. The gate is the
 //! ONE scope authority, consulted by BOTH public entry points on the emit side; a source file's
 //! inline `# WHY:` rationale is design intent wherever the code lives and is never gated.
+//! (These "criteria" are spec 29b's own three, unrelated to spec 86's below.)
+//!
+//! Spec 86 criterion 1's CONSTRAINTS WALK (TESTS ARE NOT NODES) additionally owns ONE corner of
+//! [`doc_links`]: a design doc's inline-code mention of a `tests/`-rooted path - inline SPECIFIES/
+//! CONSTRAINS/GOVERNS carrier or markdown-citation REFERENCES carrier alike - is excluded from
+//! this pass too, by the SAME rule the code-entity pass already applies to a whole file under
+//! `tests/` ([`crate::grounder::symbols::events::is_under_tests_dir`], reused here rather than
+//! re-derived). Without this, the always-compiled fold would still mint a bare `KIND_ARTIFACT`
+//! node for the mention that `concepts::intent_layer` walks (its own filter only requires the
+//! OTHER endpoint be a doc), so test-scoped code would re-enter the intent layer through this
+//! link-carried back door even though criterion 1's code-entity pass correctly keeps it out of the
+//! graph as a NODE. A bare identifier naming a test-only symbol (no `/`) never reaches this pass
+//! at all - [`is_code_path`] requires a `/` and [`is_repo_path`] requires a `/` or a `.`, so
+//! neither carrier can ever mint a link to a bare test-function name in the first place; the
+//! spec's "or of a name defined only inside a `#[cfg(test)]` module or a `#[test]` function"
+//! clause is therefore already vacuously satisfied by the existing path-shape gate, needing no
+//! code of its own.
 
 use std::collections::BTreeSet;
 
 use crate::grounder::design::model::{ConceptKind, DesignConcept, DesignLink, LinkRel};
+use crate::grounder::symbols::events::is_under_tests_dir;
 
 /// Extract every design-intent concept from one file at relative path `path` with `contents`.
 ///
@@ -254,7 +272,10 @@ fn doc_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
         // Inline-code CODE-path mentions -> the doc's kind-specific design->code relation ("this
         // doc designs / constrains / governs this code").
         for span in inline_code_spans(line) {
-            if is_code_path(&span) {
+            // Spec 86 criterion 1's CONSTRAINTS WALK (module doc): a tests/-rooted mention is
+            // excluded from the design-intent link pass too, by the SAME rule the code-entity
+            // pass applies to a whole file under tests/ - never a second, independent check.
+            if is_code_path(&span) && !is_under_tests_dir(&span) {
                 out.insert(DesignLink {
                     from: from.clone(),
                     rel: code_rel,
@@ -266,7 +287,9 @@ fn doc_links(path: &str, contents: &str, out: &mut BTreeSet<DesignLink>) {
         // `design-doc` only (the criterion's FROM kind for `references`).
         if kind == ConceptKind::DesignDoc {
             for target in link_targets(line) {
-                if is_repo_path(&target) {
+                // Same spec-86-criterion-1 exclusion as the inline-code carrier above, applied to
+                // the citation carrier - a tests/-rooted markdown-link target excludes identically.
+                if is_repo_path(&target) && !is_under_tests_dir(&target) {
                     out.insert(DesignLink {
                         from: from.clone(),
                         rel: LinkRel::References,
@@ -651,6 +674,35 @@ mod tests {
             ls.len(),
             2,
             "exactly the SPECIFIES + references links; got {ls:?}"
+        );
+    }
+
+    #[test]
+    fn a_tests_rooted_path_mention_never_links_inline_or_by_citation() {
+        // Spec 86 criterion 1's CONSTRAINTS WALK: a design doc's inline-code mention of a
+        // `tests/`-rooted path is excluded from the design-intent link pass too, by the SAME
+        // exclusion rule the code-entity pass already applies to a whole file under `tests/`
+        // (`is_under_tests_dir`, reused here) - never a second, independent rule. Without this, the
+        // fold would still mint a bare KIND_ARTIFACT node for the mention (ensure_node on the
+        // TYPE_DOC_LINK_EXTRACTED edge's `to` endpoint) that `concepts::intent_layer` would then
+        // walk, since its own filter only checks the OTHER endpoint is a doc - so test-scoped code
+        // would re-enter the intent layer through this back door even though criterion 1's own
+        // code-entity pass correctly excludes it from ever becoming a real code-entity node.
+        // Covers both carriers this pass has: the inline-code SPECIFIES/CONSTRAINS/GOVERNS form and
+        // the design-doc's own markdown-citation REFERENCES form.
+        let md = "# Reference architecture\n\n\
+                  See `tests/cli.rs` and `tests/code_entity_test_exclusion_periphery.rs` inline, \
+                  and cite [the periphery suite](tests/no_os_kill_audit.rs) too. Real product code \
+                  `src/conductor.rs` still links normally.\n";
+        let ls = extract_links("docs/architecture.md", md);
+        assert!(
+            !ls.iter().any(|l| l.to.starts_with("tests/")),
+            "no tests/-rooted mention - inline or cited - may become a design-intent link target; \
+             got {ls:?}"
+        );
+        assert!(
+            ls.iter().any(|l| l.to == "src/conductor.rs"),
+            "a genuine product-code mention in the SAME doc must still link normally; got {ls:?}"
         );
     }
 

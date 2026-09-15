@@ -284,6 +284,7 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
         "",
         "",
         "",
+        "",
         &BuildEnv::default(),
         &BuildBudget::default(),
     );
@@ -304,6 +305,7 @@ fn a_real_fenced_courier_actually_succeeds_and_lands_in_an_isolated_persistent_s
         &emit_gate("fence-emit-2", "fence-probe-2"),
         &dir,
         &target_dir,
+        "",
         "",
         "",
         "",
@@ -386,6 +388,7 @@ fn an_unfenced_integrated_tree_gate_still_walks_up_to_the_live_store() {
     let result = ExecRunner.run(
         &emit_gate("unfenced-emit", "unfenced-probe"),
         &dir,
+        "",
         "",
         "",
         "",
@@ -504,6 +507,22 @@ fn init_repo_with_head() -> tempfile::TempDir {
 }
 
 #[test]
+#[serial_test::serial(cwd)]
+// Spec 89 criterion 2 boundary bug (found running this file's own full-suite verification,
+// not by inspection): this test resolves its `root` via the REAL production default rung -
+// `rigger::worktree::scratch_root(&repo_path, "", None)` reads the ambient process `HOME`
+// deliberately, since proving that real default IS this test's whole point (see this file's
+// own module doc, item 4). Unguarded, that made it flaky against test 8
+// (`an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_ambient_home`),
+// which mutates `HOME` process-globally for its own fixture duration: this test's `root`
+// would then resolve under test 8's temporary HOME instead of the real one, so `fence_dir`
+// stops matching what the spawned courier (fenced through `cmd.env`, unaffected by the same
+// race) actually wrote to - live-reproduced via a 15-run repeat (1/15 failed) and root-caused
+// by direct code read, not guessed. Sharing the `cwd` serial key (already used by every other
+// process-global-env mutator in this file) makes this test mutually exclusive with test 8's
+// mutation instead of racing it - the same discipline this file's tests 2/3/8 already apply
+// to `STORE_FENCE_ENV`/`XDG_STATE_HOME`, extended to cover `HOME` too. Pre-existing since this
+// test was added (spec 70 c3 / u3), not introduced by this unit's round 7.
 fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed() {
     let repo = init_repo_with_head();
     let repo_path = repo.path().to_string_lossy().into_owned();
@@ -519,7 +538,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_remove
     // path, not a double of it.
     let root = rigger::worktree::scratch_root(&repo_path, "", None);
     let worktree_dir = format!("{root}/rigger-wt-reclaim-probe");
-    let worktree = Worktree::create(&repo_path, &worktree_dir, "rigger/u/reclaim-probe")
+    let worktree = Worktree::create(&repo_path, &worktree_dir, "rigger/u/reclaim-probe", &root)
         .expect("create a real unit worktree");
     std::fs::create_dir_all(Path::new(&worktree.dir).join(".rigger")).unwrap();
     std::fs::write(
@@ -541,6 +560,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_remove
         &emit_gate("reclaim-emit", "reclaim-probe"),
         &worktree.dir,
         &target_dir,
+        "",
         "",
         "",
         "",
@@ -577,6 +597,9 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_remove
 }
 
 #[test]
+#[serial_test::serial(cwd)]
+// Same HOME-mutation race as the sibling test above (shares its `root = scratch_root(...)`
+// pattern against the real default rung); same fix, same `cwd` serial key.
 fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too() {
     // Spec 70 criterion 3, widened (u4 round 2 fix for
     // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced /
@@ -604,8 +627,13 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
     // unlike a unit worktree.
     let root = rigger::worktree::scratch_root(&repo_path, "", None);
     let review_dir = format!("{root}/rigger-review-reclaim-probe-0");
-    let review = Worktree::create(&repo_path, &review_dir, "rigger/review/reclaim-probe-0")
-        .expect("create a real review worktree");
+    let review = Worktree::create(
+        &repo_path,
+        &review_dir,
+        "rigger/review/reclaim-probe-0",
+        &root,
+    )
+    .expect("create a real review worktree");
     std::fs::create_dir_all(Path::new(&review.dir).join(".rigger")).unwrap();
     std::fs::write(
         Path::new(&review.dir).join(".rigger").join("workflow.yml"),
@@ -640,6 +668,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
         "",
         "",
         "",
+        "",
         &fence_dir,
         &BuildEnv::default(),
         &BuildBudget::default(),
@@ -671,6 +700,8 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
 }
 
 #[test]
+#[serial_test::serial(cwd)]
+// Same HOME-mutation race as the two sibling tests above; same fix, same `cwd` serial key.
 fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
     // u4 round 3 fix for adv-u4c70r2-discard-path-leaks-review-fence-sibling: the SAME real,
     // end-to-end wiring as the two tests above, but exercising `Worktree::discard` - the
@@ -694,8 +725,8 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
     let root = rigger::worktree::scratch_root(&repo_path, "", None);
     let review_dir = format!("{root}/rigger-review-discard-reclaim-probe-0");
     let branch = "rigger/review/discard-reclaim-probe-0";
-    let review =
-        Worktree::create(&repo_path, &review_dir, branch).expect("create a real review worktree");
+    let review = Worktree::create(&repo_path, &review_dir, branch, &root)
+        .expect("create a real review worktree");
     let dir = review.dir.clone();
     std::fs::create_dir_all(Path::new(&dir).join(".rigger")).unwrap();
     std::fs::write(
@@ -714,6 +745,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
     let result = ExecRunner.run(
         &emit_gate("discard-reclaim-emit", "discard-reclaim-probe"),
         &dir,
+        "",
         "",
         "",
         "",
@@ -740,7 +772,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
 
     // `discard`, not `remove`: the crash-resume teardown path `review_only_worktree` runs
     // unconditionally before every review-stage attempt's `create()`.
-    Worktree::discard(&repo_path, &dir, branch).expect("discard the real review worktree");
+    Worktree::discard(&repo_path, &dir, branch, &root).expect("discard the real review worktree");
 
     assert!(
         !Path::new(&fence_dir).exists(),
@@ -806,6 +838,10 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
     let live_before = std::fs::read(&live_events).unwrap();
 
     let mut cfg = Config::default();
+    // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside this
+    // fixture's own repo tempdir so the real `review_only_worktree` this test drives never
+    // reaches the real ambient `XDG_CACHE_HOME`/`HOME` cache-home default.
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
     cfg.agents.insert(
         "lens".into(),
         AgentDef {
@@ -909,6 +945,7 @@ fn an_unfenced_integrated_tree_couriers_registry_refresh_never_touches_the_real_
     let result = ExecRunner.run(
         &emit_gate("unfenced-registry-emit", "unfenced-registry-probe"),
         &dir,
+        "",
         "",
         "",
         "",

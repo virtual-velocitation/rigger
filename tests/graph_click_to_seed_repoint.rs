@@ -137,6 +137,20 @@ fn a_de_noised_unit_click_lands_on_a_real_neighborhood_through_the_route() {
         Some("u1"),
         "the response echoes the requested unit seed, not the re-pointed content ids: {body}"
     );
+    // spec 63 c5 (the repoint_seed / non-node-seed gap,
+    // adv-u63c5-rail-lies-empty-for-a-repointed-unit-seed), proven at the PUBLIC route boundary:
+    // the docked memory rail must not silently come back all-empty just because the raw
+    // requested seed (the unit id) is not itself a graph node.
+    assert_eq!(
+        body["memory"]["decisions"][0]["id"].as_str(),
+        Some("d1"),
+        "the unit's own governing decision is on the rail, not silently dropped: {body}"
+    );
+    assert_eq!(
+        body["memory"]["findings"][0]["id"].as_str(),
+        Some("f1"),
+        "the unit's own finding is on the rail, not silently dropped: {body}"
+    );
 }
 
 #[test]
@@ -170,7 +184,8 @@ fn a_unit_click_is_scoped_to_the_clicked_unit_and_never_drags_in_another() {
 
     // The same scoping observed through the real route: clicking uA never drags in uB's neighborhood.
     let graph = fold_and_prefetch(&run);
-    let ids = node_ids(&get_graph(&run, &graph, "uA"));
+    let body = get_graph(&run, &graph, "uA");
+    let ids = node_ids(&body);
     for want in ["dA", "fA", "a.rs"] {
         assert!(ids.contains(want), "uA's click reaches {want}: {ids:?}");
     }
@@ -180,6 +195,21 @@ fn a_unit_click_is_scoped_to_the_clicked_unit_and_never_drags_in_another() {
             "uA's click never drags in uB's content ({never}): {ids:?}"
         );
     }
+    // The memory rail (spec 63 c5), folded over uA's re-pointed effective seeds, is likewise
+    // scoped to uA alone - never uB's decision, matching the neighborhood's own isolation.
+    assert_eq!(
+        body["memory"]["decisions"][0]["id"].as_str(),
+        Some("dA"),
+        "uA's click surfaces its own decision on the rail: {body}"
+    );
+    assert!(
+        body["memory"]["decisions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|d| d["id"] != "dB"),
+        "uA's rail never carries uB's decision: {body}"
+    );
 }
 
 #[test]
@@ -225,6 +255,54 @@ fn repoint_seed_preserves_a_real_node_click_and_falls_back_gracefully() {
         repoint_seed(&run, &graph, "no-such-thing"),
         vec!["no-such-thing".to_string()],
         "a seed matching neither a node nor a unit's content falls back to itself, never empty"
+    );
+}
+
+#[test]
+fn a_units_rail_dedupes_a_decision_reachable_via_two_of_its_own_content_seeds() {
+    // Round-2 fix (adv-u63c5-rail-lies-empty-for-a-repointed-unit-seed / d-u63c5r2-rail-folds-over-effective-seeds):
+    // the docked rail now folds `memory_rail_of` over the WHOLE `effective_seeds` set a unit click
+    // re-points onto, not one node - a genuinely NEW fold arm no existing test (inside-out or
+    // periphery) drives with more than one seed contributing DISJOINT rationale. This pins the
+    // dedup-by-id guarantee that new arm depends on: one decision governing TWO of the SAME unit's
+    // content files puts BOTH those files in `effective_seeds`, and each independently resolves back
+    // to the SAME decision via its GOVERNS edge - so the rail must list that decision exactly ONCE,
+    // never once per seed that reaches it.
+    let run = vec![
+        ev(
+            1,
+            "UnitStarted",
+            serde_json::json!({ "unit": "u1", "criterion": "c", "agent": "impl", "needs": [] }),
+        ),
+        ev(
+            2,
+            "DecisionMade",
+            serde_json::json!({ "id": "d1", "summary": "one decision, two files", "governs": ["combat.rs", "render.rs"], "supersedes": "" }),
+        )
+        .with_meta(META_SPAWN, "u1/implementer#0"),
+    ];
+
+    let graph = fold_and_prefetch(&run);
+    let repointed = repoint_seed(&run, &graph, "u1");
+    assert!(
+        repointed.contains(&"combat.rs".to_string()) && repointed.contains(&"render.rs".to_string()),
+        "d1 governs both files, so both are real content nodes in u1's effective seeds: {repointed:?}"
+    );
+
+    let body = get_graph(&run, &graph, "u1");
+    let decisions = body["memory"]["decisions"]
+        .as_array()
+        .expect("the rail carries a decisions array");
+    assert_eq!(
+        decisions.len(),
+        1,
+        "d1 is reachable via TWO different effective seeds (combat.rs AND render.rs) but the rail \
+         lists it exactly once, deduped by id, never once per reaching seed: {body}"
+    );
+    assert_eq!(
+        decisions[0]["id"].as_str(),
+        Some("d1"),
+        "the single listed decision is d1 itself: {body}"
     );
 }
 

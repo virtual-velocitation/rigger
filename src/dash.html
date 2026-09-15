@@ -33,7 +33,13 @@
   .release b { color: var(--ok); }
   .release code { background: var(--panel); border: 1px solid var(--line);
     border-radius: 4px; padding: 1px 5px; }
-  .release code.pr { display: inline-block; margin-top: 4px; color: var(--accent); }
+  /* white-space: pre-wrap so the two-command PR handoff's embedded newline (spec 82 c2)
+     renders as a real line break, matching the established `.reasoning` idiom above -
+     without it, the default `white-space: normal` inherited everywhere on this page
+     collapses the newline to a single space and the two commands run on as one invalid
+     shell line. */
+  .release code.pr { display: inline-block; margin-top: 4px; color: var(--accent);
+    white-space: pre-wrap; }
   /* LANDING strip (spec 50 c3): the instance picker. One row of selectable chips; the chip list
      scrolls INSIDE its own container (overflow-x: auto) so any number of instances stays one row
      and never widens the page. */
@@ -62,7 +68,10 @@
   /* KG is the top, full-width feature holding ~half the viewport for graph exploration; the columns
      hold the remaining half and scroll INTERNALLY, so the whole dashboard fits one screen with no
      page overflow. */
-  #kg { flex: 0 0 48%; min-height: 0; display: flex; flex-direction: column; }
+  /* position:relative so the docked memory rail (spec 63 c5, .kgrail) can be position:absolute
+     WITHIN this section, scoped to its bounds - never a flex sibling of #kgpanel, so opening or
+     closing the rail changes nothing about #kgpanel's own box and the graph layout never re-flows. */
+  #kg { flex: 0 0 48%; min-height: 0; display: flex; flex-direction: column; position: relative; }
   #kg > .kg { flex: 1 1 auto; min-height: 0; overflow: auto; }
   .columns { flex: 1 1 0; min-height: 0; display: flex; gap: 16px; }
   .columns > .col { flex: 1 1 46%; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
@@ -241,6 +250,13 @@
   .kgsvg { display: block; width: 100%; overflow: hidden; background: rgba(110, 168, 254, 0.03);
     border: 1px solid var(--line); border-radius: 6px; cursor: grab; touch-action: none; user-select: none; }
   .kgsvg:active { cursor: grabbing; }
+  /* GROUP HULL (spec 63 c3, directory hulls): a low-contrast tinted region behind the members sharing
+     a group key (the files lens's directory grouping), never a hub node - a region, never a member. */
+  .kghull rect { fill: rgba(110, 168, 254, 0.06); stroke: var(--dim); stroke-width: 1; }
+  .kghull-l {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; letter-spacing: 0.08em;
+    fill: var(--muted); text-transform: uppercase;
+  }
   .kgline { stroke: var(--dim); }
   .kgn { cursor: pointer; }
   .kgn circle { stroke: var(--panel); stroke-width: 1; }
@@ -312,6 +328,44 @@
   .kgunresolved { margin-top: 6px; }
   .kgunresolved h3 { font-size: 12px; margin: 4px 0; color: var(--dim); }
   .kgsharedlist { font-size: 11px; color: var(--dim); padding: 3px 2px; overflow-wrap: anywhere; }
+  /* The SUBJECT VIEW's docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, absolutely
+     positioned WITHIN #kg (never a flex sibling), so it docks to the right over the panel without
+     changing #kgpanel's own box - the canvas layout never re-flows when the rail opens or closes.
+     Lists the focused subject's governing decisions/findings/concepts as scrollable cards; hidden
+     with no subject focused (mirrors .kgsubjectlens). */
+  .kgrail { position: absolute; top: 0; right: 0; bottom: 0; width: 260px; max-width: 42%;
+    overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line);
+    padding: 8px 10px; box-sizing: border-box; font-size: 12px; }
+  .kgrail[hidden] { display: none; }
+  .kgrail-section { margin-bottom: 10px; }
+  .kgrail-section h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--muted); }
+  .kgrail-card { border-bottom: 1px solid var(--line); padding: 4px 0; overflow-wrap: anywhere; }
+  .kgrail-card b { display: block; color: var(--ink); }
+  /* The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel (like .kgsubjectlens / .kgrail),
+     so populating it never touches the panel's own rendered nodes/edges. Docks TOP-LEFT (the
+     memory rail docks right) so a code subject's card and its rail can show together without
+     overlapping - the graph layout never re-flows for either. Hidden with no subject carded. */
+  .kgcard { position: absolute; top: 8px; left: 8px; width: 280px; max-width: 46%;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; box-sizing: border-box; font-size: 12px; z-index: 2; }
+  .kgcard[hidden] { display: none; }
+  .kgcard-title { font-weight: 700; color: var(--ink); }
+  .kgcard-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle; }
+  .kgcard-prov { color: var(--muted); font-size: 11px; margin: 2px 0 6px; overflow-wrap: anywhere; }
+  .kgcard-row { margin-top: 4px; }
+  .kgcard-row h4 { margin: 0 0 3px; font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--muted); }
+  .kgcard-chip { display: inline-block; border: 1px solid var(--line); border-radius: 9px;
+    padding: 1px 8px; margin: 0 4px 4px 0; font-size: 11px; cursor: pointer; background: none;
+    color: inherit; text-decoration: none; }
+  .kgcard-chip:hover { border-color: var(--accent); }
+  /* The PROOF row's explicit "no test reaches this entity" state (spec 86 criterion 2): absence
+     of proof is itself information, so it gets the SAME amber the codebase already reserves for
+     a documented empty state (.kgempty-cell) rather than reading as silent/missing. */
+  .kgcard-proof-empty { color: var(--warn); }
+  .kgcard-proof-list { margin: 4px 0 0; padding-left: 16px; font-size: 11px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -346,6 +400,14 @@
     <div class="kg" id="kgpanel">
       <div class="empty">the unified knowledge graph renders here for exploration; hover or click a node to highlight it, shift-click a second to trace the path between them</div>
     </div>
+    <!-- The docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel, absolutely positioned so
+         populating it never touches the panel's own rendered nodes/edges - hidden until a subject is
+         focused (a plain node click), exactly like #kgsubjectlens. -->
+    <div class="kgrail" id="kgrail" hidden></div>
+    <!-- The METADATA CARD (spec 63 c2): a STATIC sibling of #kgpanel, absolutely positioned so
+         populating it never touches the panel's own rendered nodes/edges - hidden until a subject
+         is carded (a plain node click, or a files/concepts cluster click). -->
+    <div class="kgcard" id="kgcard" hidden></div>
   </section>
 
   <div class="columns">
@@ -738,6 +800,117 @@ function syncSubjectLens() {
     + ' &middot; <a href="#" class="kgback" data-kgclear="1">whole graph</a>';
 }
 
+// The SUBJECT VIEW's docked MEMORY RAIL (spec 63 c5): a STATIC sibling of #kgpanel (like
+// #kgsubjectlens), so populating it never touches the neighborhood's own rendered nodes/edges -
+// it is pure metadata and the canvas layout never re-flows for it. `memory` is the seeded
+// neighborhood's `memory` field (`{decisions, findings, concepts}`, each possibly empty); `null`
+// (no subject focused, or a static export with no live memory to fetch) hides the rail entirely.
+// Each section renders its documented "none" state rather than disappearing, so an all-empty
+// memory rail still reads as "checked, and there is none" rather than looking broken.
+function renderMemoryRail(memory) {
+  const rail = el("kgrail");
+  if (!rail) return;
+  if (!memory) { rail.hidden = true; rail.innerHTML = ""; return; }
+  rail.hidden = false;
+  const section = (title, items, card) => '<div class="kgrail-section"><h3>' + esc(title)
+    + ' (' + items.length + ')</h3>'
+    + (items.length ? items.map(card).join("") : '<div class="empty">none</div>') + '</div>';
+  const leafCard = lf => '<div class="kgrail-card"><b>' + esc(lf.id) + '</b>'
+    + esc(preview(lf.summary)) + '</div>';
+  const conceptCard = c => '<div class="kgrail-card"><b>' + esc(c.label || c.id) + '</b></div>';
+  rail.innerHTML = section("decisions", memory.decisions || [], leafCard)
+    + section("findings", memory.findings || [], leafCard)
+    + section("concepts", memory.concepts || [], conceptCard);
+}
+
+// A CardRef's OWN `kind` (never the card's own subject kind) resolved to the lens that owns that
+// taxonomy (spec 63 c2, "Card handoff ownership is total"): a `top_entities` member is always a
+// code entity (REL_CONTAINS forward edges are structurally file -> code-entity only, spec 29a),
+// but a `top_evidence` member can be ANY kind the intent layer folds into a concept (a file, a
+// design-doc, a handbook rule, ... - spec 54/29b) - so the chip lens is resolved from THIS field,
+// never hardcoded to "code" for the whole row. A kind with no lens of its own in this design's
+// three named lenses (Code, Files, Concepts) resolves to `null` - a graceful non-handoff, the
+// same shape the MEMORY chip already uses.
+function chipLensForKind(kind) {
+  if (kind === "file") return "files";
+  if (kind === "code-entity") return "code";
+  return null;
+}
+
+// The METADATA CARD (spec 63 c2): ONE hover/click-card anatomy for any subject - a title row (its
+// label), a provenance row (file:line, degree, community), and per-taxonomy chip rows. `card` is
+// the `/api/graph?card=` body's `card` field (`null` hides the card entirely - no subject carded,
+// or a static export with no live card to fetch). Every OTHER taxonomy than the card's OWN subject
+// renders here as a CHIP, never a second graph node: a code-entity subject gets FILE / CONCEPTS /
+// MEMORY chip rows; a file subject gets TOP ENTITIES; a concept subject gets TOP EVIDENCE. A FILE
+// or CONCEPTS chip carries `data-handoff="<lens>"` alongside `data-seed="<id>"` (the LENS HANDOFF:
+// #kgcard's own click handler reads it to force that lens before re-projecting, spec 63's "a chip
+// opens its own taxonomy's lens, the subject rides along"); a TOP-ENTITIES/TOP-EVIDENCE chip's
+// handoff is resolved per-member via `chipLensForKind` (never assumed code - see its own doc);
+// the MEMORY chip carries `data-seed` alone, so it falls through to the SAME plain re-seed
+// [`seedGraph`] already performs on a node click - reusing spec 63 c5's rail-and-reseed mechanism
+// rather than building a second one (no memory lens exists among this design's three named
+// lenses).
+function renderCard(card) {
+  const box = el("kgcard");
+  if (!box) return;
+  if (!card) { box.hidden = true; box.innerHTML = ""; return; }
+  box.hidden = false;
+  const chip = (id, label, lens) => '<a href="#" class="kgcard-chip" data-seed="' + esc(id) + '"'
+    + (lens ? ' data-handoff="' + esc(lens) + '"' : "") + '>' + esc(label) + '</a>';
+  const memberChip = e => chip(e.id, e.label, chipLensForKind(e.kind));
+  const row = (title, chips) => chips ? '<div class="kgcard-row"><h4>' + esc(title) + '</h4>' + chips + '</div>' : "";
+  // The PROOF row (spec 86 criterion 2): "proven by N tests" with the evidence file:lines on
+  // expand, or the explicit amber "no test reaches this entity" state - absence of proof is
+  // itself information the audit (spec 85) and reviewers want, so this is NEVER omitted like an
+  // empty chip row above (`row`'s own `chips ? ... : ""` would silently hide a zero-proof entity
+  // exactly like an entity with no decisions/findings, which is the wrong default here).
+  const proofRow = c => {
+    const n = c.proven_by || 0;
+    if (n === 0) {
+      return '<div class="kgcard-row kgcard-proof-empty"><h4>PROOF</h4>no test reaches this entity</div>';
+    }
+    const label = "proven by " + n + (n === 1 ? " test" : " tests");
+    const items = (c.proof_evidence || []).map(ev => "<li>" + esc(ev) + "</li>").join("");
+    return '<div class="kgcard-row"><h4>PROOF</h4><details><summary>' + esc(label) + '</summary>'
+      + '<ul class="kgcard-proof-list">' + items + "</ul></details></div>";
+  };
+  const prov = [
+    card.file ? esc(card.file) + (card.line ? ":" + esc(card.line) : "") : "",
+    "degree " + card.degree,
+    card.community ? "community: " + esc(card.community) : ""
+  ].filter(Boolean).join(" · ");
+  let rows = "";
+  if (card.kind === "code-entity") {
+    rows += row("FILE", card.file ? chip(card.file, card.file, "files") : "");
+    rows += row("CONCEPTS", (card.concepts || []).map(c => chip(c.id, c.label, "concepts")).join(""));
+    const mem = (card.decisions ? chip(card.id, card.decisions + (card.decisions === 1 ? " decision" : " decisions")) : "")
+      + (card.findings ? chip(card.id, card.findings + (card.findings === 1 ? " finding" : " findings")) : "");
+    rows += row("MEMORY", mem);
+    rows += proofRow(card);
+  } else if (card.kind === "file") {
+    rows += row("TOP ENTITIES", (card.top_entities || []).map(memberChip).join(""));
+  } else if (card.kind === "concept") {
+    rows += row("TOP EVIDENCE", (card.top_evidence || []).map(memberChip).join(""));
+  }
+  const dot = '<span class="kgcard-dot" style="background:' + esc(kindColor(card.kind)) + '"></span>';
+  box.innerHTML = '<div class="kgcard-title">' + dot + esc(card.label) + '</div>'
+    + '<div class="kgcard-prov">' + prov + '</div>' + rows;
+}
+
+// Fetch subject `id`'s metadata card from GET /api/graph?card=<id> and render it (spec 63 c2). The
+// id is `encodeURIComponent`d like every other node id param. A static export / failed fetch /
+// unknown id all degrade to hiding the card - never an error, never a stale card left showing.
+async function loadCard(id) {
+  if (!LIVE || !id) { renderCard(null); return; }
+  try {
+    const body = await (await fetch(apiUrl("/api/graph?card=" + encodeURIComponent(id)), { cache: "no-store" })).json();
+    renderCard(body.card || null);
+  } catch (e) {
+    renderCard(null);
+  }
+}
+
 // The SUBJECT-STICKY lens dispatch (spec 55 c4): ONE lens picker serves the overview's inline selector
 // AND the subject-lens header. When a subject is focused, flipping the lens RE-REQUESTS that subject
 // under the new lens (a re-projection, seed+lens); with no subject it reloads the whole-graph overview
@@ -782,6 +955,11 @@ function renderReprojection(rp) {
   kgMode = "reproject";
   kgViewData = rp;
   const subject = (rp && rp.subject) || kgSubject || "";
+  // The re-projected SUBJECT's own METADATA CARD (spec 63 c2): re-projecting under a new lens
+  // (e.g. after a card chip's handoff) re-cards the SAME subject, so a code-entity subject's card
+  // (file/concepts/memory) or a file/concept subject's card (top entities / top evidence) tracks
+  // whichever taxonomy is now focused.
+  loadCard(subject);
   const clusters = (rp && rp.clusters) || [];
   const total = (rp && rp.total) || 0;
   const back = '<a class="kgback" href="#" data-kgclear="1">&larr; whole graph</a>';
@@ -823,7 +1001,11 @@ function renderReprojection(rp) {
     nodeClass: () => "kgcluster",
     nodeAttrs: n => ' data-cluster="' + esc(n.id) + '"',
     label: n => (n.label || n.id) + " (" + n.count + ")",
-    edgeWidth: e => 0.6 + 4 * (e.weight / maxW)
+    edgeWidth: e => 0.6 + 4 * (e.weight / maxW),
+    // DIRECTORY HULLS (spec 63 c3): a files re-grain's clusters ARE files too, so the same directory
+    // grouping applies here; code/concepts re-grains opt out (undefined groupOf), unchanged.
+    groupOf: kgLens === "files" ? (n => kgFilesDirOf(n.id)) : undefined,
+    groupLabel: kgLens === "files" ? (key => "DIR · " + key) : undefined
   });
   el("kgpanel").innerHTML = toolbar + emptyCell + svg + unresolvedSection + sharedSection + overlayNotes(nodes);
   bindKgView();
@@ -922,6 +1104,14 @@ function renderGraph(g) {
   // c4). These are state-only assignments; they do NOT change this view's rendered output.
   kgMode = "seed";
   kgViewData = g;
+  // The SUBJECT VIEW's docked memory rail (spec 63 c5): the seed's governing decisions/findings/
+  // concepts riding this SAME response, rendered into the STATIC #kgrail sibling - never folded
+  // into `nodes`/`edges` above, so listing them adds no node to the drawn layout.
+  renderMemoryRail(g.memory || null);
+  // The seed's METADATA CARD (spec 63 c2): a code-entity subject's file:line/degree/community/
+  // concepts/memory-count peek, docked alongside the rail. A separate on-demand fetch (never
+  // folded into `g`), so a plain neighborhood response stays byte-identical.
+  loadCard(g.seed);
   const nodes = g.nodes || [];
   const edges = g.edges || [];
   // The query-path (spec 30 c6): the shortest chain of node ids between the two selected nodes, and
@@ -1412,15 +1602,56 @@ function kgVisibleLabels(nodes, pos, scale, radiusOf, labelOf) {
   return vis;
 }
 
+// Fold laid-out nodes into their GROUP HULL bounding boxes (spec 63 c3, directory hulls): `groupOf(n)`
+// keys each node with a laid-out position (`pos[n.id]` present) into a group; a nullish key or a
+// missing position joins no group. Each group's box is the union of its members' circles (centre +/-
+// `radiusOf(n)`), so the box is exactly as large as it needs to be to enclose every member - never
+// hard-coded, never approximated. Returns `{}` (no hulls) when `groupOf` is absent, so this is a
+// pure no-op for every view that does not opt in.
+function kgGroupHulls(nodes, pos, radiusOf, groupOf) {
+  const boxes = {};
+  if (!groupOf) return boxes;
+  nodes.forEach(n => {
+    const q = pos[n.id];
+    if (!q) return;
+    const key = groupOf(n);
+    if (key === null || key === undefined) return;
+    const r = radiusOf(n);
+    const b = boxes[key] || (boxes[key] = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity });
+    b.minX = Math.min(b.minX, q.x - r);
+    b.minY = Math.min(b.minY, q.y - r);
+    b.maxX = Math.max(b.maxX, q.x + r);
+    b.maxY = Math.max(b.maxY, q.y + r);
+  });
+  return boxes;
+}
+
+// The files lens's DIRECTORY grouping key (spec 63 c3, directory hulls): a file cluster's `id` IS its
+// repo-relative path (clustered_overview / reproject's own files-lens fold key), so its directory is
+// everything before the LAST `/`; a directory-less (repo-root) file falls back to the SAME `(root)`
+// sentinel the server's own directory fold (`cluster_key` / `CLUSTER_ROOT`) uses, so a root file's
+// hull label reads identically to how the pre-spec-63 directory fold once bucketed it. Pure client-
+// side string logic over the ALREADY-SERVED file key - no new payload field, matching the dash
+// charter (JS-only where the existing DTO already carries what the view needs).
+function kgFilesDirOf(key) {
+  const i = key.lastIndexOf('/');
+  return i === -1 ? '(root)' : key.slice(0, i);
+}
+
 // Emit the SVG for a graph: a layout places the nodes, then we draw one edge per <line>/<path> and
 // one <g><circle><text></g> per node - all inside a single #kgzoom group the pan/zoom transforms. The
 // caller supplies per-node radius/colour/class/label and the select handle (data-cluster on a cluster
 // super-node, data-seed on a member), so ONE emitter serves the overview, the drill, AND the directed
-// -call DAG (spec 52 c5). The DIRECTION is drawn from three optional opts the exploration views omit
-// (so their output is unchanged): `opts.layout` swaps the force layout for another position map (the
+// -call DAG (spec 52 c5). The DIRECTION is drawn from optional opts the exploration views omit (so
+// their output is unchanged): `opts.layout` swaps the force layout for another position map (the
 // left-to-right layered layout); `opts.marker` adds an SVG ARROWHEAD marker definition and points the
-// forward edges at it; and `opts.edgeBack(e)` renders a recursion edge as a DISTINCT curved return
-// arc instead of a straight line. With none supplied the emitter draws exactly as before.
+// forward edges at it; `opts.edgeBack(e)` renders a recursion edge as a DISTINCT curved return arc
+// instead of a straight line; and `opts.groupOf(n)` + `opts.groupLabel(key)` draw a GROUP HULL - a
+// low-contrast tinted, labelled region behind the members sharing a group key (spec 63 c3's directory
+// hulls: the files lens groups its file nodes by directory) - computed from the SAME laid-out
+// positions and radii as the nodes themselves, so a hull always encloses exactly the members it
+// labels. `groupOf` returning a nullish key excludes that node from every hull (no group, no hull).
+// With none of these supplied the emitter draws exactly as before.
 function kgSvg(nodes, edges, width, height, opts) {
   // The force path is DENSITY-SCALED (spec 59 c2): forceLayout takes the per-node radius/label
   // accessors so its canvas (and thus its repulsion) grows with the node count and the total label
@@ -1441,6 +1672,23 @@ function kgSvg(nodes, edges, width, height, opts) {
   // it clears the state and stays byte-identical.
   const declutter = !opts.layout;
   kgLabelState = declutter ? { nodes: nodes, pos: pos, radius: opts.radius, label: opts.label, width: width } : null;
+  // GROUP HULLS (spec 63 c3, directory hulls): a low-contrast tinted, rounded region drawn BEHIND the
+  // edges and nodes, one per DISTINCT group key `opts.groupOf` reports, padding the bounding box of
+  // its members' laid-out circles (centre +/- radius) so the region always encloses exactly what it
+  // labels. Sorted by group key for a deterministic z-order and DOM order across polls. A node whose
+  // `groupOf` is nullish (or whose position is missing, e.g. a budget-dropped drill member) joins no
+  // hull. Absent `opts.groupOf`, this is a no-op and the emitter draws exactly as before.
+  const hulls = kgGroupHulls(nodes, pos, opts.radius, opts.groupOf);
+  const hullPad = 16;
+  const hullMarkup = Object.keys(hulls).sort().map(key => {
+    const b = hulls[key];
+    const x = b.minX - hullPad, y = b.minY - hullPad;
+    const w = (b.maxX - b.minX) + hullPad * 2, h = (b.maxY - b.minY) + hullPad * 2;
+    const label = opts.groupLabel ? opts.groupLabel(key) : key;
+    return '<g class="kghull"><rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="'
+      + w.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="14" ry="14"/><text class="kghull-l" x="'
+      + (x + 10).toFixed(1) + '" y="' + (y + 17).toFixed(1) + '">' + esc(label) + '</text></g>';
+  }).join("");
   // The arrowhead marker (spec 52 c5): defined ONLY when the caller asks for direction, so the
   // exploration views (no marker) emit no <defs> and stay byte-identical. Forward directed edges
   // then carry marker-end so the callee end draws an arrowhead.
@@ -1493,7 +1741,7 @@ function kgSvg(nodes, edges, width, height, opts) {
   }).join("");
   return '<svg class="kgsvg" width="100%" height="' + height + '" viewBox="0 0 ' + width + ' ' + height
     + '" preserveAspectRatio="xMidYMid meet">' + defs
-    + '<g id="kgzoom">' + lines + circles + '</g></svg>';
+    + '<g id="kgzoom">' + hullMarkup + lines + circles + '</g></svg>';
 }
 
 // The DIRECTED-CALL layered layout (spec 52 c5): a left-to-right DAG position map for `kgSvg`, keyed
@@ -1638,7 +1886,12 @@ function renderKgOverview(ov) {
     nodeClass: () => "kgcluster",
     nodeAttrs: n => ' data-cluster="' + esc(n.id) + '"',
     label: n => (n.label || n.id) + " (" + n.count + ")",
-    edgeWidth: e => 0.6 + 4 * (e.weight / maxW)
+    edgeWidth: e => 0.6 + 4 * (e.weight / maxW),
+    // DIRECTORY HULLS (spec 63 c3): only the files lens's nodes ARE files, so only there does a
+    // directory grouping mean anything - code/concepts clusters are already communities/concepts,
+    // not files, so they opt out (undefined groupOf, no hull drawn) and stay byte-identical.
+    groupOf: kgLens === "files" ? (n => kgFilesDirOf(n.id)) : undefined,
+    groupLabel: kgLens === "files" ? (key => "DIR · " + key) : undefined
   });
   const toolbar = '<div class="kgtoolbar">' + controls + ' &middot; ' + total + " node" + (total === 1 ? "" : "s")
     + " in " + clusters.length + " cluster" + (clusters.length === 1 ? "" : "s")
@@ -1739,6 +1992,11 @@ async function loadKgOverview() {
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the knowledge graph is unavailable</div>';
   }
+  // The whole-graph overview is the subject-less altitude (spec 63 c5): the docked memory rail is
+  // a SUBJECT's rail, so it hides right alongside the subject-sticky lens control, on every arm.
+  renderMemoryRail(null);
+  // Likewise the METADATA CARD (spec 63 c2): no single subject is carded at the whole-graph altitude.
+  renderCard(null);
 }
 
 // DRILL a cluster (spec 42 c5): fetch /api/graph?cluster=<key> (the key encodeURIComponent'd, since a
@@ -1762,6 +2020,12 @@ async function drillCluster(key) {
   } catch (e) {
     el("kgpanel").innerHTML = '<div class="empty">the cluster is unavailable</div>';
   }
+  // The FILES / CONCEPTS lens's own cluster IS a file / concept subject (criteria 3/4): card it
+  // alongside the drill (its top entities / top evidence, spec 63 c2) - additive, the drill's own
+  // markup above is unchanged. A CODE lens cluster is a coupling COMMUNITY, which this design names
+  // no card for, so it hides any stale card instead.
+  if (kgLens === "files" || kgLens === "concepts") loadCard(key);
+  else renderCard(null);
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -1968,6 +2232,21 @@ function wireSelectToSeed() {
     const lens = ev.target.closest("[data-lens]");
     if (lens && lens.dataset.lens) { ev.preventDefault(); onLensPick(lens.dataset.lens); return; }
   });
+  // The METADATA CARD's own chip dispatch (spec 63 c2): ONE delegated click on the STATIC #kgcard,
+  // so a chip works no matter which view is behind it (the card is never swapped by a view render).
+  // A FILE / CONCEPTS / TOP-ENTITIES / TOP-EVIDENCE chip carries `data-handoff="<lens>"` alongside
+  // `data-seed="<id>"` - the LENS HANDOFF: force that lens, then re-project the chip's id under it
+  // (subject rides along, spec 63's "a chip opens its own taxonomy's lens"). A MEMORY chip carries
+  // `data-seed` ALONE, so it falls through to the plain re-seed [`seedGraph`] a node click already
+  // performs - reusing criterion 5's rail-and-reseed mechanism for the card's OWN subject, never a
+  // second memory lens (this design names none).
+  el("kgcard").addEventListener("click", ev => {
+    const chip = ev.target.closest("[data-seed]");
+    if (!chip || !chip.dataset.seed) return;
+    ev.preventDefault();
+    if (chip.dataset.handoff) { kgLens = chip.dataset.handoff; reprojectSubject(chip.dataset.seed); }
+    else seedGraph(chip.dataset.seed);
+  });
   // c7 TIER FILTER: one delegated CHANGE listener on the stable KG panel container, so a tier-checkbox
   // toggle re-filters the DRAWN edges over the LAST neighborhood body (no re-fetch) and it SURVIVES the
   // renderGraph innerHTML swaps - the same delegation discipline the select-to-seed click uses.
@@ -2083,6 +2362,11 @@ wireSelectToSeed();
 // paint. Both are no-ops on their view bodies (the additive guarantee).
 syncSubjectLens();
 syncOverlayToggle();
+// The docked memory rail (spec 63 c5) starts hidden too - no subject is focused before the first
+// paint (matches the static markup's own `hidden` attribute; a no-op on the panel body).
+renderMemoryRail(null);
+// The metadata card (spec 63 c2) starts hidden the same way.
+renderCard(null);
 
 // Paint the landing strip immediately (the "this dash" chip, plus any prior list) so the picker is
 // present before the first /api/instances fetch lands; the live poll then fills in the instances.
