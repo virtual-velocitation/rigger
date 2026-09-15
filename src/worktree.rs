@@ -62,6 +62,16 @@ pub enum RunBranchSetup {
     CreatedFromHead,
 }
 
+/// What [`Worktree::land`] did with the run branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LandOutcome {
+    /// The run branch fast-forwarded to the unit's branch: the unit is on the run branch.
+    Landed,
+    /// The run branch moved after the worktree merge, so a fast-forward was impossible; the
+    /// repo is untouched. Merge the new tip into the worktree and land again.
+    TipMoved,
+}
+
 /// The outcome of [`Worktree::merge_into_worktree`] (spec 88, criterion 1 round 4, TABLE row
 /// 1: "conflict detection"). This is the FRONT HALF of what a single pre-round-4 `integrate`
 /// method used to do in one call - merging the run branch's tip into the unit's own worktree
@@ -891,10 +901,25 @@ impl Worktree {
     /// an earlier one already established that), so this lands as a clean fast-forward. A
     /// failure here is a genuine, unexpected error - never a conflict (conflicts are caught,
     /// and returned, by `merge_into_worktree` itself, which the caller must check first).
-    pub fn land(&self) -> Result<(), Error> {
-        match run_git(&self.repo, &["merge", "--no-edit", &self.branch]) {
-            Ok(_) => Ok(()),
-            Err(out) => Err(Error(format!("git merge --no-edit {}: {out}", self.branch))),
+    pub fn land(&self) -> Result<LandOutcome, Error> {
+        // FAST-FORWARD ONLY. `merge_into_worktree` has just merged the run branch's tip into
+        // the unit's branch, so a correct landing is always a fast-forward; anything else
+        // means the run branch MOVED between that merge and this call (an operator commit, a
+        // sibling's landing). A real merge here would resolve nothing the worktree merge did
+        // not already resolve - and on a conflict it left the main checkout mid-merge
+        // (`MERGE_HEAD`, `UU` paths), which failed every later step (2026-09-15, spec 92).
+        // `--ff-only` refuses before it touches the index, so the repo is never left dirty;
+        // the caller redoes the worktree merge against the new tip and lands again.
+        match run_git(&self.repo, &["merge", "--ff-only", &self.branch]) {
+            Ok(_) => Ok(LandOutcome::Landed),
+            Err(out)
+                if out
+                    .to_ascii_lowercase()
+                    .contains("not possible to fast-forward") =>
+            {
+                Ok(LandOutcome::TipMoved)
+            }
+            Err(out) => Err(Error(format!("git merge --ff-only {}: {out}", self.branch))),
         }
     }
 
@@ -2286,8 +2311,8 @@ mod tests {
             match self.merge_into_worktree(message)? {
                 MergeOutcome::Conflict(paths) => Ok(IntegrateOutcome::Conflict(paths)),
                 MergeOutcome::Ready(commit) => {
-                    if !commit.is_empty() {
-                        self.land()?;
+                    if !commit.is_empty() && self.land()? == LandOutcome::TipMoved {
+                        return Err(Error("run tip moved under the test".into()));
                     }
                     Ok(IntegrateOutcome::Merged(commit))
                 }
@@ -2612,6 +2637,66 @@ mod tests {
         assert!(
             shown.contains("work.txt"),
             "the checkpoint carries the tree: {shown}"
+        );
+    }
+
+    #[test]
+    fn land_is_fast_forward_only_and_reports_a_moved_tip_without_dirtying_the_repo() {
+        // The worktree merge has just brought the run tip into the unit branch, so a landing
+        // is a fast-forward; if the run branch moved meanwhile, `land` must say so and leave
+        // the repo untouched (no MERGE_HEAD, no conflicted index) - the conductor then merges
+        // the new tip into the worktree and lands again. A real merge here once left the main
+        // checkout mid-merge and failed every later step.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/land-ff", "").unwrap();
+        std::fs::write(wt_path.join("unit.txt"), "unit work\n").unwrap();
+        wt.commit("rigger: unit work").unwrap();
+
+        // The run branch moves under the unit (an operator commit on the run branch).
+        std::fs::write(repo.path().join("operator.txt"), "operator work\n").unwrap();
+        git(&repo_path, &["add", "operator.txt"]).unwrap();
+        git(
+            &repo_path,
+            &["commit", "-q", "-m", "operator: moved the tip"],
+        )
+        .unwrap();
+        let tip_before = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+
+        assert_eq!(
+            wt.land().unwrap(),
+            LandOutcome::TipMoved,
+            "no fast-forward is possible"
+        );
+        assert!(
+            !repo.path().join(".git").join("MERGE_HEAD").exists(),
+            "a refused landing never leaves the repo mid-merge"
+        );
+        assert_eq!(
+            git(&repo_path, &["rev-parse", "HEAD"]).unwrap(),
+            tip_before,
+            "the run branch is untouched"
+        );
+        assert_eq!(
+            git(&repo_path, &["status", "--porcelain"]).unwrap().trim(),
+            "",
+            "the main checkout stays clean"
+        );
+
+        // Merging the new tip into the worktree makes the next landing a fast-forward.
+        match wt.merge_into_worktree("rigger: integrate land-ff").unwrap() {
+            MergeOutcome::Ready(c) => assert!(!c.is_empty(), "the merge commits"),
+            MergeOutcome::Conflict(paths) => {
+                panic!("expected a clean merge, got a conflict on {paths:?}")
+            }
+        }
+        assert_eq!(wt.land().unwrap(), LandOutcome::Landed);
+        assert_eq!(
+            git(&repo_path, &["rev-parse", "HEAD"]).unwrap(),
+            git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap(),
+            "the run branch fast-forwarded to the unit branch"
         );
     }
 
