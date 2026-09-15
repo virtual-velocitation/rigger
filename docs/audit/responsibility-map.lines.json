@@ -5937,2227 +5937,2233 @@
     "file": "src/main.rs",
     "name": "precommit_block",
     "start_line": 11919,
-    "end_line": 12034
+    "end_line": 12060
   },
   {
     "file": "src/main.rs",
     "name": "find_bytes",
-    "start_line": 12040,
-    "end_line": 12045
+    "start_line": 12066,
+    "end_line": 12071
   },
   {
     "file": "src/main.rs",
     "name": "compose_precommit_bytes",
-    "start_line": 12065,
-    "end_line": 12117
+    "start_line": 12091,
+    "end_line": 12143
   },
   {
     "file": "src/main.rs",
     "name": "compose_precommit",
-    "start_line": 12127,
-    "end_line": 12132
+    "start_line": 12153,
+    "end_line": 12158
   },
   {
     "file": "src/main.rs",
     "name": "git_hooks_dir",
-    "start_line": 12138,
-    "end_line": 12159
+    "start_line": 12164,
+    "end_line": 12185
   },
   {
     "file": "src/main.rs",
     "name": "install_precommit_hook",
-    "start_line": 12171,
-    "end_line": 12199
+    "start_line": 12197,
+    "end_line": 12225
   },
   {
     "file": "src/main.rs",
     "name": "provision_shim",
-    "start_line": 12216,
-    "end_line": 12224
+    "start_line": 12242,
+    "end_line": 12250
   },
   {
     "file": "src/main.rs",
     "name": "shim_is_current",
-    "start_line": 12238,
-    "end_line": 12247
+    "start_line": 12264,
+    "end_line": 12273
   },
   {
     "file": "src/main.rs",
     "name": "write_shim_files",
-    "start_line": 12252,
-    "end_line": 12259
+    "start_line": 12278,
+    "end_line": 12285
   },
   {
     "file": "src/main.rs",
     "name": "run_npm_install",
-    "start_line": 12266,
-    "end_line": 12294
+    "start_line": 12292,
+    "end_line": 12320
   },
   {
     "file": "src/main.rs",
     "name": "cmd_setup",
-    "start_line": 12303,
-    "end_line": 12423
+    "start_line": 12329,
+    "end_line": 12449
   },
   {
     "file": "src/main.rs",
     "name": "parse_setup_args",
-    "start_line": 12435,
-    "end_line": 12451
+    "start_line": 12461,
+    "end_line": 12477
   },
   {
     "file": "src/main.rs",
     "name": "import_agents",
-    "start_line": 12472,
-    "end_line": 12563
+    "start_line": 12498,
+    "end_line": 12589
   },
   {
     "file": "src/main.rs",
     "name": "normalize_identity",
-    "start_line": 12572,
-    "end_line": 12602
+    "start_line": 12598,
+    "end_line": 12628
   },
   {
     "file": "src/main.rs",
     "name": "top_level_key",
-    "start_line": 12607,
-    "end_line": 12613
+    "start_line": 12633,
+    "end_line": 12639
   },
   {
     "file": "src/main.rs",
     "name": "docs_context",
-    "start_line": 12623,
-    "end_line": 12661
+    "start_line": 12649,
+    "end_line": 12687
   },
   {
     "file": "src/main.rs",
     "name": "write_docs",
-    "start_line": 12671,
-    "end_line": 12689
+    "start_line": 12697,
+    "end_line": 12715
   },
   {
     "file": "src/main.rs",
     "name": "cmd_docs",
-    "start_line": 12697,
-    "end_line": 12702
+    "start_line": 12723,
+    "end_line": 12728
   },
   {
     "file": "src/main.rs",
     "name": "docs_drift",
-    "start_line": 12717,
-    "end_line": 12736
+    "start_line": 12743,
+    "end_line": 12762
   },
   {
     "file": "src/main.rs",
     "name": "docs_drift_failure",
-    "start_line": 12745,
-    "end_line": 12761
+    "start_line": 12771,
+    "end_line": 12787
   },
   {
     "file": "src/main.rs",
     "name": "spec_lint_next_step",
-    "start_line": 12783,
-    "end_line": 12789
+    "start_line": 12809,
+    "end_line": 12815
   },
   {
     "file": "src/main.rs",
     "name": "spec_lint_reminder_suppressed",
-    "start_line": 12810,
-    "end_line": 12814
+    "start_line": 12836,
+    "end_line": 12840
   },
   {
     "file": "src/main.rs",
     "name": "spec_lint_reminder_should_print",
-    "start_line": 12822,
-    "end_line": 12834
+    "start_line": 12848,
+    "end_line": 12860
   },
   {
     "file": "src/main.rs",
     "name": "cmd_prime",
-    "start_line": 12842,
-    "end_line": 12876
+    "start_line": 12868,
+    "end_line": 12902
   },
   {
     "file": "src/main.rs",
     "name": "select_grounder",
-    "start_line": 12890,
-    "end_line": 12905
+    "start_line": 12916,
+    "end_line": 12931
   },
   {
     "file": "src/main.rs",
     "name": "select_reindex_grounder",
-    "start_line": 12913,
-    "end_line": 12915
+    "start_line": 12939,
+    "end_line": 12941
   },
   {
     "file": "src/main.rs",
     "name": "git_repo",
-    "start_line": 12917,
-    "end_line": 12920
+    "start_line": 12943,
+    "end_line": 12946
   },
   {
     "file": "src/main.rs",
     "name": "git_repo_at",
-    "start_line": 12928,
-    "end_line": 12938
+    "start_line": 12954,
+    "end_line": 12964
   },
   {
     "file": "src/main.rs",
     "name": "print_run_state",
-    "start_line": 12940,
-    "end_line": 12959
+    "start_line": 12966,
+    "end_line": 12985
   },
   {
     "file": "src/main.rs",
     "name": "write_if_absent",
-    "start_line": 12969,
-    "end_line": 12976
+    "start_line": 12995,
+    "end_line": 13002
   },
   {
     "file": "src/main.rs",
     "name": "spec_lint_next_step_names_rigger_validate_and_the_given_spec_path",
-    "start_line": 13178,
-    "end_line": 13185
+    "start_line": 13204,
+    "end_line": 13211
   },
   {
     "file": "src/main.rs",
     "name": "spec_lint_reminder_suppressed_when_env_names_the_real_direct_parent_pid",
-    "start_line": 13193,
-    "end_line": 13195
+    "start_line": 13219,
+    "end_line": 13221
   },
   {
     "file": "src/main.rs",
     "name": "spec_lint_reminder_prints_on_absent_foreign_stale_or_malformed_env",
-    "start_line": 13201,
-    "end_line": 13222
+    "start_line": 13227,
+    "end_line": 13248
   },
   {
     "file": "src/main.rs",
     "name": "spec_lint_warning_lines_formats_every_advisory_with_the_spec_path",
-    "start_line": 13239,
-    "end_line": 13261
+    "start_line": 13265,
+    "end_line": 13287
   },
   {
     "file": "src/main.rs",
     "name": "spec_lint_warning_lines_is_empty_on_a_clean_spec",
-    "start_line": 13266,
-    "end_line": 13269
+    "start_line": 13292,
+    "end_line": 13295
   },
   {
     "file": "src/main.rs",
     "name": "ensure_run_dashboard_at_starts_once_then_short_circuits_on_a_live_marker",
-    "start_line": 13279,
-    "end_line": 13332
+    "start_line": 13305,
+    "end_line": 13358
   },
   {
     "file": "src/main.rs",
     "name": "dash_marker_serving_reports_false_when_nothing_answers_the_markers_port",
-    "start_line": 13341,
-    "end_line": 13347
+    "start_line": 13367,
+    "end_line": 13373
   },
   {
     "file": "src/main.rs",
     "name": "ensure_run_dashboard_at_restarts_when_the_recorded_dash_is_gone",
-    "start_line": 13352,
-    "end_line": 13384
+    "start_line": 13378,
+    "end_line": 13410
   },
   {
     "file": "src/main.rs",
     "name": "ensure_run_dashboard_at_reports_failed_when_the_start_errors",
-    "start_line": 13392,
-    "end_line": 13411
+    "start_line": 13418,
+    "end_line": 13437
   },
   {
     "file": "src/main.rs",
     "name": "wait_for_dash_bind_confirms_promptly_once_the_port_answers_as_a_dash",
-    "start_line": 13423,
-    "end_line": 13462
+    "start_line": 13449,
+    "end_line": 13488
   },
   {
     "file": "src/main.rs",
     "name": "wait_for_dash_bind_fails_fast_when_the_child_exits_before_confirming",
-    "start_line": 13469,
-    "end_line": 13496
+    "start_line": 13495,
+    "end_line": 13522
   },
   {
     "file": "src/main.rs",
     "name": "wait_for_dash_bind_times_out_against_a_real_held_port",
-    "start_line": 13510,
-    "end_line": 13552
+    "start_line": 13536,
+    "end_line": 13578
   },
   {
     "file": "src/main.rs",
     "name": "wait_for_dash_bind_or_diagnose_never_self_attributes_its_own_still_starting_spawn",
-    "start_line": 13575,
-    "end_line": 13619
+    "start_line": 13601,
+    "end_line": 13645
   },
   {
     "file": "src/main.rs",
     "name": "ensure_run_dashboard_at_writes_no_marker_when_the_real_spawn_never_confirms_a_bind",
-    "start_line": 13636,
-    "end_line": 13664
+    "start_line": 13662,
+    "end_line": 13690
   },
   {
     "file": "src/main.rs",
     "name": "ensure_run_dashboard_at_names_the_held_ports_holder_when_the_real_spawn_fails",
-    "start_line": 13679,
-    "end_line": 13724
+    "start_line": 13705,
+    "end_line": 13750
   },
   {
     "file": "src/main.rs",
     "name": "ensure_run_dashboard_at_never_claims_a_phantom_holder_for_an_unheld_port",
-    "start_line": 13744,
-    "end_line": 13768
+    "start_line": 13770,
+    "end_line": 13794
   },
   {
     "file": "src/main.rs",
     "name": "ensure_run_dashboard_at_self_heals_a_marker_naming_a_dead_pid",
-    "start_line": 13780,
-    "end_line": 13811
+    "start_line": 13806,
+    "end_line": 13837
   },
   {
     "file": "src/main.rs",
     "name": "ensure_run_dashboard_at_self_heals_a_marker_naming_a_live_pid_whose_port_is_unserved",
-    "start_line": 13821,
-    "end_line": 13855
+    "start_line": 13847,
+    "end_line": 13881
   },
   {
     "file": "src/main.rs",
     "name": "ensure_run_dashboard_at_never_revisits_a_still_serving_unattributed_pid_marker",
-    "start_line": 13868,
-    "end_line": 13906
+    "start_line": 13894,
+    "end_line": 13932
   },
   {
     "file": "src/main.rs",
     "name": "dash_ensure_is_suppressed_by_either_opt_out_and_proceeds_when_neither_is_set",
-    "start_line": 13913,
-    "end_line": 13934
+    "start_line": 13939,
+    "end_line": 13960
   },
   {
     "file": "src/main.rs",
     "name": "dash_status_line_renders_each_outcome_to_its_exact_text",
-    "start_line": 13944,
-    "end_line": 13975
+    "start_line": 13970,
+    "end_line": 14001
   },
   {
     "file": "src/main.rs",
     "name": "dash_status_json_renders_each_outcome_to_its_exact_shape",
-    "start_line": 13983,
-    "end_line": 14011
+    "start_line": 14009,
+    "end_line": 14037
   },
   {
     "file": "src/main.rs",
     "name": "dash_ensure_port_defaults_to_the_fixed_address_and_only_a_valid_override_relocates_it",
-    "start_line": 14020,
-    "end_line": 14047
+    "start_line": 14046,
+    "end_line": 14073
   },
   {
     "file": "src/main.rs",
     "name": "compose_precommit_fresh_install_carries_the_managed_block",
-    "start_line": 14057,
-    "end_line": 14090
+    "start_line": 14083,
+    "end_line": 14116
   },
   {
     "file": "src/main.rs",
     "name": "precommit_block_refuses_on_drift_instead_of_staging",
-    "start_line": 14100,
-    "end_line": 14127
+    "start_line": 14126,
+    "end_line": 14153
+  },
+  {
+    "file": "src/main.rs",
+    "name": "precommit_block_finds_the_relocated_unit_target_with_the_binary_s_own_path_encoding",
+    "start_line": 14167,
+    "end_line": 14220
   },
   {
     "file": "src/main.rs",
     "name": "precommit_block_resolves_a_tree_built_binary_before_path",
-    "start_line": 14141,
-    "end_line": 14242
+    "start_line": 14223,
+    "end_line": 14324
   },
   {
     "file": "src/main.rs",
     "name": "compose_precommit_is_idempotent",
-    "start_line": 14249,
-    "end_line": 14261
+    "start_line": 14331,
+    "end_line": 14343
   },
   {
     "file": "src/main.rs",
     "name": "compose_precommit_chains_without_clobbering_an_existing_hook",
-    "start_line": 14272,
-    "end_line": 14301
+    "start_line": 14354,
+    "end_line": 14383
   },
   {
     "file": "src/main.rs",
     "name": "compose_precommit_prepends_before_a_terminal_exit_existing_hook",
-    "start_line": 14311,
-    "end_line": 14325
+    "start_line": 14393,
+    "end_line": 14407
   },
   {
     "file": "src/main.rs",
     "name": "install_precommit_hook_preserves_a_non_utf8_existing_hook",
-    "start_line": 14334,
-    "end_line": 14385
+    "start_line": 14416,
+    "end_line": 14467
   },
   {
     "file": "src/main.rs",
     "name": "compose_precommit_refreshes_a_stale_block_in_place",
-    "start_line": 14392,
-    "end_line": 14415
+    "start_line": 14474,
+    "end_line": 14497
   },
   {
     "file": "src/main.rs",
     "name": "cmd_peers_prints_live_or_historical_per_decision_provenance",
-    "start_line": 14423,
-    "end_line": 14442
+    "start_line": 14505,
+    "end_line": 14524
   },
   {
     "file": "src/main.rs",
     "name": "ev",
-    "start_line": 14462,
-    "end_line": 14464
+    "start_line": 14544,
+    "end_line": 14546
   },
   {
     "file": "src/main.rs",
     "name": "run_started",
-    "start_line": 14465,
-    "end_line": 14470
+    "start_line": 14547,
+    "end_line": 14552
   },
   {
     "file": "src/main.rs",
     "name": "superseded_graph_nodes_drops_dead_runs_and_preboundary_keeping_lessons_active_and_reused_ids",
-    "start_line": 14460,
-    "end_line": 14503
+    "start_line": 14542,
+    "end_line": 14585
   },
   {
     "file": "src/main.rs",
     "name": "run_started_at",
-    "start_line": 14514,
-    "end_line": 14520
+    "start_line": 14596,
+    "end_line": 14602
   },
   {
     "file": "src/main.rs",
     "name": "decision",
-    "start_line": 14521,
-    "end_line": 14527
+    "start_line": 14603,
+    "end_line": 14609
   },
   {
     "file": "src/main.rs",
     "name": "superseded_edge_boundary_is_the_active_runs_start_or_none_without_a_run",
-    "start_line": 14512,
-    "end_line": 14550
+    "start_line": 14594,
+    "end_line": 14632
   },
   {
     "file": "src/main.rs",
     "name": "ev",
-    "start_line": 14584,
-    "end_line": 14588
+    "start_line": 14666,
+    "end_line": 14670
   },
   {
     "file": "src/main.rs",
     "name": "the_denoise_leaves_metrics_run_pruning_and_blast_radius_unaffected",
-    "start_line": 14578,
-    "end_line": 14836
+    "start_line": 14660,
+    "end_line": 14918
   },
   {
     "file": "src/main.rs",
     "name": "version_line_carries_the_derived_version_and_a_non_empty_build_provenance",
-    "start_line": 14846,
-    "end_line": 14864
+    "start_line": 14928,
+    "end_line": 14946
   },
   {
     "file": "src/main.rs",
     "name": "docs_context_reads_every_fact_from_code",
-    "start_line": 14871,
-    "end_line": 14912
+    "start_line": 14953,
+    "end_line": 14994
   },
   {
     "file": "src/main.rs",
     "name": "docs_render_surfaces_known_code_facts_verbatim",
-    "start_line": 14919,
-    "end_line": 14949
+    "start_line": 15001,
+    "end_line": 15031
   },
   {
     "file": "src/main.rs",
     "name": "commands_registry_is_well_formed_and_covers_dispatch",
-    "start_line": 14955,
-    "end_line": 14974
+    "start_line": 15037,
+    "end_line": 15056
   },
   {
     "file": "src/main.rs",
     "name": "write_docs_writes_every_registry_skill_plus_the_handbook",
-    "start_line": 14982,
-    "end_line": 15012
+    "start_line": 15064,
+    "end_line": 15094
   },
   {
     "file": "src/main.rs",
     "name": "install_and_docs_each_cover_exactly_the_registry_no_more_no_less",
-    "start_line": 15022,
-    "end_line": 15059
+    "start_line": 15104,
+    "end_line": 15141
   },
   {
     "file": "src/main.rs",
     "name": "per_operation_skills_reference_only_real_subcommands",
-    "start_line": 15068,
-    "end_line": 15107
+    "start_line": 15150,
+    "end_line": 15189
   },
   {
     "file": "src/main.rs",
     "name": "watching_discipline_skills_reference_only_real_subcommands",
-    "start_line": 15117,
-    "end_line": 15145
+    "start_line": 15199,
+    "end_line": 15227
   },
   {
     "file": "src/main.rs",
     "name": "docs_drift_flags_a_changed_file_and_skips_absent_or_in_sync_ones",
-    "start_line": 15153,
-    "end_line": 15220
+    "start_line": 15235,
+    "end_line": 15302
   },
   {
     "file": "src/main.rs",
     "name": "committed_registry_docs_are_in_sync_with_a_fresh_render",
-    "start_line": 15231,
-    "end_line": 15257
+    "start_line": 15313,
+    "end_line": 15339
   },
   {
     "file": "src/main.rs",
     "name": "planning_field_guide_page_renders_and_is_linked_from_authoring_loops",
-    "start_line": 15268,
-    "end_line": 15297
+    "start_line": 15350,
+    "end_line": 15379
   },
   {
     "file": "src/main.rs",
     "name": "status_and_dashboard_render_the_same_current_blocker_lines",
-    "start_line": 15308,
-    "end_line": 15375
+    "start_line": 15390,
+    "end_line": 15457
   },
   {
     "file": "src/main.rs",
     "name": "release_ready_lines_surface_only_on_a_done_run",
-    "start_line": 15388,
-    "end_line": 15443
+    "start_line": 15470,
+    "end_line": 15525
   },
   {
     "file": "src/main.rs",
     "name": "status_and_dash_read_the_runs_persisted_base_not_a_re_resolution",
-    "start_line": 15446,
-    "end_line": 15512
+    "start_line": 15528,
+    "end_line": 15594
   },
   {
     "file": "src/main.rs",
     "name": "dirty_tracked_paths_keeps_tracked_modifications_and_drops_untracked_and_ignored",
-    "start_line": 15517,
-    "end_line": 15538
+    "start_line": 15599,
+    "end_line": 15620
   },
   {
     "file": "src/main.rs",
     "name": "dirty_tracked_paths_on_a_clean_tree_is_empty",
-    "start_line": 15541,
-    "end_line": 15543
+    "start_line": 15623,
+    "end_line": 15625
   },
   {
     "file": "src/main.rs",
     "name": "installed_workflow_drifted_is_false_when_absent_or_identical_and_true_on_drift",
-    "start_line": 15546,
-    "end_line": 15571
+    "start_line": 15628,
+    "end_line": 15653
   },
   {
     "file": "src/main.rs",
     "name": "drift_side_names_the_binary_stale_only_when_the_installed_workflow_is_provably_newer",
-    "start_line": 15576,
-    "end_line": 15623
+    "start_line": 15658,
+    "end_line": 15705
   },
   {
     "file": "src/main.rs",
     "name": "workflow_drift_advisory_names_which_side_is_stale_and_never_says_they_differ",
-    "start_line": 15626,
-    "end_line": 15674
+    "start_line": 15708,
+    "end_line": 15756
   },
   {
     "file": "src/main.rs",
     "name": "git_is_ancestor_decides_commit_order_in_a_real_repo",
-    "start_line": 15677,
-    "end_line": 15721
+    "start_line": 15759,
+    "end_line": 15803
   },
   {
     "file": "src/main.rs",
     "name": "git_commit_distance_counts_commits_ahead_in_a_real_repo",
-    "start_line": 15724,
-    "end_line": 15770
+    "start_line": 15806,
+    "end_line": 15852
   },
   {
     "file": "src/main.rs",
     "name": "missing_gitsemver_binary_advisory_fires_only_on_the_unversioned_marker",
-    "start_line": 15773,
-    "end_line": 15787
+    "start_line": 15855,
+    "end_line": 15869
   },
   {
     "file": "src/main.rs",
     "name": "behind_the_tree_message_is_silent_when_versions_already_match",
-    "start_line": 15790,
-    "end_line": 15795
+    "start_line": 15872,
+    "end_line": 15877
   },
   {
     "file": "src/main.rs",
     "name": "behind_the_tree_message_is_silent_when_either_side_is_unversioned",
-    "start_line": 15798,
-    "end_line": 15808
+    "start_line": 15880,
+    "end_line": 15890
   },
   {
     "file": "src/main.rs",
     "name": "behind_the_tree_message_is_silent_on_an_undecidable_or_zero_distance",
-    "start_line": 15811,
-    "end_line": 15820
+    "start_line": 15893,
+    "end_line": 15902
   },
   {
     "file": "src/main.rs",
     "name": "behind_the_tree_message_names_both_versions_and_the_commit_distance",
-    "start_line": 15823,
-    "end_line": 15830
+    "start_line": 15905,
+    "end_line": 15912
   },
   {
     "file": "src/main.rs",
     "name": "gitsemver_available",
-    "start_line": 15837,
-    "end_line": 15843
+    "start_line": 15919,
+    "end_line": 15925
   },
   {
     "file": "src/main.rs",
     "name": "behind_the_tree_git",
-    "start_line": 15847,
-    "end_line": 15862
+    "start_line": 15929,
+    "end_line": 15944
   },
   {
     "file": "src/main.rs",
     "name": "behind_the_tree_git_output",
-    "start_line": 15864,
-    "end_line": 15876
-  },
-  {
-    "file": "src/main.rs",
-    "name": "behind_the_tree_advisory_names_the_real_derived_version_ahead_of_the_installed_commit",
-    "start_line": 15879,
-    "end_line": 15917
-  },
-  {
-    "file": "src/main.rs",
-    "name": "behind_the_tree_advisory_is_silent_when_the_checkout_has_not_moved",
-    "start_line": 15920,
-    "end_line": 15942
-  },
-  {
-    "file": "src/main.rs",
-    "name": "install_workflow_records_the_build_provenance_beside_the_workflow",
-    "start_line": 15945,
+    "start_line": 15946,
     "end_line": 15958
   },
   {
     "file": "src/main.rs",
-    "name": "validate_advisories_warns_on_workflow_drift_naming_the_file",
+    "name": "behind_the_tree_advisory_names_the_real_derived_version_ahead_of_the_installed_commit",
     "start_line": 15961,
-    "end_line": 15976
+    "end_line": 15999
+  },
+  {
+    "file": "src/main.rs",
+    "name": "behind_the_tree_advisory_is_silent_when_the_checkout_has_not_moved",
+    "start_line": 16002,
+    "end_line": 16024
+  },
+  {
+    "file": "src/main.rs",
+    "name": "install_workflow_records_the_build_provenance_beside_the_workflow",
+    "start_line": 16027,
+    "end_line": 16040
+  },
+  {
+    "file": "src/main.rs",
+    "name": "validate_advisories_warns_on_workflow_drift_naming_the_file",
+    "start_line": 16043,
+    "end_line": 16058
   },
   {
     "file": "src/main.rs",
     "name": "slugs",
-    "start_line": 15982,
-    "end_line": 15984
+    "start_line": 16064,
+    "end_line": 16066
   },
   {
     "file": "src/main.rs",
     "name": "write_file",
-    "start_line": 15986,
-    "end_line": 15989
+    "start_line": 16068,
+    "end_line": 16071
   },
   {
     "file": "src/main.rs",
     "name": "init_committed_repo",
-    "start_line": 15994,
-    "end_line": 16022
+    "start_line": 16076,
+    "end_line": 16104
   },
   {
     "file": "src/main.rs",
     "name": "resolve_main_worktree_or_refuse_returns_exactly_git_rev_parse_show_toplevel",
-    "start_line": 16040,
-    "end_line": 16056
+    "start_line": 16122,
+    "end_line": 16138
   },
   {
     "file": "src/main.rs",
     "name": "refuse_when_base_lacks_spec_paths_refuses_on_total_absence_and_names_a_path",
-    "start_line": 16059,
-    "end_line": 16083
+    "start_line": 16141,
+    "end_line": 16165
   },
   {
     "file": "src/main.rs",
     "name": "refuse_when_base_lacks_spec_paths_proceeds_when_the_base_contains_them",
-    "start_line": 16086,
-    "end_line": 16103
+    "start_line": 16168,
+    "end_line": 16185
   },
   {
     "file": "src/main.rs",
     "name": "refuse_when_base_lacks_spec_paths_partial_match_warns_and_proceeds",
-    "start_line": 16106,
-    "end_line": 16124
+    "start_line": 16188,
+    "end_line": 16206
   },
   {
     "file": "src/main.rs",
     "name": "refuse_when_base_lacks_spec_paths_skips_without_tokens_or_off_a_fresh_from_base_anchor",
-    "start_line": 16127,
-    "end_line": 16167
+    "start_line": 16209,
+    "end_line": 16249
   },
   {
     "file": "src/main.rs",
     "name": "refuse_when_base_unreachable_fails_loudly_only_when_no_reachable_base",
-    "start_line": 16170,
-    "end_line": 16251
+    "start_line": 16252,
+    "end_line": 16333
   },
   {
     "file": "src/main.rs",
     "name": "human_size_formats_bytes_through_gib",
-    "start_line": 16254,
-    "end_line": 16261
+    "start_line": 16336,
+    "end_line": 16343
   },
   {
     "file": "src/main.rs",
     "name": "is_uuid8_accepts_exactly_eight_hex_digits",
-    "start_line": 16264,
-    "end_line": 16270
+    "start_line": 16346,
+    "end_line": 16352
   },
   {
     "file": "src/main.rs",
     "name": "worktree_belongs_to_live_matches_both_naming_shapes_without_prefix_false_match",
-    "start_line": 16273,
-    "end_line": 16318
+    "start_line": 16355,
+    "end_line": 16400
   },
   {
     "file": "src/main.rs",
     "name": "current_run_units_scopes_to_the_current_run_and_splits_live_from_dead",
-    "start_line": 16321,
-    "end_line": 16368
+    "start_line": 16403,
+    "end_line": 16450
   },
   {
     "file": "src/main.rs",
     "name": "current_run_units_spares_a_terminal_units_branch_whose_latest_spawn_is_still_in_flight",
-    "start_line": 16371,
-    "end_line": 16408
+    "start_line": 16453,
+    "end_line": 16490
   },
   {
     "file": "src/main.rs",
     "name": "current_run_units_still_retires_a_terminal_unit_once_its_latest_spawn_answers",
-    "start_line": 16411,
-    "end_line": 16437
+    "start_line": 16493,
+    "end_line": 16519
   },
   {
     "file": "src/main.rs",
     "name": "current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_current_run",
-    "start_line": 16440,
-    "end_line": 16487
+    "start_line": 16522,
+    "end_line": 16569
   },
   {
     "file": "src/main.rs",
     "name": "live_branches_for_sweep_fails_closed_on_an_unreadable_stream_but_folds_a_readable_one",
-    "start_line": 16499,
-    "end_line": 16525
+    "start_line": 16581,
+    "end_line": 16607
   },
   {
     "file": "src/main.rs",
     "name": "find_shadow_stores_finds_nested_events_db_and_prunes_build_caches",
-    "start_line": 16528,
-    "end_line": 16568
+    "start_line": 16610,
+    "end_line": 16650
   },
   {
     "file": "src/main.rs",
     "name": "dir_size_bytes_sums_files_recursively",
-    "start_line": 16571,
-    "end_line": 16582
+    "start_line": 16653,
+    "end_line": 16664
   },
   {
     "file": "src/main.rs",
     "name": "reclaim_shared_build_cache_deletes_a_populated_cache_and_reports_its_bytes",
-    "start_line": 16587,
-    "end_line": 16603
+    "start_line": 16669,
+    "end_line": 16685
   },
   {
     "file": "src/main.rs",
     "name": "reclaim_shared_build_cache_is_idempotent_zero_report_when_absent",
-    "start_line": 16606,
-    "end_line": 16624
+    "start_line": 16688,
+    "end_line": 16706
   },
   {
     "file": "src/main.rs",
     "name": "reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard",
-    "start_line": 16627,
-    "end_line": 16655
+    "start_line": 16709,
+    "end_line": 16737
   },
   {
     "file": "src/main.rs",
     "name": "reclaim_shared_build_cache_releases_the_guard_promptly_after_a_successful_reclaim",
-    "start_line": 16658,
-    "end_line": 16681
+    "start_line": 16740,
+    "end_line": 16763
   },
   {
     "file": "src/main.rs",
     "name": "scan_residue_reports_dead_worktrees_caches_shadows_and_branches",
-    "start_line": 16684,
-    "end_line": 16757
+    "start_line": 16766,
+    "end_line": 16839
   },
   {
     "file": "src/main.rs",
     "name": "scan_residue_is_empty_when_everything_is_live_and_no_shadow_stores",
-    "start_line": 16760,
-    "end_line": 16779
+    "start_line": 16842,
+    "end_line": 16861
   },
   {
     "file": "src/main.rs",
     "name": "format_residue_renders_a_sized_warning_block",
-    "start_line": 16782,
-    "end_line": 16799
+    "start_line": 16864,
+    "end_line": 16881
   },
   {
     "file": "src/main.rs",
     "name": "store_and_backup_bytes_splits_live_store_files_from_dot_bak_backups",
-    "start_line": 16804,
-    "end_line": 16823
+    "start_line": 16886,
+    "end_line": 16905
   },
   {
     "file": "src/main.rs",
     "name": "store_and_backup_bytes_is_zero_on_a_missing_directory",
-    "start_line": 16826,
-    "end_line": 16830
+    "start_line": 16908,
+    "end_line": 16912
   },
   {
     "file": "src/main.rs",
     "name": "scratch_footprint_totals_every_entry_and_dead_only_the_non_live_share",
-    "start_line": 16833,
-    "end_line": 16875
+    "start_line": 16915,
+    "end_line": 16957
   },
   {
     "file": "src/main.rs",
     "name": "footprint_report_measures_every_category_on_a_seeded_fixture_tree",
-    "start_line": 16878,
-    "end_line": 16943
+    "start_line": 16960,
+    "end_line": 17025
   },
   {
     "file": "src/main.rs",
     "name": "footprint_report_folds_a_none_mutation_root_to_a_zero_contribution",
-    "start_line": 16946,
-    "end_line": 16963
+    "start_line": 17028,
+    "end_line": 17045
   },
   {
     "file": "src/main.rs",
     "name": "footprint_report_flags_registered_scratch_roots_dead_share_and_spares_a_live_spawn",
-    "start_line": 16966,
-    "end_line": 17048
+    "start_line": 17048,
+    "end_line": 17130
   },
   {
     "file": "src/main.rs",
     "name": "footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone",
-    "start_line": 17061,
-    "end_line": 17115
+    "start_line": 17143,
+    "end_line": 17197
   },
   {
     "file": "src/main.rs",
     "name": "looks_like_run_container_true_when_every_direct_child_is_a_directory",
-    "start_line": 17118,
-    "end_line": 17123
+    "start_line": 17200,
+    "end_line": 17205
   },
   {
     "file": "src/main.rs",
     "name": "looks_like_run_container_false_when_a_direct_child_is_a_bare_file",
-    "start_line": 17126,
-    "end_line": 17134
+    "start_line": 17208,
+    "end_line": 17216
   },
   {
     "file": "src/main.rs",
     "name": "looks_like_run_container_is_true_on_an_empty_or_missing_dir",
-    "start_line": 17137,
-    "end_line": 17145
+    "start_line": 17219,
+    "end_line": 17227
   },
   {
     "file": "src/main.rs",
     "name": "classify_agent_scratch_separates_a_bare_top_level_file_from_a_well_formed_container",
-    "start_line": 17148,
-    "end_line": 17161
-  },
-  {
-    "file": "src/main.rs",
-    "name": "footprint_report_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_never_folded_into_the_dead_run_bucket",
-    "start_line": 17164,
+    "start_line": 17230,
     "end_line": 17243
   },
   {
     "file": "src/main.rs",
-    "name": "footprint_report_lines_reports_every_categorys_total_unconditionally",
+    "name": "footprint_report_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_never_folded_into_the_dead_run_bucket",
     "start_line": 17246,
-    "end_line": 17270
+    "end_line": 17325
+  },
+  {
+    "file": "src/main.rs",
+    "name": "footprint_report_lines_reports_every_categorys_total_unconditionally",
+    "start_line": 17328,
+    "end_line": 17352
   },
   {
     "file": "src/main.rs",
     "name": "footprint_advisories_flags_a_category_whose_dead_share_reaches_the_threshold",
-    "start_line": 17273,
-    "end_line": 17284
+    "start_line": 17355,
+    "end_line": 17366
   },
   {
     "file": "src/main.rs",
     "name": "footprint_advisories_is_silent_below_the_threshold",
-    "start_line": 17287,
-    "end_line": 17295
+    "start_line": 17369,
+    "end_line": 17377
   },
   {
     "file": "src/main.rs",
     "name": "footprint_advisories_flags_a_category_exactly_at_the_threshold_boundary",
-    "start_line": 17298,
-    "end_line": 17315
+    "start_line": 17380,
+    "end_line": 17397
   },
   {
     "file": "src/main.rs",
     "name": "footprint_advisories_never_flags_a_category_with_no_reclaim_command",
-    "start_line": 17318,
-    "end_line": 17328
+    "start_line": 17400,
+    "end_line": 17410
   },
   {
     "file": "src/main.rs",
     "name": "footprint_advisories_is_silent_on_an_empty_category",
-    "start_line": 17331,
-    "end_line": 17339
+    "start_line": 17413,
+    "end_line": 17421
   },
   {
     "file": "src/main.rs",
     "name": "owning_repo_root_prefers_the_stores_own_root_over_the_git_toplevel",
-    "start_line": 17342,
-    "end_line": 17365
+    "start_line": 17424,
+    "end_line": 17447
   },
   {
     "file": "src/main.rs",
     "name": "reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas",
-    "start_line": 17370,
-    "end_line": 17493
+    "start_line": 17452,
+    "end_line": 17575
   },
   {
     "file": "src/main.rs",
     "name": "reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty",
-    "start_line": 17496,
-    "end_line": 17561
+    "start_line": 17578,
+    "end_line": 17643
   },
   {
     "file": "src/main.rs",
     "name": "reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree",
-    "start_line": 17564,
-    "end_line": 17603
+    "start_line": 17646,
+    "end_line": 17685
   },
   {
     "file": "src/main.rs",
     "name": "reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally",
-    "start_line": 17606,
-    "end_line": 17636
+    "start_line": 17688,
+    "end_line": 17718
   },
   {
     "file": "src/main.rs",
     "name": "leaked_process_advisories_name_a_process_rooted_under_the_scratch_root",
-    "start_line": 17641,
-    "end_line": 17680
+    "start_line": 17723,
+    "end_line": 17762
   },
   {
     "file": "src/main.rs",
     "name": "leaked_process_advisories_is_empty_when_no_process_is_rooted_under_the_scratch_root",
-    "start_line": 17683,
-    "end_line": 17693
+    "start_line": 17765,
+    "end_line": 17775
   },
   {
     "file": "src/main.rs",
     "name": "leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent",
-    "start_line": 17696,
-    "end_line": 17703
+    "start_line": 17778,
+    "end_line": 17785
   },
   {
     "file": "src/main.rs",
     "name": "parse_result_takes_an_id_and_an_optional_output_arg",
-    "start_line": 17708,
-    "end_line": 17714
+    "start_line": 17790,
+    "end_line": 17796
   },
   {
     "file": "src/main.rs",
     "name": "parse_result_with_no_output_defers_to_stdin",
-    "start_line": 17717,
-    "end_line": 17722
+    "start_line": 17799,
+    "end_line": 17804
   },
   {
     "file": "src/main.rs",
     "name": "find_store_dir_from_returns_the_dir_that_holds_the_store",
-    "start_line": 17727,
-    "end_line": 17733
+    "start_line": 17809,
+    "end_line": 17815
   },
   {
     "file": "src/main.rs",
     "name": "find_store_dir_from_walks_up_from_a_subdirectory",
-    "start_line": 17736,
-    "end_line": 17748
+    "start_line": 17818,
+    "end_line": 17830
   },
   {
     "file": "src/main.rs",
     "name": "git_init_quiet",
-    "start_line": 17751,
-    "end_line": 17757
+    "start_line": 17833,
+    "end_line": 17839
   },
   {
     "file": "src/main.rs",
     "name": "find_store_dir_from_never_escapes_the_repo_into_a_parent_store",
-    "start_line": 17760,
-    "end_line": 17797
+    "start_line": 17842,
+    "end_line": 17879
   },
   {
     "file": "src/main.rs",
     "name": "reap_then_remove_dir_reaps_processes_rooted_inside_then_removes_the_dir",
-    "start_line": 17800,
-    "end_line": 17875
+    "start_line": 17882,
+    "end_line": 17957
   },
   {
     "file": "src/main.rs",
     "name": "reclaim_run_scratch_removes_the_run_level_areas_and_spares_per_unit_scratch",
-    "start_line": 17878,
-    "end_line": 17927
-  },
-  {
-    "file": "src/main.rs",
-    "name": "reclaim_run_scratch_spares_the_shared_build_cache_while_a_build_holds_its_guard",
-    "start_line": 17930,
-    "end_line": 17963
-  },
-  {
-    "file": "src/main.rs",
-    "name": "find_store_dir_from_refuses_the_worktree_shape_with_no_events_db",
-    "start_line": 17966,
-    "end_line": 17977
-  },
-  {
-    "file": "src/main.rs",
-    "name": "find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above",
-    "start_line": 17980,
+    "start_line": 17960,
     "end_line": 18009
   },
   {
     "file": "src/main.rs",
-    "name": "find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it",
+    "name": "reclaim_run_scratch_spares_the_shared_build_cache_while_a_build_holds_its_guard",
     "start_line": 18012,
-    "end_line": 18065
+    "end_line": 18045
+  },
+  {
+    "file": "src/main.rs",
+    "name": "find_store_dir_from_refuses_the_worktree_shape_with_no_events_db",
+    "start_line": 18048,
+    "end_line": 18059
+  },
+  {
+    "file": "src/main.rs",
+    "name": "find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above",
+    "start_line": 18062,
+    "end_line": 18091
+  },
+  {
+    "file": "src/main.rs",
+    "name": "find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it",
+    "start_line": 18094,
+    "end_line": 18147
   },
   {
     "file": "src/main.rs",
     "name": "find_store_dir_from_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store",
-    "start_line": 18068,
-    "end_line": 18122
+    "start_line": 18150,
+    "end_line": 18204
   },
   {
     "file": "src/main.rs",
     "name": "walk_stores_from_prefers_the_outermost_store_over_a_nearer_shadow",
-    "start_line": 18125,
-    "end_line": 18152
+    "start_line": 18207,
+    "end_line": 18234
   },
   {
     "file": "src/main.rs",
     "name": "walk_stores_from_reports_no_shadow_for_a_single_store",
-    "start_line": 18155,
-    "end_line": 18173
+    "start_line": 18237,
+    "end_line": 18255
   },
   {
     "file": "src/main.rs",
     "name": "drop",
-    "start_line": 18185,
-    "end_line": 18188
+    "start_line": 18267,
+    "end_line": 18270
   },
   {
     "file": "src/main.rs",
     "name": "require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it",
-    "start_line": 18182,
-    "end_line": 18251
+    "start_line": 18264,
+    "end_line": 18333
   },
   {
     "file": "src/main.rs",
     "name": "drop",
-    "start_line": 18261,
-    "end_line": 18263
+    "start_line": 18343,
+    "end_line": 18345
   },
   {
     "file": "src/main.rs",
     "name": "require_store_dir_fence_is_off_by_default",
-    "start_line": 18255,
-    "end_line": 18277
-  },
-  {
-    "file": "src/main.rs",
-    "name": "result_advisories_flags_an_orphan_id_with_no_spawn_request",
-    "start_line": 18282,
-    "end_line": 18288
-  },
-  {
-    "file": "src/main.rs",
-    "name": "result_advisories_orphan_wording_is_plain_on_record_and_conditional_under_if_absent",
-    "start_line": 18291,
-    "end_line": 18316
-  },
-  {
-    "file": "src/main.rs",
-    "name": "result_advisories_is_silent_for_a_parked_unanswered_spawn",
-    "start_line": 18319,
-    "end_line": 18329
-  },
-  {
-    "file": "src/main.rs",
-    "name": "result_advisories_flags_a_supersede_with_the_prior_result_position",
-    "start_line": 18332,
-    "end_line": 18343
-  },
-  {
-    "file": "src/main.rs",
-    "name": "result_advisories_suppresses_the_supersede_note_when_not_superseding",
-    "start_line": 18346,
+    "start_line": 18337,
     "end_line": 18359
   },
   {
     "file": "src/main.rs",
+    "name": "result_advisories_flags_an_orphan_id_with_no_spawn_request",
+    "start_line": 18364,
+    "end_line": 18370
+  },
+  {
+    "file": "src/main.rs",
+    "name": "result_advisories_orphan_wording_is_plain_on_record_and_conditional_under_if_absent",
+    "start_line": 18373,
+    "end_line": 18398
+  },
+  {
+    "file": "src/main.rs",
+    "name": "result_advisories_is_silent_for_a_parked_unanswered_spawn",
+    "start_line": 18401,
+    "end_line": 18411
+  },
+  {
+    "file": "src/main.rs",
+    "name": "result_advisories_flags_a_supersede_with_the_prior_result_position",
+    "start_line": 18414,
+    "end_line": 18425
+  },
+  {
+    "file": "src/main.rs",
+    "name": "result_advisories_suppresses_the_supersede_note_when_not_superseding",
+    "start_line": 18428,
+    "end_line": 18441
+  },
+  {
+    "file": "src/main.rs",
     "name": "result_advisories_flags_both_orphan_and_supersede",
-    "start_line": 18362,
-    "end_line": 18374
+    "start_line": 18444,
+    "end_line": 18456
   },
   {
     "file": "src/main.rs",
     "name": "parse_result_error_flag_is_order_independent",
-    "start_line": 18377,
-    "end_line": 18397
+    "start_line": 18459,
+    "end_line": 18479
   },
   {
     "file": "src/main.rs",
     "name": "parse_result_if_absent_is_off_by_default_and_a_bare_order_independent_flag",
-    "start_line": 18400,
-    "end_line": 18427
+    "start_line": 18482,
+    "end_line": 18509
   },
   {
     "file": "src/main.rs",
     "name": "parse_result_meta_must_be_a_json_object",
-    "start_line": 18430,
-    "end_line": 18465
+    "start_line": 18512,
+    "end_line": 18547
   },
   {
     "file": "src/main.rs",
     "name": "parse_result_rejects_missing_id_extra_args_and_unknown_flags",
-    "start_line": 18468,
-    "end_line": 18482
+    "start_line": 18550,
+    "end_line": 18564
   },
   {
     "file": "src/main.rs",
     "name": "build_result_shapes_success_and_failure",
-    "start_line": 18485,
-    "end_line": 18499
+    "start_line": 18567,
+    "end_line": 18581
   },
   {
     "file": "src/main.rs",
     "name": "build_result_rejects_a_blank_error_message",
-    "start_line": 18502,
-    "end_line": 18507
+    "start_line": 18584,
+    "end_line": 18589
   },
   {
     "file": "src/main.rs",
     "name": "build_result_attaches_meta",
-    "start_line": 18510,
-    "end_line": 18519
+    "start_line": 18592,
+    "end_line": 18601
   },
   {
     "file": "src/main.rs",
     "name": "a_recorded_result_lets_the_replay_driver_advance_past_the_spawn",
-    "start_line": 18522,
-    "end_line": 18560
+    "start_line": 18604,
+    "end_line": 18642
   },
   {
     "file": "src/main.rs",
     "name": "a_recorded_error_result_replays_as_a_failure_not_a_fake_success",
-    "start_line": 18563,
-    "end_line": 18595
+    "start_line": 18645,
+    "end_line": 18677
   },
   {
     "file": "src/main.rs",
     "name": "scaffold_parses_into_a_valid_config",
-    "start_line": 18601,
-    "end_line": 18691
+    "start_line": 18683,
+    "end_line": 18773
   },
   {
     "file": "src/main.rs",
     "name": "shipped_workflows_carry_a_non_zero_spawn_budget",
-    "start_line": 18705,
-    "end_line": 18722
+    "start_line": 18787,
+    "end_line": 18804
   },
   {
     "file": "src/main.rs",
     "name": "parse_canary_args_defaults_corpus_and_jobs",
-    "start_line": 18725,
-    "end_line": 18737
+    "start_line": 18807,
+    "end_line": 18819
   },
   {
     "file": "src/main.rs",
     "name": "parse_canary_args_reads_corpus_if_model_changed_and_jobs",
-    "start_line": 18740,
-    "end_line": 18752
+    "start_line": 18822,
+    "end_line": 18834
   },
   {
     "file": "src/main.rs",
     "name": "parse_canary_args_rejects_a_non_positive_jobs_value",
-    "start_line": 18755,
-    "end_line": 18767
+    "start_line": 18837,
+    "end_line": 18849
   },
   {
     "file": "src/main.rs",
     "name": "parse_canary_args_rejects_unknown_flags",
-    "start_line": 18770,
-    "end_line": 18780
+    "start_line": 18852,
+    "end_line": 18862
   },
   {
     "file": "src/main.rs",
     "name": "usage_text_gives_the_jobs_flag_its_own_description_line",
-    "start_line": 18783,
-    "end_line": 18812
+    "start_line": 18865,
+    "end_line": 18894
   },
   {
     "file": "src/main.rs",
     "name": "usage_text_names_the_build_cache_reset_mode",
-    "start_line": 18815,
-    "end_line": 18832
+    "start_line": 18897,
+    "end_line": 18914
   },
   {
     "file": "src/main.rs",
     "name": "parse_run_args_defaults_to_cli_and_an_unset_store",
-    "start_line": 18835,
-    "end_line": 18845
+    "start_line": 18917,
+    "end_line": 18927
   },
   {
     "file": "src/main.rs",
     "name": "parse_run_args_reads_fresh_alongside_a_spec",
-    "start_line": 18848,
-    "end_line": 18859
+    "start_line": 18930,
+    "end_line": 18941
   },
   {
     "file": "src/main.rs",
     "name": "parse_run_args_reads_rebase_definition",
-    "start_line": 18862,
-    "end_line": 18872
+    "start_line": 18944,
+    "end_line": 18954
   },
   {
     "file": "src/main.rs",
     "name": "parse_run_args_reads_driver_eventstore_conn_and_spec",
-    "start_line": 18875,
-    "end_line": 18890
+    "start_line": 18957,
+    "end_line": 18972
   },
   {
     "file": "src/main.rs",
     "name": "parse_run_args_rejects_unknown_flags_and_values",
-    "start_line": 18893,
-    "end_line": 18898
+    "start_line": 18975,
+    "end_line": 18980
   },
   {
     "file": "src/main.rs",
     "name": "parse_run_args_accepts_base_alongside_a_spec",
-    "start_line": 18905,
-    "end_line": 18931
+    "start_line": 18987,
+    "end_line": 19013
   },
   {
     "file": "src/main.rs",
     "name": "resolve_run_base_precedence_flag_then_env_then_default",
-    "start_line": 18939,
-    "end_line": 18961
+    "start_line": 19021,
+    "end_line": 19043
   },
   {
     "file": "src/main.rs",
     "name": "parse_workflow_args_reads_spec_and_base",
-    "start_line": 18967,
-    "end_line": 19005
+    "start_line": 19049,
+    "end_line": 19087
   },
   {
     "file": "src/main.rs",
     "name": "parse_step_args_reads_spec_and_base_with_default",
-    "start_line": 19010,
-    "end_line": 19062
+    "start_line": 19092,
+    "end_line": 19144
   },
   {
     "file": "src/main.rs",
     "name": "definition_hash_is_stable_and_content_sensitive",
-    "start_line": 19068,
-    "end_line": 19112
+    "start_line": 19150,
+    "end_line": 19194
   },
   {
     "file": "src/main.rs",
     "name": "kurrentdb_is_always_available_and_needs_a_conn",
-    "start_line": 19121,
-    "end_line": 19148
+    "start_line": 19203,
+    "end_line": 19230
   },
   {
     "file": "src/main.rs",
     "name": "store_selection_preserves_a_credentialed_tls_conn_verbatim",
-    "start_line": 19160,
-    "end_line": 19191
+    "start_line": 19242,
+    "end_line": 19273
   },
   {
     "file": "src/main.rs",
     "name": "store_selection_precedence_flag_env_secret_file_config_then_default",
-    "start_line": 19202,
-    "end_line": 19379
+    "start_line": 19284,
+    "end_line": 19461
   },
   {
     "file": "src/main.rs",
     "name": "project_identity_is_never_empty",
-    "start_line": 19382,
-    "end_line": 19384
+    "start_line": 19464,
+    "end_line": 19466
   },
   {
     "file": "src/main.rs",
     "name": "project_identity_reads_the_tracked_id_file_then_falls_back_to_the_basename",
-    "start_line": 19387,
-    "end_line": 19412
+    "start_line": 19469,
+    "end_line": 19494
   },
   {
     "file": "src/main.rs",
     "name": "ssh_https_and_git_suffix_forms_of_one_repo_mint_identical_ids",
-    "start_line": 19415,
-    "end_line": 19442
+    "start_line": 19497,
+    "end_line": 19524
   },
   {
     "file": "src/main.rs",
     "name": "normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host",
-    "start_line": 19445,
-    "end_line": 19459
+    "start_line": 19527,
+    "end_line": 19541
   },
   {
     "file": "src/main.rs",
     "name": "decide_migration_covers_every_case",
-    "start_line": 19462,
-    "end_line": 19491
+    "start_line": 19544,
+    "end_line": 19573
   },
   {
     "file": "src/main.rs",
     "name": "migrate_project_identity_renames_legacy_history_and_records_a_decision",
-    "start_line": 19494,
-    "end_line": 19533
+    "start_line": 19576,
+    "end_line": 19615
   },
   {
     "file": "src/main.rs",
     "name": "migrate_project_identity_refuses_when_both_namespaces_hold_history",
-    "start_line": 19536,
-    "end_line": 19575
+    "start_line": 19618,
+    "end_line": 19657
   },
   {
     "file": "src/main.rs",
     "name": "migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned",
-    "start_line": 19578,
-    "end_line": 19643
+    "start_line": 19660,
+    "end_line": 19725
   },
   {
     "file": "src/main.rs",
     "name": "migrate_project_identity_rekeys_the_graph_before_the_irreversible_stream_rename",
-    "start_line": 19646,
-    "end_line": 19726
+    "start_line": 19728,
+    "end_line": 19808
   },
   {
     "file": "src/main.rs",
     "name": "migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename",
-    "start_line": 19729,
-    "end_line": 19824
+    "start_line": 19811,
+    "end_line": 19906
   },
   {
     "file": "src/main.rs",
     "name": "dash_graph_provider_reaches_the_whole_projection_when_run_seeds_are_empty",
-    "start_line": 19833,
-    "end_line": 19938
+    "start_line": 19915,
+    "end_line": 20020
   },
   {
     "file": "src/main.rs",
     "name": "dash_read_whole_graph_on_an_absent_db_is_empty_and_creates_nothing",
-    "start_line": 19952,
-    "end_line": 19991
+    "start_line": 20034,
+    "end_line": 20073
   },
   {
     "file": "src/main.rs",
     "name": "setup_provisions_the_shim_runtime_files",
-    "start_line": 19997,
-    "end_line": 20029
-  },
-  {
-    "file": "src/main.rs",
-    "name": "setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow",
-    "start_line": 20038,
-    "end_line": 20097
-  },
-  {
-    "file": "src/main.rs",
-    "name": "outcome_for",
-    "start_line": 20102,
+    "start_line": 20079,
     "end_line": 20111
   },
   {
     "file": "src/main.rs",
+    "name": "setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow",
+    "start_line": 20120,
+    "end_line": 20179
+  },
+  {
+    "file": "src/main.rs",
+    "name": "outcome_for",
+    "start_line": 20184,
+    "end_line": 20193
+  },
+  {
+    "file": "src/main.rs",
     "name": "registry_entry",
-    "start_line": 20115,
-    "end_line": 20120
+    "start_line": 20197,
+    "end_line": 20202
   },
   {
     "file": "src/main.rs",
     "name": "setup_installs_the_using_rigger_skill_distinct_from_the_workflow",
-    "start_line": 20130,
-    "end_line": 20200
+    "start_line": 20212,
+    "end_line": 20282
   },
   {
     "file": "src/main.rs",
     "name": "planning_a_spec_installs_and_renders_through_the_registry_with_no_planning_specific_code",
-    "start_line": 20218,
-    "end_line": 20302
+    "start_line": 20300,
+    "end_line": 20384
   },
   {
     "file": "src/main.rs",
     "name": "setup_skill_install_applies_the_project_overlay",
-    "start_line": 20312,
-    "end_line": 20348
+    "start_line": 20394,
+    "end_line": 20430
   },
   {
     "file": "src/main.rs",
     "name": "docs_overlay_overrides_only_declared_fields",
-    "start_line": 20354,
-    "end_line": 20380
-  },
-  {
-    "file": "src/main.rs",
-    "name": "docs_overlay_malformed_is_a_loud_error",
-    "start_line": 20385,
-    "end_line": 20395
-  },
-  {
-    "file": "src/main.rs",
-    "name": "provision_shim_is_a_silent_noop_when_already_current",
-    "start_line": 20405,
-    "end_line": 20433
-  },
-  {
-    "file": "src/main.rs",
-    "name": "shim_is_not_current_when_node_modules_is_torn_missing_the_install_marker",
-    "start_line": 20443,
+    "start_line": 20436,
     "end_line": 20462
   },
   {
     "file": "src/main.rs",
+    "name": "docs_overlay_malformed_is_a_loud_error",
+    "start_line": 20467,
+    "end_line": 20477
+  },
+  {
+    "file": "src/main.rs",
+    "name": "provision_shim_is_a_silent_noop_when_already_current",
+    "start_line": 20487,
+    "end_line": 20515
+  },
+  {
+    "file": "src/main.rs",
+    "name": "shim_is_not_current_when_node_modules_is_torn_missing_the_install_marker",
+    "start_line": 20525,
+    "end_line": 20544
+  },
+  {
+    "file": "src/main.rs",
     "name": "init_project_is_idempotent_reporting_new_work_only_once",
-    "start_line": 20469,
-    "end_line": 20491
+    "start_line": 20551,
+    "end_line": 20573
   },
   {
     "file": "src/main.rs",
     "name": "scaffold_summary_reports_only_the_gitignore_change_on_a_gitignore_only_repair",
-    "start_line": 20501,
-    "end_line": 20559
+    "start_line": 20583,
+    "end_line": 20641
   },
   {
     "file": "src/main.rs",
     "name": "init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently",
-    "start_line": 20570,
-    "end_line": 20649
+    "start_line": 20652,
+    "end_line": 20731
   },
   {
     "file": "src/main.rs",
     "name": "init_project_gitignores_the_store_conn_secret_file_idempotently",
-    "start_line": 20658,
-    "end_line": 20698
+    "start_line": 20740,
+    "end_line": 20780
   },
   {
     "file": "src/main.rs",
     "name": "a_group_or_other_readable_secret_file_mode_is_flagged_owner_only_is_not",
-    "start_line": 20707,
-    "end_line": 20721
+    "start_line": 20789,
+    "end_line": 20803
   },
   {
     "file": "src/main.rs",
     "name": "init_project_still_writes_the_dash_ignore_lines_when_a_broader_rule_covers_them",
-    "start_line": 20733,
-    "end_line": 20781
+    "start_line": 20815,
+    "end_line": 20863
   },
   {
     "file": "src/main.rs",
     "name": "scaffold_agents_and_workflow_reference_the_same_canonical_set",
-    "start_line": 20790,
-    "end_line": 20852
+    "start_line": 20872,
+    "end_line": 20934
   },
   {
     "file": "src/main.rs",
     "name": "init_scaffolds_only_the_workflow_referenced_agents",
-    "start_line": 20859,
-    "end_line": 20902
+    "start_line": 20941,
+    "end_line": 20984
   },
   {
     "file": "src/main.rs",
     "name": "get_referenced_agent_ids_reads_the_scaffolded_workflows_fleet",
-    "start_line": 20909,
-    "end_line": 20938
+    "start_line": 20991,
+    "end_line": 21020
   },
   {
     "file": "src/main.rs",
     "name": "write_if_absent_wrote_kept_and_errors_naming_the_artifact",
-    "start_line": 20945,
-    "end_line": 20977
+    "start_line": 21027,
+    "end_line": 21059
   },
   {
     "file": "src/main.rs",
     "name": "parse_setup_args_reads_the_agents_directory_flag",
-    "start_line": 20985,
-    "end_line": 21002
+    "start_line": 21067,
+    "end_line": 21084
   },
   {
     "file": "src/main.rs",
     "name": "import_agents_copies_and_normalizes_the_identity_field",
-    "start_line": 21009,
-    "end_line": 21054
+    "start_line": 21091,
+    "end_line": 21136
   },
   {
     "file": "src/main.rs",
     "name": "import_agents_refuses_to_overwrite_an_existing_agent",
-    "start_line": 21060,
-    "end_line": 21097
+    "start_line": 21142,
+    "end_line": 21179
   },
   {
     "file": "src/main.rs",
     "name": "import_agents_validates_and_rejects_a_malformed_agent",
-    "start_line": 21103,
-    "end_line": 21116
+    "start_line": 21185,
+    "end_line": 21198
   },
   {
     "file": "src/main.rs",
     "name": "import_agents_rejects_an_id_colliding_with_an_existing_agent",
-    "start_line": 21125,
-    "end_line": 21147
-  },
-  {
-    "file": "src/main.rs",
-    "name": "import_agents_rejects_a_duplicate_id_within_one_import",
-    "start_line": 21153,
-    "end_line": 21173
-  },
-  {
-    "file": "src/main.rs",
-    "name": "import_agents_rejects_an_agent_with_a_blank_id",
-    "start_line": 21179,
-    "end_line": 21200
-  },
-  {
-    "file": "src/main.rs",
-    "name": "import_agents_runs_full_validation_and_rejects_a_broken_project",
     "start_line": 21207,
     "end_line": 21229
   },
   {
     "file": "src/main.rs",
-    "name": "meta_object_body",
+    "name": "import_agents_rejects_a_duplicate_id_within_one_import",
     "start_line": 21235,
-    "end_line": 21254
+    "end_line": 21255
+  },
+  {
+    "file": "src/main.rs",
+    "name": "import_agents_rejects_an_agent_with_a_blank_id",
+    "start_line": 21261,
+    "end_line": 21282
+  },
+  {
+    "file": "src/main.rs",
+    "name": "import_agents_runs_full_validation_and_rejects_a_broken_project",
+    "start_line": 21289,
+    "end_line": 21311
+  },
+  {
+    "file": "src/main.rs",
+    "name": "meta_object_body",
+    "start_line": 21317,
+    "end_line": 21336
   },
   {
     "file": "src/main.rs",
     "name": "meta_description",
-    "start_line": 21263,
-    "end_line": 21277
+    "start_line": 21345,
+    "end_line": 21359
   },
   {
     "file": "src/main.rs",
     "name": "strip_line_comments",
-    "start_line": 21284,
-    "end_line": 21292
+    "start_line": 21366,
+    "end_line": 21374
   },
   {
     "file": "src/main.rs",
     "name": "workflow_is_a_thin_courier_driver_with_per_unit_phase_labels",
-    "start_line": 21306,
-    "end_line": 21529
+    "start_line": 21388,
+    "end_line": 21611
   },
   {
     "file": "src/main.rs",
     "name": "the_step_schema_admits_the_attention_array",
-    "start_line": 21538,
-    "end_line": 21549
+    "start_line": 21620,
+    "end_line": 21631
   },
   {
     "file": "src/main.rs",
     "name": "js_function_body",
-    "start_line": 21555,
-    "end_line": 21577
+    "start_line": 21637,
+    "end_line": 21659
   },
   {
     "file": "src/main.rs",
     "name": "phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage",
-    "start_line": 21593,
-    "end_line": 21648
+    "start_line": 21675,
+    "end_line": 21730
   },
   {
     "file": "src/main.rs",
     "name": "meta_matches_reality_drops_integrate_and_the_unit_stage_construction",
-    "start_line": 21661,
-    "end_line": 21699
+    "start_line": 21743,
+    "end_line": 21781
   },
   {
     "file": "src/main.rs",
     "name": "the_driver_relays_each_attention_entry_as_a_narrator_log_line",
-    "start_line": 21718,
-    "end_line": 21809
+    "start_line": 21800,
+    "end_line": 21891
   },
   {
     "file": "src/main.rs",
     "name": "merge_hung_attention_does_nothing_when_not_newly_hung",
-    "start_line": 21816,
-    "end_line": 21829
+    "start_line": 21898,
+    "end_line": 21911
   },
   {
     "file": "src/main.rs",
     "name": "merge_hung_attention_defers_to_an_existing_budget_halt",
-    "start_line": 21837,
-    "end_line": 21849
+    "start_line": 21919,
+    "end_line": 21931
   },
   {
     "file": "src/main.rs",
     "name": "merge_hung_attention_lands_in_canonical_position_alongside_other_signals",
-    "start_line": 21858,
-    "end_line": 21894
+    "start_line": 21940,
+    "end_line": 21976
   },
   {
     "file": "src/main.rs",
     "name": "workflow_step_courier_prompt_is_foreground_and_honest",
-    "start_line": 21912,
-    "end_line": 21960
+    "start_line": 21994,
+    "end_line": 22042
   },
   {
     "file": "src/main.rs",
     "name": "step_courier_prompt",
-    "start_line": 21970,
-    "end_line": 21979
+    "start_line": 22052,
+    "end_line": 22061
   },
   {
     "file": "src/main.rs",
     "name": "workflow_step_courier_waits_on_an_auto_backgrounded_step",
-    "start_line": 21997,
-    "end_line": 22064
+    "start_line": 22079,
+    "end_line": 22146
   },
   {
     "file": "src/main.rs",
     "name": "workflow_driver_guards_a_null_step_before_dereferencing_it",
-    "start_line": 22079,
-    "end_line": 22134
+    "start_line": 22161,
+    "end_line": 22216
   },
   {
     "file": "src/main.rs",
     "name": "workflow_meta_description_is_a_user_facing_tagline_free_of_plumbing_terms",
-    "start_line": 22147,
-    "end_line": 22204
+    "start_line": 22229,
+    "end_line": 22286
   },
   {
     "file": "src/main.rs",
     "name": "setup_runs_npm_install_or_reports_a_clear_error",
-    "start_line": 22211,
-    "end_line": 22235
+    "start_line": 22293,
+    "end_line": 22317
   },
   {
     "file": "src/main.rs",
     "name": "workflow_locates_the_provisioned_shim_or_tells_you_to_run_setup",
-    "start_line": 22241,
-    "end_line": 22266
+    "start_line": 22323,
+    "end_line": 22348
   },
   {
     "file": "src/main.rs",
     "name": "npm_available",
-    "start_line": 22268,
-    "end_line": 22274
+    "start_line": 22350,
+    "end_line": 22356
   },
   {
     "file": "src/main.rs",
     "name": "format_stats_prints_all_four_metrics",
-    "start_line": 22285,
-    "end_line": 22328
+    "start_line": 22367,
+    "end_line": 22410
   },
   {
     "file": "src/main.rs",
     "name": "format_stats_handles_zeroed_metrics_without_nan",
-    "start_line": 22334,
-    "end_line": 22350
+    "start_line": 22416,
+    "end_line": 22432
   },
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_reports_findings_raised_by_tier",
-    "start_line": 22356,
-    "end_line": 22373
+    "start_line": 22438,
+    "end_line": 22455
   },
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_reports_a_zero_findings_count_honestly",
-    "start_line": 22378,
-    "end_line": 22388
+    "start_line": 22460,
+    "end_line": 22470
   },
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_omits_the_findings_volume_section_when_empty",
-    "start_line": 22394,
-    "end_line": 22400
+    "start_line": 22476,
+    "end_line": 22482
   },
   {
     "file": "src/main.rs",
     "name": "progress_outcome",
-    "start_line": 22405,
-    "end_line": 22422
+    "start_line": 22487,
+    "end_line": 22504
   },
   {
     "file": "src/main.rs",
     "name": "format_progress_line_names_id_verdict_and_none_when_nothing_caught",
-    "start_line": 22429,
-    "end_line": 22441
+    "start_line": 22511,
+    "end_line": 22523
   },
   {
     "file": "src/main.rs",
     "name": "format_progress_line_reports_a_wrong_verdict_and_every_catching_tier",
-    "start_line": 22447,
-    "end_line": 22464
+    "start_line": 22529,
+    "end_line": 22546
   },
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_renders_na_for_a_tier_with_unattributed_correct_rejects",
-    "start_line": 22472,
-    "end_line": 22503
+    "start_line": 22554,
+    "end_line": 22585
   },
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_renders_the_real_zero_when_attribution_was_fully_measured",
-    "start_line": 22510,
-    "end_line": 22529
+    "start_line": 22592,
+    "end_line": 22611
   },
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_reports_control_items_and_false_positives",
-    "start_line": 22538,
-    "end_line": 22557
+    "start_line": 22620,
+    "end_line": 22639
   },
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_reports_zero_false_positives_honestly",
-    "start_line": 22565,
-    "end_line": 22580
+    "start_line": 22647,
+    "end_line": 22662
   },
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_reports_the_model_pinning_header_when_present",
-    "start_line": 22587,
-    "end_line": 22616
+    "start_line": 22669,
+    "end_line": 22698
   },
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_omits_the_model_pinning_header_when_the_run_never_recorded_one",
-    "start_line": 22622,
-    "end_line": 22628
+    "start_line": 22704,
+    "end_line": 22710
   },
   {
     "file": "src/main.rs",
     "name": "format_stats_surfaces_parallelism_retention_and_warns_below_the_floor",
-    "start_line": 22638,
-    "end_line": 22680
+    "start_line": 22720,
+    "end_line": 22762
   },
   {
     "file": "src/main.rs",
     "name": "format_stats_surfaces_spawn_timing_and_reports_unpaired_separately",
-    "start_line": 22687,
-    "end_line": 22727
+    "start_line": 22769,
+    "end_line": 22809
   },
   {
     "file": "src/main.rs",
     "name": "format_stats_spawn_timing_reports_no_spawns_when_none_recorded",
-    "start_line": 22733,
-    "end_line": 22739
+    "start_line": 22815,
+    "end_line": 22821
   },
   {
     "file": "src/main.rs",
     "name": "format_stats_spawn_timing_no_spawns_line_requires_both_empty_and_zero_unpaired",
-    "start_line": 22746,
-    "end_line": 22773
+    "start_line": 22828,
+    "end_line": 22855
   },
   {
     "file": "src/main.rs",
     "name": "format_stats_spawn_timing_all_unpaired_is_not_reported_as_no_spawns",
-    "start_line": 22780,
-    "end_line": 22795
+    "start_line": 22862,
+    "end_line": 22877
   },
   {
     "file": "src/main.rs",
     "name": "parallelism_retention_line_is_single_sourced_and_warns_below_the_floor",
-    "start_line": 22803,
-    "end_line": 22830
+    "start_line": 22885,
+    "end_line": 22912
   },
   {
     "file": "src/main.rs",
     "name": "stats_discloses_when_no_verdict_was_recorded_on_this_driver",
-    "start_line": 22837,
-    "end_line": 22882
+    "start_line": 22919,
+    "end_line": 22964
   },
   {
     "file": "src/main.rs",
     "name": "stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed",
-    "start_line": 22893,
-    "end_line": 22966
+    "start_line": 22975,
+    "end_line": 23048
   },
   {
     "file": "src/main.rs",
     "name": "stats_discloses_cause_split_remainder_when_fewer_causes_than_rejects",
-    "start_line": 22974,
-    "end_line": 23011
+    "start_line": 23056,
+    "end_line": 23093
   },
   {
     "file": "src/main.rs",
     "name": "cmd_stats_rejects_extra_arguments",
-    "start_line": 23016,
-    "end_line": 23022
-  },
-  {
-    "file": "src/main.rs",
-    "name": "baseline_run_slice_selects_a_run_by_id_including_a_middle_run",
-    "start_line": 23025,
-    "end_line": 23070
-  },
-  {
-    "file": "src/main.rs",
-    "name": "format_stats_diff_flags_only_the_changed_rows",
-    "start_line": 23073,
+    "start_line": 23098,
     "end_line": 23104
   },
   {
     "file": "src/main.rs",
+    "name": "baseline_run_slice_selects_a_run_by_id_including_a_middle_run",
+    "start_line": 23107,
+    "end_line": 23152
+  },
+  {
+    "file": "src/main.rs",
+    "name": "format_stats_diff_flags_only_the_changed_rows",
+    "start_line": 23155,
+    "end_line": 23186
+  },
+  {
+    "file": "src/main.rs",
     "name": "build_environment_report_with_a_wrapper_lists_wrapper_cache_dir_and_budget",
-    "start_line": 23116,
-    "end_line": 23134
+    "start_line": 23198,
+    "end_line": 23216
   },
   {
     "file": "src/main.rs",
     "name": "build_environment_report_with_no_wrapper_omits_cache_dir_but_keeps_budget",
-    "start_line": 23141,
-    "end_line": 23158
+    "start_line": 23223,
+    "end_line": 23240
   },
   {
     "file": "src/main.rs",
     "name": "build_environment_report_zero_max_concurrent_reports_unlimited",
-    "start_line": 23164,
-    "end_line": 23174
+    "start_line": 23246,
+    "end_line": 23256
   },
   {
     "file": "src/main.rs",
     "name": "build_environment_report_reports_mutation_gate_declared",
-    "start_line": 23180,
-    "end_line": 23189
+    "start_line": 23262,
+    "end_line": 23271
   },
   {
     "file": "src/main.rs",
     "name": "build_environment_report_reports_mutation_gate_not_configured",
-    "start_line": 23195,
-    "end_line": 23204
+    "start_line": 23277,
+    "end_line": 23286
   },
   {
     "file": "src/main.rs",
     "name": "order_signature_advisories_names_the_stream_count_range_and_repair_doc",
-    "start_line": 23222,
-    "end_line": 23241
+    "start_line": 23304,
+    "end_line": 23323
   },
   {
     "file": "src/main.rs",
     "name": "order_signature_advisories_is_empty_when_no_signatures_are_given",
-    "start_line": 23245,
-    "end_line": 23247
+    "start_line": 23327,
+    "end_line": 23329
   },
   {
     "file": "src/main.rs",
     "name": "drift_change",
-    "start_line": 23255,
-    "end_line": 23261
+    "start_line": 23337,
+    "end_line": 23343
   },
   {
     "file": "src/main.rs",
     "name": "model_drift_advisory_is_a_soft_note_for_snapshot_only_drift",
-    "start_line": 23267,
-    "end_line": 23296
+    "start_line": 23349,
+    "end_line": 23378
   },
   {
     "file": "src/main.rs",
     "name": "model_drift_advisory_stays_a_warning_when_any_change_is_a_real_model_repoint",
-    "start_line": 23301,
-    "end_line": 23312
+    "start_line": 23383,
+    "end_line": 23394
   },
   {
     "file": "src/main.rs",
     "name": "model_drift_advisory_is_none_when_nothing_changed",
-    "start_line": 23316,
-    "end_line": 23318
+    "start_line": 23398,
+    "end_line": 23400
   },
   {
     "file": "src/main.rs",
     "name": "index_staleness_message_names_every_kind_of_disagreement_and_the_fix",
-    "start_line": 23323,
-    "end_line": 23339
+    "start_line": 23405,
+    "end_line": 23421
   },
   {
     "file": "src/main.rs",
     "name": "bloat_advisory_is_none_at_or_below_the_threshold_and_named_above_it",
-    "start_line": 23342,
-    "end_line": 23365
+    "start_line": 23424,
+    "end_line": 23447
   },
   {
     "file": "src/main.rs",
     "name": "assert_advisory_for_never_fabricates_a_missing_store",
-    "start_line": 23373,
-    "end_line": 23388
+    "start_line": 23455,
+    "end_line": 23470
   },
   {
     "file": "src/main.rs",
     "name": "bloat_advisory_for_never_fabricates_a_store_that_does_not_exist",
-    "start_line": 23391,
-    "end_line": 23393
-  },
-  {
-    "file": "src/main.rs",
-    "name": "retired_entities_advisory_is_none_at_zero_and_named_with_correct_pluralization",
-    "start_line": 23398,
-    "end_line": 23416
-  },
-  {
-    "file": "src/main.rs",
-    "name": "retired_entities_advisory_for_never_fabricates_a_graph_that_does_not_exist",
-    "start_line": 23419,
-    "end_line": 23424
-  },
-  {
-    "file": "src/main.rs",
-    "name": "retired_entities_advisory_for_reads_the_projectors_own_counting_authority",
-    "start_line": 23427,
-    "end_line": 23461
-  },
-  {
-    "file": "src/main.rs",
-    "name": "scaffold_workflow_declares_build_wrapper_auto",
-    "start_line": 23468,
+    "start_line": 23473,
     "end_line": 23475
   },
   {
     "file": "src/main.rs",
+    "name": "retired_entities_advisory_is_none_at_zero_and_named_with_correct_pluralization",
+    "start_line": 23480,
+    "end_line": 23498
+  },
+  {
+    "file": "src/main.rs",
+    "name": "retired_entities_advisory_for_never_fabricates_a_graph_that_does_not_exist",
+    "start_line": 23501,
+    "end_line": 23506
+  },
+  {
+    "file": "src/main.rs",
+    "name": "retired_entities_advisory_for_reads_the_projectors_own_counting_authority",
+    "start_line": 23509,
+    "end_line": 23543
+  },
+  {
+    "file": "src/main.rs",
+    "name": "scaffold_workflow_declares_build_wrapper_auto",
+    "start_line": 23550,
+    "end_line": 23557
+  },
+  {
+    "file": "src/main.rs",
     "name": "init_project_never_clobbers_an_existing_build_section",
-    "start_line": 23483,
-    "end_line": 23497
+    "start_line": 23565,
+    "end_line": 23579
   },
   {
     "file": "src/main.rs",
     "name": "parse_replay_args_requires_a_run_and_a_rev_in_either_order",
-    "start_line": 23500,
-    "end_line": 23517
+    "start_line": 23582,
+    "end_line": 23599
   },
   {
     "file": "src/main.rs",
     "name": "drop",
-    "start_line": 23536,
-    "end_line": 23538
+    "start_line": 23618,
+    "end_line": 23620
   },
   {
     "file": "src/main.rs",
     "name": "cmd_stats_on_a_never_run_project_says_no_runs_and_creates_no_db",
-    "start_line": 23529,
-    "end_line": 23550
+    "start_line": 23611,
+    "end_line": 23632
   },
   {
     "file": "src/main.rs",
     "name": "drop",
-    "start_line": 23563,
-    "end_line": 23565
+    "start_line": 23645,
+    "end_line": 23647
   },
   {
     "file": "src/main.rs",
     "name": "a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release",
-    "start_line": 23558,
-    "end_line": 23605
+    "start_line": 23640,
+    "end_line": 23687
   },
   {
     "file": "src/main.rs",
     "name": "no_runs_message_points_at_rigger_run",
-    "start_line": 23611,
-    "end_line": 23614
+    "start_line": 23693,
+    "end_line": 23696
   },
   {
     "file": "src/main.rs",
     "name": "seed_run",
-    "start_line": 23620,
-    "end_line": 23627
+    "start_line": 23702,
+    "end_line": 23709
   },
   {
     "file": "src/main.rs",
     "name": "stats_lines_absent_db_returns_none_and_creates_no_file",
-    "start_line": 23633,
-    "end_line": 23645
+    "start_line": 23715,
+    "end_line": 23727
   },
   {
     "file": "src/main.rs",
     "name": "stats_lines_existing_db_with_empty_run_stream_returns_none",
-    "start_line": 23652,
-    "end_line": 23668
+    "start_line": 23734,
+    "end_line": 23750
   },
   {
     "file": "src/main.rs",
     "name": "stats_lines_does_not_read_another_projects_namespaced_run",
-    "start_line": 23676,
-    "end_line": 23705
+    "start_line": 23758,
+    "end_line": 23787
   },
   {
     "file": "src/main.rs",
     "name": "stats_lines_existing_run_renders_metric_lines",
-    "start_line": 23712,
-    "end_line": 23743
+    "start_line": 23794,
+    "end_line": 23825
   },
   {
     "file": "src/main.rs",
     "name": "stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing",
-    "start_line": 23766,
-    "end_line": 23835
+    "start_line": 23848,
+    "end_line": 23917
   },
   {
     "file": "src/main.rs",
     "name": "result_of_at_absent_db_reads_as_unreported_and_creates_no_file",
-    "start_line": 23843,
-    "end_line": 23855
+    "start_line": 23925,
+    "end_line": 23937
   },
   {
     "file": "src/main.rs",
     "name": "result_of_at_unrecorded_spawn_reads_as_unreported",
-    "start_line": 23861,
-    "end_line": 23881
+    "start_line": 23943,
+    "end_line": 23963
   },
   {
     "file": "src/main.rs",
     "name": "result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered",
-    "start_line": 23889,
-    "end_line": 23913
+    "start_line": 23971,
+    "end_line": 23995
   },
   {
     "file": "src/main.rs",
     "name": "result_of_at_is_namespace_scoped",
-    "start_line": 23919,
-    "end_line": 23948
+    "start_line": 24001,
+    "end_line": 24030
   },
   {
     "file": "src/main.rs",
     "name": "cmd_reported_requires_exactly_one_id",
-    "start_line": 23955,
-    "end_line": 23967
+    "start_line": 24037,
+    "end_line": 24049
   },
   {
     "file": "src/main.rs",
     "name": "pgid_of",
-    "start_line": 23978,
-    "end_line": 23991
+    "start_line": 24060,
+    "end_line": 24073
   },
   {
     "file": "src/main.rs",
     "name": "detach_process_group_places_the_child_in_its_own_process_group",
-    "start_line": 24002,
-    "end_line": 24027
+    "start_line": 24084,
+    "end_line": 24109
   },
   {
     "file": "src/main.rs",
     "name": "a_child_spawned_without_detachment_inherits_the_parent_process_group",
-    "start_line": 24036,
-    "end_line": 24057
+    "start_line": 24118,
+    "end_line": 24139
   },
   {
     "file": "src/main.rs",
     "name": "spawn_run_dashboard_detached_session_detaches_the_dash",
-    "start_line": 24071,
-    "end_line": 24091
+    "start_line": 24153,
+    "end_line": 24173
   },
   {
     "file": "src/main.rs",
     "name": "report_of",
-    "start_line": 24106,
-    "end_line": 24126
+    "start_line": 24188,
+    "end_line": 24208
   },
   {
     "file": "src/main.rs",
     "name": "a_compaction_that_failed_after_the_deletes_is_reported_beside_the_counts",
-    "start_line": 24137,
-    "end_line": 24160
+    "start_line": 24219,
+    "end_line": 24242
   },
   {
     "file": "src/main.rs",
     "name": "a_prune_that_shed_nothing_is_justified_by_this_log_not_by_when_it_was_written",
-    "start_line": 24171,
-    "end_line": 24194
+    "start_line": 24253,
+    "end_line": 24276
   },
   {
     "file": "src/main.rs",
     "name": "a_pass_that_deleted_nothing_but_reclaimed_space_reports_the_reclamation",
-    "start_line": 24205,
-    "end_line": 24216
+    "start_line": 24287,
+    "end_line": 24298
   },
   {
     "file": "src/main.rs",
     "name": "a_prune_that_shed_rows_explains_the_duplication_a_deduplicated_log_still_accumulates",
-    "start_line": 24221,
-    "end_line": 24252
+    "start_line": 24303,
+    "end_line": 24334
   },
   {
     "file": "src/main.rs",
     "name": "an_unmeasurable_database_is_not_reported_as_a_checkpoint_a_reader_declined",
-    "start_line": 24266,
-    "end_line": 24301
-  },
-  {
-    "file": "src/main.rs",
-    "name": "no_live_units",
-    "start_line": 24305,
-    "end_line": 24307
-  },
-  {
-    "file": "src/main.rs",
-    "name": "live_writer_reasons_is_empty_only_when_all_four_facts_are_quiet",
-    "start_line": 24311,
-    "end_line": 24329
-  },
-  {
-    "file": "src/main.rs",
-    "name": "refusal_names_a_held_step_lock_and_the_force_live_override_owning_the_risk",
-    "start_line": 24335,
-    "end_line": 24354
-  },
-  {
-    "file": "src/main.rs",
-    "name": "refusal_names_a_non_terminal_unit_between_spawn_rounds",
-    "start_line": 24359,
-    "end_line": 24367
-  },
-  {
-    "file": "src/main.rs",
-    "name": "refusal_names_every_in_flight_spawn_id_and_the_count",
-    "start_line": 24371,
+    "start_line": 24348,
     "end_line": 24383
   },
   {
     "file": "src/main.rs",
-    "name": "refusal_names_the_driver_registration_count",
+    "name": "no_live_units",
     "start_line": 24387,
-    "end_line": 24394
+    "end_line": 24389
   },
   {
     "file": "src/main.rs",
-    "name": "refusal_names_every_applicable_reason_together_not_just_the_first",
-    "start_line": 24399,
+    "name": "live_writer_reasons_is_empty_only_when_all_four_facts_are_quiet",
+    "start_line": 24393,
     "end_line": 24411
   },
   {
     "file": "src/main.rs",
-    "name": "refuse_derived_reset_if_live_fails_safe_on_a_malformed_spawn_event",
+    "name": "refusal_names_a_held_step_lock_and_the_force_live_override_owning_the_risk",
     "start_line": 24417,
-    "end_line": 24446
+    "end_line": 24436
+  },
+  {
+    "file": "src/main.rs",
+    "name": "refusal_names_a_non_terminal_unit_between_spawn_rounds",
+    "start_line": 24441,
+    "end_line": 24449
+  },
+  {
+    "file": "src/main.rs",
+    "name": "refusal_names_every_in_flight_spawn_id_and_the_count",
+    "start_line": 24453,
+    "end_line": 24465
+  },
+  {
+    "file": "src/main.rs",
+    "name": "refusal_names_the_driver_registration_count",
+    "start_line": 24469,
+    "end_line": 24476
+  },
+  {
+    "file": "src/main.rs",
+    "name": "refusal_names_every_applicable_reason_together_not_just_the_first",
+    "start_line": 24481,
+    "end_line": 24493
+  },
+  {
+    "file": "src/main.rs",
+    "name": "refuse_derived_reset_if_live_fails_safe_on_a_malformed_spawn_event",
+    "start_line": 24499,
+    "end_line": 24528
   },
   {
     "file": "src/main.rs",
     "name": "reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode",
-    "start_line": 24452,
-    "end_line": 24473
+    "start_line": 24534,
+    "end_line": 24555
   },
   {
     "file": "src/main.rs",
     "name": "reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates",
-    "start_line": 24480,
-    "end_line": 24497
+    "start_line": 24562,
+    "end_line": 24579
   },
   {
     "file": "src/main.rs",
     "name": "watch_test_store",
-    "start_line": 24505,
-    "end_line": 24514
+    "start_line": 24587,
+    "end_line": 24596
   },
   {
     "file": "src/main.rs",
     "name": "store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found",
-    "start_line": 24537,
-    "end_line": 24570
+    "start_line": 24619,
+    "end_line": 24652
   },
   {
     "file": "src/main.rs",
     "name": "scratch_defaults_reads_the_owning_roots_config_with_no_agents_fleet_present",
-    "start_line": 24584,
-    "end_line": 24615
+    "start_line": 24666,
+    "end_line": 24697
   },
   {
     "file": "src/main.rs",
     "name": "watch_once_on_a_clean_store_reports_no_anomalies",
-    "start_line": 24618,
-    "end_line": 24643
+    "start_line": 24700,
+    "end_line": 24725
   },
   {
     "file": "src/main.rs",
     "name": "parse_watch_args_defaults_to_streaming_with_the_default_interval",
-    "start_line": 24646,
-    "end_line": 24650
+    "start_line": 24728,
+    "end_line": 24732
   },
   {
     "file": "src/main.rs",
     "name": "parse_watch_args_accepts_once_and_interval_together_in_either_order",
-    "start_line": 24657,
-    "end_line": 24679
+    "start_line": 24739,
+    "end_line": 24761
   },
   {
     "file": "src/main.rs",
     "name": "parse_watch_args_rejects_a_non_integer_interval_a_missing_value_and_an_unknown_flag",
-    "start_line": 24682,
-    "end_line": 24686
+    "start_line": 24764,
+    "end_line": 24768
   },
   {
     "file": "src/main.rs",
     "name": "watch_once_on_the_seeded_store_reports_one_line_per_anomaly",
-    "start_line": 24694,
-    "end_line": 24814
+    "start_line": 24776,
+    "end_line": 24896
   },
   {
     "file": "src/main.rs",
     "name": "the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names",
-    "start_line": 24821,
-    "end_line": 24840
+    "start_line": 24903,
+    "end_line": 24922
   },
   {
     "file": "src/main.rs",
     "name": "watch_once_reports_dash_not_serving_when_the_marker_names_a_dead_holder",
-    "start_line": 24848,
-    "end_line": 24876
+    "start_line": 24930,
+    "end_line": 24958
   },
   {
     "file": "src/main.rs",
     "name": "watch_once_reports_no_anomaly_when_the_dash_marker_names_a_real_serving_holder",
-    "start_line": 24883,
-    "end_line": 24913
-  },
-  {
-    "file": "src/main.rs",
-    "name": "runs_menu_line_names_the_measured_counts_and_the_flag",
-    "start_line": 24918,
-    "end_line": 24941
-  },
-  {
-    "file": "src/main.rs",
-    "name": "derived_menu_line_sums_the_measured_duplicate_counts_and_names_the_flag",
-    "start_line": 24944,
-    "end_line": 24973
-  },
-  {
-    "file": "src/main.rs",
-    "name": "derived_menu_line_on_a_server_backend_says_so_instead_of_a_fabricated_count",
-    "start_line": 24980,
+    "start_line": 24965,
     "end_line": 24995
   },
   {
     "file": "src/main.rs",
+    "name": "runs_menu_line_names_the_measured_counts_and_the_flag",
+    "start_line": 25000,
+    "end_line": 25023
+  },
+  {
+    "file": "src/main.rs",
+    "name": "derived_menu_line_sums_the_measured_duplicate_counts_and_names_the_flag",
+    "start_line": 25026,
+    "end_line": 25055
+  },
+  {
+    "file": "src/main.rs",
+    "name": "derived_menu_line_on_a_server_backend_says_so_instead_of_a_fabricated_count",
+    "start_line": 25062,
+    "end_line": 25077
+  },
+  {
+    "file": "src/main.rs",
     "name": "implementer_persona_pins_the_checkin_stage_kill_or_justify_contract",
-    "start_line": 25014,
-    "end_line": 25107
+    "start_line": 25096,
+    "end_line": 25189
   },
   {
     "file": "src/main.rs",
     "name": "implementer_persona_pins_the_checkpoint_before_long_work_contract",
-    "start_line": 25115,
-    "end_line": 25157
+    "start_line": 25197,
+    "end_line": 25239
   },
   {
     "file": "src/main.rs",
     "name": "no_persona_under_rigger_agents_invokes_cargo_mutants",
-    "start_line": 25168,
-    "end_line": 25198
+    "start_line": 25250,
+    "end_line": 25280
   },
   {
     "file": "src/dash.rs",
