@@ -4,21 +4,21 @@
 doing right now, what happens next, what needs a human, why a unit was rejected, and the map of
 the codebase being changed - for every project the machine is running, at any moment of a run,
 not only its head. It is one browser page that rigger serves itself. Everything on it is folded
-from the event log by the same Rust that drives the loop, compiled to WebAssembly and run in the
+from the log by the same Rust that drives the loop, compiled to WebAssembly and run in the
 page, so the console can never disagree with the conductor or with `rigger status`. It replaces
 the dashboard; the dashboard's knowledge-graph panel becomes the console's Knowledge tab.
 
 The visual contract is the Rigger Mission Control mock, artifact
-`54f8451e-ca21-45a5-bab7-575e57451b20` (approved 2026-09-06 as the goal). Where this addendum
-and the mock differ, the mock's appearance wins and this addendum's data rules win: the console
-looks like the mock and shows only what the log can prove.
+`54f8451e-ca21-45a5-bab7-575e57451b20` (approved 2026-09-06 as the goal). Every mark the mock
+shows has a recorded source in this design; where the log did not hold one, this design adds
+the recording. The console looks like the mock and shows what the log proves - and the log is
+made to hold everything the mock shows.
 
 ## Problem
 
-The loop already records everything: every spawn, every progress line, every gate verdict,
-every finding, stance and ruling, every merge. What is missing is a surface that turns that
-record into the four things a person actually asks while a run is live. Five gaps, each with a
-concrete anchor in today's tree:
+The loop records a great deal: every spawn, every progress line, every gate verdict, every
+finding, stance and ruling, every merge. Two things it does not record, and five surfaces it
+lacks, stand between that record and the four questions a person asks while a run is live.
 
 - **No surface answers the operator's questions.** `rigger status` prints the frontier and the
   blocker lines; the dashboard (`src/dash.rs`, 11,240 lines, and `src/dash.html`, 2,398 lines)
@@ -31,6 +31,14 @@ concrete anchor in today's tree:
   post-mortem of a six-attempt unit is done by re-reading event dumps by position. The
   question "what did the theater look like when round 2 was rejected" has an exact answer in
   the log and no way to see it.
+- **The agent's own session is not in the log.** A worker reports progress lines and a
+  result; its actual work - the tools it ran, what they printed, the edits it made, the tokens
+  it spent per turn - lives only in the editor harness's session files, outside rigger. So no
+  surface can show a transcript, a per-agent or per-unit token burn, or what a silent agent is
+  doing between reports, and a post-mortem reads harness files by hand.
+- **Steps are not recorded.** `rigger step` advances the frontier and returns a wave, but the
+  log carries no record of the invocation itself, so "how many steps has this run taken" and
+  "when did the frontier last move" are inferred from spawn timestamps.
 - **Three folds of one log.** `rigger status` folds the log (`ledger::project`,
   `blocker::from_state`), the dashboard folds it again (`build_state`), and every operator
   script folds it a third time. The dashboard's release-ready line is kept equal to status's by
@@ -57,7 +65,7 @@ concrete anchor in today's tree:
   +---------------------------------------------------------------------------------------+
   | Fleet  Theater  Agents  Courtroom  Knowledge  Plan  Briefing     o heartbeats 2 live      |
   |                                                                  o frontier step#12      |
-  |                                                                  o no churn  o dash o store|
+  |                                                    budget 1,284k tok  o no churn o dash o store|
   +---------------------------------------------------------------------+-----------------+
   |                                                                     | NEXT            |
   |                              the view                               |  1 Adjudicator  |
@@ -80,15 +88,15 @@ The shell is a fixed grid: header, tab bar with the health strip, the view besid
 time scrubber, the statusline. Each view answers one question; the dock answers "what next and
 what needs me" on every view.
 
-| View       | The question it answers                                  | Folded from                                   |
-|------------|-----------------------------------------------------------|-----------------------------------------------|
-| Fleet      | What is every project on this machine doing?              | the registry, one small fold per instance     |
-| Theater    | Where is each unit in Plan / Build / Review / Integrate?  | units, spawns, progress, verdicts, merges     |
-| Agents     | What is this agent doing, and what has it done?           | one spawn's prompt, progress, gates, result   |
-| Courtroom  | Why was this round approved or rejected?                  | findings, stances, verdicts, rulings per round|
-| Knowledge  | What does the code look like, and what is changing?       | the graph, plus the run's blast radius        |
-| Plan       | How far along is the run, and how fast is it going?       | the unit DAG, gates, durations, rounds        |
-| Briefing   | Tell me where things stand, in prose.                     | the whole fold, rendered as sentences         |
+| View       | The question it answers                                  | Folded from                                    |
+|------------|-----------------------------------------------------------|------------------------------------------------|
+| Fleet      | What is every project on this machine doing?              | the registry, one small fold per instance      |
+| Theater    | Where is each unit in Plan / Build / Review / Integrate?  | units, spawns, transcripts, verdicts, merges   |
+| Agents     | What is this agent doing, and what has it done?           | one spawn's prompt, transcript, gates, result  |
+| Courtroom  | Why was this round approved or rejected?                  | findings, stances, verdicts, rulings per round |
+| Knowledge  | What does the code look like, and what is changing?       | the graph, plus the run's blast radius         |
+| Plan       | How far along is the run, and how fast is it going?       | the unit DAG, gates, durations, rounds, tokens |
+| Briefing   | Tell me where things stand, in prose.                     | the whole fold, rendered as sentences          |
 
 ### 2. Everything is a fold of the log, at a position
 
@@ -99,27 +107,27 @@ struct, so the theater, the courtroom and the briefing at position N are three r
 one fact, never three folds.
 
 ```
-   event log (run stream)         progress store          liveness markers (disk)
-   RunStarted .. UnitProposed ..  per-spawn "doing"       per-spawn heartbeat mtime
-   SpawnRequested .. GateVerdict  lines with time         (live head only)
-   ReviewFinding .. DecisionMade
-   UnitIntegrated ..
-          |                              |                        |
-          v                              v                        v
-   +----------------------------------------------------------------------+
-   |  fold(events[..N], progress[..t(N)], ages)  ->  ConsoleState          |
-   |     units (ledger::RunState)   agents (spawn + progress + result)     |
-   |     court (findings, stances, verdicts by unit and round)             |
-   |     plan (DAG, gates, durations, ETA)     attention (needs-you items) |
-   |     brief (sentences)   health (signals)   next (steps)   statusline  |
-   +----------------------------------------------------------------------+
+   event log (run stream)         progress store                  liveness markers (disk)
+   RunStarted .. UnitProposed ..  progress lines (time, text)     per-spawn heartbeat mtime
+   SpawnRequested .. StepTaken    transcript turns per spawn      (live head only)
+   GateVerdict .. ReviewFinding   (text, tool call, tool result,
+   DecisionMade .. UnitIntegrated  edit, usage, time)
+          |                              |                                  |
+          v                              v                                  v
+   +---------------------------------------------------------------------------------+
+   |  fold(events[..N], progress[..t(N)], usage[..t(N)], ages)  ->  ConsoleState      |
+   |     units (ledger::RunState)   agents (spawn + latest turn + result)             |
+   |     court (findings, stances, verdicts by unit and round)   steps (StepTaken)    |
+   |     plan (DAG, gates, durations, ETA, token burn)   attention (needs-you items)  |
+   |     brief (sentences)   health (signals)   next (steps)   statusline             |
+   +---------------------------------------------------------------------------------+
           |            |            |            |            |
        Theater      Agents     Courtroom       Plan       Briefing  ... Dock, strip, statusline
 ```
 
 Only **console events** count toward N: the run-lifecycle types (`RunStarted`,
 `UnitProposed`, `UnitStarted`, `UnitStatus`, `UnitIntegrated`, `UnitFailed`, `UnitEscalated`,
-`UnitResumed`, `SpawnRequested`, `SpawnResult`, `GateVerdict`, `ReviewFinding`,
+`UnitResumed`, `SpawnRequested`, `SpawnResult`, `StepTaken`, `GateVerdict`, `ReviewFinding`,
 `DecisionMade`, `LessonLearned`, `BlastRadiusComputed`, `FileTouched`,
 `DefinitionSuperseded`, `BudgetExhausted`). The graph-extraction types that share the stream
 (`CodeEntityExtracted`, `EdgeInferred`, `DocLinkExtracted`, `DocConceptExtracted`) are the
@@ -128,10 +136,57 @@ scrubber. A run of this repository's size has a few thousand console events and 
 graph events, so this filter is what makes "the state at every position" cheap.
 
 Times come from each event's `recorded_at`. At the live head, an agent's age is its heartbeat
-marker's age; at a replay position, its age is the time since its last progress line before
-that position, so a replay shows the same staleness the operator would have seen then.
+marker's age; at a replay position, its age is the time since its last transcript turn or
+progress line before that position, so a replay shows the same staleness the operator would
+have seen then.
 
-### 3. The core runs in the browser as WebAssembly
+### 3. The agent's session is in the log
+
+**Why.** The mock's Agents view is a transcript: the prompt, the agent's reasoning text, the
+tools it called, what they printed, the edits it made as diffs, and its result; the Plan view
+burns tokens per unit; the Theater card says what an agent is doing even when it has not
+reported. None of that is a rendering choice - it is data the log must hold. Today a worker's
+session is written by the editor harness into its own session files, keyed by nothing rigger
+knows. The join exists: every spawn's prompt begins with its spawn id, and the harness writes
+each sub-agent's session as a line-delimited file whose first message is that prompt. So the
+transcript of a spawn is locatable exactly, without guessing.
+
+**Transcript sources.** A transcript source is the one place rigger reads a spawn's session
+from; two are shipped. The *editor-session source* scans the harness's project directory for
+this repository (its path is derived from the repository root the same way the harness
+derives it, overridable by `RIGGER_TRANSCRIPT_ROOT` for tests and unusual homes) for
+sub-agent session files whose first message carries the spawn id, newest first. The *driver
+source* is the headless driver (`rigger workflow`, `rigger run`), which receives the agent's
+message stream directly from the agent SDK and records turns as they arrive, with no file
+scanning. A run records which source each spawn's transcript came from.
+
+**What is recorded.** Into the progress store (the separate store `rigger progress` already
+appends to, never the run stream), one `TranscriptTurn` record per message of the session:
+the turn index, its time, its role, and its blocks - text; a tool call (tool name, its input;
+an edit tool's old and new text kept whole so the console renders the diff; a shell tool's
+command); a tool result (its output, capped at 32 KB per block with the head and tail kept
+and the omitted byte count recorded) - and the usage the harness reports on the message
+(input, output, cache-creation and cache-read tokens). At the spawn's completion the totals
+are written into the existing `SpawnResult` event's `meta.usage`, so the run stream carries
+per-spawn tokens without a new run-stream type, and `rigger stats` and the Plan view read the
+same numbers.
+
+**When.** Three moments, all the same code: while a spawn is live, the dash singleton's
+transcript tailer follows the growing session file (polling its length every two seconds)
+and appends turns as they land, so the Agents view shows the agent working turn by turn; at
+`rigger result <id>` the worker's own recording call ingests whatever the file holds and
+writes the usage totals; at every `rigger step`, any spawn with a result and an incomplete
+transcript is ingested to the end (a courier that died mid-session still leaves a complete
+record). Ingestion is idempotent by (spawn, turn index): a turn is recorded once.
+
+**What it closes.** The Agents transcript is the real one. The Theater card's "what" is the
+latest transcript turn when no progress line is newer (a tool call reads as `running cargo
+test --test cli`, an edit as `editing src/dash.rs`), so a silent agent is never blank. Token
+burn per unit is the cumulative usage of its spawns over time; the budget chip is the run's
+total; the Fleet's "tokens today" sums instances. The transcript is also the evidence a
+courtroom finding can link to (a finding's `about` naming a spawn turn opens it).
+
+### 4. The core runs in the browser as WebAssembly
 
 **Why.** The fold above already exists in Rust and is the conductor's own: `ledger::project`,
 `blocker::from_state`, `progress::consolidate`, `spawn::step_result`, `metrics::project`, the
@@ -145,10 +200,10 @@ fold cannot drift: it is not a fourth fold.
 **What runs in the core.** A `core` build of the library containing the pure modules and one
 new module, `console`, that holds the view models (theater lanes, agent transcripts, courtroom
 boards, plan instruments, briefing sentences, next steps, needs-you items, health signals, the
-statusline) and the map engine spec 84 defines (districts, degree rank, semantic zoom budget,
-label placement, hit testing). The same `console` module serves `rigger status` (the
-statusline and the needs-you lines are printed by the CLI from the same functions), so the
-terminal and the page are one authority too.
+statusline, the palette commands, the scrub track) and the map engine spec 84 defines
+(districts, degree rank, semantic zoom budget, label placement, hit testing). The same
+`console` module serves `rigger status` (the statusline and the needs-you lines are printed by
+the CLI from the same functions), so the terminal and the page are one authority too.
 
 **What stays in JavaScript.** Only what a browser must do: the DOM (building the shell and the
 view markup from the core's JSON), the canvas draw calls for the map (the core returns a draw
@@ -194,7 +249,7 @@ a workflow-level install in CI - never something a unit installs.
 operator's machine; a fold of 10,000 console events under 16 ms (one frame), so a scrub is
 never perceptibly late. A frame of the map at full extent stays under 8 ms of core time.
 
-### 4. The data plane
+### 5. The data plane
 
 ```
    browser page                              rigger (the dash singleton, one process)
@@ -202,43 +257,54 @@ never perceptibly late. A frame of the map at full extent stays under 8 ms of co
    GET /                                --->  the console page (shell + JS + font links)
    GET /console/core.wasm, /console/fonts/* -> embedded assets from the binary
    GET /api/console/snapshot?instance=  --->  { run_id, spec, base, console events of the
-                                               current run, progress lines, liveness ages,
+                                               current run, progress lines, per-spawn usage
+                                               totals and turn counts, liveness ages,
                                                definition (stages, gates, liveness bound),
-                                               head position }
-   GET /api/console/stream?since=N      --->  text/event-stream: one frame per new console
-                                               event (subscribe_all on the store), one
-                                               `progress` frame per new progress line, one
-                                               `liveness` frame every 5 s with marker ages,
-                                               a `heartbeat` frame every 15 s
+                                               head position, action token }
+   GET /api/console/stream?since=N&follow=<spawn>
+                                        --->  text/event-stream: `event` per new console
+                                               event (subscribe_all on the store), `progress`
+                                               per new progress line, `turn` per new
+                                               transcript turn of the followed spawn plus a
+                                               `usage` frame per spawn as its totals grow,
+                                               `liveness` every 5 s, `attention` when an
+                                               entry first appears, `heartbeat` every 15 s
+   GET /api/console/transcript?spawn=   --->  the spawn's recorded turns (paged by index)
    GET /api/graph?payload=map           --->  the whole graph for the map (entities, kinds,
                                                files, typed edges, communities, concepts,
                                                proof counts), cached per index stamp
    GET /api/code?file=&line=            --->  a window of the file at the run branch
-   GET /api/code?diff=<unit>&sha=       --->  git diff of the unit's worktree sha vs its base
+   GET /api/code?diff=<unit>&sha=       --->  git diff of the unit's worktree sha vs its base,
+                                               resolved through the unit's lineage ref when
+                                               the sha is no longer on any live branch
+   GET /api/console/fleet               --->  one small fold per registered instance
    GET /api/instances                   --->  the registry (unchanged)
-   POST /api/actions/resume-unit        --->  guarded action (section 6)
-   POST /api/actions/ruling             --->  guarded action (section 6)
+   POST /api/actions/resume-unit        --->  guarded action (section 7)
+   POST /api/actions/ruling             --->  guarded action (section 7)
 ```
 
-The server does no folding for the console. Its job is to hand the page the raw materials
-(events, progress, ages, the graph payload, code windows) and to keep the stream open. The
-existing `/api/state` and `/api/graph` routes stay for the transition and for external
-readers; the console does not read `/api/state`.
+The server does no folding for the console page. Its job is to hand the page the raw
+materials (events, progress, usage, transcripts on demand, ages, the graph payload, code
+windows) and to keep the stream open. Transcripts are large, so the snapshot carries only
+per-spawn usage totals and turn counts; the Agents view fetches a spawn's turns when it is
+opened and follows the live ones through the stream. The existing `/api/state` and
+`/api/graph` routes stay for the transition and for external readers; the console does not
+read `/api/state`.
 
-Three sources feed the fold: the run stream (the event store), the progress store (the
-separate store `rigger progress` appends to, never the run stream) and the liveness markers
-(files whose modification time is the heartbeat). The snapshot carries all three at once so
-the page renders before the stream connects; the stream then carries deltas only. A dropped
-stream reconnects with `since=` the last position received and is shown on the health strip
-(`dash` turns amber while disconnected); the page never fabricates events while offline.
+Three sources feed the fold: the run stream, the progress store (progress lines, transcript
+turns, usage) and the liveness markers. The snapshot carries the first two at once so the page
+renders before the stream connects; the stream then carries deltas only. A dropped stream
+reconnects with `since=` the last position received and is shown on the health strip (`dash`
+turns amber while disconnected); the page never fabricates events while offline.
 
-### 5. The views
+### 6. The views
 
-Every view has an **honest empty state**: a sentence that names what the log does not hold
-and, where a command produces it, the command. No view fabricates a number, a transcript line
-or an estimate it cannot derive.
+Every view renders every element the mock shows from recorded data. A view's *empty state*
+exists only for a store with nothing to show (no run yet, no findings in a round) and names
+the command that produces the data; it is never a substitute for a recording this design
+provides.
 
-#### 5.1 Theater
+#### 6.1 Theater
 
 ```
    UNIT                    PLAN          BUILD                REVIEW                INTEGRATE
@@ -247,46 +313,55 @@ or an estimate it cannot derive.
    u90c1 . runner hermetic               [Implementer done]   [SDET done][Arch done] [merged . 5df3c3d]
                                           [SDET-Author done]   [Adversary done]
                                                                [Adjudicator done]    r1 ok
-   u90c2 . line-free guard               [Implementer done]   [Lens:SDET o working]  r1 x  r2 x
-                                          [SDET-Author done]   [Lens:Arch  o 2m]
+   u90c2 . line-free guard               [Implementer done]   [Lens:SDET o cargo test --test cli]  r1 x  r2 x
+                                          [SDET-Author done]   [Lens:Arch  o editing tests/audit.rs  2m]
    u90c3 . lanes green     waiting on u90c2
    Drive                                  step#1 .. step#12  (last step 4m ago)
 ```
 
 One lane per unit plus the plan lane and the drive lane; four phase cells. An agent card shows
-its persona, its latest progress line, its age since the last heartbeat and a pulsing dot while
-working (grey when stale, faint when done). The Review cell carries the round pile (`r1 x`,
-`r2 ok`). The active cell is tinted; a landed unit's Integrate cell shows the commit. The
-frontier at position N is the set of spawns without a result at N. Clicking an agent card
+its persona, what it is doing (its latest progress line, or when the transcript has a newer
+turn, that turn rendered as an activity: `running <command>`, `editing <file>`, `reading
+<file>`, `thinking`), its age since the last heartbeat and a pulsing dot while working (grey
+when stale, faint when done). The Review cell carries the round pile (`r1 x`, `r2 ok`). The
+active cell is tinted; a landed unit's Integrate cell shows the commit. The frontier at
+position N is the set of spawns without a result at N. The drive lane lists every `StepTaken`
+as a badge with the current one highlighted and the last step's time. Clicking an agent card
 opens it in Agents.
 
 Fold inputs: `UnitStarted`/`UnitProposed` (lanes, needs), `SpawnRequested`/`SpawnResult`
-(cards, phases from the stage and the persona), progress lines (the card text), `GateVerdict`
-(the gate badges), `UnitFailed` with cause `reject` and the adjudicator's verdict ruling (the
-round pile), `UnitIntegrated` (merged), `UnitEscalated` (the lane turns critical).
+(cards, phases from the stage and the persona), progress lines and transcript turns (the card
+text), `GateVerdict` (the gate badges), `UnitFailed` with cause `reject` and the adjudicator's
+verdict record (the round pile), `UnitIntegrated` (merged), `UnitEscalated` (the lane turns
+critical), `StepTaken` (the drive lane).
 
-#### 5.2 Agents
+#### 6.2 Agents
 
 Left: every spawn of the run grouped by unit, newest first, the working ones marked. Right:
-the selected agent's transcript, built only from what the log holds, in order:
+the selected agent's transcript, the session itself, in order:
 
 1. **Prompt** - the spawn's task text and persona name from `SpawnRequested` (the full prompt
    behind a disclosure, the same text `rigger prompt <id>` prints).
-2. **Progress turns** - each progress line with its time.
-3. **Gate evidence** - each `GateVerdict` of the unit during this spawn, rendered as a
-   terminal block (pass in green, fail in red, the evidence text verbatim).
+2. **Turns** - each transcript turn: the agent's text as paragraphs; a tool call as the mock's
+   tool chip (`rigger graph --around src/worktree.rs`, `cargo test --test cli`); a tool result
+   as a terminal block (a test run's lines with pass and fail coloured, a command's output
+   verbatim, a truncated block carrying its omitted byte count); an edit as a diff block (the
+   old text as removed lines, the new text as added lines, under the file's header); a
+   progress line reported at that moment as a highlighted turn.
+3. **Gate evidence** - each `GateVerdict` of the unit during this spawn, as a terminal block
+   in sequence with the turns.
 4. **The diff** - the unit's worktree diff at the spawn's last recorded `worktree_sha`
-   (`UnitStatus` meta), fetched on demand from `/api/code?diff=`.
+   (`UnitStatus` meta), fetched from `/api/code?diff=`, resolved through the lineage ref when
+   the sha has left every live branch.
 5. **Findings, stances and rulings this agent recorded** - `ReviewFinding` and `DecisionMade`
-   whose `meta.spawn` is this id.
-6. **Result** - the `SpawnResult` output, or a live "working" turn showing the latest progress
-   line with a pulsing marker.
+   whose `meta.spawn` is this id, placed at their times.
+6. **Result** - the `SpawnResult` output with the spawn's usage totals, or a live "working"
+   turn that grows as the tailer records new turns.
 
-The tool-by-tool transcript of the agent's editor session is not held by the log and is not
-shown; the header says so ("the log holds the agent's reports, gates and records, not its
-keystrokes"). A `Follow live` toggle keeps the newest turn in view at the head.
+The header carries the spawn id, the persona, done or working with the age since the last
+turn, and the tokens spent. A `Follow live` toggle keeps the newest turn in view at the head.
 
-#### 5.3 Courtroom
+#### 6.3 Courtroom
 
 ```
    [u90c1] [u90c2] [u90c3]     round 1 x   round 2 x   round 3 o          line-free audit guard
@@ -306,20 +381,26 @@ keystrokes"). A `Follow live` toggle keeps the newest turn in view at the head.
 A unit tab row and a round row (each round's button carries its outcome dot). The board holds
 one card per `ReviewFinding` of that unit and round (the lens as the colour stripe, the finding
 id, the `about` location as a link that opens the code pane), threaded with the adversary's
-stance where the adversary's record names that finding id (uphold or refute, with its text),
-then the verdict card: the round's outcome from the log (`UnitFailed` cause `reject`, or the
-unit reaching `reviewed`) with the adjudicator's ruling text and cause, or a "deliberating"
-card with the adjudicator's latest progress line while the round is live. Below: the
+stance on it, then the verdict card: the round's outcome from the log (`UnitFailed` cause
+`reject`, or the unit reaching `reviewed`) with the adjudicator's ruling text and cause, or a
+"deliberating" card with the adjudicator's latest turn while the round is live. Below: the
 `DecisionMade` records that govern the unit (operator rulings first), and the **finding
 audit**: for a unit with two or more rejects, the core groups the rejecting rounds' findings
 by the code location and the wording they share and reports whether the rejects are one cause
 reached through different paths or genuinely new defects - the question an operator must
 answer before spending another round.
 
-Rounds are derived, not recorded: a spawn id's attempt number (`u90c2/lens:sdet#1` is round
-2) keys findings, stances and verdicts to their round.
+**The review record's shape.** So that the thread is a join and not a text search, the review
+personas record in the shapes the courtroom reads: a lens records one `ReviewFinding` per
+finding with `about` the code location; the adversary records one `ReviewFinding` per stance
+with `about` the finding id it weighs, `by` the adversary, and a summary that begins `UPHOLD`
+or `REFUTE`; the adjudicator records its ruling as one `DecisionMade` whose id is
+`adj-<unit>-r<N>-verdict-<approve|reject>` with the cause as its first clause. These are
+persona rules (definition content), verified by a definition test. Rounds are derived, not
+recorded: a spawn id's attempt number (`u90c2/lens:sdet#1` is round 2) keys findings, stances
+and verdicts to their round.
 
-#### 5.4 Knowledge
+#### 6.4 Knowledge
 
 The three lenses of the knowledge-graph inspector, unchanged in their taxonomy: Code (the
 labelled map of spec 84: districts named by purpose, semantic zoom, always-labelled
@@ -327,32 +408,35 @@ entities, typed directed edges, the explore rail, the card with Called by / Call
 Proof / Concepts / Memory chips), Files, Concepts. The console adds exactly one thing: the
 **run-activity overlay**, which at the scrubber's position lights every entity inside an
 in-flight unit's blast radius (`BlastRadiusComputed` precise and safe file lists, plus
-`FileTouched` since the unit started) with the amber ring the legend names, and pulses the
-files a building unit is editing. The Memory chips hand off to the Courtroom (a finding chip
-opens its unit and round). The map engine runs in the core; the page draws.
+`FileTouched` since the unit started, plus the files the unit's transcript edits) with the
+amber ring the legend names, and pulses the files a building unit is editing. The Memory chips
+hand off to the Courtroom (a finding chip opens its unit and round). The map engine runs in
+the core; the page draws.
 
-#### 5.5 Plan
+#### 6.5 Plan
 
 The unit DAG (needs edges, the critical path - the longest chain of unlanded units - drawn in
 the accent colour, each box coloured by status and captioned with its status, reject count and
-commit), the instruments (units landed, ETA to done, rounds and rejects, elapsed, tokens,
-mean landed-unit duration), token burn per unit as sparklines, and the gates table (the latest
-verdict of every gate for every unit). ETA is remaining units times the mean landed-unit
-duration less the time each in-flight unit has already spent, recomputed at every position;
-before any unit has landed it reads "no unit landed yet". Tokens render from `SpawnResult`
-usage metadata when the driver recorded it and read "usage not recorded by this driver" when
-it did not - a blank, never an estimate.
+commit), the instruments (units landed, ETA to done, rounds and rejects, elapsed, tokens, mean
+landed-unit duration), token burn per unit as sparklines, and the gates table (the latest
+verdict of every gate for every unit). Tokens are the recorded usage of each unit's spawns,
+cumulative over the turns' times. ETA is remaining units times the mean landed-unit duration
+less the time each in-flight unit has already spent, recomputed at every position; the mean is
+this run's when a unit has landed, this project's across its earlier runs before that, and the
+fleet's across the machine's projects before that - and the instrument names which of the
+three it used.
 
-#### 5.6 Briefing
+#### 6.6 Briefing
 
 Prose generated from the fold at the cursor: a headline (release-ready, or where things stand
-at the cursor's time), a metadata line, one summary sentence, then Landed (each unit with its
-time, commit and reject count), Rejects and why (the first sentence of each rejecting ruling),
-Decisions taken, What happens next (the same steps the dock shows), and, on a done run, the
-release commands `ledger::ReleaseReady` already produces for `rigger status`. Every sentence is
-assembled from recorded text; the page adds no adjectives.
+at the cursor's time), a metadata line (run, elapsed, steps, tokens, units landed of total),
+one summary sentence, then Landed (each unit with its time, commit and reject count), Rejects
+and why (the first sentence of each rejecting ruling), Decisions taken, What happens next (the
+same steps the dock shows), and, on a done run, the release commands `ledger::ReleaseReady`
+already produces for `rigger status`. Every sentence is assembled from recorded text; the page
+adds no adjectives.
 
-#### 5.7 Fleet
+#### 6.7 Fleet
 
 One board for every registered instance on the machine: a strip of totals (projects, live
 runs, agents working, needs-you count, tokens today), a card per project (spec, run, a unit
@@ -362,11 +446,11 @@ of today's runs as bars against the clock with a "now" line. A project's card is
 rendered small: the singleton folds each registered instance's store through the same core
 (it runs the core natively for this), so a number on a card equals the number on that
 project's console. Opening a card routes the console to that instance (`?instance=<id>`, the
-convention the API already uses). Attention entries from every project reach the inbox and,
-when the person has allowed it once, a browser notification, so nobody watches a board to be
-tapped.
+convention the API already uses), where the full console - every view - renders from that
+instance's log. Attention entries from every project reach the inbox and, when the person
+has allowed it once, a browser notification, so nobody watches a board to be tapped.
 
-#### 5.8 The dock, the health strip and the statusline
+#### 6.8 The dock, the health strip and the statusline
 
 **Next** is a numbered list of the run's next steps derived from the fold (the adjudicator
 rules on a unit in review; an implementer finishes a round; a rejected unit re-spawns for its
@@ -380,15 +464,17 @@ actions the console may perform, a guarded button. When the list is empty it say
 block (spec, base, steps, agents, decisions, findings, the latest decision).
 
 The **health strip** shows five signals as coloured dots: heartbeats (working spawns, amber
-when any is past the run's liveness bound), frontier (amber when the last step is older than
-the bound), churn (amber when any open unit has three or more rejects), dash (the stream
-connection), store (the server's last successful read), plus the token chip.
+when any is past the run's liveness bound), frontier (the current step number, amber when the
+last `StepTaken` is older than the bound), churn (amber when any open unit has three or more
+rejects), dash (the stream connection), store (the server's last successful read), plus the
+budget chip (the run's recorded tokens).
 
 The **statusline** is one line: unit focus, review round, units landed, health word, step age,
-live or replay - the same text `rigger status` prints first, produced by the same core
-function.
+live or replay - produced by the core's `statusline` function. `rigger status --line` prints
+the same line, and `rigger setup` registers that command as the editor's status line, so the
+line the editor shows under the conversation and the line the console shows are one text.
 
-#### 5.9 The scrubber, replay and the palette
+#### 6.9 The scrubber, replay and the palette
 
 The scrubber's range is the run's console events; its marks are verdicts (red reject, green
 approve), integrations (accent, taller) and the plan approval, each with a tooltip; its ticks
@@ -399,7 +485,7 @@ carries the view, the selection and the position (`#/court/u90c2/2?at=3146150`),
 is shareable. The command palette (`Ctrl/Cmd-K`) jumps to a view, a unit's courtroom, an agent
 or a round, to live, or to a replay from the start; the digits 0-6 switch views.
 
-### 6. Guarded actions
+### 7. Guarded actions
 
 The console is a reader that may perform two writes, both of which the CLI performs today
 with the same library calls, both recorded on the log by the same code path:
@@ -418,7 +504,7 @@ command, never a button: the console does not push branches, open pull requests,
 stop runs, or touch a process (there is no stop-agent action anywhere, by the no-OS-kills
 rule). Launching runs belongs to the world authority described in its own addendum.
 
-### 7. Look and feel
+### 8. Look and feel
 
 The mock's tokens are the console's tokens, verbatim, in both themes:
 
@@ -441,7 +527,7 @@ is designed, not inverted. Motion is limited to the heartbeat pulse, the card ho
 scrubber fill, and all of it stops under `prefers-reduced-motion`. Every interactive element
 has a visible focus ring in the accent colour.
 
-### 8. The dashboard charter, amended
+### 9. The dashboard charter, amended
 
 The dashboard's charter was: no external assets, inline JavaScript in the served page, zero
 new dependencies, read-only over existing projections. For the console it becomes:
@@ -454,18 +540,23 @@ new dependencies, read-only over existing projections. For the console it become
   library. A build *target* (`wasm32-unknown-unknown`) is added; it is an operator and CI
   install, never a crate.
 - **Reads projections; writes only through the guarded action set** replaces "read-only": the
-  two actions in section 6, each a CLI-equivalent library call recorded on the log.
+  two actions in section 7, each a CLI-equivalent library call recorded on the log. Transcript
+  ingestion writes the progress store, as `rigger progress` already does.
 
-### 9. Constraints walk
+### 10. Constraints walk
 
 - **Empty store, no run** - every view shows its empty sentence ("no run recorded; start one
   with `rigger run <spec>`"), the scrubber is disabled, the health strip shows store and dash
   only.
-- **A run recorded by an older binary** - events lacking a field the core reads (a
-  `worktree_sha`, a `base_tip`) render the honest blank ("no worktree recorded"), never a
-  guess; the fold never fails on a missing optional field.
-- **A run with no progress lines** - agent cards show "no progress reported" and age from the
-  spawn time.
+- **A spawn whose session file is not found** - the ingester records that the source found no
+  session for the id and where it looked; the transcript shows the prompt, progress lines,
+  gates and result, with that record as its first turn, and the needs-you list carries the
+  item (a missing session is a harness fault to fix, not a quiet absence).
+- **A session file still being written** - turns are appended as they land; a partial last
+  line is skipped until complete; ingestion is idempotent by turn index.
+- **A run recorded before this design** - spawns without usage show the usage of the turns
+  the ingester can still find at step time; earlier spawns with no session on disk carry the
+  not-found record above.
 - **The graph payload is large** - it is fetched once per index stamp, cached in the page, and
   the map draws only what the rank budget admits (spec 84); the core never returns the whole
   entity list to the page.
@@ -477,7 +568,8 @@ new dependencies, read-only over existing projections. For the console it become
 - **An instance goes away** - its Fleet card shows its last fold with an "unreachable since"
   badge; opening it says why.
 - **The singleton restarts** - the page reloads its snapshot; the position it was showing is
-  in its URL, so a replay survives the restart.
+  in its URL, so a replay survives the restart; the tailer resumes from the recorded turn
+  counts.
 - **A store anomaly** - a projection error is surfaced as a critical `store` signal with the
   error text, never swallowed into an empty view.
 - **The core fails to load** - the page shows one sentence naming the module and the build
@@ -485,17 +577,18 @@ new dependencies, read-only over existing projections. For the console it become
 
 ## Delivery
 
-Six specs, in this order, plus one amendment. Spec 84 (the labelled map) is amended to build
-its layout, ranking and label placement in the core rather than in page script, so it lands on
-the core once and moves into the Knowledge tab unchanged; it therefore follows spec 93.
+Seven specs and one amendment. Spec 84 (the labelled map) is amended to build its layout,
+ranking and label placement in the core rather than in page script, so it lands on the core
+once and moves into the Knowledge tab unchanged; it therefore follows spec 93.
 
 | Spec | Scope |
 |------|-------|
 | 93 | The console core compiles to WebAssembly: the `store`/`core` feature split of the library, the `crates/console-core` member, the build-time embedding, the three-function ABI, the fold exports proven equal to `rigger status`, the graph query exports |
 | 84 (amended) | The labelled map, built on the core: districts, semantic zoom, label placement and hit testing as core functions returning draw lists; the page draws |
-| 94 | The console shell and the live data plane: the served page (shell, tabs, dock frame, health strip, statusline, scrubber, palette, theme, embedded fonts), the snapshot and stream endpoints, the position-addressed fold in the page, replay and the shareable URL |
-| 95 | Theater, Agents and the dock: lanes and phase cells, agent cards, the transcript view with prompt, progress, gate evidence, diff and result, Next and Needs-you and Run |
-| 96 | Courtroom and Plan: the findings board with adversary threads and verdict cards, the code pane, governing decisions, the finding audit; the DAG with critical path, the instruments, token burn, the gates table |
+| 94 | The console shell and the live data plane: the served page (shell, tabs, dock frame, health strip, statusline, scrubber, palette, theme, embedded fonts), the snapshot and stream endpoints, the position-addressed fold in the page, replay and the shareable URL, the statusline command and its editor registration |
+| 99 | The agent's session is in the log: transcript sources, the turn records and usage in the progress store, the live tailer, ingestion at result and step time, usage on `SpawnResult`, `StepTaken` recorded by every step |
+| 95 | Theater, Agents and the dock: lanes and phase cells, agent cards with transcript-derived activity, the drive lane, the transcript view with prompt, turns, gate evidence, diff and result, Next and Needs-you and Run |
+| 96 | Courtroom and Plan: the review record's shape, the findings board with adversary threads and verdict cards, the code pane, governing decisions, the finding audit; the DAG with critical path, the instruments with provenance-named ETA, token burn, the gates table |
 | 97 | Briefing, Fleet and attention: the generated brief, the fleet board over the registry with per-instance folds, the cross-project inbox, notifications, the guarded action set |
 | 98 | The Knowledge tab absorbs the inspector: the three lenses in the console with the run-activity overlay and the Memory hand-off, and the old dashboard page retired - `rigger dash` serves the console |
 
@@ -506,8 +599,8 @@ installs the same target at workflow level.
 
 1. **One fold.** The console's state is computed by the library's own projection code
    running in the page; no view derives a number from another view or from the DOM.
-2. **Position-addressed.** Every view is a function of (events up to N, progress up to the
-   time of N, ages); the live head is only the largest N.
+2. **Position-addressed.** Every view is a function of (events up to N, progress and
+   transcript turns up to the time of N, ages); the live head is only the largest N.
 3. **The page never computes what the core can.** JavaScript builds markup and draws lists;
    it holds no run model and no graph algorithm.
 4. **Reads projections, writes through the guarded set only.** Two actions, each a CLI
@@ -515,7 +608,9 @@ installs the same target at workflow level.
 5. **No external assets.** Page, script, core and fonts come from the binary.
 6. **Every visible mark is named.** Legends and labels for every class of mark; no unlabelled
    node on the map (spec 84).
-7. **Honest blanks.** A value the log does not hold is shown as its absence with the command
-   that would produce it, never estimated or fabricated.
+7. **Nothing on the mock is a blank.** Every element the mock shows has a recorded source;
+   where the log did not hold one, the design records it (the session transcript, usage,
+   steps). An empty state exists only for data that does not exist yet, never for data the
+   design chose not to record.
 8. **The mock is the contract.** Appearance, layout, interaction and wording follow the
    approved mock; data rules follow this addendum.

@@ -14,7 +14,8 @@ Fleet, inbox, notifications and guarded actions
 
 THE BRIEF, decided: `view("brief")` returns prose assembled only from recorded text: a
 headline ("<spec> is release-ready" or "<spec> - where things stand at <time>"), a metadata
-line (run, elapsed, steps, tokens when recorded, units landed of total), one summary
+line (run, elapsed, steps from `StepTaken`, tokens from recorded usage, units landed of
+total), one summary
 sentence built from unit statuses and the working-agent count, Landed (each unit with time,
 commit and reject count), Rejects and why (the first sentence of each rejecting ruling),
 Decisions taken (operator rulings and governing decisions), What happens next (the dock's
@@ -24,8 +25,9 @@ brief is generated from the log at the scrubber's position.
 
 THE FLEET, decided: the singleton folds every registered instance's store through the
 console core natively and `GET /api/console/fleet` returns one summary per instance (project,
-spec, run, units by status, agents working, ETA, tokens when recorded, steps, last event age,
-the five health signals, its attention entries, and a spawn-rate series); `view("fleet")`
+spec, run, units by status, agents working, ETA, tokens from recorded usage, steps, last
+event age, the five health signals, its attention entries, and a spawn-rate series);
+`view("fleet")`
 renders the strip (projects, live runs, agents working, needs-you count, tokens today), one
 card per project (the unit progress bar coloured by status, the metadata, the signals, the
 sparkline, `Open console`), the needs-you inbox across projects, and today's timeline of runs
@@ -58,7 +60,7 @@ so once.
 ## Notes (non-criteria)
 
 The registry, `/api/instances` and the instance routing convention are unchanged. Token
-totals read "not recorded" wherever usage metadata is absent. Proof is on recorded stream
+totals are spec 99's recorded usage. Proof is on recorded stream
 fixtures and a two-instance registry fixture; the SDET lens records the manual walk
 (briefing prose, fleet board, a real notification, both actions) as evidence, as in spec 94.
 
