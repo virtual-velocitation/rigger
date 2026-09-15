@@ -775,7 +775,7 @@
       }
     ],
     "disposition": "delete",
-    "reason": "ingest_project (the #[cfg(feature = \"symbols\")] single-event lane) has no production caller. Production calls ingest_project_batched (conductor.rs:8050/15473, main.rs:4067) exclusively - the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession. Ambiguous with its #[cfg(not(feature = \"symbols\"))] sibling at ingest.rs:615 (the textual scanner sees two same-named definitions where rustc, feature-gated, sees one); both carry the identical finding and disposition."
+    "reason": "ingest_project - both the #[cfg(feature = \"symbols\")] single-event lane and the #[cfg(not(feature = \"symbols\"))] light-lane no-op, one name at two cfg-gated sites - has no production caller on either lane. Production calls ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession."
   },
   {
     "name": "ingest_project",
@@ -809,7 +809,7 @@
       }
     ],
     "disposition": "delete",
-    "reason": "ingest_project (the #[cfg(not(feature = \"symbols\"))] light-lane no-op) has no production caller, for the identical reason as its #[cfg(feature = \"symbols\")] sibling at ingest.rs:124: production calls ingest_project_batched exclusively on both lanes. (Line shifted 468 -> 615: spec 92 criterion 1's FRESH ON EVERY INTEGRATION unit added file_batches/ingest_files_batched/graph_index_lag/ graph_index_lag_sample earlier in this same file, ahead of this untouched definition.)"
+    "reason": "ingest_project - both the #[cfg(feature = \"symbols\")] single-event lane and the #[cfg(not(feature = \"symbols\"))] light-lane no-op, one name at two cfg-gated sites - has no production caller on either lane. Production calls ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession."
   },
   {
     "name": "record_current_generation",

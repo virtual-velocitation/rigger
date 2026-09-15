@@ -167,9 +167,16 @@ export function buildProxyServer(client) {
       '"UnitProposed"; data is the decision/finding object.',
     {
       type: z.string().describe('DecisionMade | ReviewFinding | UnitProposed'),
-      data: z.record(z.string(), z.unknown()).describe('the decision/finding payload'),
+      // An object with a catchall, not `z.record`: the two produce the same JSON schema
+      // (an object whose additional properties have the value type), but the Agent SDK's
+      // bundled schema converter crashes on zod's record processor from zod 4.6 onward
+      // (`Cannot read properties of undefined (reading 'push')` on tools/list), which
+      // hid every rigger tool from the agent. The catchall form converts cleanly on every
+      // zod 4 release.
+      data: z.object({}).catchall(z.unknown()).describe('the decision/finding payload'),
       meta: z
-        .record(z.string(), z.string())
+        .object({})
+        .catchall(z.string())
         .optional()
         .describe('string->string metadata, e.g. {"actor":"<agent-id>"}'),
       valid_from: z

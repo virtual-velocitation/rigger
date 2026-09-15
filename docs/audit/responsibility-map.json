@@ -749,7 +749,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "32f95382919fe9af"
+    "content_hash": "55f29c50e73d27ff"
   },
   {
     "file": "src/conductor.rs",
@@ -781,7 +781,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "af003bd4458a6a7b"
+    "content_hash": "09684e4c17b9dce6"
   },
   {
     "file": "src/conductor.rs",
@@ -1093,7 +1093,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "3de1e5655534d13b"
+    "content_hash": "0742a06f33982a0a"
   },
   {
     "file": "src/conductor.rs",
@@ -7965,7 +7965,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "aed1d3fc3172bccf"
+    "content_hash": "06acc2732049ac5f"
   },
   {
     "file": "src/main.rs",
@@ -8398,6 +8398,22 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "5a41b3f4d076967d"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "precommit_block_finds_the_relocated_unit_target_with_the_binary_s_own_path_encoding",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8b77181ad85a4566"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "shipped_workflow_driver_tells_a_worker_its_units_build_location",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1689610eae341b87"
   },
   {
     "file": "src/main.rs",
