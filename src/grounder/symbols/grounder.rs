@@ -143,7 +143,9 @@ fn name_occurrence_map(idx: &SymbolIndex, count_refs: bool) -> BTreeMap<&str, us
 /// Every distinct name's total DEFINITION+REFERENCE occurrence count (spec 92 criterion 3,
 /// RANKED BY INTENT): the inverse-document-frequency proxy Design names - "a token in hundreds
 /// of files - `run`, `new`, `tests` - carries near-zero weight." The ONE authority
-/// [`scored_hits`] draws a matched TERM's commonness from, for ranking (rarer wins a tie). NOT
+/// [`scored_hits`] draws a matched ENTITY's own commonness from (looked up by the entity's OWN
+/// resolved name, never the raw query term - a CONTAINS-tier term is by definition a substring
+/// and so is almost never itself a key here), for ranking (rarer wins a tie). NOT
 /// the signal [`Symbols::has_strong_match`] gates on - a popular but UNAMBIGUOUS entity (one
 /// definition, many call sites, e.g. `criterion_stable_id`) must rank low here (it is genuinely
 /// the specific thing a caller meant when they typed its exact name) without being misread as
@@ -184,11 +186,15 @@ enum HitKind {
 /// One (file, line) location scored against the query's terms (spec 92 criterion 3, the
 /// scorer): `tier` - EXACT (2, a term equals the entity's name) beats CONTAINS (1, a term
 /// merely occurs within a longer name), the Design decision "a query token that equals an
-/// entity's name beats a token that merely occurs in it"; `commonness` - the winning term's
-/// OWN tree-wide occurrence count from [`commonness_map`] (ascending: rarer ranks first, the
-/// inverse-document-frequency ordering, without needing floating point); `lexical` - the
-/// EXISTING definition-over-reference tier, the Design's final tiebreaker ("then by the
-/// existing lexical score").
+/// entity's name beats a token that merely occurs in it"; `commonness` - the MATCHED ENTITY's
+/// OWN tree-wide occurrence count from [`commonness_map`], looked up by the entity's OWN
+/// resolved name rather than whichever query term matched it (ascending: rarer ranks first, the
+/// inverse-document-frequency ordering, without needing floating point - spec 92 criterion 3
+/// remediation round 2, adv-u92c3r2-contains-tier-commonness-collapses-to-spurious-zero: a
+/// CONTAINS-tier term is by definition a substring, so keying this off the term itself missed
+/// `commonness_map` for nearly every CONTAINS hit and silently handed it the artificial rarest
+/// score); `lexical` - the EXISTING definition-over-reference tier, the Design's final
+/// tiebreaker ("then by the existing lexical score").
 struct ScoredHit<'a> {
     tier: u8,
     commonness: usize,
@@ -205,36 +211,41 @@ struct ScoredHit<'a> {
 /// (a total, deterministic order) - the ONE scored, sorted pass both [`Symbols::ground`] and
 /// [`Symbols::ground_ranked`] consume, so the two views can never disagree on ranking. A
 /// location that matches more than one term (or both an EXACT and a CONTAINS candidate) keeps
-/// its BEST (tier, commonness) combination - mirroring the def-and-ref-at-one-line collapse the
-/// prior single-pass scorer already made.
+/// its BEST tier - commonness is a property of the matched entity's own name, so it never varies
+/// by which term matched - mirroring the def-and-ref-at-one-line collapse the prior single-pass
+/// scorer already made.
 fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
     let commonness = commonness_map(idx);
     let mut best: BTreeMap<(&'a str, u32), ScoredHit<'a>> = BTreeMap::new();
     for (path, fs) in idx.files() {
         let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8| {
-            // The best (tier, commonness) ANY query term gives this name: an EXACT match always
-            // wins tier over a CONTAINS match; among ties, the RAREST matching term wins (the
-            // smallest tree-wide commonness - more specific, ranks first).
+            // The best TIER any query term gives this name: an EXACT match (some term equals the
+            // name) always wins over a CONTAINS match (some term merely occurs within it).
+            // `commonness` is the MATCHED ENTITY's own tree-wide occurrence count - `name`, never
+            // the raw query term `t` - so it is the same value regardless of which term matched.
+            // A CONTAINS-tier term is by definition a substring, so it is almost never itself an
+            // indexed name; keying the lookup on `t` instead of `name` (round-2 defect,
+            // adv-u92c3r2-contains-tier-commonness-collapses-to-spurious-zero) silently missed
+            // `commonness_map` for nearly every CONTAINS hit and handed it the artificial
+            // rarest score (`unwrap_or(0)`), drowning a genuinely rare entity under unrelated
+            // ones that merely share a common substring.
             let mut hit_tier = 0u8;
-            let mut hit_commonness = usize::MAX;
             for t in terms {
-                let candidate = if name == *t {
-                    Some((2u8, commonness.get(*t).copied().unwrap_or(0)))
+                let tier = if name == *t {
+                    2u8
                 } else if name.contains(t) {
-                    Some((1u8, commonness.get(*t).copied().unwrap_or(0)))
+                    1u8
                 } else {
-                    None
+                    0u8
                 };
-                if let Some((tier, c)) = candidate {
-                    if tier > hit_tier || (tier == hit_tier && c < hit_commonness) {
-                        hit_tier = tier;
-                        hit_commonness = c;
-                    }
+                if tier > hit_tier {
+                    hit_tier = tier;
                 }
             }
             if hit_tier == 0 {
                 return;
             }
+            let hit_commonness = commonness.get(name).copied().unwrap_or(0);
             best.entry((path.as_str(), line))
                 .and_modify(|slot| {
                     let better = hit_tier > slot.tier
@@ -1177,6 +1188,56 @@ mod tests {
             "the rare token must rank above the six tree-wide `run` hits; got {refs:?}"
         );
         assert_eq!(refs[0].file, "zzz_dash.rs");
+    }
+
+    /// Spec 92 criterion 3 remediation round 2 (adv-u92c3r2-contains-tier-commonness-collapses
+    /// -to-spurious-zero, UPHELD by review): `scored_hits`' CONTAINS-tier commonness must be the
+    /// MATCHED ENTITY's OWN tree-wide occurrence count, never the raw query term's. A
+    /// CONTAINS-tier term is by definition a substring, so it is almost never itself an indexed
+    /// name; keying `commonness_map` on the term (instead of the entity it resolved to) silently
+    /// collapsed every CONTAINS hit to the artificial rarest score (0), drowning a genuinely rare
+    /// entity under unrelated ones that merely happen to share a common substring.
+    ///
+    /// `cfg_one`..`cfg_four` are four unrelated entities (each defined once, referenced twice -
+    /// own commonness 3) sharing the substring "cfg", which is never itself a standalone name.
+    /// `zorble_alone` (defined once, referenced nowhere - own commonness 1) is genuinely rarer.
+    /// `zorble_alone`'s definition is placed LAST (the highest line number) in the fixture file
+    /// deliberately: under the old bug every CONTAINS hit ties at commonness 0, so the sort falls
+    /// through to line order and puts `zorble_alone` LAST, not first - only scoring commonness
+    /// off the matched entity's own name can put the genuinely rare one first.
+    #[test]
+    fn ground_ranked_puts_a_genuinely_rare_contains_tier_entity_above_common_ones_sharing_its_substring(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("entities.rs"),
+            "fn cfg_one() {}\nfn cfg_two() {}\nfn cfg_three() {}\nfn cfg_four() {}\nfn zorble_alone() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("callers.rs"),
+            "fn go() {\n    cfg_one();\n    cfg_one();\n    cfg_two();\n    cfg_two();\n    cfg_three();\n    cfg_three();\n    cfg_four();\n    cfg_four();\n}\n",
+        )
+        .unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        // Neither "cfg" nor "zorble" is ever itself a standalone name in this fixture - every
+        // match below is CONTAINS-tier, never EXACT, squarely exercising the scorer's
+        // CONTAINS-tier commonness lookup.
+        let ranked = g.ground_ranked("cfg zorble", 10);
+        assert_eq!(
+            ranked.len(),
+            5,
+            "five distinct entities must each collapse to one row; got {ranked:?}"
+        );
+        assert_eq!(
+            ranked[0].loc.text, "zorble_alone",
+            "the genuinely rare entity (own commonness 1) must outrank four entities that share \
+             its query substring but are each themselves more common (own commonness 3) - CONTAINS \
+             -tier commonness keyed on the raw query term ties all five at an artificial zero and \
+             falls through to line order (which would rank zorble_alone LAST, by construction of \
+             this fixture); got {ranked:?}"
+        );
     }
 
     /// Spec 92 criterion 3, "the top page is deduplicated by entity, so six call sites of one
