@@ -26,6 +26,28 @@
 //! This unit does NOT own the duplication catalog, report sections 2-6, or any production code
 //! (spec 85: "no production code changes"), so this file drives no binary and spawns no
 //! process - the whole surface to prove is the persisted data contract itself.
+//!
+//! SPEC 90 CRITERION 2 ACCOUNTING (decision `sdet-u90c2-surface-accounting`, correction
+//! `sdet-u90c2-claim1-subsumed-by-roundtrip`): CLAIM 1 needs no new test - the pre-existing
+//! `deserializing_then_reserializing_reproduces_the_committed_bytes_exactly` below already
+//! proves it strictly. Two genuine gaps closed here: (1)
+//! `docs/audit/responsibility-map.lines.json`, spec 90's new unguarded sibling, had ZERO test
+//! coverage - `ConsumedMapEntryLines`/`deserialize_committed_map_lines` plus
+//! `the_committed_map_and_its_lines_sibling_are_position_joined` close it (`MAP_PATH`/
+//! `MAP_LINES_PATH` are built from the SAME `Vec<MapEntry>` with no resort in either
+//! `map_to_json` or `map_lines_to_json` - array position is a valid join here; unlike
+//! `tests/dead_code_json_contract_periphery.rs`'s equivalent, this does not also assert a global
+//! ascending order - see that test's own doc comment for why). (2) CLAIM 4 had
+//! NO test anywhere before this unit for this artifact -
+//! `the_committed_report_section_1_cites_file_line_exactly_as_the_lines_sibling_records_them`
+//! below closes it, reading the COMMITTED report and COMMITTED lines sibling directly. It joins
+//! by `(file, start_line)`, never `(file, name)` or bare array position: `render_section_1`
+//! re-groups entries by PROPOSED MODULE (sorted alphabetically), so the report's own citation
+//! order is a permutation of `MAP_LINES_PATH`'s array order, ruling out a positional join;
+//! `(file, name)` is not unique either - `src/conductor.rs`'s three `Error::from` impls all share
+//! one bare name in one file (visible in the committed map's own `conductor::error` module
+//! group). `(file, start_line)` is the one key that is: no two function definitions can start on
+//! the same line of the same file.
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -228,4 +250,136 @@ fn deserializing_then_reserializing_reproduces_the_committed_bytes_exactly() {
          a downstream consumer decoding and re-encoding this file would silently diverge from \
          the committed artifact"
     );
+}
+
+// -----------------------------------------------------------------------------------------
+// Spec 90 criterion 2, THE DRIFT GUARD IS LINE-FREE: the unguarded `.lines.json` sibling
+// (zero prior coverage) and CLAIM 4 at the true periphery level.
+// -----------------------------------------------------------------------------------------
+
+/// Spec 90 criterion 2: the UNGUARDED sibling carrying [`MAP_PATH`]'s line spans, joined to it
+/// by array POSITION (never drift-guarded, so not itself a "documented contract" - read here
+/// only to prove the join and the ordering it preserves, same convention as
+/// `tests/dead_code_json_contract_periphery.rs`'s own `DEAD_CODE_LINES_PATH`).
+const MAP_LINES_PATH: &str = "docs/audit/responsibility-map.lines.json";
+
+/// Mirrors `tests/simplification_audit.rs`'s private `MapEntryLines` shape field-for-field.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct ConsumedMapEntryLines {
+    file: String,
+    name: String,
+    start_line: usize,
+    end_line: usize,
+}
+
+fn deserialize_committed_map_lines() -> Vec<ConsumedMapEntryLines> {
+    let path = repo_root().join(MAP_LINES_PATH);
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{MAP_LINES_PATH} is missing or unreadable ({e})"));
+    serde_json::from_str(&raw).unwrap_or_else(|e| {
+        panic!("{MAP_LINES_PATH} does not deserialize as the documented lines contract: {e}")
+    })
+}
+
+/// The join, checked against the PERSISTED files rather than the generator's in-memory value:
+/// same length, same `(file, name)` at every index. Unlike
+/// `tests/dead_code_json_contract_periphery.rs`'s equivalent test, this does NOT also assert a
+/// global ascending-by-`(file, start_line)` order: `build_map`'s scanner visits an out-of-line
+/// `#[cfg(test)] mod tests` body as a distinct pass after its enclosing file's top-level scan
+/// (verified against the real committed file: the first non-monotonic `start_line` step, index
+/// 241, is exactly such a seam), so entries are grouped by scan pass, not globally
+/// line-sorted - a real, deliberate property of the scanner, not a drift-guard gap this unit
+/// introduces or this test should assert against.
+#[test]
+fn the_committed_map_and_its_lines_sibling_are_position_joined() {
+    let entries = deserialize_committed_map();
+    let lines = deserialize_committed_map_lines();
+    assert_eq!(
+        entries.len(),
+        lines.len(),
+        "{MAP_PATH} and {MAP_LINES_PATH} must have equal length - they are joined by array \
+         position"
+    );
+    for (i, (e, l)) in entries.iter().zip(lines.iter()).enumerate() {
+        assert_eq!(
+            (&e.file, &e.name),
+            (&l.file, &l.name),
+            "{MAP_PATH} and {MAP_LINES_PATH} entry {i} disagree on (file, name) - the two files \
+             are joined by array position and must describe the same entry at each index"
+        );
+    }
+}
+
+const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
+
+/// Section 1's per-entry citations (`render_section_1`'s own shared template for both the
+/// "Proposed module tree" and "Unassigned" lists: `` `{file}:{start}-{end}` `{name}` - {reason}
+/// ``), extracted from the section between its own "## 1." heading and the next "## 2." heading.
+fn section_1_citations(report: &str) -> Vec<(String, String, usize, usize)> {
+    let start = report
+        .find("## 1. Responsibility Map")
+        .expect("report has a 1. heading");
+    let rest = &report[start..];
+    let end = rest
+        .find("\n## 2. ")
+        .map(|i| i + start)
+        .unwrap_or(report.len());
+    let section = &report[start..end];
+    let re = regex::Regex::new(r"(?m)^\s*- `([^`]+):(\d+)-(\d+)` `([^`]+)`").expect("valid regex");
+    re.captures_iter(section)
+        .map(|c| {
+            (
+                c[4].to_string(),
+                c[1].to_string(),
+                c[2].parse().expect("digits"),
+                c[3].parse().expect("digits"),
+            )
+        })
+        .collect()
+}
+
+/// CLAIM 4: "the report still cites `file:line` from the unguarded lines file." Every citation
+/// in section 1 of the COMMITTED report (both the module tree and the unassigned list share one
+/// template) matches the COMMITTED `MAP_LINES_PATH` entry with the SAME `(file, start_line)` -
+/// the one join key guaranteed unique here (no two functions start on the same line of the same
+/// file; `(file, name)` is NOT unique - see the module doc comment's `Error::from` example, and
+/// `render_section_1` re-groups by module so bare array position does not correspond either).
+#[test]
+fn the_committed_report_section_1_cites_file_line_exactly_as_the_lines_sibling_records_them() {
+    let report = std::fs::read_to_string(repo_root().join(REPORT_PATH))
+        .unwrap_or_else(|e| panic!("{REPORT_PATH} is missing or unreadable ({e})"));
+    let citations = section_1_citations(&report);
+    let lines = deserialize_committed_map_lines();
+    assert_eq!(
+        citations.len(),
+        lines.len(),
+        "section 1 of {REPORT_PATH} renders {} citation(s) but {MAP_LINES_PATH} records {} - \
+         every entry must appear exactly once (module tree + unassigned lists partition the \
+         full set)",
+        citations.len(),
+        lines.len()
+    );
+    for (name, file, start, end) in &citations {
+        let entry = lines
+            .iter()
+            .find(|l| &l.file == file && l.start_line == *start)
+            .unwrap_or_else(|| {
+                panic!(
+                    "report cites {name} ({file}:{start}-{end}) in section 1, but no entry with \
+                     that (file, start_line) exists in {MAP_LINES_PATH}"
+                )
+            });
+        assert_eq!(
+            &entry.name, name,
+            "report section 1 cites {file}:{start}-{end} as {name:?}, but {MAP_LINES_PATH} \
+             records {:?} for that (file, start_line)",
+            entry.name
+        );
+        assert_eq!(
+            entry.end_line, *end,
+            "report section 1 cites {name} as {file}:{start}-{end}, but {MAP_LINES_PATH} \
+             records end_line {} for that (file, start_line)",
+            entry.end_line
+        );
+    }
 }
