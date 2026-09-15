@@ -3262,7 +3262,23 @@ fn catalog_lines_to_json(clusters: &[DupCluster]) -> String {
     s
 }
 
-fn render_section_2(files: &[FileScan], clusters: &[DupCluster]) -> String {
+/// Spec 90 criterion 2: `lines` carries each cluster's site line spans in the SAME
+/// cluster/site order as `clusters` ([`dup_cluster_lines`] - joined by array position, exactly
+/// like [`CATALOG_LINES_PATH`] itself). Every `file:line` citation below reads from `lines`,
+/// never from a [`DupSite`]'s own `start_line`/`end_line` directly - the report's citations are
+/// the SAME line data the unguarded sidecar persists, not a second, independent read of the
+/// live scan (spec 90 Design: "the report keeps its `file:line` citations ... rendered from
+/// that file").
+fn render_section_2(
+    files: &[FileScan],
+    clusters: &[DupCluster],
+    lines: &[DupClusterLines],
+) -> String {
+    assert_eq!(
+        clusters.len(),
+        lines.len(),
+        "clusters and lines must be the same length, computed from the same pass"
+    );
     let mut out = String::new();
     let _ = writeln!(out, "## 2. Duplication Catalog");
     let _ = writeln!(out);
@@ -3309,7 +3325,11 @@ fn render_section_2(files: &[FileScan], clusters: &[DupCluster]) -> String {
             .count(),
     );
     let _ = writeln!(out);
-    for c in clusters {
+    for (c, cl) in clusters.iter().zip(lines) {
+        debug_assert_eq!(
+            c.id, cl.id,
+            "clusters and lines must share cluster order/identity"
+        );
         let _ = writeln!(
             out,
             "#### `{}` ({}, {} sites)",
@@ -3322,11 +3342,11 @@ fn render_section_2(files: &[FileScan], clusters: &[DupCluster]) -> String {
         let _ = writeln!(out);
         let _ = writeln!(out, "{}", c.note);
         let _ = writeln!(out);
-        for s in &c.sites {
+        for (s, sl) in c.sites.iter().zip(&cl.sites) {
             let _ = writeln!(
                 out,
                 "- `{}:{}-{}` `{}`",
-                s.file, s.start_line, s.end_line, s.name
+                sl.file, sl.start_line, sl.end_line, s.name
             );
         }
         let _ = writeln!(out);
@@ -3456,24 +3476,36 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
 /// section span). Panics if `existing` has no `## 2. ` heading at all - that would mean the
 /// report is missing criterion 1's placeholder contract, a precondition this criterion (and
 /// every later one) relies on, not a case to paper over silently.
-fn replace_section_2(existing: &str, section_2: &str) -> String {
-    let start = find_heading(existing, "## 2. ").unwrap_or_else(|| {
-        panic!("{REPORT_PATH} has no '## 2. ' heading - missing criterion 1's placeholder contract")
+/// The `## N. ` section's own byte span within `existing` - shared by [`replace_section_2`]
+/// (which overwrites it) and spec 90 criterion 2's structural drift-guard check (which reads it
+/// without touching the rest of the document, since a byte comparison would fail on every pin
+/// bump elsewhere in the tree - see `assert_section_2_structurally_matches`).
+fn section_span(existing: &str, marker: &str) -> std::ops::Range<usize> {
+    let start = find_heading(existing, marker).unwrap_or_else(|| {
+        panic!(
+            "{REPORT_PATH} has no {marker:?} heading - missing criterion 1's placeholder \
+             contract"
+        )
     });
-    let rest_after_marker = &existing[start + "## 2. ".len()..];
+    let rest_after_marker = &existing[start + marker.len()..];
     let end_offset = rest_after_marker.find("\n## ").map(|p| p + 1);
     let end = match end_offset {
-        Some(off) => start + "## 2. ".len() + off,
+        Some(off) => start + marker.len() + off,
         None => existing.len(),
     };
+    start..end
+}
+
+fn replace_section_2(existing: &str, section_2: &str) -> String {
+    let span = section_span(existing, "## 2. ");
     let mut out = String::new();
-    out.push_str(&existing[..start]);
+    out.push_str(&existing[..span.start]);
     out.push_str(section_2);
     if !section_2.ends_with('\n') {
         out.push('\n');
     }
     out.push('\n');
-    out.push_str(&existing[end..]);
+    out.push_str(&existing[span.end..]);
     out
 }
 
@@ -7086,6 +7118,95 @@ mod tests {
         );
     }
 
+    /// Parses a guarded artifact's bare-array JSON into owned [`serde_json::Value`] elements,
+    /// so two independently-generated arrays can be compared as SETS (order-independent,
+    /// insensitive to pretty-printed whitespace) rather than by byte equality. Shared by the
+    /// responsibility-map and dead-code CLAIM 3 tests below - both need the same "every
+    /// pre-existing entry survives untouched, exactly one new entry appears" shape.
+    fn json_array_entries(json: &str) -> Vec<serde_json::Value> {
+        let value: serde_json::Value = serde_json::from_str(json).expect("valid json");
+        value.as_array().expect("a bare array").clone()
+    }
+
+    /// Spec 90 criterion 2, CLAIM 3 for `docs/audit/responsibility-map.json`, REFRAMED for a
+    /// per-entry artifact - `sdet-lens-u90c2-probe-verified-no-live-defect`'s own empirically-
+    /// verified proposal: CLAIM 3's literal text ("two branches adding tests in different files
+    /// merge it without conflict") does not transfer as byte-identical-across-the-board the way
+    /// it does for the duplication catalog, which lists only DUPLICATE clusters - a genuinely
+    /// new, non-duplicate function correctly ADDS a new array entry here, and that addition is
+    /// not a defect to reject. What carries the merge-safety guarantee for a PER-ENTRY artifact
+    /// is CLAIM 2's own pin-bump property (a pre-existing entry is never perturbed by an
+    /// unrelated edit elsewhere in its file) PLUS this: two branches, each adding one new,
+    /// distinct function to a DIFFERENT target file, leave every pre-existing entry byte-
+    /// identical and each contribute exactly their own one new entry - so a real merge of the
+    /// two branches has nothing to conflict over, even though the guarded file's own byte
+    /// length legitimately changes (unlike the catalog's).
+    #[test]
+    fn two_branches_each_adding_an_unrelated_function_to_a_different_target_file_never_perturb_an_existing_responsibility_map_entry(
+    ) {
+        let base = tempfile::tempdir().expect("base scratch dir");
+        write_fixture(base.path(), "src/conductor.rs", "fn one() {}\n");
+        write_fixture(base.path(), "src/main.rs", "fn two() {}\n");
+        write_fixture(base.path(), "src/dash.rs", "fn three() {}\n");
+        let base_entries = json_array_entries(&map_to_json(&build_map(base.path())));
+
+        let branch_a = tempfile::tempdir().expect("branch A scratch dir");
+        write_fixture(
+            branch_a.path(),
+            "src/conductor.rs",
+            "fn one() {}\n\nfn branch_a_only() {\n    let _ = 1;\n}\n",
+        );
+        write_fixture(branch_a.path(), "src/main.rs", "fn two() {}\n");
+        write_fixture(branch_a.path(), "src/dash.rs", "fn three() {}\n");
+        let a_entries = json_array_entries(&map_to_json(&build_map(branch_a.path())));
+
+        let branch_b = tempfile::tempdir().expect("branch B scratch dir");
+        write_fixture(branch_b.path(), "src/conductor.rs", "fn one() {}\n");
+        write_fixture(
+            branch_b.path(),
+            "src/main.rs",
+            "fn two() {}\n\nfn branch_b_only() {\n    let _ = 2;\n}\n",
+        );
+        write_fixture(branch_b.path(), "src/dash.rs", "fn three() {}\n");
+        let b_entries = json_array_entries(&map_to_json(&build_map(branch_b.path())));
+
+        assert_eq!(
+            a_entries.len(),
+            base_entries.len() + 1,
+            "branch A must contribute exactly one new entry"
+        );
+        assert_eq!(
+            b_entries.len(),
+            base_entries.len() + 1,
+            "branch B must contribute exactly one new entry"
+        );
+        for entry in &base_entries {
+            assert!(
+                a_entries.contains(entry),
+                "branch A perturbed or dropped a pre-existing entry {entry}"
+            );
+            assert!(
+                b_entries.contains(entry),
+                "branch B perturbed or dropped a pre-existing entry {entry}"
+            );
+        }
+        let a_new: Vec<&serde_json::Value> = a_entries
+            .iter()
+            .filter(|e| !base_entries.contains(e))
+            .collect();
+        let b_new: Vec<&serde_json::Value> = b_entries
+            .iter()
+            .filter(|e| !base_entries.contains(e))
+            .collect();
+        assert_eq!(a_new.len(), 1, "branch A's own new entry: {a_new:?}");
+        assert_eq!(b_new.len(), 1, "branch B's own new entry: {b_new:?}");
+        assert_ne!(
+            a_new[0], b_new[0],
+            "the two branches' new entries must be distinct - nothing for a real merge to \
+             conflict over"
+        );
+    }
+
     /// THE DRIFT GUARD for section 1 of the report: with `RIGGER_AUDIT_WRITE=1` set,
     /// (re)write it (creating the report fresh with placeholders for the sections this
     /// criterion does not own, or replacing only section 1's span if the report already
@@ -8031,7 +8152,8 @@ mod tests {
         );
         let files = scan_tree(dir.path());
         let clusters = build_catalog(&files);
-        let rendered = render_section_2(&files, &clusters);
+        let lines: Vec<DupClusterLines> = clusters.iter().map(dup_cluster_lines).collect();
+        let rendered = render_section_2(&files, &clusters, &lines);
         assert!(rendered.starts_with("## 2. Duplication Catalog"));
         for name in MANDATORY_SWEEPS {
             assert!(rendered.contains(name));
@@ -8355,39 +8477,193 @@ mod tests {
         );
     }
 
-    /// CLAIM 4: "the report still cites `file:line` from the unguarded lines file." Every site
-    /// citation `render_section_2` renders for the real tree matches, byte-for-byte, the span
-    /// [`catalog_lines_to_json`] would persist for that same site - the report's citations and
-    /// the unguarded sidecar are the SAME line data, never the (now line-free) guarded catalog.
+    /// The structural report guard's own pin-bump proof, exercising the RENDERED REPORT TEXT
+    /// itself (`render_section_2`'s output), not only the underlying catalog JSON CLAIM 2
+    /// already covers: the same "pin bump that shifts every site in a file" fixture, rendered
+    /// before and after. `assert_section_2_structurally_matches` accepts BOTH renders (against
+    /// their own fresh cluster data), and every structural fact of the one bumped cluster -
+    /// id, classification, proposed home, note, site names/files, site count - is byte-
+    /// identical across the bump; only the bumped site's own numeric citation moves, tracking
+    /// the shift exactly (never stale, never frozen) since `render_section_2` always reads a
+    /// FRESH `lines` computed from the same live `clusters` it renders alongside. This is the
+    /// property spec 90's remedy asks for: the report survives a pin bump structurally, the way
+    /// the guarded catalog already survives one byte-for-byte.
     #[test]
-    fn report_section_2_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
-        let clusters = real_catalog();
-        let rendered = render_section_2(real_files(), clusters);
-        let mut checked = 0usize;
-        for cluster in clusters {
-            let lines = dup_cluster_lines(cluster);
-            for site in &lines.sites {
-                let citation = format!("`{}:{}-{}`", site.file, site.start_line, site.end_line);
-                assert!(
-                    rendered.contains(&citation),
-                    "report section 2 does not cite {citation} - its file:line citations must \
-                     come from the same line data duplication-catalog.lines.json persists"
-                );
-                checked += 1;
+    fn a_pin_bump_leaves_the_rendered_report_section_2_structurally_unchanged() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/a.rs",
+            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "src/z.rs",
+            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
+        );
+        let render = |root: &Path| -> (String, Vec<DupCluster>) {
+            let files = scan_tree(root);
+            let clusters = build_catalog(&files);
+            let lines: Vec<DupClusterLines> = clusters.iter().map(dup_cluster_lines).collect();
+            let rendered = render_section_2(&files, &clusters, &lines);
+            (rendered, clusters)
+        };
+        let (before, before_clusters) = render(dir.path());
+
+        write_fixture(
+            dir.path(),
+            "src/a.rs",
+            "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
+             fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        let (after, after_clusters) = render(dir.path());
+
+        // The structural guard itself must accept BOTH renders, against their own fresh
+        // clusters - the very property that makes it pin-bump-safe.
+        assert_section_2_structurally_matches(&before, &before_clusters);
+        assert_section_2_structurally_matches(&after, &after_clusters);
+
+        assert_eq!(
+            before_clusters.len(),
+            after_clusters.len(),
+            "the bump must not add or remove a cluster"
+        );
+        for (b, a) in before_clusters.iter().zip(&after_clusters) {
+            assert_eq!(b.id, a.id, "cluster id must survive a pure line shift");
+            assert_eq!(b.classification, a.classification);
+            assert_eq!(b.proposed_home, a.proposed_home);
+            assert_eq!(b.note, a.note);
+            assert_eq!(b.sites.len(), a.sites.len());
+            for (bs, asite) in b.sites.iter().zip(&a.sites) {
+                assert_eq!(bs.name, asite.name);
+                assert_eq!(bs.file, asite.file);
             }
         }
-        assert!(checked > 0, "expected at least one site to check");
+        assert!(
+            before.contains("`src/a.rs:1-3`"),
+            "expected the pre-bump render to cite add_one at its original span - got {before:?}"
+        );
+        assert!(
+            after.contains("`src/a.rs:6-8`"),
+            "expected the post-bump render to cite add_one at its shifted span, tracking the \
+             live tree exactly - got {after:?}"
+        );
+        assert!(
+            !after.contains("`src/a.rs:1-3`"),
+            "the post-bump render must not still cite add_one's stale, pre-bump span"
+        );
+    }
+
+    /// CLAIM 4: "the report still cites `file:line` from the unguarded lines file." Proven at
+    /// the DATA-FLOW level, not by coincidence: a synthetic cluster whose [`DupSite`] carries a
+    /// DECOY `start_line`/`end_line` that appears nowhere in `lines`, rendered with a separate,
+    /// deliberately different [`DupClusterLines`] - the rendered citation is the `lines` value,
+    /// never the decoy `DupSite` one. The prior round's same-named test derived both sides from
+    /// the SAME live cluster (`dup_cluster_lines(cluster)`, itself just repackaging that
+    /// cluster's own `DupSite.start_line`/`end_line`), so it could never fail even if
+    /// `render_section_2` read `DupSite.start_line`/`end_line` directly - exactly the defect
+    /// `adv-u90c2-report-guard-still-byte-pinned-to-live-line-numbers` found. This version fails
+    /// if the renderer ever falls back to `DupSite`'s own fields.
+    #[test]
+    fn report_section_2_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
+        let decoy = (999_999, 999_998);
+        let real = (10, 12);
+        let cluster = DupCluster {
+            id: "dup-0001".to_string(),
+            classification: "near".to_string(),
+            sites: vec![DupSite {
+                file: "src/a.rs".to_string(),
+                start_line: decoy.0,
+                end_line: decoy.1,
+                name: "add_one".to_string(),
+                content_hash: "deadbeefcafef00d".to_string(),
+            }],
+            proposed_home: "a::support".to_string(),
+            note: "n".to_string(),
+        };
+        let lines = DupClusterLines {
+            id: "dup-0001".to_string(),
+            sites: vec![DupSiteLines {
+                file: "src/a.rs".to_string(),
+                start_line: real.0,
+                end_line: real.1,
+            }],
+        };
+        let rendered = render_section_2(&[], &[cluster], &[lines]);
+        let real_citation = format!("`src/a.rs:{}-{}`", real.0, real.1);
+        let decoy_citation = format!("`src/a.rs:{}-{}`", decoy.0, decoy.1);
+        assert!(
+            rendered.contains(&real_citation),
+            "report section 2 must cite the unguarded lines value {real_citation} - got \
+             {rendered:?}"
+        );
+        assert!(
+            !rendered.contains(&decoy_citation),
+            "report section 2 must NEVER cite DupSite's own start_line/end_line directly - it \
+             cited the decoy {decoy_citation} instead of the unguarded lines data"
+        );
+    }
+
+    /// Spec 90 Design, verbatim: "the report's guard checks structure only (sections present,
+    /// counts equal to the catalog) rather than bytes." A byte-exact comparison against the
+    /// previously committed text (the prior round's own mechanism) fails on the VERY NEXT pin
+    /// bump anywhere in the tree - any change that moves a cited site's own line number, with
+    /// no change to the duplication catalog itself - reproducing spec 90's own Goal (the
+    /// cascading-diff-on-an-unrelated-edit problem this whole spec exists to eliminate) for the
+    /// report specifically, even though the guarded JSON catalog it is generated alongside is
+    /// already genuinely pin-bump-stable (`adv-u90c2-report-guard-still-byte-pinned-to-live-
+    /// line-numbers`). This checks only that the heading is present, that the declared
+    /// cluster/site counts match the fresh catalog, that every mandatory sweep is named, and
+    /// that every current cluster id has its own heading - never the exact citation bytes,
+    /// which are free to legitimately move between explicit `RIGGER_AUDIT_WRITE=1` regens.
+    fn assert_section_2_structurally_matches(committed_section_2: &str, clusters: &[DupCluster]) {
+        assert!(
+            committed_section_2.starts_with("## 2. Duplication Catalog"),
+            "{REPORT_PATH} section 2 is missing its own heading"
+        );
+        let total_sites: usize = clusters.iter().map(|c| c.sites.len()).sum();
+        let counts_line = format!("{} clusters ({total_sites} total sites)", clusters.len());
+        assert!(
+            committed_section_2.contains(&counts_line),
+            "{REPORT_PATH} section 2's declared counts have drifted from the tree (expected \
+             {counts_line:?}) - regenerate with RIGGER_AUDIT_WRITE=1"
+        );
+        for name in MANDATORY_SWEEPS {
+            assert!(
+                committed_section_2.contains(name),
+                "{REPORT_PATH} section 2 is missing mandatory sweep {name:?} - regenerate with \
+                 RIGGER_AUDIT_WRITE=1"
+            );
+        }
+        for c in clusters {
+            let heading = format!(
+                "#### `{}` ({}, {} sites)",
+                c.id,
+                c.classification,
+                c.sites.len()
+            );
+            assert!(
+                committed_section_2.contains(&heading),
+                "{REPORT_PATH} section 2 is missing or has a stale heading for cluster `{}` \
+                 (expected {heading:?}) - regenerate with RIGGER_AUDIT_WRITE=1",
+                c.id
+            );
+        }
     }
 
     /// THE DRIFT GUARD for section 2 of the report: with `RIGGER_AUDIT_WRITE=1` set, patch
     /// section 2's span in place (guarded by [`REPORT_WRITE_LOCK`] since criterion 1's own
     /// drift guard writes the SAME file); otherwise assert the committed report's section 2
-    /// matches byte-for-byte. Mirrors `report_section_1_matches_the_tree_or_is_rewritten`.
+    /// matches the fresh catalog STRUCTURALLY (see `assert_section_2_structurally_matches`),
+    /// never byte-for-byte. Mirrors `report_section_1_matches_the_tree_or_is_rewritten`'s
+    /// write-mode half; its check-mode half deliberately does NOT mirror that test's byte
+    /// comparison (spec 90 Design decides section 2's guard specifically is structural).
     #[test]
     fn report_section_2_matches_the_tree_or_is_rewritten() {
         let root = repo_root();
         let clusters = real_catalog();
-        let section_2 = render_section_2(real_files(), clusters);
+        let lines: Vec<DupClusterLines> = clusters.iter().map(dup_cluster_lines).collect();
+        let section_2 = render_section_2(real_files(), clusters, &lines);
         let path = root.join(REPORT_PATH);
         let write = std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1");
         if write {
@@ -8411,16 +8687,8 @@ mod tests {
         let committed = fs::read_to_string(&path).unwrap_or_else(|_| {
             panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
         });
-        let expected = replace_section_2(&committed, &section_2);
-        assert_eq!(
-            expected, committed,
-            "{REPORT_PATH} section 2 has drifted from the tree - regenerate with \
-             RIGGER_AUDIT_WRITE=1"
-        );
-        assert!(
-            committed.contains(&section_2),
-            "{REPORT_PATH} must contain section 2 verbatim"
-        );
+        let span = section_span(&committed, "## 2. ");
+        assert_section_2_structurally_matches(&committed[span], clusters);
     }
 
     // =====================================================================================
@@ -9786,6 +10054,132 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Spec 90 criterion 2, CLAIM 2 for `docs/audit/dead-code.json`: a synthetic fixture tree
+    /// proves a pin bump (5 unrelated comment lines prepended to one file, shifting that file's
+    /// own candidate's line span) leaves the guarded dead-code JSON byte-identical, because
+    /// `content_hash` keys on each candidate's own span text, never its line number. Closes
+    /// `sdet-u90c2-surface-accounting`/`sdet-u90c2-deadcode-map-missing-claim2-claim3-tests` -
+    /// sdet's own reverted probe already empirically confirmed this property; this test is that
+    /// probe made permanent, using the file's own [`candidates_for`] fixture helper (never
+    /// [`real_dead_code_candidates`], which requires the real tree's `disposition_for` table).
+    #[test]
+    fn a_pin_bump_leaves_the_guarded_dead_code_json_byte_identical() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/a.rs",
+            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "src/z.rs",
+            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
+        );
+        let base_json = dead_code_to_json(&candidates_for(dir.path()));
+
+        write_fixture(
+            dir.path(),
+            "src/a.rs",
+            "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
+             fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        let bumped_json = dead_code_to_json(&candidates_for(dir.path()));
+
+        assert_eq!(
+            base_json, bumped_json,
+            "a pin bump that only shifts a candidate's OWN line number must leave the guarded \
+             dead-code JSON byte-identical (spec 90 criterion 2)"
+        );
+    }
+
+    /// Spec 90 criterion 2, CLAIM 3 for `docs/audit/dead-code.json`, REFRAMED for a per-entry
+    /// artifact - see the identical reframing on
+    /// `two_branches_each_adding_an_unrelated_function_to_a_different_target_file_never_perturb_an_existing_responsibility_map_entry`
+    /// for the full rationale (this file's own `json_array_entries` helper is shared with that
+    /// test). Two branches, each adding one new, unreferenced (hence dead-code-candidate)
+    /// function to a DIFFERENT file, leave every pre-existing candidate byte-identical and each
+    /// contribute exactly their own one new entry.
+    #[test]
+    fn two_branches_each_adding_an_unrelated_function_to_a_different_file_never_perturb_an_existing_dead_code_entry(
+    ) {
+        let base = tempfile::tempdir().expect("base scratch dir");
+        write_fixture(
+            base.path(),
+            "src/a.rs",
+            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        write_fixture(
+            base.path(),
+            "src/z.rs",
+            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
+        );
+        let base_entries = json_array_entries(&dead_code_to_json(&candidates_for(base.path())));
+
+        let branch_a = tempfile::tempdir().expect("branch A scratch dir");
+        write_fixture(
+            branch_a.path(),
+            "src/a.rs",
+            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n\n\
+             fn branch_a_only(x: i64) -> i64 {\n    x * 3 - 7\n}\n",
+        );
+        write_fixture(
+            branch_a.path(),
+            "src/z.rs",
+            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
+        );
+        let a_entries = json_array_entries(&dead_code_to_json(&candidates_for(branch_a.path())));
+
+        let branch_b = tempfile::tempdir().expect("branch B scratch dir");
+        write_fixture(
+            branch_b.path(),
+            "src/a.rs",
+            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        write_fixture(
+            branch_b.path(),
+            "src/z.rs",
+            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n\n\
+             fn branch_b_only(y: i64) -> i64 {\n    y / 2 + 11\n}\n",
+        );
+        let b_entries = json_array_entries(&dead_code_to_json(&candidates_for(branch_b.path())));
+
+        assert_eq!(
+            a_entries.len(),
+            base_entries.len() + 1,
+            "branch A must contribute exactly one new candidate"
+        );
+        assert_eq!(
+            b_entries.len(),
+            base_entries.len() + 1,
+            "branch B must contribute exactly one new candidate"
+        );
+        for entry in &base_entries {
+            assert!(
+                a_entries.contains(entry),
+                "branch A perturbed or dropped a pre-existing candidate {entry}"
+            );
+            assert!(
+                b_entries.contains(entry),
+                "branch B perturbed or dropped a pre-existing candidate {entry}"
+            );
+        }
+        let a_new: Vec<&serde_json::Value> = a_entries
+            .iter()
+            .filter(|e| !base_entries.contains(e))
+            .collect();
+        let b_new: Vec<&serde_json::Value> = b_entries
+            .iter()
+            .filter(|e| !base_entries.contains(e))
+            .collect();
+        assert_eq!(a_new.len(), 1, "branch A's own new candidate: {a_new:?}");
+        assert_eq!(b_new.len(), 1, "branch B's own new candidate: {b_new:?}");
+        assert_ne!(
+            a_new[0], b_new[0],
+            "the two branches' new candidates must be distinct - nothing for a real merge to \
+             conflict over"
+        );
     }
 
     #[test]
