@@ -29,7 +29,7 @@ use rigger::driver::replay::{
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
     sqlite::{PrunedDerived, Store},
-    Direction, Event, EventStore, ExpectedRevision, Filter,
+    Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
     resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateResult, Runner,
@@ -4153,16 +4153,107 @@ fn cmd_graph(args: &[String]) -> Res {
     let gp = Projector::open(&db_path("graph.db"), &project_identity())?;
     let g = gp.subgraph(&[around.clone()], depth)?;
     println!("subgraph around {around:?} (depth {depth}):");
-    for n in &g.nodes {
+    print_around_subgraph(&g, &around);
+    Ok(())
+}
+
+/// The number of newest governing decision/finding nodes `rigger graph --around` prints in full
+/// before collapsing the rest into a trailing count (spec 92, u92c6 - "a file's neighborhood is
+/// code first"). Ten is a page, not a cliff: enough to read at a glance, small enough that
+/// decision spam never crowds the code entities off the screen the way it did before this fix -
+/// the u88c1 evidence recorded a loop agent grepping `conductor.rs` because `--around` returned
+/// "only generic decision-node spam, not code structure".
+const AROUND_GOVERNANCE_CAP: usize = 10;
+
+/// Print a `rigger graph --around` subgraph CODE FIRST (spec 92, u92c6). Before this fix
+/// [`cmd_graph`] printed every node and edge [`Projector::subgraph`] returned in one
+/// undifferentiated, unbounded list - a decision or finding node is indistinguishable in shape
+/// from a code entity, and a file governed by dozens of rounds' worth of decisions buried its
+/// own structure under them (the u88c1 evidence this criterion fixes).
+///
+/// Two sections, never interleaved:
+/// - CODE FIRST: every node that is NOT a [`contextgraph::KIND_DECISION`] /
+///   [`contextgraph::KIND_FINDING`] - a file, a code entity, a design doc, a community, anything
+///   structural - sorted by id for a deterministic read, followed by every edge whose BOTH
+///   endpoints are in that same set (a decision's `GOVERNS` / a finding's `ABOUT` edge, which
+///   always terminates on a narrative node, is never one of these - the narrative section speaks
+///   for itself as a node list).
+/// - GOVERNING DECISIONS/FINDINGS, separately and capped: every [`contextgraph::KIND_DECISION`] /
+///   [`contextgraph::KIND_FINDING`] node, ranked NEWEST first and capped to
+///   [`AROUND_GOVERNANCE_CAP`], with a trailing count of however many more this subgraph held.
+///   "Newest" is the event log POSITION of the node's OWN `GOVERNS` (decision) / `ABOUT`
+///   (finding) edge - via [`conductor::recency_by_own_edge`], the SAME from-side-only core
+///   `conductor::write_capped_section` dates the prompt's decisions/lessons/findings sections
+///   with - never an edge that merely touches the node as `to` (a superseded decision's
+///   inbound `SUPERSEDES` edge carries its superseder's fresh position, which would let the
+///   stale decision crowd a live one out of the cap if it counted).
+fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let is_narrative =
+        |kind: &str| kind == contextgraph::KIND_DECISION || kind == contextgraph::KIND_FINDING;
+
+    let mut code_nodes: Vec<&contextgraph::Node> =
+        g.nodes.iter().filter(|n| !is_narrative(&n.kind)).collect();
+    code_nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    let code_ids: BTreeSet<&str> = code_nodes.iter().map(|n| n.id.as_str()).collect();
+
+    for n in &code_nodes {
         println!("  node {:<24} {}", n.id, n.kind);
     }
     for e in &g.edges {
-        println!("  edge {} -{}-> {}", e.from, e.rel, e.to);
+        if code_ids.contains(e.from.as_str()) && code_ids.contains(e.to.as_str()) {
+            println!("  edge {} -{}-> {}", e.from, e.rel, e.to);
+        }
     }
+
+    // Recency per node: the SAME from-side-only core `write_capped_section` uses for the
+    // prompt's decisions/lessons/findings sections (`conductor::recency_by_own_edge`), never a
+    // scan of every edge touching a node as either endpoint. A decision is dated off its own
+    // `GOVERNS` edge, a finding off its own `ABOUT` edge - both point node -> file, so `from`
+    // is always the narrative node itself. Keying on either endpoint (as an earlier version of
+    // this function did) let a superseded decision inherit its superseder's fresh position
+    // through the inbound `SUPERSEDES` edge (`from` = the new decision, `to` = the superseded
+    // one) and crowd a genuinely live decision out of the newest-`AROUND_GOVERNANCE_CAP` slice
+    // while printing the stale one as if current - the exact bug class `write_capped_section`'s
+    // own doc comment already fixed once; this reuses that fix rather than re-deriving it.
+    let mut recency: BTreeMap<&str, Position> =
+        conductor::recency_by_own_edge(g, contextgraph::REL_GOVERNS);
+    for (id, pos) in conductor::recency_by_own_edge(g, contextgraph::REL_ABOUT) {
+        let slot = recency.entry(id).or_insert(0);
+        *slot = (*slot).max(pos);
+    }
+
+    let mut narrative_nodes: Vec<&contextgraph::Node> =
+        g.nodes.iter().filter(|n| is_narrative(&n.kind)).collect();
+    narrative_nodes.sort_by(|a, b| {
+        let ra = recency.get(a.id.as_str()).copied().unwrap_or(0);
+        let rb = recency.get(b.id.as_str()).copied().unwrap_or(0);
+        // Newest (highest position) first; the id breaks a tie so the page is deterministic.
+        rb.cmp(&ra).then_with(|| a.id.cmp(&b.id))
+    });
+
+    if !narrative_nodes.is_empty() {
+        println!();
+        let shown = narrative_nodes.len().min(AROUND_GOVERNANCE_CAP);
+        println!(
+            "  {} governing decision(s)/finding(s) (newest {shown} shown):",
+            narrative_nodes.len()
+        );
+        for n in narrative_nodes.iter().take(AROUND_GOVERNANCE_CAP) {
+            println!("  node {:<24} {}", n.id, n.kind);
+        }
+        let rest = narrative_nodes.len().saturating_sub(AROUND_GOVERNANCE_CAP);
+        if rest > 0 {
+            println!(
+                "  (+{rest} more decision(s)/finding(s) not shown - see `rigger peers {around}` for the full history)"
+            );
+        }
+    }
+
     if g.nodes.is_empty() {
         println!("  (nothing found; has `rigger run` been run yet?)");
     }
-    Ok(())
 }
 
 /// The upper bound on how many body lines `rigger graph --show` prints (spec 58): the definition's
