@@ -64,6 +64,7 @@ fn for_extraction(fs: &FileSymbols, excluded: bool) -> Cow<'_, FileSymbols> {
             lang: fs.lang,
             defs: Vec::new(),
             refs: Vec::new(),
+            partial: fs.partial,
         })
     } else {
         Cow::Borrowed(fs)
@@ -164,7 +165,7 @@ pub fn project_batches_paced(root: &str, workers: usize) -> (Vec<(String, Vec<Ev
 pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     let lang = lang_str(fs.lang);
     if is_under_tests_dir(file) {
-        return vec![empty_structural_boundary_event(file, lang)];
+        return vec![empty_structural_boundary_event(file, lang, fs.partial)];
     }
     let mut events = Vec::with_capacity(fs.defs.len() + fs.refs.len());
 
@@ -184,6 +185,11 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
             lang: lang.to_string(),
             // The first event of the file's batch marks the re-extraction boundary; set below.
             fresh: false,
+            // Spec 92 criterion 2 round 4 (adv-u2c2-partial-marker-unimplemented): carried on
+            // EVERY event of this file's batch (never only the `fresh` one) so the fold's
+            // merge-not-replace `ensure_node` stamp is independent of which event happens to be
+            // first - see `FileSymbols::partial`'s own doc.
+            partial: fs.partial,
         };
         events.push(Event::new(
             TYPE_CODE_ENTITY_EXTRACTED,
@@ -213,6 +219,8 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
             // This is a structural reference, never evidence - `proof_events` (below) is the one
             // emitter of `is_test: true` events.
             is_test: false,
+            // See the definition arm's identical field above.
+            partial: fs.partial,
         };
         events.push(Event::new(
             TYPE_EDGE_INFERRED,
@@ -246,7 +254,7 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
     if let Some(first) = events.first_mut() {
         set_fresh(first);
     } else {
-        events.push(empty_structural_boundary_event(file, lang));
+        events.push(empty_structural_boundary_event(file, lang, fs.partial));
     }
 
     events
@@ -273,7 +281,13 @@ pub fn extract_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
 /// general "extracted to nothing" case at the end of [`extract_events`] (whatever survived
 /// filtering, if anything, amounted to zero definitions and zero references). Both are ONE rule,
 /// never two: [`extract_events`] never returns an empty `Vec`.
-fn empty_structural_boundary_event(file: &str, lang: &str) -> Event {
+///
+/// `partial` (spec 92 criterion 2 round 4): the file's own parse-degraded marker, carried through
+/// for wire consistency with every other event of a batch even though this sentinel's own
+/// empty-name fold guard returns before ever reaching `ensure_node` - criterion 1's "never a node"
+/// promise for an excluded/empty file holds unchanged; there is no `KIND_FILE` node here for the
+/// marker to land on.
+fn empty_structural_boundary_event(file: &str, lang: &str, partial: bool) -> Event {
     let payload = EdgeInferred {
         file: file.to_string(),
         name: String::new(),
@@ -282,6 +296,7 @@ fn empty_structural_boundary_event(file: &str, lang: &str) -> Event {
         caller: None,
         line: 0,
         is_test: false,
+        partial,
     };
     Event::new(
         TYPE_EDGE_INFERRED,
@@ -394,6 +409,10 @@ pub fn proof_events(file: &str, fs: &FileSymbols) -> Vec<Event> {
                 caller: None,
                 line: r.line,
                 is_test: true,
+                // Evidence events never reach the structural `ensure_node` stamp (`fold_test_evidence`
+                // returns before it) - always `false`, a plain field-completeness requirement, not a
+                // meaningful signal here.
+                partial: false,
             };
             Event::new(
                 TYPE_EDGE_INFERRED,
@@ -427,6 +446,7 @@ fn empty_evidence_boundary_event(file: &str, lang: &str) -> Event {
         caller: None,
         line: 0,
         is_test: true,
+        partial: false,
     };
     Event::new(
         TYPE_EDGE_INFERRED,
@@ -868,6 +888,7 @@ mod tests {
                 enclosing: None,
                 is_test: false,
             }],
+            partial: false,
         };
         let events = extract_events("src/a.rs", &fs);
 
@@ -921,6 +942,7 @@ mod tests {
                     is_test: false,
                 },
             ],
+            partial: false,
         };
         let events = extract_events("src/only_refs.rs", &fs);
         assert!(
@@ -977,6 +999,7 @@ mod tests {
                     is_test: false,
                 },
             ],
+            partial: false,
         };
         let events = extract_events("src/combat.rs", &fs);
 
@@ -1030,6 +1053,7 @@ mod tests {
             lang: Lang::Rust,
             defs: vec![],
             refs: vec![],
+            partial: false,
         };
         let events = extract_events("src/empty.rs", &fs);
         assert_eq!(
@@ -1080,6 +1104,7 @@ mod tests {
                 enclosing: None,
                 is_test: false,
             }],
+            partial: false,
         }
     }
 
@@ -1172,6 +1197,7 @@ mod tests {
                     is_test: false,
                 },
             ],
+            partial: false,
         };
         let events = extract_events("src/mixed.rs", &fs);
 
@@ -1497,6 +1523,7 @@ fn an_integration_test() {
             lang: Lang::Rust,
             defs: vec![],
             refs: vec![],
+            partial: false,
         };
         let events = proof_events("tests/empty_integration.rs", &fs);
         assert_eq!(
@@ -1507,5 +1534,76 @@ fn an_integration_test() {
         );
         let v: serde_json::Value = serde_json::from_slice(&events[0].data).unwrap();
         assert_eq!(v.get("name").and_then(|n| n.as_str()), Some(""));
+    }
+
+    #[test]
+    fn a_malformed_js_fixture_gets_the_partial_marker_end_to_end_and_a_well_formed_one_never_does()
+    {
+        // Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
+        // `adv-u2c2-partial-marker-unimplemented`): the SAME REAL pipeline
+        // (`build_index` -> `index_events` -> `Projector`) `a_source_file_extraction_emits_events_
+        // the_fold_turns_into_a_code_graph` above proves for Rust, run here over a REAL malformed
+        // `.js` fixture the grammar cannot fully parse alongside a well-formed one, folding both
+        // into ONE graph. `broken.js`'s file node must carry the degraded `partial` marker;
+        // `clean.js`'s must never carry it - proving detection (`extract::extract`'s
+        // `has_error()` check), emission (`extract_events` threading `FileSymbols::partial`), and
+        // the fold's `ensure_node` stamp all actually compose end to end, not merely in isolation.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("broken.js"),
+            "function greet() { return 1; }\nfunction broken(\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("clean.js"),
+            "function greet2() { return 2; }\n",
+        )
+        .unwrap();
+
+        let idx = build_index(dir.path().to_str().unwrap(), None);
+        let events = index_events(&idx);
+
+        let p = Projector::open(":memory:", "test").unwrap();
+        for (i, mut e) in events.into_iter().enumerate() {
+            e.position = (i + 1) as u64;
+            p.apply(&e).unwrap();
+        }
+
+        let g = p
+            .subgraph(&["broken.js".to_string(), "clean.js".to_string()], 1)
+            .unwrap();
+
+        let broken = g
+            .nodes
+            .iter()
+            .find(|n| n.kind == KIND_FILE && n.id == "broken.js")
+            .expect("the malformed file still carries a KIND_FILE container node - it indexed as far as the parse reached");
+        assert_eq!(
+            broken.attrs.get("partial").map(String::as_str),
+            Some("true"),
+            "a real malformed-JS fixture's file node must carry the partial marker end to end; \
+             got {:?}",
+            broken.attrs
+        );
+        // The well-formed part of the SAME malformed file was still indexed, never dropped.
+        assert!(
+            g.nodes
+                .iter()
+                .any(|n| n.kind == KIND_CODE_ENTITY && n.id == "broken.js::greet"),
+            "the well-formed function ahead of the parse error must still be indexed; got {:?}",
+            g.nodes
+        );
+
+        let clean = g
+            .nodes
+            .iter()
+            .find(|n| n.kind == KIND_FILE && n.id == "clean.js")
+            .expect("the well-formed file's container node folded");
+        assert_eq!(
+            clean.attrs.get("partial"),
+            None,
+            "a real well-formed JS fixture must never carry the partial marker; got {:?}",
+            clean.attrs
+        );
     }
 }

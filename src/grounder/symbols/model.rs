@@ -140,6 +140,19 @@ pub struct FileSymbols {
     pub lang: Lang,
     pub defs: Vec<Def>,
     pub refs: Vec<SymRef>,
+    /// Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
+    /// `adv-u2c2-partial-marker-unimplemented`): whether tree-sitter's parse of this file's
+    /// source contained an ERROR node - `tree_sitter::Node::has_error()` on the parsed root -
+    /// meaning the grammar could not fully parse it and `defs`/`refs` above only cover as far as
+    /// the parse reached, never a guarantee of completeness. Computed once during extraction
+    /// ([`crate::grounder::symbols::extract::extract`]) from the SAME parsed tree
+    /// `test_regions` already walks there (never a second parse). `#[serde(default)]` so an
+    /// index persisted before this field existed loads with every file `partial: false` - the
+    /// safe default, never manufacturing a false degraded marker for old data - and the
+    /// overwhelmingly common well-formed case serializes with no key at all, byte-identical to
+    /// before this field existed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 /// The whole-project index. Deterministic containers only (`BTreeMap`): iterating it for
@@ -316,6 +329,7 @@ mod tests {
                     enclosing: None,
                     is_test: false,
                 }],
+                partial: false,
             },
         );
         idx.insert_file(
@@ -332,6 +346,7 @@ mod tests {
                     enclosing_inline_module_path: None,
                 }],
                 refs: vec![],
+                partial: false,
             },
         );
         // Name lookup finds both definitions of `parse`, across languages.
@@ -359,6 +374,7 @@ mod tests {
                         enclosing: None,
                         is_test: false,
                     }],
+                    partial: false,
                 },
             );
         }
@@ -381,6 +397,7 @@ mod tests {
                     enclosing: None,
                     is_test: false,
                 }],
+                partial: false,
             },
         );
         assert_eq!(idx.reference_degree("new", Lang::Rust), 20);
@@ -436,6 +453,7 @@ mod tests {
                 lang: Lang::Rust,
                 defs: vec![],
                 refs,
+                partial: false,
             },
         );
 
@@ -489,6 +507,7 @@ mod tests {
                 lang: Lang::Rust,
                 defs: vec![],
                 refs: flat_refs,
+                partial: false,
             },
         );
         for name in ["alpha", "beta", "gamma", "delta"] {
@@ -518,6 +537,7 @@ mod tests {
                         enclosing: None,
                         is_test: false,
                     }],
+                    partial: false,
                 },
             );
         }
@@ -533,6 +553,7 @@ mod tests {
                     enclosing: None,
                     is_test: false,
                 }],
+                partial: false,
             },
         );
         for i in 0..10 {
@@ -547,6 +568,7 @@ mod tests {
                         enclosing: None,
                         is_test: false,
                     }],
+                    partial: false,
                 },
             );
         }
@@ -597,6 +619,7 @@ mod tests {
                     enclosing: None,
                     is_test: false,
                 }],
+                partial: false,
             },
         );
         let json = serde_json::to_string(&idx).expect("model serializes with plain serde");
@@ -620,6 +643,7 @@ mod tests {
                 lang: Lang::Rust,
                 defs: vec![],
                 refs: vec![],
+                partial: false,
             },
         );
         idx.remove_file("a.rs");
@@ -638,6 +662,7 @@ mod tests {
                 lang: Lang::Rust,
                 defs: vec![],
                 refs: vec![],
+                partial: false,
             },
         );
         let mut json: serde_json::Value = serde_json::to_value(&idx).unwrap();

@@ -436,6 +436,18 @@ pub(crate) struct CodeEntityExtracted {
     /// recorded before the field existed folds as a non-boundary event.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fresh: bool,
+    /// Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
+    /// `adv-u2c2-partial-marker-unimplemented`): mirrors
+    /// [`crate::grounder::symbols::model::FileSymbols::partial`] - whether this file's parse hit a
+    /// tree-sitter ERROR node, so its extracted structure only covers as far as the parse reached.
+    /// The fold stamps this onto the `KIND_FILE` node's own `partial` attrs key (through the SAME
+    /// `ensure_node` attrs authority it already uses for `lang`/`title`, never a second
+    /// attrs-writing path) whenever ANY event of the file's batch carries it, so a degraded parse is
+    /// visible on the node rather than silently presented as complete. Serde-defaulted and omitted
+    /// when `false`, so the overwhelmingly common well-formed file's wire form is byte-identical to
+    /// before this field existed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub partial: bool,
 }
 /// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
 /// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,
@@ -488,6 +500,11 @@ pub(crate) struct EdgeInferred {
     /// omitted when `false`, so an ordinary reference's wire form is unaffected.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_test: bool,
+    /// The `EdgeInferred` twin of [`CodeEntityExtracted::partial`] - see that field's own doc. A
+    /// refs-only file (no definitions) carries its parse-degraded marker here instead, mirroring how
+    /// `fresh` already rides whichever event happens to be the file's batch boundary.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub partial: bool,
 }
 
 /// Serde `skip_serializing_if` predicate: an `EdgeInferred::line` of `0` is never a real 1-based
@@ -747,6 +764,7 @@ mod caller_wire_contract {
             caller: Some("F".to_string()),
             line: 0,
             is_test: false,
+            partial: false,
         };
         let wire = serde_json::to_vec(&edge).unwrap();
         let back: EdgeInferred = serde_json::from_slice(&wire).unwrap();
@@ -772,6 +790,7 @@ mod caller_wire_contract {
             caller: None,
             line: 0,
             is_test: false,
+            partial: false,
         };
         let wire = String::from_utf8(serde_json::to_vec(&edge).unwrap()).unwrap();
         assert_eq!(
