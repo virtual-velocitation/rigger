@@ -36,12 +36,31 @@
 //!    actually uses to answer "what does this file define"), and that a function-valued const is
 //!    never double-tagged, through the SAME shared JS tags query the code-entity extraction (not
 //!    just the `ground` index) now uses.
+//! 6. That the CONSTRAINTS WALK's degraded-parse promise (specs/92, line 62-63: "a JavaScript file
+//!    with syntax the grammar cannot parse - indexed as far as the parse reaches, with a `partial`
+//!    marker on the file node, never dropped silently") holds through a REAL cold `rigger graph
+//!    build` - review round 3's adversary caught this as entirely UNIMPLEMENTED
+//!    (`adv-u2c2-partial-marker-unimplemented`) and round 4 closed it at the data-model/fold layer
+//!    (`FileSymbols::partial`, threaded through `CodeEntityExtracted`/`EdgeInferred`, stamped onto
+//!    the file node's `partial` attr by `contextgraph::sqlite`'s fold). Round 4's own tests
+//!    (`extract.rs`, `events.rs`) prove this by calling `extract()` / `build_index()` /
+//!    `index_events()` directly and folding into an in-memory `Projector::open(":memory:", ..)` -
+//!    never through the CLI's actual cold-build entry point (`cmd_graph_build`) writing the REAL
+//!    persisted `graph.db` a reader's `--around` then queries. Proven here instead: a real
+//!    malformed `workflows/*.js` file run through a real `rigger graph build`, read back from the
+//!    SAME persisted store via the crate's own public `Projection::subgraph` - the identical read
+//!    `--around` performs - carries the marker; a well-formed sibling never does; and the malformed
+//!    file's well-formed prefix is still indexed, never dropped.
 //!
 //! Scope is strictly criterion 2 (the JavaScript and definition indexers). Criterion 1 (reindex
 //! freshness / the lag advisory), criterion 3 (`ground`'s ranking) and criterion 4 (`rigger setup`
 //! / the lookup hook / the shipped skill) are owned by sibling units and are deliberately not
 //! exercised here.
 
+#[cfg(feature = "symbols")]
+use rigger::contextgraph::sqlite::Projector;
+#[cfg(feature = "symbols")]
+use rigger::contextgraph::{Projection, KIND_CODE_ENTITY, KIND_FILE};
 #[cfg(feature = "symbols")]
 use std::path::Path;
 #[cfg(feature = "symbols")]
@@ -84,6 +103,30 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
+}
+
+/// The project identity `cmd_graph_build`/`cmd_graph`'s `--show`/`--around` scope their graph read
+/// under (the basename of the git top-level; `project_identity_at` in `src/main.rs`, not itself
+/// exported) - a fresh `temp_project()` mints no `.rigger/project.id`, so this is the pre-spec-09
+/// legacy basename identity both the CLI and this direct-open read must agree on for item 6's
+/// `Projector::open` to see the SAME store the CLI just wrote.
+#[cfg(feature = "symbols")]
+fn project_identity_of(root: &Path) -> String {
+    let toplevel = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+    let base = toplevel.as_deref().map(Path::new).unwrap_or(root);
+    base.file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .unwrap_or_else(|| "rigger".to_string())
 }
 
 /// How many events `rigger graph build` reported ingesting, parsed from the line it prints - the
@@ -449,5 +492,92 @@ fn graph_show_and_around_expose_plain_top_level_js_and_mjs_constants_without_dou
         "both plain top-level constants must appear as nodes in the file's own neighborhood, \
          answering \"what does this file define\" directly - the exact gap questions 5 and 8 of \
          the audit measured (\"JS not indexed\"); got:\n{around}"
+    );
+}
+
+/// CONSTRAINTS WALK, through the REAL pipeline end to end (item 6 above): a JavaScript file the
+/// grammar cannot fully parse must still be indexed as far as the parse reaches, with a `partial`
+/// marker stamped on its file node - proven here off a REAL `rigger graph build` (not a hand-built
+/// event fed to an in-memory store), reading back the SAME persisted `graph.db` the CLI wrote
+/// through the crate's own public `Projection::subgraph`, the identical read `--around` performs.
+/// A well-formed sibling file must never carry the marker, and the malformed file's well-formed
+/// prefix (a function ahead of its syntax error) must still be indexed, never dropped silently.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_real_malformed_js_file_carries_the_partial_marker_through_a_real_graph_build_and_a_well_formed_one_never_does(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("workflows")).unwrap();
+    std::fs::write(
+        root.join("workflows").join("broken.js"),
+        "function greet() { return 1; }\nfunction broken(\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("workflows").join("whole.js"),
+        "function greet2() { return 2; }\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["graph", "build"]);
+    assert!(
+        ok,
+        "graph build must succeed even over a malformed JS file; stderr: {err}; stdout: {out}"
+    );
+    assert!(
+        ingested_count(&out) > 0,
+        "sanity: the malformed and well-formed fixtures must actually get ingested; got:\n{out}"
+    );
+
+    let id = project_identity_of(root);
+    let gp = Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id)
+        .expect("the real graph.db a real `rigger graph build` just wrote must open");
+    let g = gp
+        .subgraph(
+            &[
+                "workflows/broken.js".to_string(),
+                "workflows/whole.js".to_string(),
+            ],
+            1,
+        )
+        .expect("a subgraph read over the real persisted store must succeed");
+
+    let broken = g
+        .nodes
+        .iter()
+        .find(|n| n.kind == KIND_FILE && n.id == "workflows/broken.js")
+        .expect(
+            "the malformed file must still get a KIND_FILE container node - indexed as far as \
+             the parse reaches, never dropped entirely",
+        );
+    assert_eq!(
+        broken.attrs.get("partial").map(String::as_str),
+        Some("true"),
+        "a real malformed JS file run through a REAL `rigger graph build` must carry the partial \
+         marker on its file node, read back through the same public Projection::subgraph the \
+         CLI's own --around uses; got attrs {:?}",
+        broken.attrs
+    );
+    assert!(
+        g.nodes
+            .iter()
+            .any(|n| n.kind == KIND_CODE_ENTITY && n.id == "workflows/broken.js::greet"),
+        "the well-formed function ahead of the parse error must still be indexed through the \
+         real pipeline, never dropped silently; got {:?}",
+        g.nodes
+    );
+
+    let whole = g
+        .nodes
+        .iter()
+        .find(|n| n.kind == KIND_FILE && n.id == "workflows/whole.js")
+        .expect("the well-formed file's own container node must fold");
+    assert_eq!(
+        whole.attrs.get("partial"),
+        None,
+        "a well-formed JS file run through the real pipeline must never carry the partial \
+         marker; got {:?}",
+        whole.attrs
     );
 }
