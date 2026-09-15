@@ -1799,7 +1799,17 @@ fn pluralize_functions(n: usize) -> String {
     }
 }
 
-fn render_section_1(entries: &[MapEntry]) -> String {
+/// Spec 90 criterion 2: `lines` carries each entry's own line span in the SAME order as
+/// `entries` ([`map_entry_lines`] - joined by array position, exactly like [`MAP_LINES_PATH`]
+/// itself). Every `file:line` citation below reads from `lines`, never from a [`MapEntry`]'s own
+/// `start_line`/`end_line` directly - mirrors [`render_section_2`]'s own `lines` param exactly
+/// (spec 90 Design: "the report keeps its `file:line` citations ... rendered from that file").
+fn render_section_1(entries: &[MapEntry], lines: &[MapEntryLines]) -> String {
+    assert_eq!(
+        entries.len(),
+        lines.len(),
+        "entries and lines must be the same length, computed from the same pass"
+    );
     let mut modules: Vec<&str> = entries
         .iter()
         .filter_map(|e| e.proposed_module.as_deref())
@@ -1823,26 +1833,32 @@ fn render_section_1(entries: &[MapEntry]) -> String {
     let _ = writeln!(out, "### Proposed module tree");
     let _ = writeln!(out);
     for module in &modules {
-        let mut fns: Vec<&MapEntry> = entries
+        let mut fns: Vec<(&MapEntry, &MapEntryLines)> = entries
             .iter()
-            .filter(|e| e.proposed_module.as_deref() == Some(*module))
+            .zip(lines)
+            .filter(|(e, _)| e.proposed_module.as_deref() == Some(*module))
             .collect();
-        fns.sort_by_key(|e| (e.file.clone(), e.start_line));
+        fns.sort_by_key(|(e, el)| (e.file.clone(), el.start_line));
         let _ = writeln!(out, "- `{module}` ({})", pluralize_functions(fns.len()));
-        for e in &fns {
+        for (e, el) in &fns {
+            debug_assert_eq!(
+                e.name, el.name,
+                "entries and lines must share order/identity"
+            );
             let _ = writeln!(
                 out,
                 "  - `{}:{}-{}` `{}` - {}",
-                e.file, e.start_line, e.end_line, e.name, e.reason
+                el.file, el.start_line, el.end_line, e.name, e.reason
             );
         }
     }
     let _ = writeln!(out);
-    let mut unassigned: Vec<&MapEntry> = entries
+    let mut unassigned: Vec<(&MapEntry, &MapEntryLines)> = entries
         .iter()
-        .filter(|e| e.proposed_module.is_none())
+        .zip(lines)
+        .filter(|(e, _)| e.proposed_module.is_none())
         .collect();
-    unassigned.sort_by_key(|e| (e.file.clone(), e.start_line));
+    unassigned.sort_by_key(|(e, el)| (e.file.clone(), el.start_line));
     let _ = writeln!(
         out,
         "### Unassigned ({})",
@@ -1855,11 +1871,15 @@ fn render_section_1(entries: &[MapEntry]) -> String {
             "None - every scanned function matched an impl-block, test-module, or naming rule."
         );
     } else {
-        for e in &unassigned {
+        for (e, el) in &unassigned {
+            debug_assert_eq!(
+                e.name, el.name,
+                "entries and lines must share order/identity"
+            );
             let _ = writeln!(
                 out,
                 "- `{}:{}-{}` `{}` - {}",
-                e.file, e.start_line, e.end_line, e.name, e.reason
+                el.file, el.start_line, el.end_line, e.name, e.reason
             );
         }
     }
@@ -3781,27 +3801,56 @@ fn render_dead_code_distribution_table() -> String {
 /// line, visibility, ambiguity, KG degree ([`kg_degree_for`]), disposition
 /// ([`disposition_label`]) and the full cited reason ([`disposition_for`]) - so the report and
 /// the committed JSON can never state two different reasons for one candidate: both read the
-/// SAME lookup table.
-fn render_dead_code_full_list() -> String {
+/// SAME lookup table. Spec 90 criterion 2: `lines` carries each candidate's own line data in
+/// the SAME order as `real_dead_code_candidates()` ([`dead_code_candidate_lines`] - joined by
+/// array position, exactly like [`DEAD_CODE_LINES_PATH`] itself). Every `file:line` citation
+/// below - including `ambiguous_with`'s own citations - reads from `lines`, never from a
+/// [`DeadCodeCandidate`]'s own `line`/`ambiguous_with` directly - mirrors [`render_section_2`]'s
+/// own `lines` param exactly (spec 90 Design: "the report keeps its `file:line` citations ...
+/// rendered from that file"). ONE exception, deliberate: [`kg_degree_for`]'s own `(file, line)`
+/// arguments are a LOOKUP KEY into a hand-maintained table keyed on the tree's real definition
+/// sites, never a rendered citation (its OUTPUT, the degree number, is what the report shows) -
+/// those read the candidate's own live field, like every other non-citation field here.
+fn render_dead_code_full_list(lines: &[DeadCodeCandidateLines]) -> String {
+    let candidates = real_dead_code_candidates();
+    assert_eq!(
+        candidates.len(),
+        lines.len(),
+        "candidates and lines must be the same length, computed from the same pass"
+    );
     let mut out = String::new();
     let mut current_file: Option<&str> = None;
-    for c in real_dead_code_candidates() {
-        if current_file != Some(c.file.as_str()) {
-            out.push_str(&format!("\n**`{}`**\n\n", c.file));
-            current_file = Some(c.file.as_str());
+    for (c, cl) in candidates.iter().zip(lines) {
+        debug_assert_eq!(
+            c.file, cl.file,
+            "candidates and lines must share order/identity"
+        );
+        debug_assert_eq!(
+            c.name, cl.name,
+            "candidates and lines must share order/identity"
+        );
+        if current_file != Some(cl.file.as_str()) {
+            out.push_str(&format!("\n**`{}`**\n\n", cl.file));
+            current_file = Some(cl.file.as_str());
         }
         let amb = if c.ambiguous {
-            format!(" (ambiguous with {})", c.ambiguous_with.join(", "))
+            format!(" (ambiguous with {})", cl.ambiguous_with.join(", "))
         } else {
             String::new()
         };
         out.push_str(&format!(
             "- **{}** (`{}:{}`, `{}`{}, KG degree {}): `{}`. {}\n",
             c.name,
-            c.file,
-            c.line,
+            cl.file,
+            cl.line,
             c.visibility,
             amb,
+            // `kg_degree_for`'s own (file, line) pair is a LOOKUP KEY into a hand-maintained
+            // table keyed on the tree's real definition sites (see its own panic message: "run
+            // `rigger graph --show <file>::<name>` and add it here") - internal plumbing, never
+            // a rendered citation, so it reads the candidate's own live field like every other
+            // non-citation field above (`c.visibility`, `c.disposition`, `c.reason`), not the
+            // unguarded `lines` sidecar.
             kg_degree_for(&c.file, c.line),
             disposition_label(c.disposition),
             c.reason
@@ -3811,26 +3860,46 @@ fn render_dead_code_full_list() -> String {
     out
 }
 
-/// Section 6 item 0's own per-file deletion list - names only (the citations live in section
-/// 4.3), rendered from [`real_dead_code_candidates`] filtered to [`Disposition::Delete`] so it
-/// can never list a `keep-pending` entry by transcription error.
-fn render_dead_code_deletion_list() -> String {
+/// Section 6 item 0's own per-file deletion list: each entry's name AND its own `(line N)`
+/// citation (corrected round 3 - a prior doc comment here claimed "names only", contradicted by
+/// this function's own body, which has always rendered a citation too), rendered from
+/// [`real_dead_code_candidates`] filtered to [`Disposition::Delete`] so it can never list a
+/// `keep-pending` entry by transcription error, paired with `lines`
+/// ([`DeadCodeCandidateLines`], the SAME sidecar section 4.3 reads) so this list's own citation
+/// is never a second, independent read of the live scan - spec 90 criterion 2, mirroring
+/// [`render_dead_code_full_list`] exactly.
+fn render_dead_code_deletion_list(lines: &[DeadCodeCandidateLines]) -> String {
+    let candidates = real_dead_code_candidates();
+    assert_eq!(
+        candidates.len(),
+        lines.len(),
+        "candidates and lines must be the same length, computed from the same pass"
+    );
     let mut out = String::new();
     let mut current_file: Option<&str> = None;
-    for c in real_dead_code_candidates()
+    for (c, cl) in candidates
         .iter()
-        .filter(|c| c.disposition == Disposition::Delete)
+        .zip(lines)
+        .filter(|(c, _)| c.disposition == Disposition::Delete)
     {
-        if current_file != Some(c.file.as_str()) {
+        debug_assert_eq!(
+            c.file, cl.file,
+            "candidates and lines must share order/identity"
+        );
+        debug_assert_eq!(
+            c.name, cl.name,
+            "candidates and lines must share order/identity"
+        );
+        if current_file != Some(cl.file.as_str()) {
             if current_file.is_some() {
                 out.push('\n');
             }
-            out.push_str(&format!("  - `{}`: ", c.file));
-            current_file = Some(c.file.as_str());
+            out.push_str(&format!("  - `{}`: ", cl.file));
+            current_file = Some(cl.file.as_str());
         } else {
             out.push_str(", ");
         }
-        out.push_str(&format!("`{}` (line {})", c.name, c.line));
+        out.push_str(&format!("`{}` (line {})", c.name, cl.line));
     }
     out.push('\n');
     out
@@ -3998,7 +4067,7 @@ fn render_section_4() -> String {
         caller.\n\n",
     );
     out.push_str("### 4.3 The full list, dispositioned\n\n");
-    out.push_str(&render_dead_code_full_list());
+    out.push_str(&render_dead_code_full_list(&real_dead_code_lines()));
     out.push_str("### 4.4 Retired-feature remnants and stale doc claims\n\n");
     out.push_str(
         "RETIRED-FEATURE REMNANTS. `turbovec` (spec 57, \"Retire turbovec\"): grepped \
@@ -4450,7 +4519,7 @@ fn render_section_6() -> String {
         `expect_merged`/`is_dirty` -> confirmed genuinely unreferenced anywhere. The full \
         per-file deletion list, by name:\n\n",
     );
-    out.push_str(&render_dead_code_deletion_list());
+    out.push_str(&render_dead_code_deletion_list(&real_dead_code_lines()));
     out.push_str(
         "\n- Files: `src/canary.rs`, `src/dash.rs`, `src/gate.rs`, \
         `src/grounder/symbols/events.rs`, `src/grounder/symbols/model.rs`, `src/ingest.rs`, \
@@ -6311,6 +6380,17 @@ fn real_dead_code_candidates() -> &'static [DeadCodeCandidate] {
     })
 }
 
+/// [`real_dead_code_candidates`]'s own `lines` sidecar, in the SAME order - one shared
+/// computation for both call sites that need it ([`render_section_4`]'s 4.3 and
+/// [`render_section_6`]'s item 0), rather than each repeating the same two-line
+/// `real_dead_code_candidates().iter().map(dead_code_candidate_lines).collect()` build.
+fn real_dead_code_lines() -> Vec<DeadCodeCandidateLines> {
+    real_dead_code_candidates()
+        .iter()
+        .map(dead_code_candidate_lines)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6940,7 +7020,8 @@ mod tests {
                 content_hash: "hash-b".to_string(),
             },
         ];
-        let rendered = render_section_1(&entries);
+        let lines: Vec<MapEntryLines> = entries.iter().map(map_entry_lines).collect();
+        let rendered = render_section_1(&entries, &lines);
         assert!(rendered.contains("## 1. Responsibility Map"));
         assert!(rendered.contains("conductor::support"));
         assert!(rendered.contains("`a`"));
@@ -6962,7 +7043,8 @@ mod tests {
             reason: "r".to_string(),
             content_hash: "hash-a".to_string(),
         }];
-        let rendered = render_section_1(&entries);
+        let lines: Vec<MapEntryLines> = entries.iter().map(map_entry_lines).collect();
+        let rendered = render_section_1(&entries, &lines);
         assert!(rendered.contains("None - every scanned function"));
     }
 
@@ -7207,15 +7289,72 @@ mod tests {
         );
     }
 
+    /// Spec 90 Design, verbatim: "the report's guard checks structure only (sections present,
+    /// counts equal to the catalog) rather than bytes." Mirrors
+    /// `assert_section_2_structurally_matches` exactly, one level down (module ~ cluster,
+    /// per-entry citation ~ per-site citation): the heading, the aggregate function-total
+    /// count, every module's own heading with its declared function count, and the unassigned
+    /// heading with its declared count - never the exact citation bytes, which are free to
+    /// legitimately move between explicit `RIGGER_AUDIT_WRITE=1` regens (a pin bump anywhere
+    /// in `src/conductor.rs`, `src/main.rs` or `src/dash.rs`).
+    fn assert_section_1_structurally_matches(committed_section_1: &str, entries: &[MapEntry]) {
+        assert!(
+            committed_section_1.starts_with("## 1. Responsibility Map"),
+            "{REPORT_PATH} section 1 is missing its own heading"
+        );
+        let total_line = format!("({} functions total)", entries.len());
+        assert!(
+            committed_section_1.contains(&total_line),
+            "{REPORT_PATH} section 1's declared function total has drifted from the tree \
+             (expected {total_line:?}) - regenerate with RIGGER_AUDIT_WRITE=1"
+        );
+        let mut modules: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e.proposed_module.as_deref())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        modules.sort_unstable();
+        for module in &modules {
+            let count = entries
+                .iter()
+                .filter(|e| e.proposed_module.as_deref() == Some(*module))
+                .count();
+            let heading = format!("- `{module}` ({})", pluralize_functions(count));
+            assert!(
+                committed_section_1.contains(&heading),
+                "{REPORT_PATH} section 1 is missing or has a stale heading for module \
+                 `{module}` (expected {heading:?}) - regenerate with RIGGER_AUDIT_WRITE=1"
+            );
+        }
+        let unassigned_count = entries
+            .iter()
+            .filter(|e| e.proposed_module.is_none())
+            .count();
+        let unassigned_heading =
+            format!("### Unassigned ({})", pluralize_functions(unassigned_count));
+        assert!(
+            committed_section_1.contains(&unassigned_heading),
+            "{REPORT_PATH} section 1's unassigned count has drifted from the tree (expected \
+             {unassigned_heading:?}) - regenerate with RIGGER_AUDIT_WRITE=1"
+        );
+    }
+
     /// THE DRIFT GUARD for section 1 of the report: with `RIGGER_AUDIT_WRITE=1` set,
     /// (re)write it (creating the report fresh with placeholders for the sections this
     /// criterion does not own, or replacing only section 1's span if the report already
-    /// exists); otherwise assert the committed report's section 1 matches byte-for-byte.
+    /// exists); otherwise assert the committed report's section 1 matches the fresh map
+    /// STRUCTURALLY (see `assert_section_1_structurally_matches`), never byte-for-byte.
+    /// Mirrors `report_section_2_matches_the_tree_or_is_rewritten`'s own check-mode half
+    /// exactly (round 3 remedy: section 1's own guard was still a whole-section byte
+    /// comparison against a render that embeds live line numbers - the same defect class
+    /// criterion 2's guard was fixed for).
     #[test]
     fn report_section_1_matches_the_tree_or_is_rewritten() {
         let root = repo_root();
         let map = build_map(&root);
-        let section_1 = render_section_1(&map);
+        let lines: Vec<MapEntryLines> = map.iter().map(map_entry_lines).collect();
+        let section_1 = render_section_1(&map, &lines);
         let path = root.join(REPORT_PATH);
         let write = std::env::var("RIGGER_AUDIT_WRITE").as_deref() == Ok("1");
         if write {
@@ -7231,23 +7370,88 @@ mod tests {
             fs::write(&path, updated).unwrap();
             return;
         }
-        let existing = fs::read_to_string(&path).ok();
-        let committed = existing.unwrap_or_else(|| {
+        let committed = fs::read_to_string(&path).unwrap_or_else(|_| {
             panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
         });
-        let expected = replace_section_1(&committed, &section_1);
-        // Comparing the rebuilt-from-committed output to itself would be vacuous; instead
-        // assert section 1's own rendered text is present verbatim in the committed file, and
-        // that re-applying replace_section_1 is a no-op (proves nothing outside section 1 was
-        // touched AND section 1 already matches byte-for-byte).
-        assert_eq!(
-            expected, committed,
-            "{REPORT_PATH} section 1 has drifted from the tree - regenerate with \
-             RIGGER_AUDIT_WRITE=1"
+        let span = section_span(&committed, "## 1. ");
+        assert_section_1_structurally_matches(&committed[span], &map);
+    }
+
+    /// The structural report guard's own pin-bump proof for section 1 (mirrors
+    /// `a_pin_bump_leaves_the_rendered_report_section_2_structurally_unchanged`): a synthetic
+    /// entry, rendered before and after a pin bump that shifts its own line span by 5. Every
+    /// structural fact - module heading, function count, name, reason - is byte-identical
+    /// across the bump; only the citation's own numeric span moves, tracking the live tree
+    /// exactly.
+    #[test]
+    fn a_pin_bump_leaves_the_rendered_report_section_1_structurally_unchanged() {
+        let before = vec![MapEntry {
+            file: "src/conductor.rs".to_string(),
+            name: "add_one".to_string(),
+            start_line: 1,
+            end_line: 3,
+            is_test: false,
+            proposed_module: Some("conductor::support".to_string()),
+            reason: "reason-a".to_string(),
+            content_hash: "hash-a".to_string(),
+        }];
+        let before_lines: Vec<MapEntryLines> = before.iter().map(map_entry_lines).collect();
+        let before_rendered = render_section_1(&before, &before_lines);
+
+        let after = vec![MapEntry {
+            start_line: 6,
+            end_line: 8,
+            ..before[0].clone()
+        }];
+        let after_lines: Vec<MapEntryLines> = after.iter().map(map_entry_lines).collect();
+        let after_rendered = render_section_1(&after, &after_lines);
+
+        assert_section_1_structurally_matches(&before_rendered, &before);
+        assert_section_1_structurally_matches(&after_rendered, &after);
+        assert!(before_rendered.contains("`src/conductor.rs:1-3`"));
+        assert!(after_rendered.contains("`src/conductor.rs:6-8`"));
+        assert!(!after_rendered.contains("`src/conductor.rs:1-3`"));
+    }
+
+    /// CLAIM-4 equivalent for section 1 (mirrors
+    /// `report_section_2_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`):
+    /// proven at the DATA-FLOW level, not by coincidence. A synthetic [`MapEntry`] carries a
+    /// DECOY `start_line`/`end_line` that appears nowhere in `lines`, rendered with a separate,
+    /// deliberately different [`MapEntryLines`] - the rendered citation is the `lines` value,
+    /// never the decoy `MapEntry` one. Fails if `render_section_1` ever falls back to
+    /// `MapEntry`'s own fields.
+    #[test]
+    fn report_section_1_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
+        let decoy = (999_999, 999_998);
+        let real = (10, 12);
+        let entry = MapEntry {
+            file: "src/a.rs".to_string(),
+            name: "add_one".to_string(),
+            start_line: decoy.0,
+            end_line: decoy.1,
+            is_test: false,
+            proposed_module: Some("a::support".to_string()),
+            reason: "reason-a".to_string(),
+            content_hash: "deadbeefcafef00d".to_string(),
+        };
+        let lines = MapEntryLines {
+            file: "src/a.rs".to_string(),
+            name: "add_one".to_string(),
+            start_line: real.0,
+            end_line: real.1,
+        };
+        let rendered = render_section_1(&[entry], &[lines]);
+        let real_citation = format!("`src/a.rs:{}-{}`", real.0, real.1);
+        let decoy_citation = format!("`src/a.rs:{}-{}`", decoy.0, decoy.1);
+        assert!(
+            rendered.contains(&real_citation),
+            "report section 1 must cite the unguarded lines value {real_citation} - got \
+             {rendered:?}"
         );
         assert!(
-            committed.contains(&section_1),
-            "{REPORT_PATH} must contain section 1 verbatim"
+            !rendered.contains(&decoy_citation),
+            "report section 1 must NEVER cite MapEntry's own start_line/end_line directly - it \
+             cited the decoy {decoy_citation} instead of the unguarded lines data"
         );
     }
 
@@ -8673,7 +8877,8 @@ mod tests {
                 Some(text) => text,
                 None => {
                     let map = build_map(&root);
-                    let section_1 = render_section_1(&map);
+                    let map_lines: Vec<MapEntryLines> = map.iter().map(map_entry_lines).collect();
+                    let section_1 = render_section_1(&map, &map_lines);
                     assemble_fresh_report(&section_1)
                 }
             };
@@ -8754,19 +8959,102 @@ mod tests {
         );
     }
 
+    /// A sub-heading's own span within a larger rendered block (from `marker` up to, but not
+    /// including, the next heading starting with `next_prefix`) - mirrors `section_span`'s own
+    /// top-level-heading logic one level down, generalized over the next boundary's own prefix
+    /// so it serves both `### `-level (section 4's own 4.N sub-headings) and `#### `-level
+    /// (section 6's own numbered plan items) boundaries alike.
+    fn heading_bounded_span(
+        haystack: &str,
+        marker: &str,
+        next_prefix: &str,
+    ) -> std::ops::Range<usize> {
+        let start = find_heading(haystack, marker)
+            .unwrap_or_else(|| panic!("{REPORT_PATH} is missing its own {marker:?} heading"));
+        let next_boundary = format!("\n{next_prefix}");
+        let rest_after_marker = &haystack[start + marker.len()..];
+        let end_offset = rest_after_marker.find(&next_boundary).map(|p| p + 1);
+        let end = match end_offset {
+            Some(off) => start + marker.len() + off,
+            None => haystack.len(),
+        };
+        start..end
+    }
+
+    /// Spec 90 Design, verbatim: "the report's guard checks structure only (sections present,
+    /// counts equal to the catalog) rather than bytes." Section 4.3's full list (via
+    /// [`render_dead_code_full_list`]) is the ONLY content anywhere in sections 3-5 that embeds
+    /// a live line number, so it is the ONLY span this isolates for structural treatment -
+    /// its own file groupings and entry names, never the exact citation bytes, which are free
+    /// to legitimately move between explicit `RIGGER_AUDIT_WRITE=1` regens (a pin bump anywhere
+    /// in `src/`). Everything else in section 4 (4.0-4.2 including the distribution table, and
+    /// 4.4) is citation-free and fully deterministic from the tree, so it stays byte-exact
+    /// against `fresh_section_4` - exactly as strict as this guard was before this fix, and
+    /// still catches real content drift (e.g. the distribution table's own per-file counts).
+    fn assert_section_4_structurally_matches(
+        committed_section_4: &str,
+        fresh_section_4: &str,
+        candidates: &[DeadCodeCandidate],
+    ) {
+        assert!(
+            committed_section_4.starts_with("## 4. Dead and Vestigial Code"),
+            "{REPORT_PATH} section 4 is missing its own heading"
+        );
+        let committed_span = heading_bounded_span(committed_section_4, "### 4.3 ", "### ");
+        let fresh_span = heading_bounded_span(fresh_section_4, "### 4.3 ", "### ");
+        let committed_4_3 = &committed_section_4[committed_span.clone()];
+        let mut files: Vec<&str> = candidates.iter().map(|c| c.file.as_str()).collect();
+        files.sort_unstable();
+        files.dedup();
+        for file in &files {
+            let group_marker = format!("**`{file}`**");
+            assert!(
+                committed_4_3.contains(&group_marker),
+                "{REPORT_PATH} section 4.3 is missing its own file grouping for `{file}` \
+                 (expected {group_marker:?}) - regenerate with RIGGER_AUDIT_WRITE=1"
+            );
+        }
+        for c in candidates {
+            let name_marker = format!("- **{}**", c.name);
+            assert!(
+                committed_4_3.contains(&name_marker),
+                "{REPORT_PATH} section 4.3 is missing or has a stale entry for `{}` (expected \
+                 {name_marker:?}) - regenerate with RIGGER_AUDIT_WRITE=1",
+                c.name
+            );
+        }
+        let committed_rest = format!(
+            "{}{}",
+            &committed_section_4[..committed_span.start],
+            &committed_section_4[committed_span.end..]
+        );
+        let fresh_rest = format!(
+            "{}{}",
+            &fresh_section_4[..fresh_span.start],
+            &fresh_section_4[fresh_span.end..]
+        );
+        // Trailing newline COUNT is a formatting artifact of the outer document splice (the
+        // top-level `## 4. ` -> `## 5. ` boundary this span was cut from keeps the full
+        // blank-line separator, one more `\n` than `render_section_4`'s own raw return), never
+        // real content - trimmed on both sides before comparing so it cannot produce a false
+        // drift report.
+        assert_eq!(
+            committed_rest.trim_end_matches('\n'),
+            fresh_rest.trim_end_matches('\n'),
+            "{REPORT_PATH} section 4 (outside 4.3's own citation list) has drifted from the \
+             tree - regenerate with RIGGER_AUDIT_WRITE=1"
+        );
+    }
+
     /// THE DRIFT GUARD for sections 3-5 of the report: with `RIGGER_AUDIT_WRITE=1` set,
     /// patch the combined 3-5 span in place (guarded by [`REPORT_WRITE_LOCK`] since
     /// criteria 1 and 2's own drift guards write the SAME file); otherwise assert the
-    /// committed report's sections 3-5 match byte-for-byte. Mirrors
-    /// `report_section_1_matches_the_tree_or_is_rewritten` /
-    /// `report_section_2_matches_the_tree_or_is_rewritten` exactly, widened to the
-    /// three-section span this criterion owns together (`render_section_3` and
-    /// `render_section_5` are static text - see this unit's own module-doc banner for why no
-    /// generator code backs them; spec 87 criterion 3 rendered `render_section_4`'s own 4.2/4.3
-    /// subsections FROM `real_dead_code_candidates()` - criterion 2's ALREADY-EXISTING committed
-    /// JSON, not a new scanner - for the same reason sections 1 and 2 read their own committed
-    /// data rather than being hand-transcribed: 26 long, citation-heavy entries invite copy
-    /// error a data-driven render cannot).
+    /// committed report's sections 3 and 5 match VERBATIM (safe - both are 100% static text,
+    /// zero pin-bump risk) and section 4 matches the fresh candidate list STRUCTURALLY (see
+    /// `assert_section_4_structurally_matches`), never byte-for-byte. Round 3 remedy: this
+    /// guard's own check-mode half used to `assert_eq!` the ENTIRE 3-5 span against a render
+    /// that embeds section 4.3's live line numbers - the same defect class criterion 2's guard
+    /// was fixed for (`report_section_2_matches_the_tree_or_is_rewritten`), now fixed here too.
     #[test]
     fn report_sections_3_through_5_match_the_tree_or_are_rewritten() {
         let root = repo_root();
@@ -8782,7 +9070,8 @@ mod tests {
                 Some(text) => text,
                 None => {
                     let map = build_map(&root);
-                    let section_1 = render_section_1(&map);
+                    let map_lines: Vec<MapEntryLines> = map.iter().map(map_entry_lines).collect();
+                    let section_1 = render_section_1(&map, &map_lines);
                     assemble_fresh_report(&section_1)
                 }
             };
@@ -8796,23 +9085,73 @@ mod tests {
         let committed = fs::read_to_string(&path).unwrap_or_else(|_| {
             panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
         });
-        let expected = replace_section_3_to_5(&committed, &section_3, &section_4, &section_5);
-        assert_eq!(
-            expected, committed,
-            "{REPORT_PATH} sections 3-5 have drifted from the tree - regenerate with \
-             RIGGER_AUDIT_WRITE=1"
-        );
         assert!(
             committed.contains(&section_3),
-            "{REPORT_PATH} must contain section 3 verbatim"
+            "{REPORT_PATH} section 3 has drifted from the tree - regenerate with \
+             RIGGER_AUDIT_WRITE=1"
         );
-        assert!(
-            committed.contains(&section_4),
-            "{REPORT_PATH} must contain section 4 verbatim"
+        let span = section_span(&committed, "## 4. ");
+        assert_section_4_structurally_matches(
+            &committed[span],
+            &section_4,
+            real_dead_code_candidates(),
         );
         assert!(
             committed.contains(&section_5),
-            "{REPORT_PATH} must contain section 5 verbatim"
+            "{REPORT_PATH} section 5 has drifted from the tree - regenerate with \
+             RIGGER_AUDIT_WRITE=1"
+        );
+    }
+
+    /// Shared machinery for the two CLAIM-4-equivalent decoy pin-bump tests below (section 4.3
+    /// and section 6 item 0): pick `probe`, override its own `lines` entry with a decoy line
+    /// found nowhere in `real_dead_code_candidates()`, render via `render`, and assert the
+    /// decoy citation (built by `citation`) is present while the stale (real) one is absent -
+    /// proving the renderer sources its citation from `lines`, never `DeadCodeCandidate`'s own
+    /// live `line` field. One helper, not two near-identical test bodies, since this file's own
+    /// duplication scanner catches test code too (spec 85 Goal: "no small enough to duplicate
+    /// exemption").
+    fn assert_dead_code_render_cites_the_unguarded_lines_value(
+        probe: usize,
+        render: impl Fn(&[DeadCodeCandidateLines]) -> String,
+        citation: impl Fn(&DeadCodeCandidate, usize) -> String,
+    ) {
+        let candidates = real_dead_code_candidates();
+        let mut lines = real_dead_code_lines();
+        let real_line = candidates[probe].line;
+        let decoy_line = real_line + 500_000;
+        lines[probe].line = decoy_line;
+        let rendered = render(&lines);
+        let decoy_citation = citation(&candidates[probe], decoy_line);
+        let stale_citation = citation(&candidates[probe], real_line);
+        assert!(
+            rendered.contains(&decoy_citation),
+            "must cite the unguarded lines value {decoy_citation} - got {rendered:?}"
+        );
+        assert!(
+            !rendered.contains(&stale_citation),
+            "must NEVER cite DeadCodeCandidate's own live `line` field directly - it still \
+             cited the stale {stale_citation} instead of the unguarded lines data"
+        );
+    }
+
+    /// CLAIM-4 equivalent for section 4.3 (mirrors
+    /// `report_section_2_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`):
+    /// proven at the DATA-FLOW level against the real committed candidate pool, since
+    /// `render_dead_code_full_list` (unlike `render_section_2`) sources its candidates
+    /// internally from `real_dead_code_candidates()` rather than a caller-supplied slice - a
+    /// synthetic single-candidate fixture is not this function's own shape (see
+    /// `assert_dead_code_render_cites_the_unguarded_lines_value`). `kg_degree_for` still
+    /// receives the probed candidate's OWN live line (a lookup key into a hand-maintained
+    /// table, never a citation - see `render_dead_code_full_list`'s own doc comment), so this
+    /// isolates exactly the citation data-flow claim without tripping `kg_degree_for`'s own
+    /// unknown-pair panic.
+    #[test]
+    fn report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
+        assert_dead_code_render_cites_the_unguarded_lines_value(
+            0,
+            render_dead_code_full_list,
+            |c, line| format!("`{}:{}`", c.file, line),
         );
     }
 
@@ -8972,15 +9311,85 @@ mod tests {
         }
     }
 
+    /// Spec 90 Design, verbatim: "the report's guard checks structure only (sections present,
+    /// counts equal to the catalog) rather than bytes." Item 0's own deletion list (via
+    /// [`render_dead_code_deletion_list`]) is the ONLY content anywhere in section 6 that
+    /// embeds a live line number, so it is the ONLY span this isolates for structural
+    /// treatment, mirroring `assert_section_4_structurally_matches` exactly (same pattern, one
+    /// level deeper: `#### 0. ` instead of `### 4.3 `). Everything else in section 6 (items
+    /// 1-19 and the tier framing prose) is citation-free and fully deterministic, so it stays
+    /// byte-exact against `fresh_section_6` - exactly as strict as this guard was before this
+    /// fix.
+    fn assert_section_6_structurally_matches(
+        committed_section_6: &str,
+        fresh_section_6: &str,
+        candidates: &[DeadCodeCandidate],
+    ) {
+        assert!(
+            committed_section_6.starts_with("## 6. Prioritized Plan"),
+            "{REPORT_PATH} section 6 is missing its own heading"
+        );
+        let committed_span = heading_bounded_span(committed_section_6, "#### 0. ", "#### ");
+        let fresh_span = heading_bounded_span(fresh_section_6, "#### 0. ", "#### ");
+        let committed_item_0 = &committed_section_6[committed_span.clone()];
+        let deletes: Vec<&DeadCodeCandidate> = candidates
+            .iter()
+            .filter(|c| c.disposition == Disposition::Delete)
+            .collect();
+        let mut files: Vec<&str> = deletes.iter().map(|c| c.file.as_str()).collect();
+        files.sort_unstable();
+        files.dedup();
+        for file in &files {
+            let group_marker = format!("`{file}`: ");
+            assert!(
+                committed_item_0.contains(&group_marker),
+                "{REPORT_PATH} section 6 item 0 is missing its own file grouping for `{file}` \
+                 (expected {group_marker:?}) - regenerate with RIGGER_AUDIT_WRITE=1"
+            );
+        }
+        for c in &deletes {
+            let name_marker = format!("`{}`", c.name);
+            assert!(
+                committed_item_0.contains(&name_marker),
+                "{REPORT_PATH} section 6 item 0 is missing or has a stale entry for `{}` \
+                 (expected {name_marker:?}) - regenerate with RIGGER_AUDIT_WRITE=1",
+                c.name
+            );
+        }
+        let committed_rest = format!(
+            "{}{}",
+            &committed_section_6[..committed_span.start],
+            &committed_section_6[committed_span.end..]
+        );
+        let fresh_rest = format!(
+            "{}{}",
+            &fresh_section_6[..fresh_span.start],
+            &fresh_section_6[fresh_span.end..]
+        );
+        // Trailing newline COUNT is a formatting artifact, never real content (mirrors
+        // `assert_section_4_structurally_matches`'s own identical trim) - trimmed on both sides
+        // so it cannot produce a false drift report regardless of which document-splice path
+        // produced each side.
+        assert_eq!(
+            committed_rest.trim_end_matches('\n'),
+            fresh_rest.trim_end_matches('\n'),
+            "{REPORT_PATH} section 6 (outside item 0's own deletion list) has drifted from the \
+             tree - regenerate with RIGGER_AUDIT_WRITE=1"
+        );
+    }
+
     /// THE DRIFT GUARD for section 6 of the report: with `RIGGER_AUDIT_WRITE=1` set, patch
     /// section 6's span in place (guarded by [`REPORT_WRITE_LOCK`] since criteria 1-3's own
     /// drift guards write the SAME file); otherwise assert the committed report's section 6
-    /// matches byte-for-byte. Mirrors `report_sections_3_through_5_match_the_tree_or_are_
-    /// rewritten` exactly (`render_section_6` is mostly static text, EXCEPT item 0's own
-    /// deletion list, rendered from `real_dead_code_candidates()` - see this unit's own
-    /// module-doc banner for why no generator code backs it: spec 85's own Done-when text
-    /// for this criterion is "cites sections 1-5 and adds no new findings", not a new
-    /// scanner).
+    /// matches the fresh candidate list STRUCTURALLY (see
+    /// `assert_section_6_structurally_matches`), never byte-for-byte. Round 3 remedy: this
+    /// guard's own check-mode half used to `assert_eq!` the WHOLE section 6 against a render
+    /// that embeds item 0's own live line numbers - the same defect class criteria 1's and
+    /// 2's guards were fixed for, now fixed here too (`render_section_6` is mostly static text,
+    /// EXCEPT item 0's own deletion list, rendered from `real_dead_code_candidates()` - see
+    /// this unit's own module-doc banner for why no generator code backs the REST of section 6:
+    /// spec 85's own Done-when text for this criterion is "cites sections 1-5 and adds no new
+    /// findings", not a new scanner).
     #[test]
     fn report_section_6_matches_the_tree_or_is_rewritten() {
         let root = repo_root();
@@ -9005,15 +9414,29 @@ mod tests {
         let committed = fs::read_to_string(&path).unwrap_or_else(|_| {
             panic!("{REPORT_PATH} is missing - run with RIGGER_AUDIT_WRITE=1 to generate it")
         });
-        let expected = replace_section_6(&committed, &section_6);
-        assert_eq!(
-            expected, committed,
-            "{REPORT_PATH} section 6 has drifted from the tree - regenerate with \
-             RIGGER_AUDIT_WRITE=1"
+        let span = section_span(&committed, "## 6. ");
+        assert_section_6_structurally_matches(
+            &committed[span],
+            &section_6,
+            real_dead_code_candidates(),
         );
-        assert!(
-            committed.contains(&section_6),
-            "{REPORT_PATH} must contain section 6 verbatim"
+    }
+
+    /// CLAIM-4 equivalent for section 6 item 0 (mirrors
+    /// `report_section_4_3_cites_file_line_exactly_as_the_unguarded_lines_file_records_them`):
+    /// same shared machinery, applied to `render_dead_code_deletion_list` instead, probed at
+    /// the first real `delete`-dispositioned entry (see
+    /// `assert_dead_code_render_cites_the_unguarded_lines_value`).
+    #[test]
+    fn report_section_6_item_0_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
+        let probe = real_dead_code_candidates()
+            .iter()
+            .position(|c| c.disposition == Disposition::Delete)
+            .expect("the real tree has at least one delete-dispositioned candidate");
+        assert_dead_code_render_cites_the_unguarded_lines_value(
+            probe,
+            render_dead_code_deletion_list,
+            |c, line| format!("`{}` (line {})", c.name, line),
         );
     }
 
