@@ -102,6 +102,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Spec 90 criterion 2's line-free content identity, reused rather than a second open-coded
+/// hasher: `content_hash` is the crate's ONE stable content-hash primitive (its own doc calls it
+/// "the content-identity primitive"; this report's own DUPLICATION section separately calls it
+/// "the crate's ONE stable content-hash primitive"), already depended on for the `symbols`
+/// grounder's reindex-freshening gate. See [`span_content_hash`].
+use rigger::grounder::symbols::store::content_hash;
+
 /// The three files this criterion scans - spec 85's Design and Done-when name them by literal
 /// path, in this fixed order (also the order every generated artifact lists them in).
 const TARGET_FILES: [&str; 3] = ["src/conductor.rs", "src/main.rs", "src/dash.rs"];
@@ -896,16 +903,48 @@ fn char_literal_len(chars: &[char], i: usize) -> Option<usize> {
 }
 
 /// Collect and scan the three target files under `root` (a repo checkout), in
-/// [`TARGET_FILES`]'s fixed order, deterministically.
-fn scan_target_files(root: &Path) -> Vec<ScannedFn> {
+/// [`TARGET_FILES`]'s fixed order, deterministically, ALONGSIDE each file's own raw content
+/// (spec 90 criterion 2: [`build_map`]'s [`raw_span_content_hash`] calls need it; every other
+/// caller just wants the functions, via [`scan_target_files`] below - the ONE walk, never a
+/// second parallel one that re-reads the same three files again).
+fn scan_target_files_with_content(root: &Path) -> (Vec<ScannedFn>, HashMap<&'static str, String>) {
     let mut out = Vec::new();
+    let mut contents = HashMap::new();
     for rel in TARGET_FILES {
         let path = root.join(rel);
         let content = fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("simplification_audit: cannot read {rel}: {e}"));
         out.extend(scan_file(rel, &content));
+        contents.insert(rel, content);
     }
-    out
+    (out, contents)
+}
+
+/// Collect and scan the three target files under `root` (a repo checkout), in
+/// [`TARGET_FILES`]'s fixed order, deterministically.
+fn scan_target_files(root: &Path) -> Vec<ScannedFn> {
+    scan_target_files_with_content(root).0
+}
+
+/// Spec 90 criterion 2, THE LINE-FREE CONTENT IDENTITY for a responsibility-map entry (decision
+/// `u90c2-content-hash-primitive-reuse`): unlike the catalog/dead-code pipeline ([`scan_tree`]),
+/// this criterion's scanner ([`scan_file`]) is deliberately UNTOKENIZED - its own module doc
+/// says so, to keep it independent of the token-level lexer - so there is no pre-computed
+/// normalized-token stream to reuse here. This hashes the span's exact RAW source text instead
+/// (still through [`content_hash`], the crate's ONE hash primitive, never a second one): a pin
+/// bump elsewhere in the file moves the span to a new line number but never touches its own
+/// text, so the hash stays byte-identical across the shift, exactly like [`span_content_hash`]'s
+/// token-based version for the other two artifacts.
+fn raw_span_content_hash(content: &str, start_line: usize, end_line: usize) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let lo = start_line.saturating_sub(1).min(lines.len());
+    let hi = end_line.min(lines.len());
+    let slice = if lo < hi {
+        lines[lo..hi].join("\n")
+    } else {
+        String::new()
+    };
+    content_hash(&slice)
 }
 
 // =========================================================================================
@@ -1452,7 +1491,11 @@ fn rules_for(file: &str) -> &'static [Rule] {
     }
 }
 
-/// One responsibility-map entry: a scanned function's proposed home and why.
+/// One responsibility-map entry: a scanned function's proposed home and why. Spec 90 criterion
+/// 2 addition: `content_hash` (see [`raw_span_content_hash`]) is this entry's line-free identity,
+/// which the guarded `docs/audit/responsibility-map.json` ([`MapEntryWire`]) carries instead of
+/// `start_line`/`end_line`; those move to the unguarded `.lines.json` sibling
+/// ([`MapEntryLines`]) and stay here for every other purpose (rendering, sorting).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct MapEntry {
     file: String,
@@ -1464,6 +1507,7 @@ struct MapEntry {
     /// functions are named as such, never omitted").
     proposed_module: Option<String>,
     reason: String,
+    content_hash: String,
 }
 
 /// Assign one scanned function to a proposed module + reason (decision
@@ -1655,11 +1699,13 @@ fn snake_case(name: &str) -> String {
 /// Build the full responsibility map for the checked-out tree at `root`, deterministically
 /// ordered by (file, in [`TARGET_FILES`] order, then start_line).
 fn build_map(root: &Path) -> Vec<MapEntry> {
-    let scanned = scan_target_files(root);
+    let (scanned, contents) = scan_target_files_with_content(root);
     scanned
         .into_iter()
         .map(|f| {
             let (proposed_module, reason) = classify(&f);
+            let content_hash =
+                raw_span_content_hash(&contents[f.file.as_str()], f.start_line, f.end_line);
             MapEntry {
                 file: f.file,
                 name: f.name,
@@ -1668,16 +1714,72 @@ fn build_map(root: &Path) -> Vec<MapEntry> {
                 is_test: f.is_test,
                 proposed_module,
                 reason,
+                content_hash,
             }
         })
         .collect()
 }
 
-/// Deterministic pretty JSON for [`build_map`]'s output - a bare array of [`MapEntry`], each
-/// field in declaration order (no `HashMap` anywhere in the shape, so `serde_json` emits the
-/// SAME bytes on every run over the same tree - the drift guard's whole premise).
+/// [`MAP_PATH`]'s guarded per-entry shape (spec 90 criterion 2): every [`MapEntry`] field except
+/// its line span.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MapEntryWire {
+    file: String,
+    name: String,
+    is_test: bool,
+    proposed_module: Option<String>,
+    reason: String,
+    content_hash: String,
+}
+
+/// [`MAP_LINES_PATH`]'s shape: one entry's line span only, in the SAME order as [`MAP_PATH`] -
+/// joined by array position, `name` carried too for a human cross-checking by eye.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MapEntryLines {
+    file: String,
+    name: String,
+    start_line: usize,
+    end_line: usize,
+}
+
+fn map_entry_wire(e: &MapEntry) -> MapEntryWire {
+    MapEntryWire {
+        file: e.file.clone(),
+        name: e.name.clone(),
+        is_test: e.is_test,
+        proposed_module: e.proposed_module.clone(),
+        reason: e.reason.clone(),
+        content_hash: e.content_hash.clone(),
+    }
+}
+
+fn map_entry_lines(e: &MapEntry) -> MapEntryLines {
+    MapEntryLines {
+        file: e.file.clone(),
+        name: e.name.clone(),
+        start_line: e.start_line,
+        end_line: e.end_line,
+    }
+}
+
+/// Deterministic pretty JSON for [`build_map`]'s output, LINE-FREE (spec 90 criterion 2):
+/// serializes through [`MapEntryWire`], never [`MapEntry`] directly, so the guarded file never
+/// carries a line number - a bare array, each field in declaration order (no `HashMap` anywhere
+/// in the shape, so `serde_json` emits the SAME bytes on every run over the same tree - the
+/// drift guard's whole premise).
 fn map_to_json(entries: &[MapEntry]) -> String {
-    let mut s = serde_json::to_string_pretty(entries).expect("MapEntry serializes");
+    let wire: Vec<MapEntryWire> = entries.iter().map(map_entry_wire).collect();
+    let mut s = serde_json::to_string_pretty(&wire).expect("MapEntryWire serializes");
+    s.push('\n');
+    s
+}
+
+/// Deterministic pretty JSON for [`MAP_LINES_PATH`] - the line spans [`map_to_json`] dropped.
+/// Never drift-guarded; written fresh every `RIGGER_AUDIT_WRITE=1` run alongside the guarded
+/// file.
+fn map_lines_to_json(entries: &[MapEntry]) -> String {
+    let wire: Vec<MapEntryLines> = entries.iter().map(map_entry_lines).collect();
+    let mut s = serde_json::to_string_pretty(&wire).expect("MapEntryLines serializes");
     s.push('\n');
     s
 }
@@ -1770,6 +1872,10 @@ fn render_section_1(entries: &[MapEntry]) -> String {
 
 const REPORT_PATH: &str = "docs/audit/2026-09-simplification-audit.md";
 const MAP_PATH: &str = "docs/audit/responsibility-map.json";
+
+/// Spec 90 criterion 2: the UNGUARDED sibling carrying [`MAP_PATH`]'s line spans (see
+/// [`CATALOG_LINES_PATH`]'s own doc comment for the full rationale, identical here).
+const MAP_LINES_PATH: &str = "docs/audit/responsibility-map.lines.json";
 
 /// Guards every read-modify-write of [`REPORT_PATH`] in `RIGGER_AUDIT_WRITE=1` mode: this
 /// criterion's own drift-guard test (`report_section_2_matches_the_tree_or_is_rewritten`) is a
@@ -1908,6 +2014,12 @@ const SIMILARITY_THRESHOLD: f64 = 0.72;
 const POSTING_CAP: usize = 32;
 
 const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
+
+/// Spec 90 criterion 2: the UNGUARDED sibling carrying [`CATALOG_PATH`]'s line spans, moved out
+/// of the guarded file so a pin bump or a sibling unit's own insertion elsewhere never perturbs
+/// this file's guarded bytes. Written only in `RIGGER_AUDIT_WRITE=1` mode; the drift guard never
+/// reads it back (see [`catalog_lines_to_json`]).
+const CATALOG_LINES_PATH: &str = "docs/audit/duplication-catalog.lines.json";
 
 /// The fixed seed for [`sample_indices`]'s adversarial draw - arbitrary but permanently fixed
 /// (spec 85 THOROUGHNESS: "The report states the sample seed so the check is reproducible").
@@ -2312,6 +2424,22 @@ fn body_tokens(file_tokens: &[RawTok], start_line: usize, end_line: usize) -> &[
     &file_tokens[lo..hi]
 }
 
+/// Spec 90 criterion 2, THE LINE-FREE CONTENT IDENTITY for a catalog site or a dead-code
+/// entry/reference (decision `u90c2-content-hash-primitive-reuse`): this span's OWN normalized
+/// token stream ([`normalize_tokens`] over [`body_tokens`] - the EXACT preprocessing
+/// [`build_mechanical_clusters`] already runs for its Jaccard pass, joined the SAME way
+/// (`norm.join("\u{1}")`) that pass already keys exact-duplicate grouping on), hashed through
+/// [`content_hash`] rather than a second, parallel hasher. A pin bump elsewhere in the file
+/// moves this span to a new line number but never touches its own tokens, so the hash is
+/// byte-identical across the shift; an actual edit inside the span (a real content change)
+/// changes it, as intended. Works uniformly for a whole function's span (a [`dup_site`]) and a
+/// single-line call/literal site (`start_line == end_line`, the mandatory sweeps) alike.
+fn span_content_hash(file_tokens: &[RawTok], start_line: usize, end_line: usize) -> String {
+    let toks = body_tokens(file_tokens, start_line, end_line);
+    let norm = normalize_tokens(toks);
+    content_hash(&norm.join("\u{1}"))
+}
+
 /// One function's identity within [`scan_tree`]'s output: which file, and its index into that
 /// file's own `fns`.
 #[derive(Debug, Clone, Copy)]
@@ -2390,12 +2518,19 @@ impl Dsu {
 // THE CATALOG SHAPE
 // -----------------------------------------------------------------------------------------
 
+/// Spec 90 criterion 2 addition: `content_hash` (see [`span_content_hash`]) is this site's
+/// line-free identity - the ONLY per-site field the guarded `docs/audit/duplication-catalog.json`
+/// carries ([`DupSiteWire`]). `start_line`/`end_line` stay on this struct for every OTHER
+/// purpose (rendering, sorting, sweep note counts) and move to the unguarded
+/// `docs/audit/duplication-catalog.lines.json` sibling ([`DupSiteLines`]) instead of the guarded
+/// file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct DupSite {
     file: String,
     start_line: usize,
     end_line: usize,
     name: String,
+    content_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2408,12 +2543,13 @@ struct DupCluster {
     note: String,
 }
 
-fn dup_site(f: &ScannedFn) -> DupSite {
+fn dup_site(f: &ScannedFn, file_tokens: &[RawTok]) -> DupSite {
     DupSite {
         file: f.file.clone(),
         start_line: f.start_line,
         end_line: f.end_line,
         name: f.name.clone(),
+        content_hash: span_content_hash(file_tokens, f.start_line, f.end_line),
     }
 }
 
@@ -2537,7 +2673,7 @@ fn build_mechanical_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupClust
         };
         let sites: Vec<DupSite> = members
             .iter()
-            .map(|&i| dup_site(refs[i].scanned(files)))
+            .map(|&i| dup_site(refs[i].scanned(files), &files[refs[i].file_idx].tokens))
             .collect();
         let proposed_home = propose_home(files, &members, refs);
         clusters.push(DupCluster {
@@ -2598,6 +2734,7 @@ fn find_ident_path_call_sites(files: &[FileScan], head: &str, tails: &[&str]) ->
                     start_line: t[i].line,
                     end_line: t[i].line,
                     name: format!("{head}::{}", t[i + 3].text),
+                    content_hash: span_content_hash(t, t[i].line, t[i].line),
                 });
             }
         }
@@ -2617,6 +2754,7 @@ fn find_literal_containing(files: &[FileScan], needle: &str) -> Vec<DupSite> {
                     start_line: t.line,
                     end_line: t.line,
                     name: t.text.clone(),
+                    content_hash: span_content_hash(&f.tokens, t.line, t.line),
                 });
             }
         }
@@ -2657,7 +2795,7 @@ fn find_error_shaping_fns(files: &[FileScan], refs: &[FnRef]) -> Vec<DupSite> {
                 && w[1].text == "!"
         });
         if has_format {
-            hits.push(dup_site(sf));
+            hits.push(dup_site(sf, &f.tokens));
         }
     }
     hits
@@ -2743,7 +2881,7 @@ fn find_proc_stat_or_status_readers(files: &[FileScan], refs: &[FnRef]) -> Vec<D
                 && (t.text.contains("/stat") || t.text.contains("/status"))
         });
         if reads_stat_or_status {
-            hits.push(dup_site(sf));
+            hits.push(dup_site(sf, &f.tokens));
         }
     }
     hits
@@ -2819,7 +2957,7 @@ fn find_parallel_constructor_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec
         let (file, ty) = key;
         let sites: Vec<DupSite> = members
             .iter()
-            .map(|&i| dup_site(refs[i].scanned(files)))
+            .map(|&i| dup_site(refs[i].scanned(files), &files[refs[i].file_idx].tokens))
             .collect();
         clusters.push(sweep_cluster(
             "parallel constructor functions",
@@ -2910,7 +3048,7 @@ fn find_same_named_helper_functions(files: &[FileScan], refs: &[FnRef]) -> Vec<D
         }
         let sites: Vec<DupSite> = members
             .iter()
-            .map(|&i| dup_site(refs[i].scanned(files)))
+            .map(|&i| dup_site(refs[i].scanned(files), &files[refs[i].file_idx].tokens))
             .collect();
         clusters.push(sweep_cluster(
             "same-named helper function defined independently in 2+ files",
@@ -2946,7 +3084,7 @@ fn find_bespoke_lexer_vs_canonical_extractor(files: &[FileScan], refs: &[FnRef])
         let is_canonical_extractor =
             sf.file == "src/grounder/symbols/extract.rs" && sf.name == "extract";
         if is_bespoke_lexer || is_canonical_extractor {
-            hits.push(dup_site(sf));
+            hits.push(dup_site(sf, &files[r.file_idx].tokens));
         }
     }
     hits
@@ -3031,10 +3169,95 @@ fn real_catalog() -> &'static [DupCluster] {
     CACHE.get_or_init(|| build_catalog(real_files()))
 }
 
-/// Deterministic pretty JSON for [`build_catalog`]'s output - mirrors [`map_to_json`]'s own
-/// shape (a bare array, declaration field order, no `HashMap` anywhere in the shape).
+// -----------------------------------------------------------------------------------------
+// SPEC 90 CRITERION 2: THE LINE-FREE WIRE SHAPE
+// -----------------------------------------------------------------------------------------
+
+/// [`CATALOG_PATH`]'s guarded per-site shape: `{file, name, content_hash}`, no line numbers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DupSiteWire {
+    file: String,
+    name: String,
+    content_hash: String,
+}
+
+/// [`CATALOG_PATH`]'s guarded per-cluster shape - every [`DupCluster`] field except its sites'
+/// line spans.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DupClusterWire {
+    id: String,
+    classification: String,
+    sites: Vec<DupSiteWire>,
+    proposed_home: String,
+    note: String,
+}
+
+/// [`CATALOG_LINES_PATH`]'s shape: one cluster's sites' line spans only, in the SAME
+/// cluster/site order as [`CATALOG_PATH`] - joined by array position (both come from the SAME
+/// `Vec<DupCluster>` in the SAME pass), `id` carried too for a human cross-checking by eye.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DupSiteLines {
+    file: String,
+    start_line: usize,
+    end_line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DupClusterLines {
+    id: String,
+    sites: Vec<DupSiteLines>,
+}
+
+fn dup_cluster_wire(c: &DupCluster) -> DupClusterWire {
+    DupClusterWire {
+        id: c.id.clone(),
+        classification: c.classification.clone(),
+        sites: c
+            .sites
+            .iter()
+            .map(|s| DupSiteWire {
+                file: s.file.clone(),
+                name: s.name.clone(),
+                content_hash: s.content_hash.clone(),
+            })
+            .collect(),
+        proposed_home: c.proposed_home.clone(),
+        note: c.note.clone(),
+    }
+}
+
+fn dup_cluster_lines(c: &DupCluster) -> DupClusterLines {
+    DupClusterLines {
+        id: c.id.clone(),
+        sites: c
+            .sites
+            .iter()
+            .map(|s| DupSiteLines {
+                file: s.file.clone(),
+                start_line: s.start_line,
+                end_line: s.end_line,
+            })
+            .collect(),
+    }
+}
+
+/// Deterministic pretty JSON for [`build_catalog`]'s output, LINE-FREE (spec 90 criterion 2):
+/// serializes through [`DupClusterWire`], never [`DupCluster`] directly, so the guarded file
+/// never carries a line number. Mirrors [`map_to_json`]'s own shape (a bare array, declaration
+/// field order, no `HashMap` anywhere in the shape).
 fn catalog_to_json(clusters: &[DupCluster]) -> String {
-    let mut s = serde_json::to_string_pretty(clusters).expect("DupCluster serializes");
+    let wire: Vec<DupClusterWire> = clusters.iter().map(dup_cluster_wire).collect();
+    let mut s = serde_json::to_string_pretty(&wire).expect("DupClusterWire serializes");
+    s.push('\n');
+    s
+}
+
+/// Deterministic pretty JSON for [`CATALOG_LINES_PATH`] - the line spans [`catalog_to_json`]
+/// dropped. Never drift-guarded (spec 90 criterion 2 Design: "the guard NEVER compares"); written
+/// fresh every `RIGGER_AUDIT_WRITE=1` run alongside the guarded file.
+fn catalog_lines_to_json(clusters: &[DupCluster]) -> String {
+    let wire: Vec<DupClusterLines> = clusters.iter().map(dup_cluster_lines).collect();
+    let mut s = serde_json::to_string_pretty(&wire).expect("DupClusterLines serializes");
     s.push('\n');
     s
 }
@@ -5167,11 +5390,16 @@ fn all_ident_ref_sites(
 }
 
 /// One `file:line` a candidate is referenced from - but ONLY from test code (spec 87 OUTPUT:
-/// "the test-only references that kept it looking alive").
+/// "the test-only references that kept it looking alive"). Spec 90 criterion 2 addition:
+/// `content_hash` (see [`span_content_hash`], over this ONE line's own tokens - `start_line ==
+/// end_line`, exactly like a mandatory-sweep call site) is this reference's line-free identity
+/// for [`DEAD_CODE_PATH`]'s guarded wire form; `line` stays for every other purpose and moves to
+/// [`DEAD_CODE_LINES_PATH`] instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct TestOnlyRef {
     file: String,
     line: usize,
+    content_hash: String,
 }
 
 /// One production fn with ZERO production references (spec 87 OUTPUT). Criterion 2 owns every
@@ -5199,6 +5427,13 @@ struct DeadCodeCandidate {
     /// addition byte-identical for the overwhelmingly common case.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ambiguous_with: Vec<String>,
+    /// Spec 90 criterion 2: the SAME citations as `ambiguous_with`, line-free - `file#hash`
+    /// instead of `file:line` (a sharer's own [`span_content_hash`], computed at construction
+    /// time over the FULL scanned candidate pool since a live sharer may not itself appear
+    /// anywhere in this list's own entries to look its hash back up from later). What
+    /// [`DEAD_CODE_PATH`]'s guarded wire form carries INSTEAD of `ambiguous_with`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ambiguous_with_hashed: Vec<String>,
     test_only_references: Vec<TestOnlyRef>,
     /// Criterion 3's own field (spec 87 OUTPUT: "and a DISPOSITION"). Assigned by
     /// [`disposition_for`], keyed on `(file, line)` - never on bare `name` alone, since the two
@@ -5209,6 +5444,10 @@ struct DeadCodeCandidate {
     /// defect") - a `delete` names why the current zero-production-reference reading is real and
     /// safe to act on; `keep-public-surface` names the consumer; `keep-pending` names the spec.
     reason: String,
+    /// Spec 90 criterion 2 addition: this candidate's own line-free identity (see
+    /// [`span_content_hash`], over its whole `[start_line, end_line]` span like a catalog
+    /// [`dup_site`]) - what [`DEAD_CODE_PATH`]'s guarded wire form carries INSTEAD of `line`.
+    content_hash: String,
 }
 
 /// Spec 87 DISPOSITIONS, decided: "exactly three" - `delete` (the fn and the tests that
@@ -5450,13 +5689,23 @@ fn build_dead_code_candidates(
     // gone). `group_members` names every OTHER sharer's `file:line` for `ambiguous_with`.
     let mut name_counts: HashMap<(DispatchCategory, &str), usize> = HashMap::new();
     let mut group_members: HashMap<(DispatchCategory, &str), Vec<String>> = HashMap::new();
+    // Spec 90 criterion 2: every candidate's own `file:line` citation -> its `content_hash`,
+    // over the FULL scanned pool (not just `out` below) - `ambiguous_with` can cite a live
+    // sharer that never itself appears in `out` (it has a production reference, so it is not a
+    // dead-code candidate), so the hash for that citation must be captured HERE, not
+    // reconstructed later from the filtered output list.
+    let mut citation_hash: HashMap<String, String> = HashMap::new();
     for f in &candidates {
         let cat = categories[&(f.file.as_str(), f.start_line)];
         *name_counts.entry((cat, f.name.as_str())).or_insert(0) += 1;
+        let citation = format!("{}:{}", f.file, f.start_line);
+        citation_hash.entry(citation.clone()).or_insert_with(|| {
+            span_content_hash(file_tokens[f.file.as_str()], f.start_line, f.end_line)
+        });
         group_members
             .entry((cat, f.name.as_str()))
             .or_default()
-            .push(format!("{}:{}", f.file, f.start_line));
+            .push(citation);
     }
 
     let mut out = Vec::new();
@@ -5540,6 +5789,7 @@ fn build_dead_code_candidates(
                 test_only.push(TestOnlyRef {
                     file: s.file.clone(),
                     line: s.line,
+                    content_hash: span_content_hash(file_tokens[s.file.as_str()], s.line, s.line),
                 });
             }
         }
@@ -5547,7 +5797,7 @@ fn build_dead_code_candidates(
             continue;
         }
         let ambiguous = ambiguous_group;
-        let ambiguous_with = if ambiguous {
+        let ambiguous_with: Vec<String> = if ambiguous {
             group_members[&(cat, f.name.as_str())]
                 .iter()
                 .filter(|c| **c != my_citation)
@@ -5556,6 +5806,18 @@ fn build_dead_code_candidates(
         } else {
             Vec::new()
         };
+        let ambiguous_with_hashed: Vec<String> = ambiguous_with
+            .iter()
+            .map(|citation| {
+                let (file, _) = citation.rsplit_once(':').unwrap_or_else(|| {
+                    panic!("ambiguous_with citation {citation:?} is not file:line-shaped")
+                });
+                let hash = citation_hash.get(citation).unwrap_or_else(|| {
+                    panic!("no content_hash recorded for ambiguous_with citation {citation:?}")
+                });
+                format!("{file}#{hash}")
+            })
+            .collect();
         test_only.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
         test_only.dedup();
         out.push(DeadCodeCandidate {
@@ -5565,7 +5827,9 @@ fn build_dead_code_candidates(
             visibility: f.visibility.clone(),
             ambiguous,
             ambiguous_with,
+            ambiguous_with_hashed,
             test_only_references: test_only,
+            content_hash: span_content_hash(file_tokens[f.file.as_str()], f.start_line, f.end_line),
             // NOT yet dispositioned here: this is criterion 2's instrument, which never sees a
             // `disposition_for` entry for a fixture-tree file (every one of this file's OWN
             // fixture tests constructs a synthetic `src/...rs` that has no place in that real-
@@ -5868,10 +6132,112 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
 
 const DEAD_CODE_PATH: &str = "docs/audit/dead-code.json";
 
-/// Deterministic pretty JSON for [`build_dead_code_candidates`]'s output - mirrors
-/// [`catalog_to_json`]'s own shape (a bare array, declared field order, no `HashMap` anywhere).
+/// Spec 90 criterion 2: the UNGUARDED sibling carrying [`DEAD_CODE_PATH`]'s line spans (see
+/// [`CATALOG_LINES_PATH`]'s own doc comment for the full rationale, identical here).
+const DEAD_CODE_LINES_PATH: &str = "docs/audit/dead-code.lines.json";
+
+/// [`DEAD_CODE_PATH`]'s guarded per-reference shape: `{file, content_hash}`, no line number.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct TestOnlyRefWire {
+    file: String,
+    content_hash: String,
+}
+
+/// [`DEAD_CODE_LINES_PATH`]'s per-reference shape: the line [`TestOnlyRefWire`] dropped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct TestOnlyRefLines {
+    file: String,
+    line: usize,
+}
+
+/// [`DEAD_CODE_PATH`]'s guarded per-candidate shape: every [`DeadCodeCandidate`] field except
+/// `line`, with `ambiguous_with_hashed` standing in for `ambiguous_with`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DeadCodeCandidateWire {
+    name: String,
+    file: String,
+    content_hash: String,
+    visibility: String,
+    ambiguous: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ambiguous_with: Vec<String>,
+    test_only_references: Vec<TestOnlyRefWire>,
+    disposition: Disposition,
+    reason: String,
+}
+
+/// [`DEAD_CODE_LINES_PATH`]'s per-candidate shape: the line spans [`DeadCodeCandidateWire`]
+/// dropped - `line`, plus `ambiguous_with`'s ORIGINAL `file:line` form (not the wire file`#`hash
+/// one) and every `test_only_references` entry's own line. In the SAME order as
+/// [`DEAD_CODE_PATH`] - joined by array position, `name` carried too for a human cross-checking
+/// by eye.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DeadCodeCandidateLines {
+    file: String,
+    name: String,
+    line: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ambiguous_with: Vec<String>,
+    test_only_references: Vec<TestOnlyRefLines>,
+}
+
+fn dead_code_candidate_wire(c: &DeadCodeCandidate) -> DeadCodeCandidateWire {
+    DeadCodeCandidateWire {
+        name: c.name.clone(),
+        file: c.file.clone(),
+        content_hash: c.content_hash.clone(),
+        visibility: c.visibility.clone(),
+        ambiguous: c.ambiguous,
+        ambiguous_with: c.ambiguous_with_hashed.clone(),
+        test_only_references: c
+            .test_only_references
+            .iter()
+            .map(|r| TestOnlyRefWire {
+                file: r.file.clone(),
+                content_hash: r.content_hash.clone(),
+            })
+            .collect(),
+        disposition: c.disposition,
+        reason: c.reason.clone(),
+    }
+}
+
+fn dead_code_candidate_lines(c: &DeadCodeCandidate) -> DeadCodeCandidateLines {
+    DeadCodeCandidateLines {
+        file: c.file.clone(),
+        name: c.name.clone(),
+        line: c.line,
+        ambiguous_with: c.ambiguous_with.clone(),
+        test_only_references: c
+            .test_only_references
+            .iter()
+            .map(|r| TestOnlyRefLines {
+                file: r.file.clone(),
+                line: r.line,
+            })
+            .collect(),
+    }
+}
+
+/// Deterministic pretty JSON for [`build_dead_code_candidates`]'s output, LINE-FREE (spec 90
+/// criterion 2): serializes through [`DeadCodeCandidateWire`], never [`DeadCodeCandidate`]
+/// directly - mirrors [`catalog_to_json`]'s own shape (a bare array, declared field order, no
+/// `HashMap` anywhere).
 fn dead_code_to_json(candidates: &[DeadCodeCandidate]) -> String {
-    let mut s = serde_json::to_string_pretty(candidates).expect("DeadCodeCandidate serializes");
+    let wire: Vec<DeadCodeCandidateWire> =
+        candidates.iter().map(dead_code_candidate_wire).collect();
+    let mut s = serde_json::to_string_pretty(&wire).expect("DeadCodeCandidateWire serializes");
+    s.push('\n');
+    s
+}
+
+/// Deterministic pretty JSON for [`DEAD_CODE_LINES_PATH`] - the line data [`dead_code_to_json`]
+/// dropped. Never drift-guarded; written fresh every `RIGGER_AUDIT_WRITE=1` run alongside the
+/// guarded file.
+fn dead_code_lines_to_json(candidates: &[DeadCodeCandidate]) -> String {
+    let wire: Vec<DeadCodeCandidateLines> =
+        candidates.iter().map(dead_code_candidate_lines).collect();
+    let mut s = serde_json::to_string_pretty(&wire).expect("DeadCodeCandidateLines serializes");
     s.push('\n');
     s
 }
@@ -6513,6 +6879,7 @@ mod tests {
             is_test: false,
             proposed_module: Some("conductor::support".to_string()),
             reason: "x".to_string(),
+            content_hash: "hash-a".to_string(),
         }];
         assert_eq!(map_to_json(&entries), map_to_json(&entries));
     }
@@ -6528,6 +6895,7 @@ mod tests {
                 is_test: false,
                 proposed_module: Some("conductor::support".to_string()),
                 reason: "reason-a".to_string(),
+                content_hash: "hash-a".to_string(),
             },
             MapEntry {
                 file: "src/conductor.rs".to_string(),
@@ -6537,6 +6905,7 @@ mod tests {
                 is_test: false,
                 proposed_module: None,
                 reason: "reason-b".to_string(),
+                content_hash: "hash-b".to_string(),
             },
         ];
         let rendered = render_section_1(&entries);
@@ -6559,6 +6928,7 @@ mod tests {
             is_test: false,
             proposed_module: Some("conductor::support".to_string()),
             reason: "r".to_string(),
+            content_hash: "hash-a".to_string(),
         }];
         let rendered = render_section_1(&entries);
         assert!(rendered.contains("None - every scanned function"));
@@ -6638,6 +7008,7 @@ mod tests {
                 fs::create_dir_all(parent).unwrap();
             }
             fs::write(&path, &json).unwrap();
+            fs::write(root.join(MAP_LINES_PATH), map_lines_to_json(&map)).unwrap();
             return;
         }
         let committed = fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -6649,6 +7020,69 @@ mod tests {
         assert_eq!(
             committed, json,
             "{MAP_PATH} has drifted from the tree - regenerate with RIGGER_AUDIT_WRITE=1"
+        );
+    }
+
+    /// Spec 90 criterion 2, CLAIM 1 for `docs/audit/responsibility-map.json`: structurally, no
+    /// site carries `start_line`/`end_line` and every one carries a non-empty `content_hash`.
+    #[test]
+    fn the_real_committed_responsibility_map_carries_no_line_number_fields() {
+        let map = build_map(&repo_root());
+        let json = map_to_json(&map);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let arr = value.as_array().expect("a bare array");
+        assert!(!arr.is_empty());
+        for entry in arr {
+            let obj = entry.as_object().expect("an entry object");
+            assert!(
+                !obj.contains_key("start_line"),
+                "entry {entry:?} still carries start_line"
+            );
+            assert!(
+                !obj.contains_key("end_line"),
+                "entry {entry:?} still carries end_line"
+            );
+            let hash = obj
+                .get("content_hash")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            assert!(
+                !hash.is_empty(),
+                "entry {entry:?} has an empty content_hash"
+            );
+        }
+    }
+
+    /// Spec 90 criterion 2, CLAIM 2 for `docs/audit/responsibility-map.json`: a synthetic
+    /// fixture tree (never the real checked-out one - [`build_map`] requires all three
+    /// [`TARGET_FILES`] to exist, so this writes trivial stand-ins for the two it does not
+    /// exercise) proves a pin bump (5 unrelated comment lines prepended to `src/dash.rs`,
+    /// shifting every entry in it) leaves the guarded map byte-identical, because
+    /// `content_hash` keys on each function's own raw text, never its line number.
+    #[test]
+    fn a_pin_bump_leaves_the_guarded_responsibility_map_byte_identical() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(dir.path(), "src/conductor.rs", "fn one() {}\n");
+        write_fixture(dir.path(), "src/main.rs", "fn two() {}\n");
+        write_fixture(
+            dir.path(),
+            "src/dash.rs",
+            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        let base_json = map_to_json(&build_map(dir.path()));
+
+        write_fixture(
+            dir.path(),
+            "src/dash.rs",
+            "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
+             fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        let bumped_json = map_to_json(&build_map(dir.path()));
+
+        assert_eq!(
+            base_json, bumped_json,
+            "a pin bump that only shifts every entry's OWN line number must leave the guarded \
+             responsibility map byte-identical (spec 90 criterion 2)"
         );
     }
 
@@ -7541,14 +7975,45 @@ mod tests {
                 start_line: 1,
                 end_line: 3,
                 name: "a".to_string(),
+                content_hash: "deadbeefcafef00d".to_string(),
             }],
             proposed_home: "a::support".to_string(),
             note: "n".to_string(),
         }];
         let json = catalog_to_json(&clusters);
         assert!(json.ends_with('\n'));
-        let back: Vec<DupCluster> = serde_json::from_str(&json).expect("round trips");
-        assert_eq!(back, clusters);
+        // Spec 90 criterion 2: the wire shape is LINE-FREE - it round-trips through
+        // `DupClusterWire`, not the full `DupCluster` (whose `start_line`/`end_line` are no
+        // longer present in `json` at all).
+        let back: Vec<DupClusterWire> = serde_json::from_str(&json).expect("round trips");
+        assert_eq!(back, vec![dup_cluster_wire(&clusters[0])]);
+        assert!(!json.contains("start_line"));
+        assert!(!json.contains("end_line"));
+    }
+
+    #[test]
+    fn catalog_lines_to_json_round_trips_and_carries_only_the_line_spans() {
+        let clusters = vec![DupCluster {
+            id: "dup-0001".to_string(),
+            classification: "exact".to_string(),
+            sites: vec![DupSite {
+                file: "src/a.rs".to_string(),
+                start_line: 1,
+                end_line: 3,
+                name: "a".to_string(),
+                content_hash: "deadbeefcafef00d".to_string(),
+            }],
+            proposed_home: "a::support".to_string(),
+            note: "n".to_string(),
+        }];
+        let json = catalog_lines_to_json(&clusters);
+        assert!(json.ends_with('\n'));
+        let back: Vec<DupClusterLines> = serde_json::from_str(&json).expect("round trips");
+        assert_eq!(back, vec![dup_cluster_lines(&clusters[0])]);
+        // The unguarded sibling carries the identity (line-free) AND the lines - never the
+        // content_hash, which belongs solely to the guarded file.
+        assert!(!json.contains("content_hash"));
+        assert!(!json.contains("proposed_home"));
     }
 
     #[test]
@@ -7716,9 +8181,12 @@ mod tests {
     }
 
     /// THE DRIFT GUARD for `docs/audit/duplication-catalog.json`: with `RIGGER_AUDIT_WRITE=1`
-    /// set, regenerate and overwrite it; otherwise regenerate in memory and assert it matches
-    /// the committed file byte-for-byte (spec 85 Design) - mirrors
-    /// `responsibility_map_json_matches_the_tree_or_is_rewritten` exactly.
+    /// set, regenerate and overwrite it (and, spec 90 criterion 2, its unguarded
+    /// `.lines.json` sibling alongside it); otherwise regenerate in memory and assert the
+    /// GUARDED file matches the committed bytes byte-for-byte (spec 85 Design) - mirrors
+    /// `responsibility_map_json_matches_the_tree_or_is_rewritten` exactly. The `.lines.json`
+    /// sibling is deliberately NEVER read back or compared here (spec 90 criterion 2 Design:
+    /// "the guard NEVER compares") - it is write-mode-only output.
     #[test]
     fn duplication_catalog_json_matches_the_tree_or_is_rewritten() {
         let root = repo_root();
@@ -7730,6 +8198,11 @@ mod tests {
                 fs::create_dir_all(parent).unwrap();
             }
             fs::write(&path, &json).unwrap();
+            fs::write(
+                root.join(CATALOG_LINES_PATH),
+                catalog_lines_to_json(clusters),
+            )
+            .unwrap();
             return;
         }
         let committed = fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -7742,6 +8215,168 @@ mod tests {
             committed, json,
             "{CATALOG_PATH} has drifted from the tree - regenerate with RIGGER_AUDIT_WRITE=1"
         );
+    }
+
+    // -------------------------------------------------------------------------------------
+    // Spec 90 criterion 2, THE DRIFT GUARD IS LINE-FREE: the four Done-when claims, each its
+    // own test against the real committed catalog (structural) or a synthetic fixture tree
+    // (byte-stability under a pin bump / a two-branch merge - the properties a real branch
+    // divergence needs, not provable from one static committed snapshot alone).
+    // -------------------------------------------------------------------------------------
+
+    /// CLAIM 1: "the guarded catalog carries no line numbers." Checked STRUCTURALLY (parsed as
+    /// generic JSON, not through the producer's own typed shape, so a regression that
+    /// re-introduces a differently-named line field would still be caught) against the real
+    /// committed file.
+    #[test]
+    fn the_real_committed_catalog_carries_no_line_number_fields() {
+        let clusters = real_catalog();
+        let json = catalog_to_json(clusters);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let arr = value.as_array().expect("a bare array");
+        assert!(!arr.is_empty());
+        for cluster in arr {
+            let sites = cluster["sites"].as_array().expect("sites array");
+            assert!(!sites.is_empty());
+            for site in sites {
+                let obj = site.as_object().expect("a site object");
+                assert!(
+                    !obj.contains_key("start_line"),
+                    "site {site:?} still carries start_line"
+                );
+                assert!(
+                    !obj.contains_key("end_line"),
+                    "site {site:?} still carries end_line"
+                );
+                let hash = obj
+                    .get("content_hash")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                assert!(!hash.is_empty(), "site {site:?} has an empty content_hash");
+            }
+        }
+    }
+
+    /// CLAIM 2: "a pin bump that shifts every site in a file leaves it byte-identical." A
+    /// synthetic two-file fixture (the same renamed-identical-pair shape
+    /// `build_catalog_assigns_sequential_ids_after_the_deterministic_sort` uses, so the fixture
+    /// forms a real 2-site cluster), then a "pin bump" - 5 unrelated comment lines prepended to
+    /// ONE file, shifting `add_one`'s own line span by 5 but leaving its text untouched -
+    /// regenerates a byte-IDENTICAL guarded catalog, because content_hash keys on the span's own
+    /// normalized tokens, never its line number.
+    #[test]
+    fn a_pin_bump_that_shifts_every_site_in_a_file_leaves_the_guarded_catalog_byte_identical() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        write_fixture(
+            dir.path(),
+            "src/a.rs",
+            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        write_fixture(
+            dir.path(),
+            "src/z.rs",
+            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
+        );
+        let base_json = catalog_to_json(&build_catalog(&scan_tree(dir.path())));
+
+        write_fixture(
+            dir.path(),
+            "src/a.rs",
+            "// pin: v1\n// pin: v2\n// pin: v3\n// pin: v4\n// pin: v5\n\
+             fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        let bumped_json = catalog_to_json(&build_catalog(&scan_tree(dir.path())));
+
+        assert_eq!(
+            base_json, bumped_json,
+            "a pin bump that only shifts an existing site's OWN line number must leave the \
+             guarded catalog byte-identical (spec 90 criterion 2)"
+        );
+    }
+
+    /// CLAIM 3: "two branches adding tests in different files merge it without conflict." Two
+    /// synthetic branches off the SAME base tree, each appending one UNIQUE (non-duplicating)
+    /// function to a DIFFERENT file - exactly the common real-world shape (a sibling unit adding
+    /// its own new periphery test) spec 90's Goal names as the u86 c2 x c3 flake. Since neither
+    /// addition forms a new duplicate cluster, the STRONGEST possible proof holds: the guarded
+    /// catalog is byte-identical across base, branch A, and branch B - nothing to merge at all,
+    /// let alone conflict.
+    #[test]
+    fn two_branches_adding_an_unrelated_function_to_different_files_leave_the_guarded_catalog_unaffected(
+    ) {
+        let base = tempfile::tempdir().expect("base scratch dir");
+        write_fixture(
+            base.path(),
+            "src/a.rs",
+            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        write_fixture(
+            base.path(),
+            "src/z.rs",
+            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
+        );
+        let base_json = catalog_to_json(&build_catalog(&scan_tree(base.path())));
+
+        let branch_a = tempfile::tempdir().expect("branch A scratch dir");
+        write_fixture(
+            branch_a.path(),
+            "src/a.rs",
+            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n\n\
+             fn branch_a_only(x: i64) -> i64 {\n    x * 3 - 7\n}\n",
+        );
+        write_fixture(
+            branch_a.path(),
+            "src/z.rs",
+            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
+        );
+        let a_json = catalog_to_json(&build_catalog(&scan_tree(branch_a.path())));
+
+        let branch_b = tempfile::tempdir().expect("branch B scratch dir");
+        write_fixture(
+            branch_b.path(),
+            "src/a.rs",
+            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        );
+        write_fixture(
+            branch_b.path(),
+            "src/z.rs",
+            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n\n\
+             fn branch_b_only(y: i64) -> i64 {\n    y / 2 + 11\n}\n",
+        );
+        let b_json = catalog_to_json(&build_catalog(&scan_tree(branch_b.path())));
+
+        assert_eq!(
+            base_json, a_json,
+            "branch A's own unrelated addition to src/a.rs must not perturb the guarded catalog"
+        );
+        assert_eq!(
+            base_json, b_json,
+            "branch B's own unrelated addition to src/z.rs must not perturb the guarded catalog"
+        );
+    }
+
+    /// CLAIM 4: "the report still cites `file:line` from the unguarded lines file." Every site
+    /// citation `render_section_2` renders for the real tree matches, byte-for-byte, the span
+    /// [`catalog_lines_to_json`] would persist for that same site - the report's citations and
+    /// the unguarded sidecar are the SAME line data, never the (now line-free) guarded catalog.
+    #[test]
+    fn report_section_2_cites_file_line_exactly_as_the_unguarded_lines_file_records_them() {
+        let clusters = real_catalog();
+        let rendered = render_section_2(real_files(), clusters);
+        let mut checked = 0usize;
+        for cluster in clusters {
+            let lines = dup_cluster_lines(cluster);
+            for site in &lines.sites {
+                let citation = format!("`{}:{}-{}`", site.file, site.start_line, site.end_line);
+                assert!(
+                    rendered.contains(&citation),
+                    "report section 2 does not cite {citation} - its file:line citations must \
+                     come from the same line data duplication-catalog.lines.json persists"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "expected at least one site to check");
     }
 
     /// THE DRIFT GUARD for section 2 of the report: with `RIGGER_AUDIT_WRITE=1` set, patch
@@ -9080,6 +9715,11 @@ mod tests {
                 fs::create_dir_all(parent).unwrap();
             }
             fs::write(&path, &json).unwrap();
+            fs::write(
+                root.join(DEAD_CODE_LINES_PATH),
+                dead_code_lines_to_json(candidates),
+            )
+            .unwrap();
             return;
         }
         let committed = fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -9092,6 +9732,60 @@ mod tests {
             committed, json,
             "{DEAD_CODE_PATH} has drifted from the tree - regenerate with RIGGER_AUDIT_WRITE=1"
         );
+    }
+
+    /// Spec 90 criterion 2, CLAIM 1 for `docs/audit/dead-code.json`: structurally, no candidate
+    /// or test-only reference carries `line`, and every `content_hash` is non-empty. Also checks
+    /// any `ambiguous_with` citation is `file#hash`-shaped, never `file:line`.
+    #[test]
+    fn the_real_committed_dead_code_json_carries_no_line_number_fields() {
+        let candidates = real_dead_code_candidates();
+        let json = dead_code_to_json(candidates);
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let arr = value.as_array().expect("a bare array");
+        assert!(!arr.is_empty());
+        for entry in arr {
+            let obj = entry.as_object().expect("a candidate object");
+            assert!(
+                !obj.contains_key("line"),
+                "entry {entry:?} still carries line"
+            );
+            let hash = obj
+                .get("content_hash")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            assert!(
+                !hash.is_empty(),
+                "entry {entry:?} has an empty content_hash"
+            );
+            for citation in obj
+                .get("ambiguous_with")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+            {
+                let citation = citation.as_str().unwrap_or_default();
+                assert!(
+                    citation.contains('#') && !citation.contains(':'),
+                    "ambiguous_with citation {citation:?} is not file#hash-shaped"
+                );
+            }
+            for r in entry["test_only_references"].as_array().expect("array") {
+                let robj = r.as_object().expect("a reference object");
+                assert!(
+                    !robj.contains_key("line"),
+                    "reference {r:?} still carries line"
+                );
+                let rhash = robj
+                    .get("content_hash")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                assert!(
+                    !rhash.is_empty(),
+                    "reference {r:?} has an empty content_hash"
+                );
+            }
+        }
     }
 
     #[test]

@@ -158,28 +158,33 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Mirrors `tests/simplification_audit.rs`'s private `TestOnlyRef` shape field-for-field, from
-/// the outside - see the module doc comment for why this is a deliberate re-declaration, not an
-/// import.
+/// Mirrors `tests/simplification_audit.rs`'s private `TestOnlyRefWire` shape field-for-field,
+/// from the outside - see the module doc comment for why this is a deliberate re-declaration,
+/// not an import. Spec 90 criterion 2: the guarded file carries `content_hash`, never `line` -
+/// `line` moved to the unguarded `docs/audit/dead-code.lines.json` sibling, out of scope for
+/// this file (never drift-guarded, so not a "documented contract" a downstream reader pins
+/// against).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 struct ConsumedTestOnlyRef {
     file: String,
-    line: usize,
+    content_hash: String,
 }
 
-/// Mirrors `tests/simplification_audit.rs`'s private `DeadCodeCandidate` shape field-for-field,
-/// `disposition`/`reason` (criterion 3's own addition) included, as plain `String` - see the
-/// module doc comment's CRITERION 3 ACCOUNTING for why a raw string, not the producer's enum.
+/// Mirrors `tests/simplification_audit.rs`'s private `DeadCodeCandidateWire` shape
+/// field-for-field, `disposition`/`reason` (criterion 3's own addition) included, as plain
+/// `String` - see the module doc comment's CRITERION 3 ACCOUNTING for why a raw string, not the
+/// producer's enum. Spec 90 criterion 2: `line` moved to the unguarded `.lines.json` sibling,
+/// replaced by `content_hash`; `ambiguous_with` citations are `file#hash`, never `file:line`.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 struct ConsumedDeadCodeCandidate {
     name: String,
     file: String,
-    line: usize,
+    content_hash: String,
     visibility: String,
     ambiguous: bool,
-    /// Round 1 addition (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): `file:line` of every
-    /// OTHER production fn this bare name is shared with, populated exactly when `ambiguous` is
-    /// `true`.
+    /// Round 1 addition (`op-u87c2-round-1-ambiguity-covers-free-fns-too`): `file#hash` (spec 90
+    /// criterion 2 - was `file:line`) of every OTHER production fn this bare name is shared
+    /// with, populated exactly when `ambiguous` is `true`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     ambiguous_with: Vec<String>,
     test_only_references: Vec<ConsumedTestOnlyRef>,
@@ -206,8 +211,8 @@ fn deserialize_committed_dead_code() -> Vec<ConsumedDeadCodeCandidate> {
     serde_json::from_str(&raw).unwrap_or_else(|e| {
         panic!(
             "{DEAD_CODE_PATH} does not deserialize as the documented DeadCodeCandidate contract \
-             (name/file/line/visibility/ambiguous/ambiguous_with/test_only_references/ \
-             disposition/reason, test_only_references as file/line): {e}"
+             (name/file/content_hash/visibility/ambiguous/ambiguous_with/test_only_references/ \
+             disposition/reason, test_only_references as file/content_hash): {e}"
         )
     })
 }
@@ -227,14 +232,16 @@ fn the_committed_dead_code_json_deserializes_as_a_downstream_consumer_would() {
 }
 
 /// Spec 87 OUTPUT: "one entry per production fn ... name, file:line, visibility, the test-only
-/// references". A consumer reading an entry to render section 4 or schedule a deletion must
-/// never see a blank name, a file outside `src/` (this criterion's whole point is PRODUCTION
-/// fns only - checked here against the PERSISTED file, not `real_dead_code_candidates()`'s
-/// in-memory value the way the unit's own
-/// `every_real_candidate_has_a_zero_degree_knowledge_graph_cross_check_shape` does), a zero or
-/// negative line, or an unrecognized visibility qualifier.
+/// references" (spec 90 criterion 2: the line half of that identity moved to the unguarded
+/// `.lines.json` sibling - `content_hash` is this guarded file's line-free replacement). A
+/// consumer reading an entry to render section 4 or schedule a deletion must never see a blank
+/// name, a file outside `src/` (this criterion's whole point is PRODUCTION fns only - checked
+/// here against the PERSISTED file, not `real_dead_code_candidates()`'s in-memory value the way
+/// the unit's own
+/// `every_real_candidate_has_a_zero_degree_knowledge_graph_cross_check_shape` does), an empty
+/// content_hash, or an unrecognized visibility qualifier.
 #[test]
-fn every_deserialized_candidate_has_a_non_empty_name_a_src_file_a_valid_line_and_a_recognized_visibility(
+fn every_deserialized_candidate_has_a_non_empty_name_a_src_file_a_content_hash_and_a_recognized_visibility(
 ) {
     let candidates = deserialize_committed_dead_code();
     for c in &candidates {
@@ -243,7 +250,10 @@ fn every_deserialized_candidate_has_a_non_empty_name_a_src_file_a_valid_line_and
             c.file.starts_with("src/"),
             "{c:?} has a file outside src/ - this criterion's whole point is production fns only"
         );
-        assert!(c.line >= 1, "{c:?} has line {} < 1", c.line);
+        assert!(
+            !c.content_hash.is_empty(),
+            "{c:?} has an empty content_hash"
+        );
         assert!(
             c.visibility == "private" || c.visibility.starts_with("pub"),
             "{c:?} has an unrecognized visibility {:?}",
@@ -254,10 +264,11 @@ fn every_deserialized_candidate_has_a_non_empty_name_a_src_file_a_valid_line_and
 
 /// Round 1: `ambiguous_with` is populated EXACTLY when `ambiguous` is `true` (never the reverse,
 /// never both empty-and-true or non-empty-and-false), and every citation it carries is a
-/// non-blank `file:line`-shaped string a consumer can act on (e.g. to render "ambiguous with
-/// `src/playbooks.rs:1`" in section 4).
+/// non-blank `file#content_hash`-shaped string a consumer can act on (spec 90 criterion 2:
+/// `file:line` moved to the unguarded `.lines.json` sibling - this guarded file's citations are
+/// line-free).
 #[test]
-fn ambiguous_with_is_populated_iff_ambiguous_and_every_citation_is_file_colon_line_shaped() {
+fn ambiguous_with_is_populated_iff_ambiguous_and_every_citation_is_file_hash_shaped() {
     let candidates = deserialize_committed_dead_code();
     for c in &candidates {
         assert_eq!(
@@ -266,9 +277,9 @@ fn ambiguous_with_is_populated_iff_ambiguous_and_every_citation_is_file_colon_li
             "{c:?} has ambiguous/ambiguous_with out of sync"
         );
         for citation in &c.ambiguous_with {
-            let Some((file, line)) = citation.rsplit_once(':') else {
+            let Some((file, hash)) = citation.rsplit_once('#') else {
                 panic!(
-                    "{} has a non-file:line ambiguous_with citation {citation:?}",
+                    "{} has a non-file#hash ambiguous_with citation {citation:?}",
                     c.name
                 );
             };
@@ -278,21 +289,22 @@ fn ambiguous_with_is_populated_iff_ambiguous_and_every_citation_is_file_colon_li
                 c.name
             );
             assert!(
-                line.parse::<usize>().is_ok_and(|n| n >= 1),
-                "{} has an ambiguous_with citation with a non-positive line: {citation:?}",
+                !hash.is_empty(),
+                "{} has an ambiguous_with citation with an empty content_hash: {citation:?}",
                 c.name
             );
         }
     }
 }
 
-/// Every test-only reference is a span a reader can act on: a non-empty file and a 1-based line.
-/// A consumer that opens `file` at `line` (e.g. to quote the reference in a disposition's cited
-/// reason) must never be handed a blank-named or zero-line reference. Spec 87 Constraints Walk
-/// permits an entry with ZERO test-only references (a fn referenced nowhere at all, not even
-/// from a test) so this deliberately asserts nothing about count, only per-reference shape.
+/// Every test-only reference is an identity a reader can act on: a non-empty file and a
+/// non-empty content_hash (spec 90 criterion 2: `line` moved to the unguarded `.lines.json`
+/// sibling). A consumer must never be handed a blank-named or blank-hash reference. Spec 87
+/// Constraints Walk permits an entry with ZERO test-only references (a fn referenced nowhere at
+/// all, not even from a test) so this deliberately asserts nothing about count, only
+/// per-reference shape.
 #[test]
-fn every_deserialized_test_only_reference_has_a_non_empty_file_and_a_valid_line() {
+fn every_deserialized_test_only_reference_has_a_non_empty_file_and_content_hash() {
     let candidates = deserialize_committed_dead_code();
     for c in &candidates {
         for r in &c.test_only_references {
@@ -302,44 +314,92 @@ fn every_deserialized_test_only_reference_has_a_non_empty_file_and_a_valid_line(
                 c.name
             );
             assert!(
-                r.line >= 1,
-                "{} has a test_only_reference in {} with line {} < 1",
+                !r.content_hash.is_empty(),
+                "{} has a test_only_reference in {} with an empty content_hash",
                 c.name,
-                r.file,
-                r.line
+                r.file
             );
         }
     }
 }
 
-/// Determinism/ordering, checked against the PERSISTED file rather than the generator's
+/// Spec 90 criterion 2: the UNGUARDED sibling carrying [`DEAD_CODE_PATH`]'s line data, joined to
+/// it by array POSITION (never drift-guarded, so not itself a "documented contract" - read here
+/// only to prove the join and the ordering it preserves).
+const DEAD_CODE_LINES_PATH: &str = "docs/audit/dead-code.lines.json";
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct ConsumedTestOnlyRefLines {
+    file: String,
+    line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct ConsumedDeadCodeCandidateLines {
+    file: String,
+    name: String,
+    line: usize,
+    test_only_references: Vec<ConsumedTestOnlyRefLines>,
+}
+
+fn deserialize_committed_dead_code_lines() -> Vec<ConsumedDeadCodeCandidateLines> {
+    let path = repo_root().join(DEAD_CODE_LINES_PATH);
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{DEAD_CODE_LINES_PATH} is missing or unreadable ({e})"));
+    serde_json::from_str(&raw).unwrap_or_else(|e| {
+        panic!("{DEAD_CODE_LINES_PATH} does not deserialize as the documented lines contract: {e}")
+    })
+}
+
+/// Determinism/ordering, checked against the PERSISTED files rather than the generator's
 /// in-memory value (the producer's own `build_dead_code_candidates` sorts its output by
 /// `(file, line)` three times over - `tests/simplification_audit.rs`'s internal fixture tests
 /// only ever assert individual entries' presence or absence, never that the committed ordering
-/// itself is stable). A consumer that iterates the file expecting per-file grouping (e.g. to
-/// render section 4's per-file distribution in file order) depends on this ordering surviving
-/// the trip to disk, not merely holding in memory at generation time.
+/// itself is stable). Spec 90 criterion 2 moved the line data itself to the unguarded
+/// `.lines.json` sibling, joined to the guarded file by array POSITION - so this now proves TWO
+/// things: the join holds (same `(file, name)` at every index across both files) and the
+/// ordering guarantee a consumer iterating `DEAD_CODE_PATH` for per-file grouping (e.g. section
+/// 4's distribution table) depends on survives the split, relocated to the sidecar.
 #[test]
-fn the_committed_dead_code_json_is_sorted_ascending_by_file_then_line() {
+fn the_committed_dead_code_json_and_its_lines_sibling_are_position_joined_and_ascending_by_file_then_line(
+) {
     let candidates = deserialize_committed_dead_code();
-    let mut sorted = candidates.clone();
-    sorted.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
-    for (i, (actual, expected)) in candidates.iter().zip(sorted.iter()).enumerate() {
+    let lines = deserialize_committed_dead_code_lines();
+    assert_eq!(
+        candidates.len(),
+        lines.len(),
+        "{DEAD_CODE_PATH} and {DEAD_CODE_LINES_PATH} must have equal length - they are joined \
+         by array position"
+    );
+    for (i, (c, l)) in candidates.iter().zip(lines.iter()).enumerate() {
         assert_eq!(
-            (&actual.file, actual.line),
-            (&expected.file, expected.line),
-            "{DEAD_CODE_PATH} entry {i} ({}:{}) is out of (file, line) order",
-            actual.file,
-            actual.line
+            (&c.file, &c.name),
+            (&l.file, &l.name),
+            "{DEAD_CODE_PATH} and {DEAD_CODE_LINES_PATH} entry {i} disagree on (file, name) - \
+             the two files are joined by array position and must describe the same candidate at \
+             each index"
+        );
+        assert_eq!(
+            c.test_only_references.len(),
+            l.test_only_references.len(),
+            "{}'s test_only_references length disagrees between {DEAD_CODE_PATH} and \
+             {DEAD_CODE_LINES_PATH}",
+            c.name
         );
     }
-    for c in &candidates {
-        let mut refs_sorted = c.test_only_references.clone();
+    let mut sorted = lines.clone();
+    sorted.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
+    assert_eq!(
+        lines, sorted,
+        "{DEAD_CODE_LINES_PATH} is not already ascending by (file, line)"
+    );
+    for l in &lines {
+        let mut refs_sorted = l.test_only_references.clone();
         refs_sorted.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
         assert_eq!(
-            c.test_only_references, refs_sorted,
-            "{}'s test_only_references are out of (file, line) order",
-            c.name
+            l.test_only_references, refs_sorted,
+            "{}'s test_only_references in {DEAD_CODE_LINES_PATH} are out of (file, line) order",
+            l.name
         );
     }
 }
@@ -402,12 +462,11 @@ fn no_committed_candidate_comes_from_a_known_out_of_line_test_file() {
     for c in &candidates {
         assert!(
             !KNOWN_OUT_OF_LINE_TEST_FILES.contains(&c.file.as_str()),
-            "{} ({}:{}) is listed as a production dead-code candidate, but {} is an out-of-line \
+            "{} ({}) is listed as a production dead-code candidate, but {} is an out-of-line \
              test file (declared behind #[cfg(test)] elsewhere) - the exact misclassification \
              spec 87's own Goal names",
             c.name,
             c.file,
-            c.line,
             c.file
         );
     }
@@ -452,7 +511,8 @@ fn default_build_config_referenced_only_via_a_serde_default_attribute_is_absent(
 /// bucket; only `distiller::rebuild` has zero attributable references and must surface as
 /// `ambiguous: true` naming its live namesake, rather than silently vanishing from the JSON
 /// (`adv-u87c2-r0-free-fn-bare-name-collision-hides-a-genuinely-dead-fn`) - checked by the
-/// `ambiguous_with` citation's FILE component only (not its line), so an unrelated future edit
+/// `ambiguous_with` citation's FILE component only (not its content_hash, spec 90 criterion 2's
+/// line-free replacement for the citation's old line component), so an unrelated future edit
 /// that merely moves `rebuild` within `src/playbooks.rs` does not spuriously fail this test.
 #[test]
 fn distiller_rebuild_is_flagged_ambiguous_and_names_its_live_namesake_in_playbooks() {
@@ -465,18 +525,16 @@ fn distiller_rebuild_is_flagged_ambiguous_and_names_its_live_namesake_in_playboo
         });
     assert!(
         rebuild.ambiguous,
-        "rebuild (src/distiller.rs:{}) is not flagged ambiguous, but a same-named live free fn \
-         exists at src/playbooks.rs - a regression of the free-fn ambiguity fix",
-        rebuild.line
+        "rebuild (src/distiller.rs) is not flagged ambiguous, but a same-named live free fn \
+         exists at src/playbooks.rs - a regression of the free-fn ambiguity fix"
     );
     assert!(
         rebuild.ambiguous_with.iter().any(|c| c
-            .rsplit_once(':')
+            .rsplit_once('#')
             .is_some_and(|(file, _)| file == "src/playbooks.rs")),
-        "rebuild (src/distiller.rs:{})'s ambiguous_with {:?} does not cite src/playbooks.rs - a \
+        "rebuild (src/distiller.rs)'s ambiguous_with {:?} does not cite src/playbooks.rs - a \
          consumer reading this entry cannot find the live namesake that keeps it ambiguous \
          rather than a confirmed deletion",
-        rebuild.line,
         rebuild.ambiguous_with
     );
 }
@@ -643,18 +701,16 @@ fn every_committed_candidate_has_exactly_one_of_the_three_dispositions_with_a_no
     for c in &candidates {
         assert!(
             ["delete", "keep-public-surface", "keep-pending"].contains(&c.disposition.as_str()),
-            "{} ({}:{}) has an unrecognized disposition {:?} - spec 87 names exactly three",
+            "{} ({}) has an unrecognized disposition {:?} - spec 87 names exactly three",
             c.name,
             c.file,
-            c.line,
             c.disposition
         );
         assert!(
             !c.reason.trim().is_empty(),
-            "{} ({}:{}) has an empty disposition reason",
+            "{} ({}) has an empty disposition reason",
             c.name,
-            c.file,
-            c.line
+            c.file
         );
     }
 }
@@ -749,12 +805,11 @@ fn every_keep_pending_reason_cites_a_real_spec_number() {
     for c in &keep_pending {
         assert!(
             cites_a_spec_number(&c.reason),
-            "{} ({}:{}) has disposition keep-pending but its reason does not cite a \"spec N\" \
+            "{} ({}) has disposition keep-pending but its reason does not cite a \"spec N\" \
              number - spec 87 DISPOSITIONS requires keep-pending to \"cite the spec that will \
              call it\": {:?}",
             c.name,
             c.file,
-            c.line,
             c.reason
         );
     }

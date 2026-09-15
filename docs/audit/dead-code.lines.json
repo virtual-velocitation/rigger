@@ -1,0 +1,1609 @@
+[
+  {
+    "file": "src/canary.rs",
+    "name": "cataloged_classes",
+    "line": 180,
+    "test_only_references": [
+      {
+        "file": "src/canary.rs",
+        "line": 1426
+      },
+      {
+        "file": "src/canary.rs",
+        "line": 1440
+      }
+    ]
+  },
+  {
+    "file": "src/config.rs",
+    "name": "sdet_author_enabled",
+    "line": 452,
+    "test_only_references": [
+      {
+        "file": "src/config.rs",
+        "line": 2339
+      },
+      {
+        "file": "src/config.rs",
+        "line": 2344
+      },
+      {
+        "file": "src/config.rs",
+        "line": 2349
+      },
+      {
+        "file": "src/config.rs",
+        "line": 2354
+      },
+      {
+        "file": "src/config.rs",
+        "line": 2360
+      }
+    ]
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "pid_is_alive",
+    "line": 425,
+    "test_only_references": [
+      {
+        "file": "src/dash.rs",
+        "line": 9310
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 9314
+      },
+      {
+        "file": "src/main.rs",
+        "line": 13292
+      },
+      {
+        "file": "src/main.rs",
+        "line": 13313
+      },
+      {
+        "file": "src/main.rs",
+        "line": 13828
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 23175
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 23190
+      }
+    ]
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "neighborhood",
+    "line": 2815,
+    "test_only_references": [
+      {
+        "file": "src/dash.rs",
+        "line": 8033
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 8044
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 8063
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 8121
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 8142
+      },
+      {
+        "file": "tests/dash_cluster_detail_drill.rs",
+        "line": 46
+      },
+      {
+        "file": "tests/dash_cluster_detail_drill.rs",
+        "line": 332
+      },
+      {
+        "file": "tests/files_lens_view_periphery.rs",
+        "line": 46
+      },
+      {
+        "file": "tests/files_lens_view_periphery.rs",
+        "line": 526
+      },
+      {
+        "file": "tests/subject_lens_reprojection_periphery.rs",
+        "line": 296
+      },
+      {
+        "file": "tests/subject_lens_reprojection_periphery.rs",
+        "line": 298
+      },
+      {
+        "file": "tests/subject_lens_reprojection_periphery.rs",
+        "line": 303
+      },
+      {
+        "file": "tests/subject_lens_reprojection_periphery.rs",
+        "line": 307
+      }
+    ]
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "serve",
+    "line": 4665,
+    "test_only_references": [
+      {
+        "file": "src/mcpserver.rs",
+        "line": 749
+      },
+      {
+        "file": "src/mcpserver.rs",
+        "line": 790
+      }
+    ]
+  },
+  {
+    "file": "src/distiller.rs",
+    "name": "rebuild",
+    "line": 231,
+    "ambiguous_with": [
+      "src/playbooks.rs:143"
+    ],
+    "test_only_references": [
+      {
+        "file": "src/distiller.rs",
+        "line": 473
+      },
+      {
+        "file": "src/distiller.rs",
+        "line": 695
+      },
+      {
+        "file": "src/distiller.rs",
+        "line": 696
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 437
+      }
+    ]
+  },
+  {
+    "file": "src/eventstore/sqlite.rs",
+    "name": "with_content_identity",
+    "line": 192,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "line": 19077
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1883
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 1985
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2041
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2046
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2075
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2112
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2147
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2191
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2230
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2270
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2326
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2362
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2429
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2491
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2540
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2601
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2632
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2661
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2731
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2745
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2800
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2806
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2851
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2861
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2904
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 2947
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 3005
+      },
+      {
+        "file": "src/eventstore/sqlite.rs",
+        "line": 3475
+      },
+      {
+        "file": "tests/published_content_key_split_periphery.rs",
+        "line": 517
+      },
+      {
+        "file": "tests/reset_derived_compaction_periphery.rs",
+        "line": 2175
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 271
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 657
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 929
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 960
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1548
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1566
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1687
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1830
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1854
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1962
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2008
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2150
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 2189
+      }
+    ]
+  },
+  {
+    "file": "src/gate.rs",
+    "name": "resolve_wrapper_name",
+    "line": 463,
+    "test_only_references": [
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "line": 157
+      },
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "line": 1126
+      },
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "line": 1135
+      },
+      {
+        "file": "tests/build_env_authority_periphery.rs",
+        "line": 1142
+      }
+    ]
+  },
+  {
+    "file": "src/grounder/symbols/events.rs",
+    "name": "index_events",
+    "line": 29,
+    "test_only_references": [
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "line": 747
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "line": 762
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "line": 1259
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "line": 1371
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 649
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 659
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 760
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 820
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 862
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 913
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 970
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1032
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1093
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1152
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1224
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1295
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1379
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1451
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1511
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1683
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1784
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1862
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 1951
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2035
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2122
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2196
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2279
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2363
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2505
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2587
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2679
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2745
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2814
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2891
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 2980
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 3098
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 3181
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 3253
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 3321
+      },
+      {
+        "file": "tests/code_entity_test_exclusion_periphery.rs",
+        "line": 3405
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 244
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 265
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 311
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 334
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 385
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 400
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 427
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 591
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 613
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 658
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 673
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 674
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 713
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 732
+      },
+      {
+        "file": "tests/code_ingest_events.rs",
+        "line": 759
+      },
+      {
+        "file": "tests/migration_is_deliberate_periphery.rs",
+        "line": 410
+      },
+      {
+        "file": "tests/migration_is_deliberate_periphery.rs",
+        "line": 413
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "line": 94
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "line": 107
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "line": 203
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "line": 220
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "line": 555
+      },
+      {
+        "file": "tests/proof_lands_on_the_card_periphery.rs",
+        "line": 572
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "line": 8898
+      }
+    ]
+  },
+  {
+    "file": "src/grounder/symbols/model.rs",
+    "name": "definitions_named",
+    "line": 201,
+    "test_only_references": [
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 459
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 460
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 461
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 471
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 480
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 482
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 530
+      },
+      {
+        "file": "src/grounder/symbols/model.rs",
+        "line": 338
+      }
+    ]
+  },
+  {
+    "file": "src/grounder/symbols/model.rs",
+    "name": "references_named",
+    "line": 211,
+    "test_only_references": [
+      {
+        "file": "src/grounder/symbols/model.rs",
+        "line": 340
+      },
+      {
+        "file": "src/grounder/symbols/model.rs",
+        "line": 343
+      }
+    ]
+  },
+  {
+    "file": "src/ingest.rs",
+    "name": "ingest_project",
+    "line": 124,
+    "ambiguous_with": [
+      "src/ingest.rs:468"
+    ],
+    "test_only_references": [
+      {
+        "file": "tests/batched_fold_cadence.rs",
+        "line": 411
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 2868
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 2965
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 3032
+      },
+      {
+        "file": "tests/parallel_ordered_emit.rs",
+        "line": 73
+      }
+    ]
+  },
+  {
+    "file": "src/ingest.rs",
+    "name": "ingest_project",
+    "line": 468,
+    "ambiguous_with": [
+      "src/ingest.rs:124"
+    ],
+    "test_only_references": [
+      {
+        "file": "tests/batched_fold_cadence.rs",
+        "line": 411
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 2868
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 2965
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 3032
+      },
+      {
+        "file": "tests/parallel_ordered_emit.rs",
+        "line": 73
+      }
+    ]
+  },
+  {
+    "file": "src/ledger.rs",
+    "name": "fully_done",
+    "line": 574,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "line": 38279
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 38346
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 39121
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 896
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 904
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 914
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 934
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 938
+      }
+    ]
+  },
+  {
+    "file": "src/ledger.rs",
+    "name": "is_integrated",
+    "line": 651,
+    "test_only_references": [
+      {
+        "file": "src/ledger.rs",
+        "line": 746
+      },
+      {
+        "file": "src/ledger.rs",
+        "line": 845
+      }
+    ]
+  },
+  {
+    "file": "src/spawn.rs",
+    "name": "new",
+    "line": 320,
+    "ambiguous_with": [
+      "src/budget.rs:57",
+      "src/dash.rs:1885",
+      "src/dash.rs:4917",
+      "src/driver/replay.rs:236",
+      "src/driver/workflow.rs:83",
+      "src/eventstore/mod.rs:99",
+      "src/eventstore/mod.rs:299",
+      "src/eventstore/mod.rs:500",
+      "src/eventstore/namespace.rs:28",
+      "src/failure.rs:218",
+      "src/ledger.rs:441",
+      "src/mcpserver.rs:94",
+      "src/watch.rs:577"
+    ],
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "line": 21392
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 21469
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 21563
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 21650
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 21745
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 28873
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 28878
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 28941
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 6127
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 6193
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 6278
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 6279
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 6280
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 6281
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 6282
+      },
+      {
+        "file": "src/dash.rs",
+        "line": 6284
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 844
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 891
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 1421
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 1965
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2061
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2073
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2157
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2167
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2257
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2266
+      },
+      {
+        "file": "src/liveness.rs",
+        "line": 728
+      },
+      {
+        "file": "src/liveness.rs",
+        "line": 837
+      },
+      {
+        "file": "src/main.rs",
+        "line": 16394
+      },
+      {
+        "file": "src/main.rs",
+        "line": 16427
+      },
+      {
+        "file": "src/main.rs",
+        "line": 16446
+      },
+      {
+        "file": "src/main.rs",
+        "line": 16449
+      },
+      {
+        "file": "src/main.rs",
+        "line": 16452
+      },
+      {
+        "file": "src/main.rs",
+        "line": 18322
+      },
+      {
+        "file": "src/main.rs",
+        "line": 18335
+      },
+      {
+        "file": "src/main.rs",
+        "line": 18350
+      },
+      {
+        "file": "src/main.rs",
+        "line": 23771
+      },
+      {
+        "file": "src/main.rs",
+        "line": 23772
+      },
+      {
+        "file": "src/main.rs",
+        "line": 23773
+      },
+      {
+        "file": "src/mcpserver.rs",
+        "line": 902
+      },
+      {
+        "file": "src/metrics.rs",
+        "line": 2027
+      },
+      {
+        "file": "src/progress.rs",
+        "line": 283
+      },
+      {
+        "file": "src/progress.rs",
+        "line": 332
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1141
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1150
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1166
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1182
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1205
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1226
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1227
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1293
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1301
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1722
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1740
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1746
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1751
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1775
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1802
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1817
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1833
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1847
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1867
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1927
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1951
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1969
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1989
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2008
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2028
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2029
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2072
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2105
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2220
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4348
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4371
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4407
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4439
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4474
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4490
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4517
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4547
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4554
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4562
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 10718
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 10719
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 10720
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 10721
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 10806
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 10866
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 10867
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 10868
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 145
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 146
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 302
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 303
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 354
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 399
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 483
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 484
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 542
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 592
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 649
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 650
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 711
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 712
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 776
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 777
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 823
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 864
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 910
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 911
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 915
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "line": 916
+      },
+      {
+        "file": "tests/mcp_activity_liveness_age_periphery.rs",
+        "line": 105
+      },
+      {
+        "file": "tests/mcp_activity_liveness_age_periphery.rs",
+        "line": 177
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "line": 109
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "line": 110
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "line": 111
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "line": 211
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "line": 285
+      },
+      {
+        "file": "tests/spawn_timing_periphery.rs",
+        "line": 286
+      },
+      {
+        "file": "tests/store_content_identity_periphery.rs",
+        "line": 1097
+      },
+      {
+        "file": "tests/worktree_liveness_fence_periphery.rs",
+        "line": 368
+      },
+      {
+        "file": "tests/worktree_liveness_fence_periphery.rs",
+        "line": 379
+      },
+      {
+        "file": "tests/worktree_liveness_fence_periphery.rs",
+        "line": 620
+      },
+      {
+        "file": "tests/worktree_liveness_fence_periphery.rs",
+        "line": 724
+      }
+    ]
+  },
+  {
+    "file": "src/spawn.rs",
+    "name": "with_system_prompt",
+    "line": 338,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1151
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1167
+      }
+    ]
+  },
+  {
+    "file": "src/spawn.rs",
+    "name": "with_model",
+    "line": 344,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1152
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1168
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1206
+      }
+    ]
+  },
+  {
+    "file": "src/spawn.rs",
+    "name": "with_tools",
+    "line": 350,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1153
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1169
+      }
+    ]
+  },
+  {
+    "file": "src/spawn.rs",
+    "name": "with_dir",
+    "line": 356,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1154
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1170
+      }
+    ]
+  },
+  {
+    "file": "src/spawn.rs",
+    "name": "with_blast_radius",
+    "line": 362,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1155
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1171
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1207
+      }
+    ]
+  },
+  {
+    "file": "src/spawn.rs",
+    "name": "with_title",
+    "line": 368,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1803
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1833
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1868
+      }
+    ]
+  },
+  {
+    "file": "src/spawn.rs",
+    "name": "with_reviews",
+    "line": 374,
+    "test_only_references": [
+      {
+        "file": "src/spawn.rs",
+        "line": 1927
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1970
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2009
+      }
+    ]
+  },
+  {
+    "file": "src/spawn.rs",
+    "name": "park",
+    "line": 399,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "line": 28871
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 28876
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 28939
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 842
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 889
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 1422
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 1963
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2059
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2071
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2155
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2165
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2255
+      },
+      {
+        "file": "src/driver/replay.rs",
+        "line": 2264
+      },
+      {
+        "file": "src/liveness.rs",
+        "line": 724
+      },
+      {
+        "file": "src/liveness.rs",
+        "line": 730
+      },
+      {
+        "file": "src/liveness.rs",
+        "line": 838
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1209
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1228
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1229
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1720
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1741
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1744
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1749
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 1869
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2010
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2030
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2031
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2070
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2103
+      },
+      {
+        "file": "src/spawn.rs",
+        "line": 2222
+      }
+    ]
+  },
+  {
+    "file": "src/worktree.rs",
+    "name": "is_dirty",
+    "line": 635,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "line": 13728
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 3915
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 3925
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 3991
+      }
+    ]
+  }
+]
