@@ -12733,9 +12733,14 @@
         "file": "src/mcpserver.rs",
         "name": "tools_call_missing_name_gets_an_invalid_params_error",
         "content_hash": "4e171c95b9439ec4"
+      },
+      {
+        "file": "src/mcpserver.rs",
+        "name": "workflow_surface_rejects_ground_and_graph_as_unknown_tools",
+        "content_hash": "d3f6c89d943435f8"
       }
     ],
-    "proposed_home": "mcpserver::support (consolidate these 4 sites into one function in this file)",
+    "proposed_home": "mcpserver::support (consolidate these 5 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

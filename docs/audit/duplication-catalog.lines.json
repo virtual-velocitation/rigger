@@ -11856,6 +11856,11 @@
         "file": "src/mcpserver.rs",
         "start_line": 1552,
         "end_line": 1570
+      },
+      {
+        "file": "src/mcpserver.rs",
+        "start_line": 1702,
+        "end_line": 1721
       }
     ]
   },
