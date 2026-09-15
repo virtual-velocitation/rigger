@@ -30,18 +30,20 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-/// Mirrors `tests/simplification_audit.rs`'s private `MapEntry` shape field-for-field, from the
-/// outside - see the module doc comment for why this is a deliberate re-declaration, not an
-/// import.
+/// Mirrors `tests/simplification_audit.rs`'s private `MapEntryWire` shape field-for-field, from
+/// the outside - see the module doc comment for why this is a deliberate re-declaration, not an
+/// import. Spec 90 criterion 2: the guarded map carries `content_hash`, never a line span -
+/// `start_line`/`end_line` moved to the unguarded `docs/audit/responsibility-map.lines.json`
+/// sibling, out of scope for this file (never drift-guarded, so not a "documented contract" a
+/// downstream reader pins against).
 #[derive(Debug, Clone, PartialEq, Deserialize, serde::Serialize)]
 struct ConsumedMapEntry {
     file: String,
     name: String,
-    start_line: usize,
-    end_line: usize,
     is_test: bool,
     proposed_module: Option<String>,
     reason: String,
+    content_hash: String,
 }
 
 const MAP_PATH: &str = "docs/audit/responsibility-map.json";
@@ -64,7 +66,7 @@ fn deserialize_committed_map() -> Vec<ConsumedMapEntry> {
     serde_json::from_str(&raw).unwrap_or_else(|e| {
         panic!(
             "{MAP_PATH} does not deserialize as the documented MapEntry contract \
-             (file/name/start_line/end_line/is_test/proposed_module/reason): {e}"
+             (file/name/is_test/proposed_module/reason/content_hash): {e}"
         )
     })
 }
@@ -99,27 +101,19 @@ fn every_deserialized_entry_names_one_of_the_three_target_files() {
     }
 }
 
-/// Every entry's line span is a span a reader can act on: 1-based and non-inverted. A consumer
-/// that opens `file` at `start_line` to `end_line` (e.g. to quote the function for a refactor
-/// spec stub) must never be handed a zero or backwards range.
+/// Every entry's identity is one a reader can act on: a non-empty `content_hash` - the LINE-FREE
+/// contract spec 90 criterion 2 establishes (no `start_line`/`end_line` at all: an extra field
+/// would silently fail to deserialize into this independently-declared struct, making the
+/// round-trip test below the real proof of their absence).
 #[test]
-fn every_deserialized_entry_has_a_well_formed_line_span() {
+fn every_deserialized_entry_has_a_non_empty_content_hash() {
     let entries = deserialize_committed_map();
     for e in &entries {
         assert!(
-            e.start_line >= 1,
-            "entry {:?} ({}) has start_line {} < 1",
+            !e.content_hash.is_empty(),
+            "entry {:?} ({}) has an empty content_hash",
             e.name,
-            e.file,
-            e.start_line
-        );
-        assert!(
-            e.end_line >= e.start_line,
-            "entry {:?} ({}) has end_line {} < start_line {}",
-            e.name,
-            e.file,
-            e.end_line,
-            e.start_line
+            e.file
         );
     }
 }

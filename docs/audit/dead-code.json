@@ -2,17 +2,17 @@
   {
     "name": "cataloged_classes",
     "file": "src/canary.rs",
-    "line": 180,
+    "content_hash": "2c737e5a2252b7b9",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/canary.rs",
-        "line": 1426
+        "content_hash": "99d81069c44251eb"
       },
       {
         "file": "src/canary.rs",
-        "line": 1440
+        "content_hash": "99d81069c44251eb"
       }
     ],
     "disposition": "delete",
@@ -21,29 +21,29 @@
   {
     "name": "sdet_author_enabled",
     "file": "src/config.rs",
-    "line": 452,
+    "content_hash": "b414f75c17b36a10",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/config.rs",
-        "line": 2339
+        "content_hash": "c580718a0832b3af"
       },
       {
         "file": "src/config.rs",
-        "line": 2344
+        "content_hash": "51460f61d0ac1cbe"
       },
       {
         "file": "src/config.rs",
-        "line": 2349
+        "content_hash": "51460f61d0ac1cbe"
       },
       {
         "file": "src/config.rs",
-        "line": 2354
+        "content_hash": "a2a512a1dfc1c841"
       },
       {
         "file": "src/config.rs",
-        "line": 2360
+        "content_hash": "51460f61d0ac1cbe"
       }
     ],
     "disposition": "keep-pending",
@@ -52,37 +52,37 @@
   {
     "name": "pid_is_alive",
     "file": "src/dash.rs",
-    "line": 425,
+    "content_hash": "3589ffc443c8c257",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/dash.rs",
-        "line": 9310
+        "content_hash": "3207cd690757f51f"
       },
       {
         "file": "src/dash.rs",
-        "line": 9314
+        "content_hash": "ff171bde4c677e38"
       },
       {
         "file": "src/main.rs",
-        "line": 13292
+        "content_hash": "4b05e60950e03ad8"
       },
       {
         "file": "src/main.rs",
-        "line": 13313
+        "content_hash": "4b05e60950e03ad8"
       },
       {
         "file": "src/main.rs",
-        "line": 13828
+        "content_hash": "c5c2fe0f8d3cb3c3"
       },
       {
         "file": "tests/cli.rs",
-        "line": 23175
+        "content_hash": "72c2747f506cd564"
       },
       {
         "file": "tests/cli.rs",
-        "line": 23190
+        "content_hash": "72c2747f506cd564"
       }
     ],
     "disposition": "delete",
@@ -91,61 +91,61 @@
   {
     "name": "neighborhood",
     "file": "src/dash.rs",
-    "line": 2815,
+    "content_hash": "017b0ac3890e0793",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/dash.rs",
-        "line": 8033
+        "content_hash": "41aa7f33c1b0e2d3"
       },
       {
         "file": "src/dash.rs",
-        "line": 8044
+        "content_hash": "0a4677751bad5fea"
       },
       {
         "file": "src/dash.rs",
-        "line": 8063
+        "content_hash": "41aa7f33c1b0e2d3"
       },
       {
         "file": "src/dash.rs",
-        "line": 8121
+        "content_hash": "41aa7f33c1b0e2d3"
       },
       {
         "file": "src/dash.rs",
-        "line": 8142
+        "content_hash": "41aa7f33c1b0e2d3"
       },
       {
         "file": "tests/dash_cluster_detail_drill.rs",
-        "line": 46
+        "content_hash": "19e529030aee63fe"
       },
       {
         "file": "tests/dash_cluster_detail_drill.rs",
-        "line": 332
+        "content_hash": "28b97baa337d7460"
       },
       {
         "file": "tests/files_lens_view_periphery.rs",
-        "line": 46
+        "content_hash": "cabef5d8c6e2da20"
       },
       {
         "file": "tests/files_lens_view_periphery.rs",
-        "line": 526
+        "content_hash": "76b104c5f032f1d5"
       },
       {
         "file": "tests/subject_lens_reprojection_periphery.rs",
-        "line": 296
+        "content_hash": "d218ee4a0356d34b"
       },
       {
         "file": "tests/subject_lens_reprojection_periphery.rs",
-        "line": 298
+        "content_hash": "a6b1dbd1e7fc3d1d"
       },
       {
         "file": "tests/subject_lens_reprojection_periphery.rs",
-        "line": 303
+        "content_hash": "64ec1ad315bd0717"
       },
       {
         "file": "tests/subject_lens_reprojection_periphery.rs",
-        "line": 307
+        "content_hash": "3fb4b4655dac6074"
       }
     ],
     "disposition": "delete",
@@ -154,17 +154,17 @@
   {
     "name": "serve",
     "file": "src/dash.rs",
-    "line": 4665,
+    "content_hash": "dda53586dfed30f6",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/mcpserver.rs",
-        "line": 749
+        "content_hash": "809a0c685a6290d0"
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 790
+        "content_hash": "809a0c685a6290d0"
       }
     ],
     "disposition": "delete",
@@ -173,28 +173,28 @@
   {
     "name": "rebuild",
     "file": "src/distiller.rs",
-    "line": 231,
+    "content_hash": "4501c113a4c9d271",
     "visibility": "pub",
     "ambiguous": true,
     "ambiguous_with": [
-      "src/playbooks.rs:143"
+      "src/playbooks.rs#4501c113a4c9d271"
     ],
     "test_only_references": [
       {
         "file": "src/distiller.rs",
-        "line": 473
+        "content_hash": "3bd5681a7e5465a9"
       },
       {
         "file": "src/distiller.rs",
-        "line": 695
+        "content_hash": "c4a3b0853623550d"
       },
       {
         "file": "src/distiller.rs",
-        "line": 696
+        "content_hash": "c4a3b0853623550d"
       },
       {
         "file": "tests/cli.rs",
-        "line": 437
+        "content_hash": "ec3c05273a03cca1"
       }
     ],
     "disposition": "keep-pending",
@@ -203,185 +203,185 @@
   {
     "name": "with_content_identity",
     "file": "src/eventstore/sqlite.rs",
-    "line": 192,
+    "content_hash": "2d40d6951fb887b3",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 19077
+        "content_hash": "ed049ee64b9530dd"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 1883
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 1985
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2041
+        "content_hash": "ad018b4310c2c67d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2046
+        "content_hash": "ad018b4310c2c67d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2075
+        "content_hash": "ad018b4310c2c67d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2112
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2147
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2191
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2230
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2270
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2326
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2362
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2429
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2491
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2540
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2601
+        "content_hash": "c697e97097051bb5"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2632
+        "content_hash": "2d5a5a6903d9f690"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2661
+        "content_hash": "2d5a5a6903d9f690"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2731
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2745
+        "content_hash": "ee13900bd82693e3"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2800
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2806
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2851
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2861
+        "content_hash": "ee13900bd82693e3"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2904
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 2947
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 3005
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "src/eventstore/sqlite.rs",
-        "line": 3475
+        "content_hash": "507c0b11c6f02468"
       },
       {
         "file": "tests/published_content_key_split_periphery.rs",
-        "line": 517
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "line": 2175
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 271
+        "content_hash": "ed049ee64b9530dd"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 657
+        "content_hash": "2d5a5a6903d9f690"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 929
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 960
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1548
+        "content_hash": "16795d3bb8b8418a"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1566
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1687
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1830
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1854
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1962
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 2008
+        "content_hash": "507c0211c6f0151d"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 2150
+        "content_hash": "2d5a5a6903d9f690"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 2189
+        "content_hash": "507c0211c6f0151d"
       }
     ],
     "disposition": "keep-pending",
@@ -390,25 +390,25 @@
   {
     "name": "resolve_wrapper_name",
     "file": "src/gate.rs",
-    "line": 463,
+    "content_hash": "5ed0f5d7996db5e1",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "tests/build_env_authority_periphery.rs",
-        "line": 157
+        "content_hash": "3ff5ebf50a1b237d"
       },
       {
         "file": "tests/build_env_authority_periphery.rs",
-        "line": 1126
+        "content_hash": "fdbe24f9e23fee7f"
       },
       {
         "file": "tests/build_env_authority_periphery.rs",
-        "line": 1135
+        "content_hash": "fdbe24f9e23fee7f"
       },
       {
         "file": "tests/build_env_authority_periphery.rs",
-        "line": 1142
+        "content_hash": "ce3afae8f8065607"
       }
     ],
     "disposition": "delete",
@@ -417,265 +417,265 @@
   {
     "name": "index_events",
     "file": "src/grounder/symbols/events.rs",
-    "line": 29,
+    "content_hash": "f82d5f772c572137",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/grounder/symbols/events.rs",
-        "line": 747
+        "content_hash": "16c98c4a018c415a"
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "line": 762
+        "content_hash": "99d81069c44251eb"
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "line": 1259
+        "content_hash": "99d81069c44251eb"
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "line": 1371
+        "content_hash": "99d81069c44251eb"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 649
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 659
+        "content_hash": "a791706909546f3c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 760
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 820
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 862
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 913
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 970
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1032
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1093
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1152
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1224
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1295
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1379
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1451
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1511
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1683
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1784
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1862
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1951
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2035
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2122
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2196
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2279
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2363
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2505
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2587
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2679
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2745
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2814
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2891
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2980
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 3098
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 3181
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 3253
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 3321
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 3405
+        "content_hash": "b848769f198b2e2c"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 244
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 265
+        "content_hash": "6c8ae37f81182437"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 311
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 334
+        "content_hash": "6c8ae37f81182437"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 385
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 400
+        "content_hash": "b7c638b9a8231000"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 427
+        "content_hash": "b7c638b9a8231000"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 591
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 613
+        "content_hash": "6c8ae37f81182437"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 658
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 673
+        "content_hash": "b7c638b9a8231000"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 674
+        "content_hash": "b7c638b9a8231000"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 713
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 732
+        "content_hash": "b7c638b9a8231000"
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "line": 759
+        "content_hash": "b7c638b9a8231000"
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "line": 410
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
-        "line": 413
+        "content_hash": "4fa000804804f19e"
       },
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
-        "line": 94
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
-        "line": 107
+        "content_hash": "a791706909546f3c"
       },
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
-        "line": 203
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
-        "line": 220
+        "content_hash": "a791706909546f3c"
       },
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
-        "line": 555
+        "content_hash": "8538b515555d6083"
       },
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
-        "line": 572
+        "content_hash": "a248d89b30e8c7d1"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 8263
+        "content_hash": "ddf9361d84df7cbb"
       }
     ],
     "disposition": "delete",
@@ -684,41 +684,41 @@
   {
     "name": "definitions_named",
     "file": "src/grounder/symbols/model.rs",
-    "line": 201,
+    "content_hash": "46d9c961e1c52481",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/grounder/symbols/mod.rs",
-        "line": 459
+        "content_hash": "59f8820c2c73d774"
       },
       {
         "file": "src/grounder/symbols/mod.rs",
-        "line": 460
+        "content_hash": "c8d4b8378d3e0a3d"
       },
       {
         "file": "src/grounder/symbols/mod.rs",
-        "line": 461
+        "content_hash": "59f8820c2c73d774"
       },
       {
         "file": "src/grounder/symbols/mod.rs",
-        "line": 471
+        "content_hash": "59f8820c2c73d774"
       },
       {
         "file": "src/grounder/symbols/mod.rs",
-        "line": 480
+        "content_hash": "c8d4b8378d3e0a3d"
       },
       {
         "file": "src/grounder/symbols/mod.rs",
-        "line": 482
+        "content_hash": "59f8820c2c73d774"
       },
       {
         "file": "src/grounder/symbols/mod.rs",
-        "line": 530
+        "content_hash": "0a68549443b7c66d"
       },
       {
         "file": "src/grounder/symbols/model.rs",
-        "line": 338
+        "content_hash": "59f8820c2c73d774"
       }
     ],
     "disposition": "delete",
@@ -727,17 +727,17 @@
   {
     "name": "references_named",
     "file": "src/grounder/symbols/model.rs",
-    "line": 211,
+    "content_hash": "eeed60763fb30cc3",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/grounder/symbols/model.rs",
-        "line": 340
+        "content_hash": "8d9bb677be2e5d2c"
       },
       {
         "file": "src/grounder/symbols/model.rs",
-        "line": 343
+        "content_hash": "196da7bb828b5b03"
       }
     ],
     "disposition": "delete",
@@ -746,32 +746,32 @@
   {
     "name": "ingest_project",
     "file": "src/ingest.rs",
-    "line": 124,
+    "content_hash": "e872a1f75704d43d",
     "visibility": "pub",
     "ambiguous": true,
     "ambiguous_with": [
-      "src/ingest.rs:468"
+      "src/ingest.rs#9919f7f948a106f7"
     ],
     "test_only_references": [
       {
         "file": "tests/batched_fold_cadence.rs",
-        "line": 411
+        "content_hash": "b007baf7d7e8d032"
       },
       {
         "file": "tests/cli.rs",
-        "line": 2868
+        "content_hash": "293bf80f8e9c007b"
       },
       {
         "file": "tests/cli.rs",
-        "line": 2965
+        "content_hash": "dc361c6fe297ee27"
       },
       {
         "file": "tests/cli.rs",
-        "line": 3032
+        "content_hash": "dc361c6fe297ee27"
       },
       {
         "file": "tests/parallel_ordered_emit.rs",
-        "line": 73
+        "content_hash": "b007baf7d7e8d032"
       }
     ],
     "disposition": "delete",
@@ -780,32 +780,32 @@
   {
     "name": "ingest_project",
     "file": "src/ingest.rs",
-    "line": 468,
+    "content_hash": "9919f7f948a106f7",
     "visibility": "pub",
     "ambiguous": true,
     "ambiguous_with": [
-      "src/ingest.rs:124"
+      "src/ingest.rs#e872a1f75704d43d"
     ],
     "test_only_references": [
       {
         "file": "tests/batched_fold_cadence.rs",
-        "line": 411
+        "content_hash": "b007baf7d7e8d032"
       },
       {
         "file": "tests/cli.rs",
-        "line": 2868
+        "content_hash": "293bf80f8e9c007b"
       },
       {
         "file": "tests/cli.rs",
-        "line": 2965
+        "content_hash": "dc361c6fe297ee27"
       },
       {
         "file": "tests/cli.rs",
-        "line": 3032
+        "content_hash": "dc361c6fe297ee27"
       },
       {
         "file": "tests/parallel_ordered_emit.rs",
-        "line": 73
+        "content_hash": "b007baf7d7e8d032"
       }
     ],
     "disposition": "delete",
@@ -814,41 +814,41 @@
   {
     "name": "fully_done",
     "file": "src/ledger.rs",
-    "line": 574,
+    "content_hash": "387948cc5003fbbd",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 38279
+        "content_hash": "ca09514201c534d2"
       },
       {
         "file": "src/conductor.rs",
-        "line": 38346
+        "content_hash": "5b392a63a53e225c"
       },
       {
         "file": "src/conductor.rs",
-        "line": 39121
+        "content_hash": "6c3bef54a54f2f35"
       },
       {
         "file": "src/ledger.rs",
-        "line": 896
+        "content_hash": "f3fd1c1804b0cb0a"
       },
       {
         "file": "src/ledger.rs",
-        "line": 904
+        "content_hash": "14435dd3b6b7d548"
       },
       {
         "file": "src/ledger.rs",
-        "line": 914
+        "content_hash": "14435dd3b6b7d548"
       },
       {
         "file": "src/ledger.rs",
-        "line": 934
+        "content_hash": "7a595a0a5652bb05"
       },
       {
         "file": "src/ledger.rs",
-        "line": 938
+        "content_hash": "5b392a63a53e225c"
       }
     ],
     "disposition": "delete",
@@ -857,17 +857,17 @@
   {
     "name": "is_integrated",
     "file": "src/ledger.rs",
-    "line": 651,
+    "content_hash": "0e3c19b7921f5993",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/ledger.rs",
-        "line": 746
+        "content_hash": "4d6e245d8082bee6"
       },
       {
         "file": "src/ledger.rs",
-        "line": 845
+        "content_hash": "4060adb46078196c"
       }
     ],
     "disposition": "delete",
@@ -876,524 +876,524 @@
   {
     "name": "new",
     "file": "src/spawn.rs",
-    "line": 320,
+    "content_hash": "37135921f81c0140",
     "visibility": "pub",
     "ambiguous": true,
     "ambiguous_with": [
-      "src/budget.rs:57",
-      "src/dash.rs:1885",
-      "src/dash.rs:4917",
-      "src/driver/replay.rs:236",
-      "src/driver/workflow.rs:83",
-      "src/eventstore/mod.rs:99",
-      "src/eventstore/mod.rs:299",
-      "src/eventstore/mod.rs:500",
-      "src/eventstore/namespace.rs:28",
-      "src/failure.rs:218",
-      "src/ledger.rs:441",
-      "src/mcpserver.rs:94",
-      "src/watch.rs:577"
+      "src/budget.rs#789015f44c6a905b",
+      "src/dash.rs#30699d151b93d069",
+      "src/dash.rs#1d6d73587ac2f278",
+      "src/driver/replay.rs#bb5d69d8debb3ee7",
+      "src/driver/workflow.rs#f24517a3c13a6746",
+      "src/eventstore/mod.rs#ad9a99aca1ad333b",
+      "src/eventstore/mod.rs#8e6468f4cfcc6be7",
+      "src/eventstore/mod.rs#5082f3efa9407c5e",
+      "src/eventstore/namespace.rs#b5bc38330f1d09de",
+      "src/failure.rs#d85d31c3f71923f5",
+      "src/ledger.rs#8018493a7c1d87a8",
+      "src/mcpserver.rs#fe8a4012cd9e457c",
+      "src/watch.rs#f24517a3c13a6746"
     ],
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 21392
+        "content_hash": "038e2dec6bef996c"
       },
       {
         "file": "src/conductor.rs",
-        "line": 21469
+        "content_hash": "038e2dec6bef996c"
       },
       {
         "file": "src/conductor.rs",
-        "line": 21563
+        "content_hash": "038e2dec6bef996c"
       },
       {
         "file": "src/conductor.rs",
-        "line": 21650
+        "content_hash": "038e2dec6bef996c"
       },
       {
         "file": "src/conductor.rs",
-        "line": 21745
+        "content_hash": "038e2dec6bef996c"
       },
       {
         "file": "src/conductor.rs",
-        "line": 28873
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/conductor.rs",
-        "line": 28878
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/conductor.rs",
-        "line": 28941
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/dash.rs",
-        "line": 6127
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "src/dash.rs",
-        "line": 6193
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "src/dash.rs",
-        "line": 6278
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/dash.rs",
-        "line": 6279
+        "content_hash": "52df8ec8a1497bc5"
       },
       {
         "file": "src/dash.rs",
-        "line": 6280
+        "content_hash": "52df8ec8a1497bc5"
       },
       {
         "file": "src/dash.rs",
-        "line": 6281
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/dash.rs",
-        "line": 6282
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/dash.rs",
-        "line": 6284
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 844
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 891
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 1421
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 1965
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2061
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2073
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2157
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2167
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2257
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2266
+        "content_hash": "ef4ba2d11d94e93a"
       },
       {
         "file": "src/liveness.rs",
-        "line": 728
+        "content_hash": "553210990f0ada01"
       },
       {
         "file": "src/liveness.rs",
-        "line": 837
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/main.rs",
-        "line": 16394
+        "content_hash": "038e2dec6bef996c"
       },
       {
         "file": "src/main.rs",
-        "line": 16427
+        "content_hash": "038e2dec6bef996c"
       },
       {
         "file": "src/main.rs",
-        "line": 16446
+        "content_hash": "2a757b2d2ab4df3f"
       },
       {
         "file": "src/main.rs",
-        "line": 16449
+        "content_hash": "2a757b2d2ab4df3f"
       },
       {
         "file": "src/main.rs",
-        "line": 16452
+        "content_hash": "2a757b2d2ab4df3f"
       },
       {
         "file": "src/main.rs",
-        "line": 18322
+        "content_hash": "9e10d783f767c6d3"
       },
       {
         "file": "src/main.rs",
-        "line": 18335
+        "content_hash": "9e10d783f767c6d3"
       },
       {
         "file": "src/main.rs",
-        "line": 18350
+        "content_hash": "9e10d783f767c6d3"
       },
       {
         "file": "src/main.rs",
-        "line": 23771
+        "content_hash": "9e10d783f767c6d3"
       },
       {
         "file": "src/main.rs",
-        "line": 23772
+        "content_hash": "9e10d783f767c6d3"
       },
       {
         "file": "src/main.rs",
-        "line": 23773
+        "content_hash": "9e10d783f767c6d3"
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 902
+        "content_hash": "590fccb098034019"
       },
       {
         "file": "src/metrics.rs",
-        "line": 2027
+        "content_hash": "c0e622510a0ff8b1"
       },
       {
         "file": "src/progress.rs",
-        "line": 283
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "src/progress.rs",
-        "line": 332
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1141
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1150
+        "content_hash": "7306390b3e246060"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1166
+        "content_hash": "7306390b3e246060"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1182
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1205
+        "content_hash": "7306390b3e246060"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1226
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1227
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1293
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1301
+        "content_hash": "50cd3c1e51affeb1"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1722
+        "content_hash": "1d55ce66904bf3bf"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1740
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1746
+        "content_hash": "1d55ce66904bf3bf"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1751
+        "content_hash": "1d55ce66904bf3bf"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1775
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1802
+        "content_hash": "7306390b3e246060"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1817
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1833
+        "content_hash": "46b8e7a60ffa0654"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1847
+        "content_hash": "5630551b3ff25a2e"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1867
+        "content_hash": "7306390b3e246060"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1927
+        "content_hash": "743af6980f75ecba"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1951
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1969
+        "content_hash": "7306390b3e246060"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1989
+        "content_hash": "5630551b3ff25a2e"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2008
+        "content_hash": "7306390b3e246060"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2028
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2029
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2072
+        "content_hash": "1d55ce66904bf3bf"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2105
+        "content_hash": "1d55ce66904bf3bf"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2220
+        "content_hash": "50cd3c1e51affeb1"
       },
       {
         "file": "src/worktree.rs",
-        "line": 4348
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "src/worktree.rs",
-        "line": 4371
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "src/worktree.rs",
-        "line": 4407
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "src/worktree.rs",
-        "line": 4439
+        "content_hash": "125f40c5b679c4ab"
       },
       {
         "file": "src/worktree.rs",
-        "line": 4474
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "src/worktree.rs",
-        "line": 4490
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "src/worktree.rs",
-        "line": 4517
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "src/worktree.rs",
-        "line": 4547
+        "content_hash": "e651d48238cf4da1"
       },
       {
         "file": "src/worktree.rs",
-        "line": 4554
+        "content_hash": "e651d48238cf4da1"
       },
       {
         "file": "src/worktree.rs",
-        "line": 4562
+        "content_hash": "e651d48238cf4da1"
       },
       {
         "file": "tests/cli.rs",
-        "line": 10718
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/cli.rs",
-        "line": 10719
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/cli.rs",
-        "line": 10720
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/cli.rs",
-        "line": 10721
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/cli.rs",
-        "line": 10806
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/cli.rs",
-        "line": 10866
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/cli.rs",
-        "line": 10867
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/cli.rs",
-        "line": 10868
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 145
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 146
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 302
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 303
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 354
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 399
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 483
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 484
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 542
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 592
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 649
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 650
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 711
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 712
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 776
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 777
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 823
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 864
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 910
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 911
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 915
+        "content_hash": "0234522ff60b9638"
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "line": 916
+        "content_hash": "50cd3c1e51affeb1"
       },
       {
         "file": "tests/mcp_activity_liveness_age_periphery.rs",
-        "line": 105
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/mcp_activity_liveness_age_periphery.rs",
-        "line": 177
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/spawn_timing_periphery.rs",
-        "line": 109
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/spawn_timing_periphery.rs",
-        "line": 110
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/spawn_timing_periphery.rs",
-        "line": 111
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/spawn_timing_periphery.rs",
-        "line": 211
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/spawn_timing_periphery.rs",
-        "line": 285
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/spawn_timing_periphery.rs",
-        "line": 286
+        "content_hash": "572defa6902d294e"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1097
+        "content_hash": "5e83253481260366"
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 368
+        "content_hash": "a76cd38d7e33a485"
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 379
+        "content_hash": "a76cd38d7e33a485"
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 620
+        "content_hash": "a76cd38d7e33a485"
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
-        "line": 724
+        "content_hash": "572defa6902d294e"
       }
     ],
     "disposition": "delete",
@@ -1402,17 +1402,17 @@
   {
     "name": "with_system_prompt",
     "file": "src/spawn.rs",
-    "line": 338,
+    "content_hash": "1cce55987dd721e9",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1151
+        "content_hash": "0a68549443b7c66d"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1167
+        "content_hash": "0a68549443b7c66d"
       }
     ],
     "disposition": "delete",
@@ -1421,21 +1421,21 @@
   {
     "name": "with_model",
     "file": "src/spawn.rs",
-    "line": 344,
+    "content_hash": "1cce55987dd721e9",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1152
+        "content_hash": "0a68549443b7c66d"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1168
+        "content_hash": "0a68549443b7c66d"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1206
+        "content_hash": "0a68549443b7c66d"
       }
     ],
     "disposition": "delete",
@@ -1444,17 +1444,17 @@
   {
     "name": "with_tools",
     "file": "src/spawn.rs",
-    "line": 350,
+    "content_hash": "36e910c9138cc41b",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1153
+        "content_hash": "18171a8614dd0379"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1169
+        "content_hash": "8dc4ec749d386297"
       }
     ],
     "disposition": "delete",
@@ -1463,17 +1463,17 @@
   {
     "name": "with_dir",
     "file": "src/spawn.rs",
-    "line": 356,
+    "content_hash": "1cce55987dd721e9",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1154
+        "content_hash": "0a68549443b7c66d"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1170
+        "content_hash": "0a68549443b7c66d"
       }
     ],
     "disposition": "delete",
@@ -1482,21 +1482,21 @@
   {
     "name": "with_blast_radius",
     "file": "src/spawn.rs",
-    "line": 362,
+    "content_hash": "36e910c9138cc41b",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1155
+        "content_hash": "ca283b86f29ebcbb"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1171
+        "content_hash": "ca283b86f29ebcbb"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1207
+        "content_hash": "ca283b86f29ebcbb"
       }
     ],
     "disposition": "delete",
@@ -1505,21 +1505,21 @@
   {
     "name": "with_title",
     "file": "src/spawn.rs",
-    "line": 368,
+    "content_hash": "1cce55987dd721e9",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1803
+        "content_hash": "6330ce3a5a38ef8d"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1833
+        "content_hash": "46b8e7a60ffa0654"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1868
+        "content_hash": "6330ce3a5a38ef8d"
       }
     ],
     "disposition": "delete",
@@ -1528,21 +1528,21 @@
   {
     "name": "with_reviews",
     "file": "src/spawn.rs",
-    "line": 374,
+    "content_hash": "36e910c9138cc41b",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1927
+        "content_hash": "743af6980f75ecba"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1970
+        "content_hash": "a70e08b35868d289"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2009
+        "content_hash": "ca283b86f29ebcbb"
       }
     ],
     "disposition": "delete",
@@ -1551,129 +1551,129 @@
   {
     "name": "park",
     "file": "src/spawn.rs",
-    "line": 399,
+    "content_hash": "171d2ebbbaacbdf3",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 28871
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/conductor.rs",
-        "line": 28876
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/conductor.rs",
-        "line": 28939
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 842
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 889
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 1422
+        "content_hash": "ce7fbe03de34f36b"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 1963
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2059
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2071
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2155
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2165
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2255
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2264
+        "content_hash": "7b0a2d7c4d31282b"
       },
       {
         "file": "src/liveness.rs",
-        "line": 724
+        "content_hash": "f4c646369672d901"
       },
       {
         "file": "src/liveness.rs",
-        "line": 730
+        "content_hash": "479cb033fa276e17"
       },
       {
         "file": "src/liveness.rs",
-        "line": 838
+        "content_hash": "446ab234af65a4ac"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1209
+        "content_hash": "446ab234af65a4ac"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1228
+        "content_hash": "446ab234af65a4ac"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1229
+        "content_hash": "446ab234af65a4ac"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1720
+        "content_hash": "bcd7620b2f61753c"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1741
+        "content_hash": "446ab234af65a4ac"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1744
+        "content_hash": "bcd7620b2f61753c"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1749
+        "content_hash": "bcd7620b2f61753c"
       },
       {
         "file": "src/spawn.rs",
-        "line": 1869
+        "content_hash": "446ab234af65a4ac"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2010
+        "content_hash": "446ab234af65a4ac"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2030
+        "content_hash": "446ab234af65a4ac"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2031
+        "content_hash": "446ab234af65a4ac"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2070
+        "content_hash": "bcd7620b2f61753c"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2103
+        "content_hash": "bcd7620b2f61753c"
       },
       {
         "file": "src/spawn.rs",
-        "line": 2222
+        "content_hash": "446ab234af65a4ac"
       }
     ],
     "disposition": "delete",
@@ -1682,25 +1682,25 @@
   {
     "name": "is_dirty",
     "file": "src/worktree.rs",
-    "line": 635,
+    "content_hash": "93fbfd06412e1f0e",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 13728
+        "content_hash": "5d6d3db4ae2ef1ac"
       },
       {
         "file": "src/worktree.rs",
-        "line": 3915
+        "content_hash": "5d6d3db4ae2ef1ac"
       },
       {
         "file": "src/worktree.rs",
-        "line": 3925
+        "content_hash": "dc00505c458a3b7e"
       },
       {
         "file": "src/worktree.rs",
-        "line": 3991
+        "content_hash": "fab60fab5f09efe3"
       }
     ],
     "disposition": "delete",

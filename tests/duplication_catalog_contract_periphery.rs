@@ -35,15 +35,17 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
-/// Mirrors `tests/simplification_audit.rs`'s private `DupSite` shape field-for-field, from the
-/// outside - see the module doc comment for why this is a deliberate re-declaration, not an
-/// import.
+/// Mirrors `tests/simplification_audit.rs`'s private `DupSiteWire` shape field-for-field, from
+/// the outside - see the module doc comment for why this is a deliberate re-declaration, not an
+/// import. Spec 90 criterion 2: the guarded catalog carries `content_hash`, never a line span -
+/// `start_line`/`end_line` moved to the unguarded `docs/audit/duplication-catalog.lines.json`
+/// sibling, out of scope for this file (never drift-guarded, so not a "documented contract" a
+/// downstream reader pins against).
 #[derive(Debug, Clone, PartialEq, Deserialize, serde::Serialize)]
 struct ConsumedDupSite {
     file: String,
-    start_line: usize,
-    end_line: usize,
     name: String,
+    content_hash: String,
 }
 
 /// Mirrors `tests/simplification_audit.rs`'s private `DupCluster` shape field-for-field.
@@ -89,7 +91,7 @@ fn deserialize_committed_catalog() -> Vec<ConsumedDupCluster> {
         panic!(
             "{CATALOG_PATH} does not deserialize as the documented DupCluster contract \
              (id/classification/sites/proposed_home/note, sites as \
-             file/start_line/end_line/name): {e}"
+             file/name/content_hash): {e}"
         )
     })
 }
@@ -138,32 +140,16 @@ fn every_deserialized_cluster_has_two_or_more_sites_a_recognized_classification_
     }
 }
 
-/// Every site's line span is a span a reader can act on: 1-based and non-inverted, with a
-/// non-empty file and function name. A consumer that opens `file` at `start_line` to `end_line`
-/// (e.g. to quote the site for a refactor spec stub) must never be handed a zero, backwards, or
-/// blank-named range.
+/// Every site's identity is one a reader can act on: a non-empty file, function name, and
+/// content_hash - the LINE-FREE contract spec 90 criterion 2 establishes (no `start_line`/
+/// `end_line` at all: an extra field would silently fail to deserialize into this
+/// independently-declared struct, making the round-trip test below the real proof of their
+/// absence; this test pins presence and non-emptiness of what DOES remain).
 #[test]
-fn every_deserialized_site_has_a_well_formed_line_span_and_non_empty_file_and_name() {
+fn every_deserialized_site_has_a_non_empty_file_name_and_content_hash() {
     let clusters = deserialize_committed_catalog();
     for c in &clusters {
         for s in &c.sites {
-            assert!(
-                s.start_line >= 1,
-                "cluster {} site {:?} ({}) has start_line {} < 1",
-                c.id,
-                s.name,
-                s.file,
-                s.start_line
-            );
-            assert!(
-                s.end_line >= s.start_line,
-                "cluster {} site {:?} ({}) has end_line {} < start_line {}",
-                c.id,
-                s.name,
-                s.file,
-                s.end_line,
-                s.start_line
-            );
             assert!(
                 !s.file.is_empty(),
                 "cluster {} has a site with an empty file",
@@ -173,6 +159,13 @@ fn every_deserialized_site_has_a_well_formed_line_span_and_non_empty_file_and_na
                 !s.name.is_empty(),
                 "cluster {} has a site in {} with an empty name",
                 c.id,
+                s.file
+            );
+            assert!(
+                !s.content_hash.is_empty(),
+                "cluster {} has a site {:?} ({}) with an empty content_hash",
+                c.id,
+                s.name,
                 s.file
             );
         }
