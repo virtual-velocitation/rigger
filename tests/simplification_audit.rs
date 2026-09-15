@@ -3601,10 +3601,12 @@ fn render_section_3() -> String {
         line 203 - same function, same missing-port defect, not a separate third \
         violation - calls `crate::grounder::design::events::project_batches` \
         directly by concrete module path for the design-doc half of the same walk. \
-        These two calls are the two named sites of section 2's own catalogued twin \
-        duplicate pair (`dup-0203`: `src/grounder/symbols/events.rs:36-38` and \
-        `src/grounder/design/events.rs:90-114`, both named `project_batches`), so \
-        this boundary violation and that duplication finding are two symptoms of \
+        These two calls are two of the three named sites of section 2's own \
+        catalogued duplicate cluster (`dup-0218`: \
+        `src/grounder/design/events.rs:90-114`, \
+        `src/grounder/symbols/events.rs:89-91`, and this diff's own new third site, \
+        `src/grounder/workflowdef.rs:191-198` - all three named `project_batches`), \
+        so this boundary violation and that duplication finding are two symptoms of \
         one root cause - `ingest.rs` naming each concrete grounder submodule \
         because no port exposes either. The `Grounder` port's own methods \
         (`ground`, `reindex`, `blast_radius`, `index_stamp` - its provenance stamp \
@@ -3735,8 +3737,8 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/eventstore/sqlite.rs", 192) => 32,
         ("src/gate.rs", 463) => 3,
         ("src/grounder/symbols/events.rs", 29) => 17,
-        ("src/grounder/symbols/model.rs", 201) => 7,
-        ("src/grounder/symbols/model.rs", 211) => 10,
+        ("src/grounder/symbols/model.rs", 214) => 7,
+        ("src/grounder/symbols/model.rs", 224) => 10,
         ("src/ingest.rs", 126) => 3,
         ("src/ingest.rs", 481) => 3,
         ("src/ledger.rs", 574) => 6,
@@ -6084,13 +6086,13 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              again on the current tree (now 64 test references at line 29, having grown with the \
              test suite): no production caller anywhere.",
         ),
-        ("src/grounder/symbols/model.rs", 201) => (
+        ("src/grounder/symbols/model.rs", 214) => (
             Delete,
             "definitions_named has no production caller - only its own module's assertion-style \
              tests (symbols/mod.rs) use it to check index state after a build/update, never a \
              production edge-resolution path.",
         ),
-        ("src/grounder/symbols/model.rs", 211) => (
+        ("src/grounder/symbols/model.rs", 224) => (
             Delete,
             "references_named has no production caller - the same test-only accessor shape as \
              its sibling definitions_named immediately above it.",

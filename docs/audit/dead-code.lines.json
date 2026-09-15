@@ -389,163 +389,167 @@
     "test_only_references": [
       {
         "file": "src/grounder/symbols/events.rs",
-        "line": 747
+        "line": 767
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "line": 762
+        "line": 782
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "line": 1259
+        "line": 1285
       },
       {
         "file": "src/grounder/symbols/events.rs",
-        "line": 1371
+        "line": 1397
+      },
+      {
+        "file": "src/grounder/symbols/events.rs",
+        "line": 1564
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 649
+        "line": 657
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 659
+        "line": 667
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 760
+        "line": 768
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 820
+        "line": 828
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 862
+        "line": 870
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 913
+        "line": 921
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 970
+        "line": 978
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1032
+        "line": 1040
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1093
+        "line": 1101
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1152
+        "line": 1160
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1224
+        "line": 1232
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1295
+        "line": 1303
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1379
+        "line": 1387
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1451
+        "line": 1459
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1511
+        "line": 1519
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1683
+        "line": 1691
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1784
+        "line": 1793
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1862
+        "line": 1871
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 1951
+        "line": 1960
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2035
+        "line": 2044
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2122
+        "line": 2131
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2196
+        "line": 2205
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2279
+        "line": 2288
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2363
+        "line": 2372
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2505
+        "line": 2514
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2587
+        "line": 2596
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2679
+        "line": 2688
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2745
+        "line": 2754
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2814
+        "line": 2823
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2891
+        "line": 2900
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 2980
+        "line": 2989
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 3098
+        "line": 3107
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 3181
+        "line": 3190
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 3253
+        "line": 3262
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 3321
+        "line": 3330
       },
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
-        "line": 3405
+        "line": 3414
       },
       {
         "file": "tests/code_ingest_events.rs",
@@ -641,34 +645,30 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 9598
+        "line": 9600
       }
     ]
   },
   {
     "file": "src/grounder/symbols/model.rs",
     "name": "definitions_named",
-    "line": 201,
+    "line": 214,
     "test_only_references": [
-      {
-        "file": "src/grounder/symbols/mod.rs",
-        "line": 459
-      },
-      {
-        "file": "src/grounder/symbols/mod.rs",
-        "line": 460
-      },
       {
         "file": "src/grounder/symbols/mod.rs",
         "line": 461
       },
       {
         "file": "src/grounder/symbols/mod.rs",
-        "line": 471
+        "line": 462
       },
       {
         "file": "src/grounder/symbols/mod.rs",
-        "line": 480
+        "line": 463
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 473
       },
       {
         "file": "src/grounder/symbols/mod.rs",
@@ -676,26 +676,30 @@
       },
       {
         "file": "src/grounder/symbols/mod.rs",
-        "line": 530
+        "line": 484
+      },
+      {
+        "file": "src/grounder/symbols/mod.rs",
+        "line": 532
       },
       {
         "file": "src/grounder/symbols/model.rs",
-        "line": 338
+        "line": 353
       }
     ]
   },
   {
     "file": "src/grounder/symbols/model.rs",
     "name": "references_named",
-    "line": 211,
+    "line": 224,
     "test_only_references": [
       {
         "file": "src/grounder/symbols/model.rs",
-        "line": 340
+        "line": 355
       },
       {
         "file": "src/grounder/symbols/model.rs",
-        "line": 343
+        "line": 358
       }
     ]
   },

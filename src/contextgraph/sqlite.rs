@@ -1307,7 +1307,16 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             if c.fresh {
                 supersede_file_edges(tx, &file, at, project)?;
             }
-            ensure_node(tx, &file, KIND_FILE, &[("lang", &c.lang)], project)?;
+            // Spec 92 criterion 2 round 4 (adv-u2c2-partial-marker-unimplemented): stamp the
+            // degraded-parse marker through the SAME `ensure_node` attrs authority `lang` already
+            // rides - never a second attrs-writing path. Merge semantics (see `ensure_node`'s own
+            // doc) mean omitting the key on a later, unrelated definition from the same file never
+            // clears a marker an earlier event of this batch already set.
+            let mut file_attrs: Vec<(&str, &str)> = vec![("lang", &c.lang)];
+            if c.partial {
+                file_attrs.push(("partial", "true"));
+            }
+            ensure_node(tx, &file, KIND_FILE, &file_attrs, project)?;
             let entity = code_entity_id(&file, &c.name);
             let line = c.line.to_string();
             ensure_node(
@@ -1422,7 +1431,13 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             if r.name.is_empty() {
                 return Ok(());
             }
-            ensure_node(tx, &file, KIND_FILE, &[("lang", &r.lang)], project)?;
+            // Spec 92 criterion 2 round 4 (adv-u2c2-partial-marker-unimplemented): the `EdgeInferred`
+            // twin of the definition arm's identical stamp above - see that arm's own comment.
+            let mut file_attrs: Vec<(&str, &str)> = vec![("lang", &r.lang)];
+            if r.partial {
+                file_attrs.push(("partial", "true"));
+            }
+            ensure_node(tx, &file, KIND_FILE, &file_attrs, project)?;
             let target = code_entity_id(&file, &r.name);
             // REFERENCES (spec 29a criterion 2): the file references this symbol, at the confidence
             // tier its resolution earns. The tier is read BEFORE `ensure_node` creates the bare
@@ -3365,6 +3380,35 @@ mod tests {
         p.apply(&e).unwrap();
     }
 
+    /// Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
+    /// `adv-u2c2-partial-marker-unimplemented`): the `partial`-carrying twin of
+    /// [`apply_code_entity`], a SEPARATE function (never a new parameter threaded onto that one,
+    /// which every existing call site would then have to grow) so each keeps its own distinct
+    /// shape, mirroring how [`apply_edge_inferred_evidence_fresh`] extends
+    /// [`apply_edge_inferred_evidence`] with its own extra flag rather than widening it in place.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_code_entity_partial(
+        p: &Projector,
+        pos: u64,
+        file: &str,
+        name: &str,
+        kind: &str,
+        line: u32,
+        lang: &str,
+        partial: bool,
+    ) {
+        let payload = serde_json::json!({
+            "file": file, "name": name, "kind": kind, "line": line, "lang": lang,
+            "partial": partial,
+        });
+        let mut e = Event::new(
+            TYPE_CODE_ENTITY_EXTRACTED,
+            serde_json::to_vec(&payload).unwrap(),
+        );
+        e.position = pos;
+        p.apply(&e).unwrap();
+    }
+
     /// Spec 86 criterion 2: one TEST-ORIGIN reference evidence event, built by hand (no
     /// `proof_events` dependency) so the fold is proven in isolation. Constructed as raw JSON
     /// (mirroring [`apply_edge_inferred`]'s own style), never through the [`super::EdgeInferred`]
@@ -4029,6 +4073,68 @@ mod tests {
                 && e.to == "src/combat.rs::clamp"),
             "a REFERENCES edge ties the file to the referenced symbol; got {:?}",
             g.edges
+        );
+    }
+
+    #[test]
+    fn a_partial_code_entity_event_stamps_the_file_nodes_partial_attr_true_and_an_ordinary_one_never_does(
+    ) {
+        // Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
+        // `adv-u2c2-partial-marker-unimplemented`): a `CodeEntityExtracted` event carrying
+        // `partial: true` (a JS file the grammar could not fully parse, per
+        // `grounder::symbols::extract::extract`'s own `has_error()` check) must stamp
+        // `("partial", "true")` onto its file's KIND_FILE node through the SAME `ensure_node`
+        // attrs authority already used for `lang`/`title` - never a second attrs-writing path. An
+        // ORDINARY (well-formed) file's event must NEVER stamp that key at all. Both files folded
+        // into ONE Projector so the merge-not-replace `ensure_node` semantics are also proven: a
+        // second, unrelated file's ordinary event must never bleed a `partial` marker onto a file
+        // it was never folded for.
+        let p = Projector::open(":memory:", "test").unwrap();
+        apply_code_entity_partial(
+            &p,
+            1,
+            "workflows/broken.js",
+            "greet",
+            "function",
+            1,
+            "js",
+            true,
+        );
+        apply_code_entity(&p, 2, "workflows/clean.js", "helper", "function", 1, "js");
+
+        let g = p
+            .subgraph(
+                &[
+                    "workflows/broken.js".to_string(),
+                    "workflows/clean.js".to_string(),
+                ],
+                1,
+            )
+            .unwrap();
+
+        let broken = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "workflows/broken.js")
+            .expect("the malformed file's container node folded");
+        assert_eq!(
+            broken.attrs.get("partial").map(String::as_str),
+            Some("true"),
+            "a partial: true event must stamp the file node's own partial attr as \"true\"; got {:?}",
+            broken.attrs
+        );
+
+        let clean = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "workflows/clean.js")
+            .expect("the well-formed file's container node folded");
+        assert_eq!(
+            clean.attrs.get("partial"),
+            None,
+            "an ordinary (non-degraded) file's event must never stamp a partial attr at all; \
+             got {:?}",
+            clean.attrs
         );
     }
 

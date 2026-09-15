@@ -438,6 +438,10 @@
         "content_hash": "99d81069c44251eb"
       },
       {
+        "file": "src/grounder/symbols/events.rs",
+        "content_hash": "99d81069c44251eb"
+      },
+      {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
         "content_hash": "8538b515555d6083"
       },

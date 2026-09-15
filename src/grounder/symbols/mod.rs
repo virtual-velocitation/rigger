@@ -291,6 +291,7 @@ mod staleness_tests {
                         enclosing_inline_module_path: None,
                     }],
                     refs: vec![],
+                    partial: false,
                 },
             );
             idx.set_hash((*path).to_string(), (*hash).to_string());
@@ -375,6 +376,7 @@ mod staleness_tests {
                 lang: crate::grounder::symbols::model::Lang::Rust,
                 defs: vec![],
                 refs: vec![],
+                partial: false,
             },
         );
         // Deliberately no `set_hash` call.

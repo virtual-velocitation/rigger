@@ -119,6 +119,7 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
                     enclosing_inline_module_path: None,
                 }],
                 refs: vec![],
+                partial: false,
             },
         );
         idx.set_hash((*path).to_string(), symstore::content_hash(content));
