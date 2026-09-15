@@ -28446,8 +28446,8 @@ fn mcp_serves_peers_ground_and_graph_over_stdio() {
          got:\n{graph}"
     );
 
-    // Closing stdin (dropping the handle) is the EOF that lets `run_operator_mcp`'s read
-    // loop finish and the process exit, exactly like the shim closing its side of the pipe.
+    // Closing stdin (dropping the handle) is the EOF that lets `mcpserver::Server::run`'s
+    // read loop finish and the process exit, exactly like the shim closing its side of the pipe.
     drop(stdin);
     let out = child.wait_with_output().expect("rigger mcp must exit");
     assert!(

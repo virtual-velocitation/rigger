@@ -1689,6 +1689,37 @@ mod tests {
         );
     }
 
+    /// The SYMMETRIC direction of `lookup_surface_serves_ground_and_rejects_workflow_tools`
+    /// (closes sdet-u92c4r2-workflow-surface-reject-of-ground-graph-untested): a `Server` built
+    /// the workflow-driver way - no grounder, no graph wired, exactly what `rigger serve`/the
+    /// loop's shim gets - must reject `rigger_ground`/`rigger_graph` as UNKNOWN TOOLS through
+    /// `call_tool`'s own `(lookup, name)` gate, never reach `tool_ground`/`tool_graph`
+    /// themselves. This matters beyond an unadvertised name: `tool_ground` `.expect()`s a
+    /// grounder that is genuinely absent on this surface, so a future match-arm refactor that
+    /// let either tool through would panic the whole server mid-run instead of answering
+    /// `-32602` - this test is the one that would go red for that regression.
+    #[test]
+    fn workflow_surface_rejects_ground_and_graph_as_unknown_tools() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        for name in ["rigger_ground", "rigger_graph"] {
+            let input = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#
+            );
+            let mut out = Vec::new();
+            server.run(Cursor::new(input), &mut out).unwrap();
+            let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            assert_eq!(
+                resp["error"]["code"], -32602,
+                "{name} must be UNDISPATCHABLE (not merely unadvertised) on the workflow \
+                 surface; got:\n{resp}"
+            );
+        }
+    }
+
     /// Reject-fix regression: `with_grounder_unavailable` (the graceful-degrade path a caller
     /// takes when its OWN grounder resolution failed) still marks the lookup surface - the tool
     /// list is unchanged, `rigger_peers` keeps answering - and `rigger_ground` alone reports the
@@ -1816,5 +1847,64 @@ mod tests {
         assert_eq!(structured["site"]["file"], "src/widget.rs");
         assert_eq!(structured["site"]["line"], 7);
         assert_eq!(structured["site"]["kind"], "fn");
+    }
+
+    /// The sibling of `lookup_surface_rigger_graph_show_resolves_via_the_locate_trait_method`
+    /// for [`Located::Many`]: this diff's own new `"status": "many"` JSON shape
+    /// (`tool_graph`, the candidate-list branch) has no coverage anywhere else - the CLI's
+    /// `graph --show` ambiguous listing (spec 58) proves `Located::Many` itself is produced
+    /// correctly, but never runs through this unit's own MCP rendering of it. Two entities
+    /// sharing the bare name `shared` in different files must come back as
+    /// `{"status":"many","candidates":[...]}`, SORTED by id exactly like the CLI surface
+    /// already asserts, never a guess among them (the call-views honesty rule this whole
+    /// resolution order exists to uphold).
+    #[test]
+    fn lookup_surface_rigger_graph_show_lists_ambiguous_candidates() {
+        use crate::contextgraph::sqlite::Projector;
+        use crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let grounder = Nop;
+        let graph = Projector::open(":memory:", "test").unwrap();
+        for (pos, file) in [(1, "src/a.rs"), (2, "src/b.rs")] {
+            let payload = format!(
+                r#"{{"file":"{file}","name":"shared","kind":"fn","line":1,"lang":"rust"}}"#
+            );
+            let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
+            e.position = pos;
+            graph.apply(&e).unwrap();
+        }
+
+        let server = Server::new(&driver, &store, "run", &peers)
+            .with_graph(&graph)
+            .with_grounder(&grounder);
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"show":"shared"}}}"#;
+        let mut out = Vec::new();
+        server.run(Cursor::new(input), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        let structured = &resp["result"]["structuredContent"];
+        assert_eq!(
+            structured["status"], "many",
+            "two same-named entities must resolve ambiguous, never a guess; got:\n{resp}"
+        );
+        let candidates = structured["candidates"].as_array().unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|c| c["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["src/a.rs::shared", "src/b.rs::shared"],
+            "candidates must be SORTED by id, never in seed/discovery order; got:\n{resp}"
+        );
+        assert_eq!(candidates[0]["file"], "src/a.rs");
+        assert_eq!(candidates[1]["file"], "src/b.rs");
+        assert!(
+            structured.get("site").is_none(),
+            "an ambiguous result must print NO single site - the honesty rule; got:\n{resp}"
+        );
     }
 }
