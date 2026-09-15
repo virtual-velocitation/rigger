@@ -9856,9 +9856,18 @@
   },
   {
     "file": "src/main.rs",
+    "name": "resolve_main_worktree_or_refuse_returns_exactly_git_rev_parse_show_toplevel",
+    "start_line": 16040,
+    "end_line": 16056,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
     "name": "refuse_when_base_lacks_spec_paths_refuses_on_total_absence_and_names_a_path",
-    "start_line": 16025,
-    "end_line": 16049,
+    "start_line": 16059,
+    "end_line": 16083,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9866,8 +9875,8 @@
   {
     "file": "src/main.rs",
     "name": "refuse_when_base_lacks_spec_paths_proceeds_when_the_base_contains_them",
-    "start_line": 16052,
-    "end_line": 16069,
+    "start_line": 16086,
+    "end_line": 16103,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9875,8 +9884,8 @@
   {
     "file": "src/main.rs",
     "name": "refuse_when_base_lacks_spec_paths_partial_match_warns_and_proceeds",
-    "start_line": 16072,
-    "end_line": 16090,
+    "start_line": 16106,
+    "end_line": 16124,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9884,8 +9893,8 @@
   {
     "file": "src/main.rs",
     "name": "refuse_when_base_lacks_spec_paths_skips_without_tokens_or_off_a_fresh_from_base_anchor",
-    "start_line": 16093,
-    "end_line": 16133,
+    "start_line": 16127,
+    "end_line": 16167,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9893,8 +9902,8 @@
   {
     "file": "src/main.rs",
     "name": "refuse_when_base_unreachable_fails_loudly_only_when_no_reachable_base",
-    "start_line": 16136,
-    "end_line": 16217,
+    "start_line": 16170,
+    "end_line": 16251,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9902,8 +9911,8 @@
   {
     "file": "src/main.rs",
     "name": "human_size_formats_bytes_through_gib",
-    "start_line": 16220,
-    "end_line": 16227,
+    "start_line": 16254,
+    "end_line": 16261,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9911,8 +9920,8 @@
   {
     "file": "src/main.rs",
     "name": "is_uuid8_accepts_exactly_eight_hex_digits",
-    "start_line": 16230,
-    "end_line": 16236,
+    "start_line": 16264,
+    "end_line": 16270,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9920,8 +9929,8 @@
   {
     "file": "src/main.rs",
     "name": "worktree_belongs_to_live_matches_both_naming_shapes_without_prefix_false_match",
-    "start_line": 16239,
-    "end_line": 16284,
+    "start_line": 16273,
+    "end_line": 16318,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9929,8 +9938,8 @@
   {
     "file": "src/main.rs",
     "name": "current_run_units_scopes_to_the_current_run_and_splits_live_from_dead",
-    "start_line": 16287,
-    "end_line": 16334,
+    "start_line": 16321,
+    "end_line": 16368,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9938,8 +9947,8 @@
   {
     "file": "src/main.rs",
     "name": "current_run_units_spares_a_terminal_units_branch_whose_latest_spawn_is_still_in_flight",
-    "start_line": 16337,
-    "end_line": 16374,
+    "start_line": 16371,
+    "end_line": 16408,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9947,8 +9956,8 @@
   {
     "file": "src/main.rs",
     "name": "current_run_units_still_retires_a_terminal_unit_once_its_latest_spawn_answers",
-    "start_line": 16377,
-    "end_line": 16403,
+    "start_line": 16411,
+    "end_line": 16437,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9956,8 +9965,8 @@
   {
     "file": "src/main.rs",
     "name": "current_run_units_splits_live_spawns_from_answered_ones_scoped_to_the_current_run",
-    "start_line": 16406,
-    "end_line": 16453,
+    "start_line": 16440,
+    "end_line": 16487,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9965,8 +9974,8 @@
   {
     "file": "src/main.rs",
     "name": "live_branches_for_sweep_fails_closed_on_an_unreadable_stream_but_folds_a_readable_one",
-    "start_line": 16465,
-    "end_line": 16491,
+    "start_line": 16499,
+    "end_line": 16525,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9974,8 +9983,8 @@
   {
     "file": "src/main.rs",
     "name": "find_shadow_stores_finds_nested_events_db_and_prunes_build_caches",
-    "start_line": 16494,
-    "end_line": 16534,
+    "start_line": 16528,
+    "end_line": 16568,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9983,8 +9992,8 @@
   {
     "file": "src/main.rs",
     "name": "dir_size_bytes_sums_files_recursively",
-    "start_line": 16537,
-    "end_line": 16548,
+    "start_line": 16571,
+    "end_line": 16582,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -9992,8 +10001,8 @@
   {
     "file": "src/main.rs",
     "name": "reclaim_shared_build_cache_deletes_a_populated_cache_and_reports_its_bytes",
-    "start_line": 16553,
-    "end_line": 16569,
+    "start_line": 16587,
+    "end_line": 16603,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10001,8 +10010,8 @@
   {
     "file": "src/main.rs",
     "name": "reclaim_shared_build_cache_is_idempotent_zero_report_when_absent",
-    "start_line": 16572,
-    "end_line": 16590,
+    "start_line": 16606,
+    "end_line": 16624,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10010,8 +10019,8 @@
   {
     "file": "src/main.rs",
     "name": "reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard",
-    "start_line": 16593,
-    "end_line": 16621,
+    "start_line": 16627,
+    "end_line": 16655,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10019,8 +10028,8 @@
   {
     "file": "src/main.rs",
     "name": "reclaim_shared_build_cache_releases_the_guard_promptly_after_a_successful_reclaim",
-    "start_line": 16624,
-    "end_line": 16647,
+    "start_line": 16658,
+    "end_line": 16681,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10028,8 +10037,8 @@
   {
     "file": "src/main.rs",
     "name": "scan_residue_reports_dead_worktrees_caches_shadows_and_branches",
-    "start_line": 16650,
-    "end_line": 16723,
+    "start_line": 16684,
+    "end_line": 16757,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10037,8 +10046,8 @@
   {
     "file": "src/main.rs",
     "name": "scan_residue_is_empty_when_everything_is_live_and_no_shadow_stores",
-    "start_line": 16726,
-    "end_line": 16745,
+    "start_line": 16760,
+    "end_line": 16779,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10046,8 +10055,8 @@
   {
     "file": "src/main.rs",
     "name": "format_residue_renders_a_sized_warning_block",
-    "start_line": 16748,
-    "end_line": 16765,
+    "start_line": 16782,
+    "end_line": 16799,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10055,8 +10064,8 @@
   {
     "file": "src/main.rs",
     "name": "store_and_backup_bytes_splits_live_store_files_from_dot_bak_backups",
-    "start_line": 16770,
-    "end_line": 16789,
+    "start_line": 16804,
+    "end_line": 16823,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10064,8 +10073,8 @@
   {
     "file": "src/main.rs",
     "name": "store_and_backup_bytes_is_zero_on_a_missing_directory",
-    "start_line": 16792,
-    "end_line": 16796,
+    "start_line": 16826,
+    "end_line": 16830,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10073,8 +10082,8 @@
   {
     "file": "src/main.rs",
     "name": "scratch_footprint_totals_every_entry_and_dead_only_the_non_live_share",
-    "start_line": 16799,
-    "end_line": 16841,
+    "start_line": 16833,
+    "end_line": 16875,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10082,8 +10091,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_report_measures_every_category_on_a_seeded_fixture_tree",
-    "start_line": 16844,
-    "end_line": 16909,
+    "start_line": 16878,
+    "end_line": 16943,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10091,8 +10100,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_report_folds_a_none_mutation_root_to_a_zero_contribution",
-    "start_line": 16912,
-    "end_line": 16929,
+    "start_line": 16946,
+    "end_line": 16963,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10100,8 +10109,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_report_flags_registered_scratch_roots_dead_share_and_spares_a_live_spawn",
-    "start_line": 16932,
-    "end_line": 17014,
+    "start_line": 16966,
+    "end_line": 17048,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10109,8 +10118,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone",
-    "start_line": 17027,
-    "end_line": 17081,
+    "start_line": 17061,
+    "end_line": 17115,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10118,8 +10127,8 @@
   {
     "file": "src/main.rs",
     "name": "looks_like_run_container_true_when_every_direct_child_is_a_directory",
-    "start_line": 17084,
-    "end_line": 17089,
+    "start_line": 17118,
+    "end_line": 17123,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10127,8 +10136,8 @@
   {
     "file": "src/main.rs",
     "name": "looks_like_run_container_false_when_a_direct_child_is_a_bare_file",
-    "start_line": 17092,
-    "end_line": 17100,
+    "start_line": 17126,
+    "end_line": 17134,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10136,8 +10145,8 @@
   {
     "file": "src/main.rs",
     "name": "looks_like_run_container_is_true_on_an_empty_or_missing_dir",
-    "start_line": 17103,
-    "end_line": 17111,
+    "start_line": 17137,
+    "end_line": 17145,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10145,8 +10154,8 @@
   {
     "file": "src/main.rs",
     "name": "classify_agent_scratch_separates_a_bare_top_level_file_from_a_well_formed_container",
-    "start_line": 17114,
-    "end_line": 17127,
+    "start_line": 17148,
+    "end_line": 17161,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10154,8 +10163,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_report_reports_a_top_level_adhoc_agent_scratch_dir_as_its_own_category_never_folded_into_the_dead_run_bucket",
-    "start_line": 17130,
-    "end_line": 17209,
+    "start_line": 17164,
+    "end_line": 17243,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10163,8 +10172,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_report_lines_reports_every_categorys_total_unconditionally",
-    "start_line": 17212,
-    "end_line": 17236,
+    "start_line": 17246,
+    "end_line": 17270,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10172,8 +10181,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_advisories_flags_a_category_whose_dead_share_reaches_the_threshold",
-    "start_line": 17239,
-    "end_line": 17250,
+    "start_line": 17273,
+    "end_line": 17284,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10181,8 +10190,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_advisories_is_silent_below_the_threshold",
-    "start_line": 17253,
-    "end_line": 17261,
+    "start_line": 17287,
+    "end_line": 17295,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10190,8 +10199,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_advisories_flags_a_category_exactly_at_the_threshold_boundary",
-    "start_line": 17264,
-    "end_line": 17281,
+    "start_line": 17298,
+    "end_line": 17315,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10199,8 +10208,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_advisories_never_flags_a_category_with_no_reclaim_command",
-    "start_line": 17284,
-    "end_line": 17294,
+    "start_line": 17318,
+    "end_line": 17328,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10208,8 +10217,8 @@
   {
     "file": "src/main.rs",
     "name": "footprint_advisories_is_silent_on_an_empty_category",
-    "start_line": 17297,
-    "end_line": 17305,
+    "start_line": 17331,
+    "end_line": 17339,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10217,8 +10226,8 @@
   {
     "file": "src/main.rs",
     "name": "owning_repo_root_prefers_the_stores_own_root_over_the_git_toplevel",
-    "start_line": 17308,
-    "end_line": 17331,
+    "start_line": 17342,
+    "end_line": 17365,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10226,8 +10235,8 @@
   {
     "file": "src/main.rs",
     "name": "reclaim_orphan_scratch_removes_non_live_owned_scratch_and_spares_live_and_shared_areas",
-    "start_line": 17336,
-    "end_line": 17459,
+    "start_line": 17370,
+    "end_line": 17493,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10235,8 +10244,8 @@
   {
     "file": "src/main.rs",
     "name": "reclaim_orphan_scratch_spares_a_non_live_worktree_that_is_still_dirty",
-    "start_line": 17462,
-    "end_line": 17527,
+    "start_line": 17496,
+    "end_line": 17561,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10244,8 +10253,8 @@
   {
     "file": "src/main.rs",
     "name": "reclaim_orphan_scratch_spares_only_a_declared_dirty_worktree",
-    "start_line": 17530,
-    "end_line": 17569,
+    "start_line": 17564,
+    "end_line": 17603,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10253,8 +10262,8 @@
   {
     "file": "src/main.rs",
     "name": "reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally",
-    "start_line": 17572,
-    "end_line": 17602,
+    "start_line": 17606,
+    "end_line": 17636,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10262,34 +10271,7 @@
   {
     "file": "src/main.rs",
     "name": "leaked_process_advisories_name_a_process_rooted_under_the_scratch_root",
-    "start_line": 17607,
-    "end_line": 17646,
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/main.rs",
-    "name": "leaked_process_advisories_is_empty_when_no_process_is_rooted_under_the_scratch_root",
-    "start_line": 17649,
-    "end_line": 17659,
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/main.rs",
-    "name": "leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent",
-    "start_line": 17662,
-    "end_line": 17669,
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/main.rs",
-    "name": "parse_result_takes_an_id_and_an_optional_output_arg",
-    "start_line": 17674,
+    "start_line": 17641,
     "end_line": 17680,
     "is_test": true,
     "proposed_module": "main::tests",
@@ -10297,26 +10279,26 @@
   },
   {
     "file": "src/main.rs",
-    "name": "parse_result_with_no_output_defers_to_stdin",
+    "name": "leaked_process_advisories_is_empty_when_no_process_is_rooted_under_the_scratch_root",
     "start_line": 17683,
-    "end_line": 17688,
+    "end_line": 17693,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
   },
   {
     "file": "src/main.rs",
-    "name": "find_store_dir_from_returns_the_dir_that_holds_the_store",
-    "start_line": 17693,
-    "end_line": 17699,
+    "name": "leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent",
+    "start_line": 17696,
+    "end_line": 17703,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
   },
   {
     "file": "src/main.rs",
-    "name": "find_store_dir_from_walks_up_from_a_subdirectory",
-    "start_line": 17702,
+    "name": "parse_result_takes_an_id_and_an_optional_output_arg",
+    "start_line": 17708,
     "end_line": 17714,
     "is_test": true,
     "proposed_module": "main::tests",
@@ -10324,9 +10306,36 @@
   },
   {
     "file": "src/main.rs",
-    "name": "git_init_quiet",
+    "name": "parse_result_with_no_output_defers_to_stdin",
     "start_line": 17717,
-    "end_line": 17723,
+    "end_line": 17722,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
+    "name": "find_store_dir_from_returns_the_dir_that_holds_the_store",
+    "start_line": 17727,
+    "end_line": 17733,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
+    "name": "find_store_dir_from_walks_up_from_a_subdirectory",
+    "start_line": 17736,
+    "end_line": 17748,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
+    "name": "git_init_quiet",
+    "start_line": 17751,
+    "end_line": 17757,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10334,8 +10343,8 @@
   {
     "file": "src/main.rs",
     "name": "find_store_dir_from_never_escapes_the_repo_into_a_parent_store",
-    "start_line": 17726,
-    "end_line": 17763,
+    "start_line": 17760,
+    "end_line": 17797,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10343,8 +10352,8 @@
   {
     "file": "src/main.rs",
     "name": "reap_then_remove_dir_reaps_processes_rooted_inside_then_removes_the_dir",
-    "start_line": 17766,
-    "end_line": 17841,
+    "start_line": 17800,
+    "end_line": 17875,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10352,8 +10361,8 @@
   {
     "file": "src/main.rs",
     "name": "reclaim_run_scratch_removes_the_run_level_areas_and_spares_per_unit_scratch",
-    "start_line": 17844,
-    "end_line": 17893,
+    "start_line": 17878,
+    "end_line": 17927,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10361,8 +10370,8 @@
   {
     "file": "src/main.rs",
     "name": "reclaim_run_scratch_spares_the_shared_build_cache_while_a_build_holds_its_guard",
-    "start_line": 17896,
-    "end_line": 17929,
+    "start_line": 17930,
+    "end_line": 17963,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10370,8 +10379,8 @@
   {
     "file": "src/main.rs",
     "name": "find_store_dir_from_refuses_the_worktree_shape_with_no_events_db",
-    "start_line": 17932,
-    "end_line": 17943,
+    "start_line": 17966,
+    "end_line": 17977,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10379,8 +10388,8 @@
   {
     "file": "src/main.rs",
     "name": "find_store_dir_from_walks_past_a_storeless_rigger_to_the_real_store_above",
-    "start_line": 17946,
-    "end_line": 17975,
+    "start_line": 17980,
+    "end_line": 18009,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10388,8 +10397,8 @@
   {
     "file": "src/main.rs",
     "name": "find_store_dir_from_resolves_the_owning_repo_even_when_the_worktree_lives_outside_it",
-    "start_line": 17978,
-    "end_line": 18031,
+    "start_line": 18012,
+    "end_line": 18065,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10397,8 +10406,8 @@
   {
     "file": "src/main.rs",
     "name": "find_store_dir_from_never_climbs_a_relocated_worktrees_own_unrelated_ancestors_into_a_foreign_store",
-    "start_line": 18034,
-    "end_line": 18088,
+    "start_line": 18068,
+    "end_line": 18122,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10406,8 +10415,8 @@
   {
     "file": "src/main.rs",
     "name": "walk_stores_from_prefers_the_outermost_store_over_a_nearer_shadow",
-    "start_line": 18091,
-    "end_line": 18118,
+    "start_line": 18125,
+    "end_line": 18152,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10415,8 +10424,8 @@
   {
     "file": "src/main.rs",
     "name": "walk_stores_from_reports_no_shadow_for_a_single_store",
-    "start_line": 18121,
-    "end_line": 18139,
+    "start_line": 18155,
+    "end_line": 18173,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10424,8 +10433,8 @@
   {
     "file": "src/main.rs",
     "name": "drop",
-    "start_line": 18151,
-    "end_line": 18154,
+    "start_line": 18185,
+    "end_line": 18188,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10433,8 +10442,8 @@
   {
     "file": "src/main.rs",
     "name": "require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it",
-    "start_line": 18148,
-    "end_line": 18217,
+    "start_line": 18182,
+    "end_line": 18251,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10442,8 +10451,8 @@
   {
     "file": "src/main.rs",
     "name": "drop",
-    "start_line": 18227,
-    "end_line": 18229,
+    "start_line": 18261,
+    "end_line": 18263,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10451,8 +10460,8 @@
   {
     "file": "src/main.rs",
     "name": "require_store_dir_fence_is_off_by_default",
-    "start_line": 18221,
-    "end_line": 18243,
+    "start_line": 18255,
+    "end_line": 18277,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10460,8 +10469,8 @@
   {
     "file": "src/main.rs",
     "name": "result_advisories_flags_an_orphan_id_with_no_spawn_request",
-    "start_line": 18248,
-    "end_line": 18254,
+    "start_line": 18282,
+    "end_line": 18288,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10469,8 +10478,8 @@
   {
     "file": "src/main.rs",
     "name": "result_advisories_orphan_wording_is_plain_on_record_and_conditional_under_if_absent",
-    "start_line": 18257,
-    "end_line": 18282,
+    "start_line": 18291,
+    "end_line": 18316,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10478,8 +10487,8 @@
   {
     "file": "src/main.rs",
     "name": "result_advisories_is_silent_for_a_parked_unanswered_spawn",
-    "start_line": 18285,
-    "end_line": 18295,
+    "start_line": 18319,
+    "end_line": 18329,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10487,8 +10496,8 @@
   {
     "file": "src/main.rs",
     "name": "result_advisories_flags_a_supersede_with_the_prior_result_position",
-    "start_line": 18298,
-    "end_line": 18309,
+    "start_line": 18332,
+    "end_line": 18343,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10496,8 +10505,8 @@
   {
     "file": "src/main.rs",
     "name": "result_advisories_suppresses_the_supersede_note_when_not_superseding",
-    "start_line": 18312,
-    "end_line": 18325,
+    "start_line": 18346,
+    "end_line": 18359,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10505,8 +10514,8 @@
   {
     "file": "src/main.rs",
     "name": "result_advisories_flags_both_orphan_and_supersede",
-    "start_line": 18328,
-    "end_line": 18340,
+    "start_line": 18362,
+    "end_line": 18374,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10514,8 +10523,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_result_error_flag_is_order_independent",
-    "start_line": 18343,
-    "end_line": 18363,
+    "start_line": 18377,
+    "end_line": 18397,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10523,8 +10532,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_result_if_absent_is_off_by_default_and_a_bare_order_independent_flag",
-    "start_line": 18366,
-    "end_line": 18393,
+    "start_line": 18400,
+    "end_line": 18427,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10532,25 +10541,7 @@
   {
     "file": "src/main.rs",
     "name": "parse_result_meta_must_be_a_json_object",
-    "start_line": 18396,
-    "end_line": 18431,
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/main.rs",
-    "name": "parse_result_rejects_missing_id_extra_args_and_unknown_flags",
-    "start_line": 18434,
-    "end_line": 18448,
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/main.rs",
-    "name": "build_result_shapes_success_and_failure",
-    "start_line": 18451,
+    "start_line": 18430,
     "end_line": 18465,
     "is_test": true,
     "proposed_module": "main::tests",
@@ -10558,9 +10549,27 @@
   },
   {
     "file": "src/main.rs",
-    "name": "build_result_rejects_a_blank_error_message",
+    "name": "parse_result_rejects_missing_id_extra_args_and_unknown_flags",
     "start_line": 18468,
-    "end_line": 18473,
+    "end_line": 18482,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
+    "name": "build_result_shapes_success_and_failure",
+    "start_line": 18485,
+    "end_line": 18499,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
+    "name": "build_result_rejects_a_blank_error_message",
+    "start_line": 18502,
+    "end_line": 18507,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10568,8 +10577,8 @@
   {
     "file": "src/main.rs",
     "name": "build_result_attaches_meta",
-    "start_line": 18476,
-    "end_line": 18485,
+    "start_line": 18510,
+    "end_line": 18519,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10577,8 +10586,8 @@
   {
     "file": "src/main.rs",
     "name": "a_recorded_result_lets_the_replay_driver_advance_past_the_spawn",
-    "start_line": 18488,
-    "end_line": 18526,
+    "start_line": 18522,
+    "end_line": 18560,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10586,8 +10595,8 @@
   {
     "file": "src/main.rs",
     "name": "a_recorded_error_result_replays_as_a_failure_not_a_fake_success",
-    "start_line": 18529,
-    "end_line": 18561,
+    "start_line": 18563,
+    "end_line": 18595,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10595,8 +10604,8 @@
   {
     "file": "src/main.rs",
     "name": "scaffold_parses_into_a_valid_config",
-    "start_line": 18567,
-    "end_line": 18657,
+    "start_line": 18601,
+    "end_line": 18691,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10604,8 +10613,8 @@
   {
     "file": "src/main.rs",
     "name": "shipped_workflows_carry_a_non_zero_spawn_budget",
-    "start_line": 18671,
-    "end_line": 18688,
+    "start_line": 18705,
+    "end_line": 18722,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10613,8 +10622,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_canary_args_defaults_corpus_and_jobs",
-    "start_line": 18691,
-    "end_line": 18703,
+    "start_line": 18725,
+    "end_line": 18737,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10622,8 +10631,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_canary_args_reads_corpus_if_model_changed_and_jobs",
-    "start_line": 18706,
-    "end_line": 18718,
+    "start_line": 18740,
+    "end_line": 18752,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10631,8 +10640,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_canary_args_rejects_a_non_positive_jobs_value",
-    "start_line": 18721,
-    "end_line": 18733,
+    "start_line": 18755,
+    "end_line": 18767,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10640,8 +10649,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_canary_args_rejects_unknown_flags",
-    "start_line": 18736,
-    "end_line": 18746,
+    "start_line": 18770,
+    "end_line": 18780,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10649,8 +10658,8 @@
   {
     "file": "src/main.rs",
     "name": "usage_text_gives_the_jobs_flag_its_own_description_line",
-    "start_line": 18749,
-    "end_line": 18778,
+    "start_line": 18783,
+    "end_line": 18812,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10658,8 +10667,8 @@
   {
     "file": "src/main.rs",
     "name": "usage_text_names_the_build_cache_reset_mode",
-    "start_line": 18781,
-    "end_line": 18798,
+    "start_line": 18815,
+    "end_line": 18832,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10667,8 +10676,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_run_args_defaults_to_cli_and_an_unset_store",
-    "start_line": 18801,
-    "end_line": 18811,
+    "start_line": 18835,
+    "end_line": 18845,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10676,8 +10685,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_run_args_reads_fresh_alongside_a_spec",
-    "start_line": 18814,
-    "end_line": 18825,
+    "start_line": 18848,
+    "end_line": 18859,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10685,8 +10694,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_run_args_reads_rebase_definition",
-    "start_line": 18828,
-    "end_line": 18838,
+    "start_line": 18862,
+    "end_line": 18872,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10694,8 +10703,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_run_args_reads_driver_eventstore_conn_and_spec",
-    "start_line": 18841,
-    "end_line": 18856,
+    "start_line": 18875,
+    "end_line": 18890,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10703,8 +10712,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_run_args_rejects_unknown_flags_and_values",
-    "start_line": 18859,
-    "end_line": 18864,
+    "start_line": 18893,
+    "end_line": 18898,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10712,8 +10721,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_run_args_accepts_base_alongside_a_spec",
-    "start_line": 18871,
-    "end_line": 18897,
+    "start_line": 18905,
+    "end_line": 18931,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10721,8 +10730,8 @@
   {
     "file": "src/main.rs",
     "name": "resolve_run_base_precedence_flag_then_env_then_default",
-    "start_line": 18905,
-    "end_line": 18927,
+    "start_line": 18939,
+    "end_line": 18961,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10730,8 +10739,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_workflow_args_reads_spec_and_base",
-    "start_line": 18933,
-    "end_line": 18971,
+    "start_line": 18967,
+    "end_line": 19005,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10739,8 +10748,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_step_args_reads_spec_and_base_with_default",
-    "start_line": 18976,
-    "end_line": 19028,
+    "start_line": 19010,
+    "end_line": 19062,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10748,8 +10757,8 @@
   {
     "file": "src/main.rs",
     "name": "definition_hash_is_stable_and_content_sensitive",
-    "start_line": 19034,
-    "end_line": 19078,
+    "start_line": 19068,
+    "end_line": 19112,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10757,8 +10766,8 @@
   {
     "file": "src/main.rs",
     "name": "kurrentdb_is_always_available_and_needs_a_conn",
-    "start_line": 19087,
-    "end_line": 19114,
+    "start_line": 19121,
+    "end_line": 19148,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10766,8 +10775,8 @@
   {
     "file": "src/main.rs",
     "name": "store_selection_preserves_a_credentialed_tls_conn_verbatim",
-    "start_line": 19126,
-    "end_line": 19157,
+    "start_line": 19160,
+    "end_line": 19191,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10775,8 +10784,8 @@
   {
     "file": "src/main.rs",
     "name": "store_selection_precedence_flag_env_secret_file_config_then_default",
-    "start_line": 19168,
-    "end_line": 19345,
+    "start_line": 19202,
+    "end_line": 19379,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10784,8 +10793,8 @@
   {
     "file": "src/main.rs",
     "name": "project_identity_is_never_empty",
-    "start_line": 19348,
-    "end_line": 19350,
+    "start_line": 19382,
+    "end_line": 19384,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10793,8 +10802,8 @@
   {
     "file": "src/main.rs",
     "name": "project_identity_reads_the_tracked_id_file_then_falls_back_to_the_basename",
-    "start_line": 19353,
-    "end_line": 19378,
+    "start_line": 19387,
+    "end_line": 19412,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10802,8 +10811,8 @@
   {
     "file": "src/main.rs",
     "name": "ssh_https_and_git_suffix_forms_of_one_repo_mint_identical_ids",
-    "start_line": 19381,
-    "end_line": 19408,
+    "start_line": 19415,
+    "end_line": 19442,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10811,8 +10820,8 @@
   {
     "file": "src/main.rs",
     "name": "normalize_origin_url_separates_distinct_repos_and_lowercases_only_the_host",
-    "start_line": 19411,
-    "end_line": 19425,
+    "start_line": 19445,
+    "end_line": 19459,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10820,8 +10829,8 @@
   {
     "file": "src/main.rs",
     "name": "decide_migration_covers_every_case",
-    "start_line": 19428,
-    "end_line": 19457,
+    "start_line": 19462,
+    "end_line": 19491,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10829,8 +10838,8 @@
   {
     "file": "src/main.rs",
     "name": "migrate_project_identity_renames_legacy_history_and_records_a_decision",
-    "start_line": 19460,
-    "end_line": 19499,
+    "start_line": 19494,
+    "end_line": 19533,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10838,8 +10847,8 @@
   {
     "file": "src/main.rs",
     "name": "migrate_project_identity_refuses_when_both_namespaces_hold_history",
-    "start_line": 19502,
-    "end_line": 19541,
+    "start_line": 19536,
+    "end_line": 19575,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10847,8 +10856,8 @@
   {
     "file": "src/main.rs",
     "name": "migrate_project_identity_rekeys_graph_rows_so_pre_mint_history_is_not_orphaned",
-    "start_line": 19544,
-    "end_line": 19609,
+    "start_line": 19578,
+    "end_line": 19643,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10856,8 +10865,8 @@
   {
     "file": "src/main.rs",
     "name": "migrate_project_identity_rekeys_the_graph_before_the_irreversible_stream_rename",
-    "start_line": 19612,
-    "end_line": 19692,
+    "start_line": 19646,
+    "end_line": 19726,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10865,8 +10874,8 @@
   {
     "file": "src/main.rs",
     "name": "migrate_project_identity_recovers_from_a_crash_between_the_rekey_and_the_rename",
-    "start_line": 19695,
-    "end_line": 19790,
+    "start_line": 19729,
+    "end_line": 19824,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10874,8 +10883,8 @@
   {
     "file": "src/main.rs",
     "name": "dash_graph_provider_reaches_the_whole_projection_when_run_seeds_are_empty",
-    "start_line": 19799,
-    "end_line": 19904,
+    "start_line": 19833,
+    "end_line": 19938,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10883,8 +10892,8 @@
   {
     "file": "src/main.rs",
     "name": "dash_read_whole_graph_on_an_absent_db_is_empty_and_creates_nothing",
-    "start_line": 19918,
-    "end_line": 19957,
+    "start_line": 19952,
+    "end_line": 19991,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10892,8 +10901,8 @@
   {
     "file": "src/main.rs",
     "name": "setup_provisions_the_shim_runtime_files",
-    "start_line": 19963,
-    "end_line": 19995,
+    "start_line": 19997,
+    "end_line": 20029,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10901,8 +10910,8 @@
   {
     "file": "src/main.rs",
     "name": "setup_installs_refreshes_and_is_a_noop_on_the_native_rigger_workflow",
-    "start_line": 20004,
-    "end_line": 20063,
+    "start_line": 20038,
+    "end_line": 20097,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10910,8 +10919,8 @@
   {
     "file": "src/main.rs",
     "name": "outcome_for",
-    "start_line": 20068,
-    "end_line": 20077,
+    "start_line": 20102,
+    "end_line": 20111,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10919,8 +10928,8 @@
   {
     "file": "src/main.rs",
     "name": "registry_entry",
-    "start_line": 20081,
-    "end_line": 20086,
+    "start_line": 20115,
+    "end_line": 20120,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10928,8 +10937,8 @@
   {
     "file": "src/main.rs",
     "name": "setup_installs_the_using_rigger_skill_distinct_from_the_workflow",
-    "start_line": 20096,
-    "end_line": 20166,
+    "start_line": 20130,
+    "end_line": 20200,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10937,8 +10946,8 @@
   {
     "file": "src/main.rs",
     "name": "planning_a_spec_installs_and_renders_through_the_registry_with_no_planning_specific_code",
-    "start_line": 20184,
-    "end_line": 20268,
+    "start_line": 20218,
+    "end_line": 20302,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10946,8 +10955,8 @@
   {
     "file": "src/main.rs",
     "name": "setup_skill_install_applies_the_project_overlay",
-    "start_line": 20278,
-    "end_line": 20314,
+    "start_line": 20312,
+    "end_line": 20348,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10955,8 +10964,8 @@
   {
     "file": "src/main.rs",
     "name": "docs_overlay_overrides_only_declared_fields",
-    "start_line": 20320,
-    "end_line": 20346,
+    "start_line": 20354,
+    "end_line": 20380,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10964,8 +10973,8 @@
   {
     "file": "src/main.rs",
     "name": "docs_overlay_malformed_is_a_loud_error",
-    "start_line": 20351,
-    "end_line": 20361,
+    "start_line": 20385,
+    "end_line": 20395,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10973,8 +10982,8 @@
   {
     "file": "src/main.rs",
     "name": "provision_shim_is_a_silent_noop_when_already_current",
-    "start_line": 20371,
-    "end_line": 20399,
+    "start_line": 20405,
+    "end_line": 20433,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10982,8 +10991,8 @@
   {
     "file": "src/main.rs",
     "name": "shim_is_not_current_when_node_modules_is_torn_missing_the_install_marker",
-    "start_line": 20409,
-    "end_line": 20428,
+    "start_line": 20443,
+    "end_line": 20462,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -10991,8 +11000,8 @@
   {
     "file": "src/main.rs",
     "name": "init_project_is_idempotent_reporting_new_work_only_once",
-    "start_line": 20435,
-    "end_line": 20457,
+    "start_line": 20469,
+    "end_line": 20491,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11000,8 +11009,8 @@
   {
     "file": "src/main.rs",
     "name": "scaffold_summary_reports_only_the_gitignore_change_on_a_gitignore_only_repair",
-    "start_line": 20467,
-    "end_line": 20525,
+    "start_line": 20501,
+    "end_line": 20559,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11009,8 +11018,8 @@
   {
     "file": "src/main.rs",
     "name": "init_project_gitignores_the_dash_runtime_breadcrumbs_idempotently",
-    "start_line": 20536,
-    "end_line": 20615,
+    "start_line": 20570,
+    "end_line": 20649,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11018,8 +11027,8 @@
   {
     "file": "src/main.rs",
     "name": "init_project_gitignores_the_store_conn_secret_file_idempotently",
-    "start_line": 20624,
-    "end_line": 20664,
+    "start_line": 20658,
+    "end_line": 20698,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11027,8 +11036,8 @@
   {
     "file": "src/main.rs",
     "name": "a_group_or_other_readable_secret_file_mode_is_flagged_owner_only_is_not",
-    "start_line": 20673,
-    "end_line": 20687,
+    "start_line": 20707,
+    "end_line": 20721,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11036,8 +11045,8 @@
   {
     "file": "src/main.rs",
     "name": "init_project_still_writes_the_dash_ignore_lines_when_a_broader_rule_covers_them",
-    "start_line": 20699,
-    "end_line": 20747,
+    "start_line": 20733,
+    "end_line": 20781,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11045,8 +11054,8 @@
   {
     "file": "src/main.rs",
     "name": "scaffold_agents_and_workflow_reference_the_same_canonical_set",
-    "start_line": 20756,
-    "end_line": 20818,
+    "start_line": 20790,
+    "end_line": 20852,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11054,8 +11063,8 @@
   {
     "file": "src/main.rs",
     "name": "init_scaffolds_only_the_workflow_referenced_agents",
-    "start_line": 20825,
-    "end_line": 20868,
+    "start_line": 20859,
+    "end_line": 20902,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11063,8 +11072,8 @@
   {
     "file": "src/main.rs",
     "name": "get_referenced_agent_ids_reads_the_scaffolded_workflows_fleet",
-    "start_line": 20875,
-    "end_line": 20904,
+    "start_line": 20909,
+    "end_line": 20938,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11072,8 +11081,8 @@
   {
     "file": "src/main.rs",
     "name": "write_if_absent_wrote_kept_and_errors_naming_the_artifact",
-    "start_line": 20911,
-    "end_line": 20943,
+    "start_line": 20945,
+    "end_line": 20977,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11081,8 +11090,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_setup_args_reads_the_agents_directory_flag",
-    "start_line": 20951,
-    "end_line": 20968,
+    "start_line": 20985,
+    "end_line": 21002,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11090,8 +11099,8 @@
   {
     "file": "src/main.rs",
     "name": "import_agents_copies_and_normalizes_the_identity_field",
-    "start_line": 20975,
-    "end_line": 21020,
+    "start_line": 21009,
+    "end_line": 21054,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11099,8 +11108,8 @@
   {
     "file": "src/main.rs",
     "name": "import_agents_refuses_to_overwrite_an_existing_agent",
-    "start_line": 21026,
-    "end_line": 21063,
+    "start_line": 21060,
+    "end_line": 21097,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11108,8 +11117,8 @@
   {
     "file": "src/main.rs",
     "name": "import_agents_validates_and_rejects_a_malformed_agent",
-    "start_line": 21069,
-    "end_line": 21082,
+    "start_line": 21103,
+    "end_line": 21116,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11117,8 +11126,8 @@
   {
     "file": "src/main.rs",
     "name": "import_agents_rejects_an_id_colliding_with_an_existing_agent",
-    "start_line": 21091,
-    "end_line": 21113,
+    "start_line": 21125,
+    "end_line": 21147,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11126,8 +11135,8 @@
   {
     "file": "src/main.rs",
     "name": "import_agents_rejects_a_duplicate_id_within_one_import",
-    "start_line": 21119,
-    "end_line": 21139,
+    "start_line": 21153,
+    "end_line": 21173,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11135,8 +11144,8 @@
   {
     "file": "src/main.rs",
     "name": "import_agents_rejects_an_agent_with_a_blank_id",
-    "start_line": 21145,
-    "end_line": 21166,
+    "start_line": 21179,
+    "end_line": 21200,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11144,8 +11153,8 @@
   {
     "file": "src/main.rs",
     "name": "import_agents_runs_full_validation_and_rejects_a_broken_project",
-    "start_line": 21173,
-    "end_line": 21195,
+    "start_line": 21207,
+    "end_line": 21229,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11153,8 +11162,8 @@
   {
     "file": "src/main.rs",
     "name": "meta_object_body",
-    "start_line": 21201,
-    "end_line": 21220,
+    "start_line": 21235,
+    "end_line": 21254,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11162,8 +11171,8 @@
   {
     "file": "src/main.rs",
     "name": "meta_description",
-    "start_line": 21229,
-    "end_line": 21243,
+    "start_line": 21263,
+    "end_line": 21277,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11171,8 +11180,8 @@
   {
     "file": "src/main.rs",
     "name": "strip_line_comments",
-    "start_line": 21250,
-    "end_line": 21258,
+    "start_line": 21284,
+    "end_line": 21292,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11180,8 +11189,8 @@
   {
     "file": "src/main.rs",
     "name": "workflow_is_a_thin_courier_driver_with_per_unit_phase_labels",
-    "start_line": 21272,
-    "end_line": 21495,
+    "start_line": 21306,
+    "end_line": 21529,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11189,8 +11198,8 @@
   {
     "file": "src/main.rs",
     "name": "the_step_schema_admits_the_attention_array",
-    "start_line": 21504,
-    "end_line": 21515,
+    "start_line": 21538,
+    "end_line": 21549,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11198,8 +11207,8 @@
   {
     "file": "src/main.rs",
     "name": "js_function_body",
-    "start_line": 21521,
-    "end_line": 21543,
+    "start_line": 21555,
+    "end_line": 21577,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11207,8 +11216,8 @@
   {
     "file": "src/main.rs",
     "name": "phase_of_maps_wave_items_to_the_meta_phase_by_role_and_stage",
-    "start_line": 21559,
-    "end_line": 21614,
+    "start_line": 21593,
+    "end_line": 21648,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11216,8 +11225,8 @@
   {
     "file": "src/main.rs",
     "name": "meta_matches_reality_drops_integrate_and_the_unit_stage_construction",
-    "start_line": 21627,
-    "end_line": 21665,
+    "start_line": 21661,
+    "end_line": 21699,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11225,8 +11234,8 @@
   {
     "file": "src/main.rs",
     "name": "the_driver_relays_each_attention_entry_as_a_narrator_log_line",
-    "start_line": 21684,
-    "end_line": 21775,
+    "start_line": 21718,
+    "end_line": 21809,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11234,8 +11243,8 @@
   {
     "file": "src/main.rs",
     "name": "merge_hung_attention_does_nothing_when_not_newly_hung",
-    "start_line": 21782,
-    "end_line": 21795,
+    "start_line": 21816,
+    "end_line": 21829,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11243,8 +11252,8 @@
   {
     "file": "src/main.rs",
     "name": "merge_hung_attention_defers_to_an_existing_budget_halt",
-    "start_line": 21803,
-    "end_line": 21815,
+    "start_line": 21837,
+    "end_line": 21849,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11252,8 +11261,8 @@
   {
     "file": "src/main.rs",
     "name": "merge_hung_attention_lands_in_canonical_position_alongside_other_signals",
-    "start_line": 21824,
-    "end_line": 21860,
+    "start_line": 21858,
+    "end_line": 21894,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11261,8 +11270,8 @@
   {
     "file": "src/main.rs",
     "name": "workflow_step_courier_prompt_is_foreground_and_honest",
-    "start_line": 21878,
-    "end_line": 21926,
+    "start_line": 21912,
+    "end_line": 21960,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11270,8 +11279,8 @@
   {
     "file": "src/main.rs",
     "name": "step_courier_prompt",
-    "start_line": 21936,
-    "end_line": 21945,
+    "start_line": 21970,
+    "end_line": 21979,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11279,8 +11288,8 @@
   {
     "file": "src/main.rs",
     "name": "workflow_step_courier_waits_on_an_auto_backgrounded_step",
-    "start_line": 21963,
-    "end_line": 22030,
+    "start_line": 21997,
+    "end_line": 22064,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11288,8 +11297,8 @@
   {
     "file": "src/main.rs",
     "name": "workflow_driver_guards_a_null_step_before_dereferencing_it",
-    "start_line": 22045,
-    "end_line": 22100,
+    "start_line": 22079,
+    "end_line": 22134,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11297,8 +11306,8 @@
   {
     "file": "src/main.rs",
     "name": "workflow_meta_description_is_a_user_facing_tagline_free_of_plumbing_terms",
-    "start_line": 22113,
-    "end_line": 22170,
+    "start_line": 22147,
+    "end_line": 22204,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11306,8 +11315,8 @@
   {
     "file": "src/main.rs",
     "name": "setup_runs_npm_install_or_reports_a_clear_error",
-    "start_line": 22177,
-    "end_line": 22201,
+    "start_line": 22211,
+    "end_line": 22235,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11315,8 +11324,8 @@
   {
     "file": "src/main.rs",
     "name": "workflow_locates_the_provisioned_shim_or_tells_you_to_run_setup",
-    "start_line": 22207,
-    "end_line": 22232,
+    "start_line": 22241,
+    "end_line": 22266,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11324,8 +11333,8 @@
   {
     "file": "src/main.rs",
     "name": "npm_available",
-    "start_line": 22234,
-    "end_line": 22240,
+    "start_line": 22268,
+    "end_line": 22274,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11333,8 +11342,8 @@
   {
     "file": "src/main.rs",
     "name": "format_stats_prints_all_four_metrics",
-    "start_line": 22251,
-    "end_line": 22294,
+    "start_line": 22285,
+    "end_line": 22328,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11342,8 +11351,8 @@
   {
     "file": "src/main.rs",
     "name": "format_stats_handles_zeroed_metrics_without_nan",
-    "start_line": 22300,
-    "end_line": 22316,
+    "start_line": 22334,
+    "end_line": 22350,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11351,8 +11360,8 @@
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_reports_findings_raised_by_tier",
-    "start_line": 22322,
-    "end_line": 22339,
+    "start_line": 22356,
+    "end_line": 22373,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11360,25 +11369,7 @@
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_reports_a_zero_findings_count_honestly",
-    "start_line": 22344,
-    "end_line": 22354,
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/main.rs",
-    "name": "format_canary_stats_omits_the_findings_volume_section_when_empty",
-    "start_line": 22360,
-    "end_line": 22366,
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/main.rs",
-    "name": "progress_outcome",
-    "start_line": 22371,
+    "start_line": 22378,
     "end_line": 22388,
     "is_test": true,
     "proposed_module": "main::tests",
@@ -11386,9 +11377,27 @@
   },
   {
     "file": "src/main.rs",
+    "name": "format_canary_stats_omits_the_findings_volume_section_when_empty",
+    "start_line": 22394,
+    "end_line": 22400,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
+    "name": "progress_outcome",
+    "start_line": 22405,
+    "end_line": 22422,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
     "name": "format_progress_line_names_id_verdict_and_none_when_nothing_caught",
-    "start_line": 22395,
-    "end_line": 22407,
+    "start_line": 22429,
+    "end_line": 22441,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11396,8 +11405,8 @@
   {
     "file": "src/main.rs",
     "name": "format_progress_line_reports_a_wrong_verdict_and_every_catching_tier",
-    "start_line": 22413,
-    "end_line": 22430,
+    "start_line": 22447,
+    "end_line": 22464,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11405,8 +11414,8 @@
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_renders_na_for_a_tier_with_unattributed_correct_rejects",
-    "start_line": 22438,
-    "end_line": 22469,
+    "start_line": 22472,
+    "end_line": 22503,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11414,8 +11423,8 @@
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_renders_the_real_zero_when_attribution_was_fully_measured",
-    "start_line": 22476,
-    "end_line": 22495,
+    "start_line": 22510,
+    "end_line": 22529,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11423,8 +11432,8 @@
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_reports_control_items_and_false_positives",
-    "start_line": 22504,
-    "end_line": 22523,
+    "start_line": 22538,
+    "end_line": 22557,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11432,8 +11441,8 @@
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_reports_zero_false_positives_honestly",
-    "start_line": 22531,
-    "end_line": 22546,
+    "start_line": 22565,
+    "end_line": 22580,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11441,8 +11450,8 @@
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_reports_the_model_pinning_header_when_present",
-    "start_line": 22553,
-    "end_line": 22582,
+    "start_line": 22587,
+    "end_line": 22616,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11450,8 +11459,8 @@
   {
     "file": "src/main.rs",
     "name": "format_canary_stats_omits_the_model_pinning_header_when_the_run_never_recorded_one",
-    "start_line": 22588,
-    "end_line": 22594,
+    "start_line": 22622,
+    "end_line": 22628,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11459,8 +11468,8 @@
   {
     "file": "src/main.rs",
     "name": "format_stats_surfaces_parallelism_retention_and_warns_below_the_floor",
-    "start_line": 22604,
-    "end_line": 22646,
+    "start_line": 22638,
+    "end_line": 22680,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11468,8 +11477,8 @@
   {
     "file": "src/main.rs",
     "name": "format_stats_surfaces_spawn_timing_and_reports_unpaired_separately",
-    "start_line": 22653,
-    "end_line": 22693,
+    "start_line": 22687,
+    "end_line": 22727,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11477,16 +11486,7 @@
   {
     "file": "src/main.rs",
     "name": "format_stats_spawn_timing_reports_no_spawns_when_none_recorded",
-    "start_line": 22699,
-    "end_line": 22705,
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/main.rs",
-    "name": "format_stats_spawn_timing_no_spawns_line_requires_both_empty_and_zero_unpaired",
-    "start_line": 22712,
+    "start_line": 22733,
     "end_line": 22739,
     "is_test": true,
     "proposed_module": "main::tests",
@@ -11494,9 +11494,18 @@
   },
   {
     "file": "src/main.rs",
-    "name": "format_stats_spawn_timing_all_unpaired_is_not_reported_as_no_spawns",
+    "name": "format_stats_spawn_timing_no_spawns_line_requires_both_empty_and_zero_unpaired",
     "start_line": 22746,
-    "end_line": 22761,
+    "end_line": 22773,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
+    "name": "format_stats_spawn_timing_all_unpaired_is_not_reported_as_no_spawns",
+    "start_line": 22780,
+    "end_line": 22795,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11504,8 +11513,8 @@
   {
     "file": "src/main.rs",
     "name": "parallelism_retention_line_is_single_sourced_and_warns_below_the_floor",
-    "start_line": 22769,
-    "end_line": 22796,
+    "start_line": 22803,
+    "end_line": 22830,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11513,8 +11522,8 @@
   {
     "file": "src/main.rs",
     "name": "stats_discloses_when_no_verdict_was_recorded_on_this_driver",
-    "start_line": 22803,
-    "end_line": 22848,
+    "start_line": 22837,
+    "end_line": 22882,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11522,8 +11531,8 @@
   {
     "file": "src/main.rs",
     "name": "stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed",
-    "start_line": 22859,
-    "end_line": 22932,
+    "start_line": 22893,
+    "end_line": 22966,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11531,8 +11540,8 @@
   {
     "file": "src/main.rs",
     "name": "stats_discloses_cause_split_remainder_when_fewer_causes_than_rejects",
-    "start_line": 22940,
-    "end_line": 22977,
+    "start_line": 22974,
+    "end_line": 23011,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11540,8 +11549,8 @@
   {
     "file": "src/main.rs",
     "name": "cmd_stats_rejects_extra_arguments",
-    "start_line": 22982,
-    "end_line": 22988,
+    "start_line": 23016,
+    "end_line": 23022,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11549,16 +11558,7 @@
   {
     "file": "src/main.rs",
     "name": "baseline_run_slice_selects_a_run_by_id_including_a_middle_run",
-    "start_line": 22991,
-    "end_line": 23036,
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/main.rs",
-    "name": "format_stats_diff_flags_only_the_changed_rows",
-    "start_line": 23039,
+    "start_line": 23025,
     "end_line": 23070,
     "is_test": true,
     "proposed_module": "main::tests",
@@ -11566,9 +11566,18 @@
   },
   {
     "file": "src/main.rs",
+    "name": "format_stats_diff_flags_only_the_changed_rows",
+    "start_line": 23073,
+    "end_line": 23104,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
     "name": "build_environment_report_with_a_wrapper_lists_wrapper_cache_dir_and_budget",
-    "start_line": 23082,
-    "end_line": 23100,
+    "start_line": 23116,
+    "end_line": 23134,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11576,8 +11585,8 @@
   {
     "file": "src/main.rs",
     "name": "build_environment_report_with_no_wrapper_omits_cache_dir_but_keeps_budget",
-    "start_line": 23107,
-    "end_line": 23124,
+    "start_line": 23141,
+    "end_line": 23158,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11585,8 +11594,8 @@
   {
     "file": "src/main.rs",
     "name": "build_environment_report_zero_max_concurrent_reports_unlimited",
-    "start_line": 23130,
-    "end_line": 23140,
+    "start_line": 23164,
+    "end_line": 23174,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11594,8 +11603,8 @@
   {
     "file": "src/main.rs",
     "name": "build_environment_report_reports_mutation_gate_declared",
-    "start_line": 23146,
-    "end_line": 23155,
+    "start_line": 23180,
+    "end_line": 23189,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11603,8 +11612,8 @@
   {
     "file": "src/main.rs",
     "name": "build_environment_report_reports_mutation_gate_not_configured",
-    "start_line": 23161,
-    "end_line": 23170,
+    "start_line": 23195,
+    "end_line": 23204,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11612,8 +11621,8 @@
   {
     "file": "src/main.rs",
     "name": "order_signature_advisories_names_the_stream_count_range_and_repair_doc",
-    "start_line": 23188,
-    "end_line": 23207,
+    "start_line": 23222,
+    "end_line": 23241,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11621,8 +11630,8 @@
   {
     "file": "src/main.rs",
     "name": "order_signature_advisories_is_empty_when_no_signatures_are_given",
-    "start_line": 23211,
-    "end_line": 23213,
+    "start_line": 23245,
+    "end_line": 23247,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11630,8 +11639,8 @@
   {
     "file": "src/main.rs",
     "name": "drift_change",
-    "start_line": 23221,
-    "end_line": 23227,
+    "start_line": 23255,
+    "end_line": 23261,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11639,8 +11648,8 @@
   {
     "file": "src/main.rs",
     "name": "model_drift_advisory_is_a_soft_note_for_snapshot_only_drift",
-    "start_line": 23233,
-    "end_line": 23262,
+    "start_line": 23267,
+    "end_line": 23296,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11648,8 +11657,8 @@
   {
     "file": "src/main.rs",
     "name": "model_drift_advisory_stays_a_warning_when_any_change_is_a_real_model_repoint",
-    "start_line": 23267,
-    "end_line": 23278,
+    "start_line": 23301,
+    "end_line": 23312,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11657,8 +11666,8 @@
   {
     "file": "src/main.rs",
     "name": "model_drift_advisory_is_none_when_nothing_changed",
-    "start_line": 23282,
-    "end_line": 23284,
+    "start_line": 23316,
+    "end_line": 23318,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11666,8 +11675,8 @@
   {
     "file": "src/main.rs",
     "name": "index_staleness_message_names_every_kind_of_disagreement_and_the_fix",
-    "start_line": 23289,
-    "end_line": 23305,
+    "start_line": 23323,
+    "end_line": 23339,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11675,8 +11684,8 @@
   {
     "file": "src/main.rs",
     "name": "bloat_advisory_is_none_at_or_below_the_threshold_and_named_above_it",
-    "start_line": 23308,
-    "end_line": 23331,
+    "start_line": 23342,
+    "end_line": 23365,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11684,8 +11693,8 @@
   {
     "file": "src/main.rs",
     "name": "assert_advisory_for_never_fabricates_a_missing_store",
-    "start_line": 23339,
-    "end_line": 23354,
+    "start_line": 23373,
+    "end_line": 23388,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11693,8 +11702,8 @@
   {
     "file": "src/main.rs",
     "name": "bloat_advisory_for_never_fabricates_a_store_that_does_not_exist",
-    "start_line": 23357,
-    "end_line": 23359,
+    "start_line": 23391,
+    "end_line": 23393,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11702,8 +11711,8 @@
   {
     "file": "src/main.rs",
     "name": "retired_entities_advisory_is_none_at_zero_and_named_with_correct_pluralization",
-    "start_line": 23364,
-    "end_line": 23382,
+    "start_line": 23398,
+    "end_line": 23416,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11711,8 +11720,8 @@
   {
     "file": "src/main.rs",
     "name": "retired_entities_advisory_for_never_fabricates_a_graph_that_does_not_exist",
-    "start_line": 23385,
-    "end_line": 23390,
+    "start_line": 23419,
+    "end_line": 23424,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11720,8 +11729,8 @@
   {
     "file": "src/main.rs",
     "name": "retired_entities_advisory_for_reads_the_projectors_own_counting_authority",
-    "start_line": 23393,
-    "end_line": 23427,
+    "start_line": 23427,
+    "end_line": 23461,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11729,8 +11738,8 @@
   {
     "file": "src/main.rs",
     "name": "scaffold_workflow_declares_build_wrapper_auto",
-    "start_line": 23434,
-    "end_line": 23441,
+    "start_line": 23468,
+    "end_line": 23475,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11738,8 +11747,8 @@
   {
     "file": "src/main.rs",
     "name": "init_project_never_clobbers_an_existing_build_section",
-    "start_line": 23449,
-    "end_line": 23463,
+    "start_line": 23483,
+    "end_line": 23497,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11747,8 +11756,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_replay_args_requires_a_run_and_a_rev_in_either_order",
-    "start_line": 23466,
-    "end_line": 23483,
+    "start_line": 23500,
+    "end_line": 23517,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11756,8 +11765,8 @@
   {
     "file": "src/main.rs",
     "name": "drop",
-    "start_line": 23502,
-    "end_line": 23504,
+    "start_line": 23536,
+    "end_line": 23538,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11765,8 +11774,8 @@
   {
     "file": "src/main.rs",
     "name": "cmd_stats_on_a_never_run_project_says_no_runs_and_creates_no_db",
-    "start_line": 23495,
-    "end_line": 23516,
+    "start_line": 23529,
+    "end_line": 23550,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11774,8 +11783,8 @@
   {
     "file": "src/main.rs",
     "name": "drop",
-    "start_line": 23529,
-    "end_line": 23531,
+    "start_line": 23563,
+    "end_line": 23565,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11783,8 +11792,8 @@
   {
     "file": "src/main.rs",
     "name": "a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release",
-    "start_line": 23524,
-    "end_line": 23571,
+    "start_line": 23558,
+    "end_line": 23605,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11792,8 +11801,8 @@
   {
     "file": "src/main.rs",
     "name": "no_runs_message_points_at_rigger_run",
-    "start_line": 23577,
-    "end_line": 23580,
+    "start_line": 23611,
+    "end_line": 23614,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11801,8 +11810,8 @@
   {
     "file": "src/main.rs",
     "name": "seed_run",
-    "start_line": 23586,
-    "end_line": 23593,
+    "start_line": 23620,
+    "end_line": 23627,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11810,8 +11819,8 @@
   {
     "file": "src/main.rs",
     "name": "stats_lines_absent_db_returns_none_and_creates_no_file",
-    "start_line": 23599,
-    "end_line": 23611,
+    "start_line": 23633,
+    "end_line": 23645,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11819,8 +11828,8 @@
   {
     "file": "src/main.rs",
     "name": "stats_lines_existing_db_with_empty_run_stream_returns_none",
-    "start_line": 23618,
-    "end_line": 23634,
+    "start_line": 23652,
+    "end_line": 23668,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11828,8 +11837,8 @@
   {
     "file": "src/main.rs",
     "name": "stats_lines_does_not_read_another_projects_namespaced_run",
-    "start_line": 23642,
-    "end_line": 23671,
+    "start_line": 23676,
+    "end_line": 23705,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11837,8 +11846,8 @@
   {
     "file": "src/main.rs",
     "name": "stats_lines_existing_run_renders_metric_lines",
-    "start_line": 23678,
-    "end_line": 23709,
+    "start_line": 23712,
+    "end_line": 23743,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11846,8 +11855,8 @@
   {
     "file": "src/main.rs",
     "name": "stats_lines_pairs_recorded_spawn_request_and_result_into_spawn_timing",
-    "start_line": 23732,
-    "end_line": 23801,
+    "start_line": 23766,
+    "end_line": 23835,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11855,8 +11864,8 @@
   {
     "file": "src/main.rs",
     "name": "result_of_at_absent_db_reads_as_unreported_and_creates_no_file",
-    "start_line": 23809,
-    "end_line": 23821,
+    "start_line": 23843,
+    "end_line": 23855,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11864,8 +11873,8 @@
   {
     "file": "src/main.rs",
     "name": "result_of_at_unrecorded_spawn_reads_as_unreported",
-    "start_line": 23827,
-    "end_line": 23847,
+    "start_line": 23861,
+    "end_line": 23881,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11873,8 +11882,8 @@
   {
     "file": "src/main.rs",
     "name": "result_of_at_reads_a_self_reported_result_so_it_is_not_clobbered",
-    "start_line": 23855,
-    "end_line": 23879,
+    "start_line": 23889,
+    "end_line": 23913,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11882,8 +11891,8 @@
   {
     "file": "src/main.rs",
     "name": "result_of_at_is_namespace_scoped",
-    "start_line": 23885,
-    "end_line": 23914,
+    "start_line": 23919,
+    "end_line": 23948,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11891,8 +11900,8 @@
   {
     "file": "src/main.rs",
     "name": "cmd_reported_requires_exactly_one_id",
-    "start_line": 23921,
-    "end_line": 23933,
+    "start_line": 23955,
+    "end_line": 23967,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11900,8 +11909,8 @@
   {
     "file": "src/main.rs",
     "name": "pgid_of",
-    "start_line": 23944,
-    "end_line": 23957,
+    "start_line": 23978,
+    "end_line": 23991,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11909,8 +11918,8 @@
   {
     "file": "src/main.rs",
     "name": "detach_process_group_places_the_child_in_its_own_process_group",
-    "start_line": 23968,
-    "end_line": 23993,
+    "start_line": 24002,
+    "end_line": 24027,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11918,16 +11927,7 @@
   {
     "file": "src/main.rs",
     "name": "a_child_spawned_without_detachment_inherits_the_parent_process_group",
-    "start_line": 24002,
-    "end_line": 24023,
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
-  },
-  {
-    "file": "src/main.rs",
-    "name": "spawn_run_dashboard_detached_session_detaches_the_dash",
-    "start_line": 24037,
+    "start_line": 24036,
     "end_line": 24057,
     "is_test": true,
     "proposed_module": "main::tests",
@@ -11935,17 +11935,17 @@
   },
   {
     "file": "src/main.rs",
-    "name": "report_of",
-    "start_line": 24072,
-    "end_line": 24092,
+    "name": "spawn_run_dashboard_detached_session_detaches_the_dash",
+    "start_line": 24071,
+    "end_line": 24091,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
   },
   {
     "file": "src/main.rs",
-    "name": "a_compaction_that_failed_after_the_deletes_is_reported_beside_the_counts",
-    "start_line": 24103,
+    "name": "report_of",
+    "start_line": 24106,
     "end_line": 24126,
     "is_test": true,
     "proposed_module": "main::tests",
@@ -11953,7 +11953,7 @@
   },
   {
     "file": "src/main.rs",
-    "name": "a_prune_that_shed_nothing_is_justified_by_this_log_not_by_when_it_was_written",
+    "name": "a_compaction_that_failed_after_the_deletes_is_reported_beside_the_counts",
     "start_line": 24137,
     "end_line": 24160,
     "is_test": true,
@@ -11962,9 +11962,18 @@
   },
   {
     "file": "src/main.rs",
-    "name": "a_pass_that_deleted_nothing_but_reclaimed_space_reports_the_reclamation",
+    "name": "a_prune_that_shed_nothing_is_justified_by_this_log_not_by_when_it_was_written",
     "start_line": 24171,
-    "end_line": 24182,
+    "end_line": 24194,
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
+  },
+  {
+    "file": "src/main.rs",
+    "name": "a_pass_that_deleted_nothing_but_reclaimed_space_reports_the_reclamation",
+    "start_line": 24205,
+    "end_line": 24216,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11972,8 +11981,8 @@
   {
     "file": "src/main.rs",
     "name": "a_prune_that_shed_rows_explains_the_duplication_a_deduplicated_log_still_accumulates",
-    "start_line": 24187,
-    "end_line": 24218,
+    "start_line": 24221,
+    "end_line": 24252,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11981,8 +11990,8 @@
   {
     "file": "src/main.rs",
     "name": "an_unmeasurable_database_is_not_reported_as_a_checkpoint_a_reader_declined",
-    "start_line": 24232,
-    "end_line": 24267,
+    "start_line": 24266,
+    "end_line": 24301,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11990,8 +11999,8 @@
   {
     "file": "src/main.rs",
     "name": "no_live_units",
-    "start_line": 24271,
-    "end_line": 24273,
+    "start_line": 24305,
+    "end_line": 24307,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -11999,8 +12008,8 @@
   {
     "file": "src/main.rs",
     "name": "live_writer_reasons_is_empty_only_when_all_four_facts_are_quiet",
-    "start_line": 24277,
-    "end_line": 24295,
+    "start_line": 24311,
+    "end_line": 24329,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12008,8 +12017,8 @@
   {
     "file": "src/main.rs",
     "name": "refusal_names_a_held_step_lock_and_the_force_live_override_owning_the_risk",
-    "start_line": 24301,
-    "end_line": 24320,
+    "start_line": 24335,
+    "end_line": 24354,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12017,8 +12026,8 @@
   {
     "file": "src/main.rs",
     "name": "refusal_names_a_non_terminal_unit_between_spawn_rounds",
-    "start_line": 24325,
-    "end_line": 24333,
+    "start_line": 24359,
+    "end_line": 24367,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12026,8 +12035,8 @@
   {
     "file": "src/main.rs",
     "name": "refusal_names_every_in_flight_spawn_id_and_the_count",
-    "start_line": 24337,
-    "end_line": 24349,
+    "start_line": 24371,
+    "end_line": 24383,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12035,8 +12044,8 @@
   {
     "file": "src/main.rs",
     "name": "refusal_names_the_driver_registration_count",
-    "start_line": 24353,
-    "end_line": 24360,
+    "start_line": 24387,
+    "end_line": 24394,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12044,8 +12053,8 @@
   {
     "file": "src/main.rs",
     "name": "refusal_names_every_applicable_reason_together_not_just_the_first",
-    "start_line": 24365,
-    "end_line": 24377,
+    "start_line": 24399,
+    "end_line": 24411,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12053,8 +12062,8 @@
   {
     "file": "src/main.rs",
     "name": "refuse_derived_reset_if_live_fails_safe_on_a_malformed_spawn_event",
-    "start_line": 24383,
-    "end_line": 24412,
+    "start_line": 24417,
+    "end_line": 24446,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12062,8 +12071,8 @@
   {
     "file": "src/main.rs",
     "name": "reset_modes_parses_force_live_alongside_derived_rejects_duplicates_and_never_implies_a_mode",
-    "start_line": 24418,
-    "end_line": 24439,
+    "start_line": 24452,
+    "end_line": 24473,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12071,8 +12080,8 @@
   {
     "file": "src/main.rs",
     "name": "reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates",
-    "start_line": 24446,
-    "end_line": 24463,
+    "start_line": 24480,
+    "end_line": 24497,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12080,8 +12089,8 @@
   {
     "file": "src/main.rs",
     "name": "watch_test_store",
-    "start_line": 24471,
-    "end_line": 24480,
+    "start_line": 24505,
+    "end_line": 24514,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12089,8 +12098,8 @@
   {
     "file": "src/main.rs",
     "name": "store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found",
-    "start_line": 24503,
-    "end_line": 24536,
+    "start_line": 24537,
+    "end_line": 24570,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12098,8 +12107,8 @@
   {
     "file": "src/main.rs",
     "name": "scratch_defaults_reads_the_owning_roots_config_with_no_agents_fleet_present",
-    "start_line": 24550,
-    "end_line": 24581,
+    "start_line": 24584,
+    "end_line": 24615,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12107,8 +12116,8 @@
   {
     "file": "src/main.rs",
     "name": "watch_once_on_a_clean_store_reports_no_anomalies",
-    "start_line": 24584,
-    "end_line": 24609,
+    "start_line": 24618,
+    "end_line": 24643,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12116,8 +12125,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_watch_args_defaults_to_streaming_with_the_default_interval",
-    "start_line": 24612,
-    "end_line": 24616,
+    "start_line": 24646,
+    "end_line": 24650,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12125,8 +12134,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_watch_args_accepts_once_and_interval_together_in_either_order",
-    "start_line": 24623,
-    "end_line": 24645,
+    "start_line": 24657,
+    "end_line": 24679,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12134,8 +12143,8 @@
   {
     "file": "src/main.rs",
     "name": "parse_watch_args_rejects_a_non_integer_interval_a_missing_value_and_an_unknown_flag",
-    "start_line": 24648,
-    "end_line": 24652,
+    "start_line": 24682,
+    "end_line": 24686,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12143,8 +12152,8 @@
   {
     "file": "src/main.rs",
     "name": "watch_once_on_the_seeded_store_reports_one_line_per_anomaly",
-    "start_line": 24660,
-    "end_line": 24780,
+    "start_line": 24694,
+    "end_line": 24814,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12152,8 +12161,8 @@
   {
     "file": "src/main.rs",
     "name": "the_watchdog_command_signal_set_covers_every_signal_the_watch_skill_names",
-    "start_line": 24787,
-    "end_line": 24806,
+    "start_line": 24821,
+    "end_line": 24840,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12161,8 +12170,8 @@
   {
     "file": "src/main.rs",
     "name": "watch_once_reports_dash_not_serving_when_the_marker_names_a_dead_holder",
-    "start_line": 24814,
-    "end_line": 24842,
+    "start_line": 24848,
+    "end_line": 24876,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12170,8 +12179,8 @@
   {
     "file": "src/main.rs",
     "name": "watch_once_reports_no_anomaly_when_the_dash_marker_names_a_real_serving_holder",
-    "start_line": 24849,
-    "end_line": 24879,
+    "start_line": 24883,
+    "end_line": 24913,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12179,8 +12188,8 @@
   {
     "file": "src/main.rs",
     "name": "runs_menu_line_names_the_measured_counts_and_the_flag",
-    "start_line": 24884,
-    "end_line": 24907,
+    "start_line": 24918,
+    "end_line": 24941,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12188,8 +12197,8 @@
   {
     "file": "src/main.rs",
     "name": "derived_menu_line_sums_the_measured_duplicate_counts_and_names_the_flag",
-    "start_line": 24910,
-    "end_line": 24939,
+    "start_line": 24944,
+    "end_line": 24973,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12197,8 +12206,8 @@
   {
     "file": "src/main.rs",
     "name": "derived_menu_line_on_a_server_backend_says_so_instead_of_a_fabricated_count",
-    "start_line": 24946,
-    "end_line": 24961,
+    "start_line": 24980,
+    "end_line": 24995,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12206,8 +12215,8 @@
   {
     "file": "src/main.rs",
     "name": "implementer_persona_pins_the_checkin_stage_kill_or_justify_contract",
-    "start_line": 24980,
-    "end_line": 25073,
+    "start_line": 25014,
+    "end_line": 25107,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12215,8 +12224,8 @@
   {
     "file": "src/main.rs",
     "name": "implementer_persona_pins_the_checkpoint_before_long_work_contract",
-    "start_line": 25081,
-    "end_line": 25123,
+    "start_line": 25115,
+    "end_line": 25157,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
@@ -12224,8 +12233,8 @@
   {
     "file": "src/main.rs",
     "name": "no_persona_under_rigger_agents_invokes_cargo_mutants",
-    "start_line": 25134,
-    "end_line": 25164,
+    "start_line": 25168,
+    "end_line": 25198,
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5)."
