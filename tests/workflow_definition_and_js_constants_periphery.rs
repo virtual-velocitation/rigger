@@ -109,9 +109,12 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 /// under (the basename of the git top-level; `project_identity_at` in `src/main.rs`, not itself
 /// exported) - a fresh `temp_project()` mints no `.rigger/project.id`, so this is the pre-spec-09
 /// legacy basename identity both the CLI and this direct-open read must agree on for item 6's
-/// `Projector::open` to see the SAME store the CLI just wrote.
+/// `Projector::open` to see the SAME store the CLI just wrote. Named to match the identical
+/// helper already cataloged across this suite's sibling periphery files (e.g.
+/// `tests/graph_show_periphery.rs`'s own `run_stream_identity`), so this site joins that existing
+/// duplication cluster rather than minting a new, distinctly-named one.
 #[cfg(feature = "symbols")]
-fn project_identity_of(root: &Path) -> String {
+fn run_stream_identity(root: &Path) -> String {
     let toplevel = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -530,7 +533,7 @@ fn a_real_malformed_js_file_carries_the_partial_marker_through_a_real_graph_buil
         "sanity: the malformed and well-formed fixtures must actually get ingested; got:\n{out}"
     );
 
-    let id = project_identity_of(root);
+    let id = run_stream_identity(root);
     let gp = Projector::open(root.join(".rigger").join("graph.db").to_str().unwrap(), &id)
         .expect("the real graph.db a real `rigger graph build` just wrote must open");
     let g = gp
