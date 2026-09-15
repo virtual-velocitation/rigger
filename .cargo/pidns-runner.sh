@@ -48,7 +48,23 @@ GIT_CONFIG_KEY_0=commit.gpgsign
 GIT_CONFIG_VALUE_0=false
 GIT_CONFIG_KEY_1=tag.gpgsign
 GIT_CONFIG_VALUE_1=false
-export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1
+# Test git never signs OR prompts, and always commits as the same fixed identity
+# (2026-09-15, spec 90 criterion 1): the block above closed the gpg half; the ~43 `git commit`
+# sites still relied on ambient identity (repo config, or nothing - which fails outright with
+# no operator gitconfig at all) and nothing stopped an interactive credential/passphrase
+# prompt from hanging a test binary that has no TTY to answer it. Fixed author/committer
+# identity, unrelated to and un-asserted by any existing test, so every commit succeeds
+# deterministically; GIT_TERMINAL_PROMPT=0 refuses any prompt instead of hanging on one. A
+# test that wants ITS OWN identity still gets it - these are plain environment variables, so a
+# test's own `.env("GIT_AUTHOR_NAME", ...)` on its own `Command` overrides this default for
+# that one child process, same as it always could.
+GIT_AUTHOR_NAME=rigger-test
+GIT_AUTHOR_EMAIL=rigger-test@localhost
+GIT_COMMITTER_NAME=rigger-test
+GIT_COMMITTER_EMAIL=rigger-test@localhost
+GIT_TERMINAL_PROMPT=0
+export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 \
+  GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL GIT_TERMINAL_PROMPT
 # Low CPU priority for every test binary too (2026-09-11): a run's review fan-out runs many
 # full suites at once; tests yield to the operator's interactive work like compiles do.
 #
