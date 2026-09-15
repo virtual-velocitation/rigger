@@ -3749,6 +3749,72 @@ fn serve_from_a_linked_worktree_refuses_naming_both_trees() {
     );
 }
 
+/// Spec 91 checkin round 4 (`op-checkin-round-4-hang-class-mutants-fail-fast-or-justify`): a
+/// DIRECT contract test for the POLARITY of `run_workflow`'s own `if !repo.is_empty()` guard
+/// (STEP RESOLVES THE MAIN WORKTREE, spec 89 criterion 4) - the run-branch-anchoring block
+/// (`resolve_run_base`/`refuse_when_base_unreachable`/`refuse_when_base_lacks_spec_paths`/
+/// `anchor_run_branch`) must run ONLY when a real enclosing repository was resolved, never on
+/// the repo-less path. The whole-diff mutation sweep (spec 91) reported deleting that `!` as a
+/// TIMEOUT, never a fast MISS: no existing test isolates this guard's OWN polarity, so every
+/// real-subprocess test that happened to still exercise SOME symptom of the flip did so only via
+/// its own long-running wall-clock wait (`run_workflow` legitimately keeps serving - and this
+/// crate's own worker threads legitimately keep running - well past any short bound even on the
+/// CORRECT path, confirmed by hand before writing this assertion), and enough of those waits ran
+/// concurrently (at the mutation gate's own reported load) to exhaust the per-mutant timeout
+/// budget before any of them individually failed (op-checkin-mutation-budget-3x-95cfdd0).
+///
+/// Flipped, a repo-less invocation (`repo == ""`) takes the anchor branch instead of skipping
+/// it: `refuse_when_base_unreachable` calls `rigger::worktree::ref_resolves("", "HEAD")`, which
+/// runs real git plumbing against whatever `git -C ""` resolves to (a documented git no-op, so
+/// the child process's own cwd - this fixture's git-LESS tempdir) and reports no resolvable
+/// HEAD, so `run_workflow` returns an `Err` ("no reachable base for the run branch...") through
+/// its own `?` in a handful of milliseconds (hand-verified: ~12ms) - a deterministic difference
+/// from the correct path, which is still healthy and running well past this test's own short
+/// (2s) observation window. This is the discriminator: NOT "does it eventually succeed"
+/// (correct code never exits within any short bound here - it moves on to serving the run), but
+/// "does it exit at all, this fast" (only the guard-flip regression does).
+#[test]
+fn repo_less_serve_never_attempts_to_anchor_a_run_branch() {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let dir = temp_repoless_project();
+    let root = dir.path();
+    write_reviewless_git_unit_workflow(root);
+    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
+
+    let mut child = common::rigger_courier()
+        .args(["serve"])
+        .current_dir(root)
+        .env("XDG_STATE_HOME", state.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn `rigger serve`");
+
+    std::thread::sleep(Duration::from_secs(2));
+    let early_exit = child.try_wait().expect("poll `rigger serve`");
+
+    // Whichever branch below runs, the child must not be left behind: a still-running child is
+    // killed via ITS OWN handle (the sanctioned handle-bound lifecycle), never a computed pid.
+    let mut err = String::new();
+    if let Some(status) = early_exit {
+        if let Some(mut e) = child.stderr.take() {
+            let _ = e.read_to_string(&mut err);
+        }
+        panic!(
+            "a repo-less `rigger serve` must never attempt to anchor a run branch (the anchor \
+             block is guarded on `!repo.is_empty()`, and a git-less cwd resolves repo to \"\"); \
+             it exited within 2s instead of proceeding to serve the run - exit status \
+             {status:?}; stderr:\n{err}"
+        );
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Spec 89, criterion 4 (EXACTLY ONE ROOT): `rigger step` must refuse BEFORE any sweep when the
 /// store it would open (cwd-relative `.rigger`) and the repository `git` resolves for that same
 /// cwd disagree on their root. Reproduces the exact 2026-09-11 u87c3 incident: a git-less
@@ -17647,7 +17713,22 @@ fn a_dropped_guard_reaps_a_standalone_rigger_dash() {
 
 /// How long a probe keeps trying to get a complete response out of a just-spawned server
 /// before it gives up and reports that the server never came up.
-const SERVER_READY_SECS: u64 = 15;
+///
+/// Tightened from 15 (spec 91 checkin round 4,
+/// `op-checkin-round-4-hang-class-mutants-fail-fast-or-justify`): the mutation gate's own
+/// whole-diff sweep reported `cmd_serve`/`run_workflow` whole-function stub mutants
+/// (`-> Res with Default::default()`) as TIMEOUTs, never fast MISSes. Under either stub the
+/// dash this constant waits for is never spawned at all, so EVERY ONE of the several dozen
+/// tests in this file that poll through it (`http_get`/`http_get_path`/`http_probe`) would
+/// exhaust this SAME bound independently and concurrently - a real dash normally answers in
+/// well under a second, so this shared ceiling was pure unused headroom on every passing run,
+/// yet it was the exact quantity the mutation gate's own per-mutant timeout budget had to
+/// absorb once, under load, for each such test. 5s keeps ample margin over a real dash's
+/// actual startup time (confirmed: on this machine, cold-spawn-to-first-answer is
+/// sub-second) while cutting that per-test worst case 3x, mirroring the SAME 3x headroom
+/// ratio the mutation gate's own timeout-multiplier config already uses
+/// (`op-checkin-mutation-budget-3x-95cfdd0`).
+const SERVER_READY_SECS: u64 = 5;
 
 /// How long ONE attempt waits for the server to answer. Shorter than
 /// [`SERVER_READY_SECS`] on purpose: an attempt that stalls must leave the deadline room
@@ -17770,8 +17851,19 @@ fn a_run_driver_auto_starts_a_reachable_dash_with_a_url_shown_in_status() {
     // The driver records the auto-started dash's URL in `.rigger/dash.url` for discoverability;
     // poll it until it appears (the dash comes up at run start). If the driver exited early,
     // surface its stderr so the failure is diagnosable rather than a bare timeout.
+    //
+    // Tightened from 15s to [`SERVER_READY_SECS`] (spec 91 checkin round 4,
+    // `op-checkin-round-4-hang-class-mutants-fail-fast-or-justify`): this is the ONE test in
+    // this file that reaches `.rigger/dash.url` through `run_workflow`/`cmd_serve` (every
+    // other real-subprocess dash test here drives `rigger dash` or `rigger step` directly), so
+    // it is the test the mutation gate's own whole-diff sweep reported as reaching a
+    // `cmd_serve -> Res with Default::default()` TIMEOUT rather than a fast MISS - under that
+    // stub the URL file is never written at all, and this loop used to wait the full 15s
+    // before failing. Sharing [`SERVER_READY_SECS`] (rather than a second hardcoded literal)
+    // keeps this test's own worst-case bound in step with the identical rationale documented
+    // there.
     let url_file = root.join(".rigger").join("dash.url");
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(SERVER_READY_SECS);
     let url = loop {
         if let Ok(s) = std::fs::read_to_string(&url_file) {
             let s = s.trim().to_string();

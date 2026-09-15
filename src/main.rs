@@ -16021,6 +16021,40 @@ mod tests {
         }
     }
 
+    // --- Spec 91 checkin round 4 (op-checkin-round-4-hang-class-mutants-fail-fast-or-justify):
+    // a direct, zero-wait contract test for `resolve_main_worktree_or_refuse`'s SUCCESS return
+    // value - the whole-diff mutation sweep's own machinery (cargo-mutants --in-diff, spec 91)
+    // reported this mutant (line 1807, both String-literal stubs) reachable ONLY through the
+    // real-subprocess suite in tests/cli.rs, whose narrowest existing coverage
+    // (`serve_from_a_linked_worktree_refuses_naming_both_trees`) exercises only the REFUSAL
+    // arm - never the plain, non-linked, single-root SUCCESS arm every other real-subprocess
+    // test relies on implicitly. A wholesale body swap there (`Ok("xyzzy".into())` /
+    // `Ok(String::new())`) is invisible to every test that merely asserts on a DOWNSTREAM
+    // side effect (a store file, a branch, an exit code) reachable via many other paths too;
+    // this pins the function's OWN contract directly, in-process, with no subprocess and no
+    // wall-clock wait, so a wrong return value fails on the spot rather than only surfacing (if
+    // ever) as one of many bounded-wait real-subprocess tests whose CUMULATIVE waits are what
+    // exhausted the mutation gate's per-mutant timeout budget (op-checkin-mutation-budget-3x-
+    // 95cfdd0) instead of ever reaching a fast, deterministic failure.
+    #[test]
+    fn resolve_main_worktree_or_refuse_returns_exactly_git_rev_parse_show_toplevel() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_committed_repo(root, "README.md", "seed\n");
+        let expected = git_repo_at(root);
+        assert!(
+            !expected.is_empty(),
+            "the fixture is a real git repo, so git_repo_at must resolve a real toplevel"
+        );
+        let got = resolve_main_worktree_or_refuse(root, "test-cmd")
+            .expect("a plain, non-linked worktree must never refuse");
+        assert_eq!(
+            got, expected,
+            "resolve_main_worktree_or_refuse must return EXACTLY `git rev-parse --show-toplevel`'s \
+             own output for a plain (non-linked) worktree, not a stand-in value"
+        );
+    }
+
     #[test]
     fn refuse_when_base_lacks_spec_paths_refuses_on_total_absence_and_names_a_path() {
         let dir = tempfile::tempdir().unwrap();
