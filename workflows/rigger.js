@@ -629,6 +629,16 @@ async function runWorker(req, fatal) {
     `LIVE PROGRESS (spec 14): after each significant step - a search, a file read, a build, a commit, a decision - report ONE short line of what you just did, from ${REPO}, using Bash:\n` +
     `  rigger progress '${req.id}' '<one line: what you just did>'\n` +
     `This is how an observer sees you working between the milestones you record, so a long silent stretch is never mistaken for a stall. Keep it flowing WHILE you work; do not batch it at the end.\n`
+  // One build location per unit (spec 77, criterion 1). The conductor pins the unit's
+  // `cargo-target-<unit>` sibling as CARGO_TARGET_DIR in the spawn's environment for drivers
+  // that can set one; this driver runs workers through an agent tool with no environment, so
+  // the wave names the directory and the worker is told to export it. Without this, every
+  // `cargo test` a worker runs builds a fresh 50 GB `target/` inside its worktree.
+  const buildLocation = req.cargo_target_dir
+    ? `BUILD LOCATION (hard rule): every cargo command you run inside your worktree (build, test, clippy, mutants, anything that compiles) MUST run with\n` +
+      `  export CARGO_TARGET_DIR='${req.cargo_target_dir}'\n` +
+      `set first, in the same shell. That directory is your unit's ONE build cache, shared with its gates, so nothing compiles twice; a \`target/\` inside the worktree itself is a defect that fills the disk - never create one.\n`
+    : ''
   const prompt =
     `You are the rigger worker for spawn ${req.id} (unit ${req.unit}). ` +
     `Your persona and full task are recorded in the run log - FETCH THEM FIRST by running, from ${REPO}, using Bash:\n` +
@@ -639,6 +649,7 @@ async function runWorker(req, fatal) {
     `SCRATCH POLICY (hard rule): before creating ANY scratch - probe repos, verification worktrees, test builds, setup rehearsals - fetch YOUR OWN rigger-assigned scratch container, from ${REPO}, using Bash:\n` +
     `  rigger scratch '${req.id}'\n` +
     `Everything you create lives INSIDE that one printed path, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR to a subdir of that same printed path first - never the shared build cache. It is reaped the moment your result records - do not store anything durable there.\n` +
+    buildLocation +
     heartbeat +
     progressNote +
     `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit --spawn '${req.id}' <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}. The \`--spawn '${req.id}'\` stamps the emit with YOUR spawn id so the conductor attributes it to you exactly (spec 18) - always include it on every \`rigger emit\`.\n` +
