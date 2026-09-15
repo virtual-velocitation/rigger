@@ -1029,7 +1029,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "5fdca8639add187e"
+    "content_hash": "25d7d59c19fb16a6"
   },
   {
     "file": "src/conductor.rs",
@@ -1326,6 +1326,22 @@
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
     "content_hash": "35ac0b9c4de554fe"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "ingest_files_into_graph",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "f47cacdbe5d80e5c"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "ingest_files_into_graph",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "b59e9800b530c7c9"
   },
   {
     "file": "src/conductor.rs",
@@ -2838,6 +2854,14 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "f3155e864d0ac4fb"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "ingest_files_into_graph_is_bounded_to_the_named_files_and_reflects_their_live_content",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "c8898abd3f68a5ed"
   },
   {
     "file": "src/conductor.rs",
@@ -6517,7 +6541,15 @@
     "is_test": false,
     "proposed_module": "main::render",
     "reason": "name contains \"print_\" (human-readable output); grouped under `main::render`.",
-    "content_hash": "22a730bfcf17a6a0"
+    "content_hash": "1da55a8034a13544"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "print_site_header",
+    "is_test": false,
+    "proposed_module": "main::render",
+    "reason": "name contains \"print_\" (human-readable output); grouped under `main::render`.",
+    "content_hash": "3bebf365b8c12274"
   },
   {
     "file": "src/main.rs",
@@ -6525,23 +6557,23 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "4a9092179a157fc9"
+    "content_hash": "72bec3c7c0298663"
   },
   {
     "file": "src/main.rs",
-    "name": "derive_extent_end",
+    "name": "locate_definition_extent",
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "193f1144d9427d61"
+    "content_hash": "992bd41331bc2c3a"
   },
   {
     "file": "src/main.rs",
-    "name": "derive_extent_end",
+    "name": "locate_definition_extent",
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "28cb764eeed9581c"
+    "content_hash": "0318f562f1849690"
   },
   {
     "file": "src/main.rs",
@@ -6662,6 +6694,14 @@
     "proposed_module": "main::support",
     "reason": "name contains \"read_\" (generic read helper); grouped under `main::support`.",
     "content_hash": "63643e5890f124da"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "read_graph_index_lag",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"read_\" (generic read helper); grouped under `main::support`.",
+    "content_hash": "5afc593a9f364d91"
   },
   {
     "file": "src/main.rs",
@@ -7389,7 +7429,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "60e1e8dd3aaa36c2"
+    "content_hash": "75c968fdc62d87a7"
   },
   {
     "file": "src/main.rs",
@@ -7414,6 +7454,14 @@
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
     "content_hash": "9fe691988403767c"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "graph_index_lag_advisory",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "03d17af17bad7996"
   },
   {
     "file": "src/main.rs",
@@ -10382,6 +10430,22 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "97786eb890aef8a5"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "graph_index_lag_advisory_names_every_lagging_file_and_the_fix",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "3439581a7063109f"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "graph_index_lag_advisory_is_none_when_the_sample_is_empty",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b46db952cd4f57e4"
   },
   {
     "file": "src/main.rs",

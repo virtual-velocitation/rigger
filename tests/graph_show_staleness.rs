@@ -6,18 +6,21 @@
 //!
 //! It proves the criterion as ONE behavioral contract over the TWO drift shapes the spec names -
 //! (a) the recorded FILE is missing, and (b) the recorded LINE drifted onto a neighbouring
-//! definition - asserting the criterion's three invariants together: the SITE header survives (the
-//! graph facts stand), the command EXITS SUCCESS (never an error), and NO WRONG TEXT is presented
-//! as current (never the neighbour's body, never the drifted entity's own body lifted from a stale
-//! line). This is the developer/acceptance layer that owns the done-when line; it is distinct from
-//! the SDET periphery, which attributes each internal degrade ARM to its guard.
+//! definition - asserting the criterion's invariants together: the command EXITS SUCCESS (never an
+//! error), and NO WRONG TEXT is ever presented as current (never a neighbour's body under another
+//! entity's header). This is the developer/acceptance layer that owns the done-when line; it is
+//! distinct from the SDET periphery, which attributes each internal degrade/heal ARM to its guard.
 //!
 //! The MISSING-FILE degrade is pre-extent (the working-tree read fails before any grammar is
-//! consulted), so its stale note is asserted LANE-INDEPENDENTLY. The LINE-DRIFT "never wrong text"
-//! invariant is likewise asserted in BOTH lanes: the symbols lane rejects the neighbour via the
-//! `derive_extent_end` name+line filter, while the light lane derives no extent at all - so neither
-//! lane can ever show the neighbour's body. (The symbols-only periphery arm proves the filter miss;
-//! this pins that the light lane is equally safe, the coverage the symbols-gated arm leaves open.)
+//! consulted), so its stale note is asserted LANE-INDEPENDENTLY - unchanged by spec 92.
+//!
+//! The LINE-DRIFT shape's contract CHANGED under spec 92 (FRESH ON EVERY INTEGRATION, criterion 1),
+//! which supersedes this criterion's original "always refuse a drifted line" rule
+//! (`adj-u58c1-r3-approve`) for the case a name-only search resolves unambiguously: the surface now
+//! HEALS to the moved definition's LIVE line and shows its real body, noting the drift, in the
+//! `symbols` lane (the light lane still derives no extent, so it still shows no body at all - the
+//! "never wrong text" invariant it existed to prove is now the narrower, permanent one: a NEIGHBOUR
+//! at the recorded line is never shown under another entity's header, in EITHER lane).
 
 use std::path::Path;
 use std::process::Command;
@@ -177,15 +180,18 @@ fn graph_show_degrades_gracefully_when_the_recorded_file_is_missing() {
 
 /// DRIFT SHAPE (b): the recorded LINE drifted so that a DIFFERENT (neighbouring) definition now sits
 /// at the entity's recorded site. The criterion's sharpest clause - "never wrong text presented as
-/// current" - means the surface must NEVER lift that neighbour's body under the drifted entity's
-/// header. It prints the recorded site, replaces the body with a note, and EXITS SUCCESS.
+/// current" - means the surface must NEVER lift that NEIGHBOUR's body under the drifted entity's
+/// header. Under spec 92 the drifted entity's OWN body is a different matter: when its name is
+/// unambiguous elsewhere in the file, the `symbols` lane now HEALS to it and shows the live body
+/// (never refuses); the light lane still cannot derive any extent at all, so it still shows no body
+/// for anything. Both lanes still EXIT SUCCESS.
 ///
-/// The "never wrong text" invariant is asserted in BOTH lanes: the symbols lane rejects the
-/// neighbour through the `derive_extent_end` name+line filter (no definition of the queried name
-/// STARTS at the recorded line), while the light lane derives no extent at all - so neither lane can
-/// ever show the neighbour's body. The lane-specific NOTE differs (a stale note under symbols; an
-/// extent-unavailable note in the light lane), so it is asserted per lane; the site header,
-/// exit-success, no-wrong-text, and no-body invariants are asserted in both.
+/// The "never a neighbour's body" invariant is asserted in BOTH lanes: the symbols lane's name-only
+/// fallback only ever searches for the QUERIED name, so `other` can never surface under `moved`'s
+/// header regardless of which line it occupies; the light lane derives no extent at all. The
+/// site-header and body-presence expectations differ per lane (symbols heals to the live line and
+/// shows the real body; light shows no body from the still-recorded stale line), so those are
+/// asserted per lane below.
 #[test]
 fn graph_show_never_presents_a_neighbours_body_when_the_line_drifted() {
     let dir = temp_project();
@@ -193,10 +199,9 @@ fn graph_show_never_presents_a_neighbours_body_when_the_line_drifted() {
     seed_rigger_dir(root);
 
     // drift.rs: an UNRELATED `other` really sits at line 1 (carrying a distinctive token), and the
-    // queried `moved` really sits at line 4 (its own distinctive token). The graph records `moved`
-    // at the STALE line 1 - the code was edited so the definition moved down since the graph was
-    // built. Line 1 is a real line, present, not 0, not past EOF, so the ONLY thing standing between
-    // the reader and a WRONG body is the surface refusing to show whatever happens to sit there.
+    // queried `moved` really sits at line 4 (its own distinctive token, and unambiguous - it occurs
+    // at exactly one line). The graph records `moved` at the STALE line 1 - the code was edited so
+    // the definition moved down since the graph was built.
     std::fs::write(
         root.join("drift.rs"),
         "fn other() {\n\
@@ -217,44 +222,53 @@ fn graph_show_never_presents_a_neighbours_body_when_the_line_drifted() {
     // NEVER AN ERROR: a name/line drift exits SUCCESS, in BOTH lanes.
     assert!(
         ok,
-        "a line-drifted location degrades gracefully (exit SUCCESS, never an error); stderr: {err}"
-    );
-    // THE SITE SURVIVES: the recorded (now stale) site header still prints, in BOTH lanes.
-    assert!(
-        out.contains("drift.rs:1"),
-        "the recorded (stale) site header survives the line drift; got:\n{out}"
+        "a line-drifted location degrades or heals gracefully (exit SUCCESS, never an error); \
+         stderr: {err}"
     );
 
-    // NEVER WRONG TEXT (the criterion's crux, LANE-INDEPENDENT): the neighbour `other` that really
-    // occupies the recorded line is NEVER shown under the `moved` header - not in the symbols lane
-    // (the name+line filter rejects it) and not in the light lane (no extent is derived at all).
+    // NEVER A NEIGHBOUR'S BODY (the criterion's permanent crux, LANE-INDEPENDENT): the neighbour
+    // `other` that really occupies the recorded line is NEVER shown under the `moved` header - the
+    // symbols lane's fallback only ever searches for the name `moved`, and the light lane derives no
+    // extent from any line at all.
     assert!(
         !out.contains("neighbour_body_never_shown"),
         "the definition sitting at the recorded line is NEVER shown under the drifted entity; got:\n{out}"
     );
-    // Nor is the drifted entity's OWN body lifted from its stale recorded line.
-    assert!(
-        !out.contains("the_real_moved_body"),
-        "the drifted entity's own body is not shown from its stale recorded line; got:\n{out}"
-    );
-    // NEVER WRONG TEXT: no line-numbered body at all, in either lane.
-    assert_eq!(
-        body_line_count(&out),
-        0,
-        "no line-numbered body is printed for a line-drifted location; got:\n{out}"
-    );
 
-    // The NOTE is lane-specific. Under symbols the drift is detected as such (a stale note); in the
-    // light lane the body simply cannot be bounded (an extent-unavailable note). Either way a note
-    // stands in for the body - the surface is never silently empty and never wrong.
+    // The symbols lane HEALS (spec 92): the live line is shown, the recorded one noted, and the
+    // moved entity's OWN real body is shown - no longer refused.
     #[cfg(feature = "symbols")]
-    assert!(
-        out.contains("stale"),
-        "the symbols lane detects the drift and prints a stale-location note; got:\n{out}"
-    );
+    {
+        assert!(
+            out.contains("drift.rs:4"),
+            "the symbols lane heals the site header to the live line; got:\n{out}"
+        );
+        assert!(
+            out.contains("recorded line 1") && out.contains("now 4"),
+            "the healed header notes the recorded line differs from the live one; got:\n{out}"
+        );
+        assert!(
+            out.contains("the_real_moved_body"),
+            "the symbols lane shows the moved entity's own LIVE body once healed; got:\n{out}"
+        );
+        assert_eq!(body_line_count(&out), 3, "got:\n{out}");
+    }
+    // The light lane still cannot derive any extent (no grammar linked), so it still shows no body
+    // for anything, from the still-recorded (stale) site.
     #[cfg(not(feature = "symbols"))]
-    assert!(
-        out.contains("code-extraction grammar") || out.contains("`symbols` feature"),
-        "the light lane replaces the body with an extent-unavailable note; got:\n{out}"
-    );
+    {
+        assert!(
+            out.contains("drift.rs:1"),
+            "the light lane still shows the recorded (unhealed) site header; got:\n{out}"
+        );
+        assert!(
+            !out.contains("the_real_moved_body"),
+            "the light lane never derives an extent, so it shows no body at all; got:\n{out}"
+        );
+        assert_eq!(body_line_count(&out), 0, "got:\n{out}");
+        assert!(
+            out.contains("code-extraction grammar") || out.contains("`symbols` feature"),
+            "the light lane replaces the body with an extent-unavailable note; got:\n{out}"
+        );
+    }
 }

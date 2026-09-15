@@ -8722,6 +8722,16 @@ impl RunCtx<'_> {
             if let Some(g) = self.deps.grounder {
                 g.reindex(&self.deps.repo, &files);
             }
+            // FRESH ON EVERY INTEGRATION (spec 92, criterion 1): the CONTEXT GRAPH (`graph.db`,
+            // what `graph --show`/`graph --around` read) used to populate only ONCE per process
+            // (`ingest_project_into_graph`'s once-per-process guard) - so a unit that integrated
+            // earlier in a long-lived driver process never made the graph learn of it, and a
+            // moved function kept resolving at its stale recorded line (docs/audit/2026-09-
+            // graph-vs-grep.md findings 4/9/11/12). This reindexes exactly the files THIS
+            // integration touched - bounded by the merge's own file list, never a whole-project
+            // walk - right alongside the grounder's own (already-existing) reindex above, so the
+            // two stay in lockstep from every integration on.
+            self.ingest_files_into_graph(&files);
         }
         // Staleness propagation (spec 12, unit 2): now that this unit's files are merged and
         // the grounder is reindexed, mark every DOWNSTREAM unit whose blast radius intersects
@@ -9961,6 +9971,32 @@ impl RunCtx<'_> {
     /// compiled fold still folds a design/code log if one exists, but PRODUCING it is extraction.
     #[cfg(not(feature = "symbols"))]
     fn ingest_project_into_graph(&self) {}
+
+    /// Reindex the CONTEXT GRAPH for exactly `files` (spec 92 criterion 1, FRESH ON EVERY
+    /// INTEGRATION): the scoped counterpart to [`ingest_project_batches`](RunCtx::
+    /// ingest_project_batches), called from [`integrate_and_emit`](RunCtx::integrate_and_emit)
+    /// right after every landed merge, right alongside the grounder's own (pre-existing) reindex.
+    /// Bounded by `files` - the merge's OWN touched-file list - never a whole-project walk, so an
+    /// integration that touches hundreds of files stays bounded by that count, not the project's.
+    /// Reuses the SAME scoped extraction and keyed-emit sink `ingest_project_batches` uses for the
+    /// whole tree ([`crate::ingest::ingest_files_batched`] + [`Self::emit_keyed_batch`]) - never a
+    /// second lowering or dedup path - so a file's scoped generation here is byte-identical to what
+    /// a full walk would have produced for it. Off (a no-op) when there is no graph to fold into,
+    /// mirroring [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)'s own guard.
+    #[cfg(feature = "symbols")]
+    fn ingest_files_into_graph(&self, files: &[String]) {
+        if self.deps.graph.is_none() || self.deps.repo.is_empty() || files.is_empty() {
+            return;
+        }
+        let root = self.deps.repo.clone();
+        crate::ingest::ingest_files_batched(&root, files, |keyed| {
+            let _ = self.emit_keyed_batch(keyed);
+        });
+    }
+
+    /// Light lane: no extraction pass is compiled, so there is nothing to reindex.
+    #[cfg(not(feature = "symbols"))]
+    fn ingest_files_into_graph(&self, _files: &[String]) {}
 
     fn emit_lesson(&self, wt: Option<&Worktree>, unit_name: &str, summary: &str) {
         // The lesson is ABOUT the files the unit touched. The conductor commits the
@@ -18795,6 +18831,100 @@ mod tests {
             g.nodes.iter().any(|n| n.kind == contextgraph::KIND_CODE_ENTITY
                 && n.attrs.get("name").map(String::as_str) == Some("replacement_symbol")),
             "the re-ingest must fold the changed file's new symbol into the graph; graph was:\n{g:#?}"
+        );
+    }
+
+    /// Spec 92 criterion 1 (FRESH ON EVERY INTEGRATION): [`RunCtx::ingest_files_into_graph`] is
+    /// BOUNDED to exactly the files it is handed - the property `ingest_project_batches` (a
+    /// whole-project walk) does not have, and the one an integration's own reindex needs
+    /// (Design/Constraints Walk: "the reindex is bounded by the merge's file list"). BOTH files
+    /// change on disk, but only `src/touched.rs` is named: the graph must reflect its NEW content
+    /// while `src/untouched.rs` - edited too, but never named - is left exactly as the FIRST
+    /// (baseline) ingest recorded it, proving the scope rather than merely "the named file works".
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn ingest_files_into_graph_is_bounded_to_the_named_files_and_reflects_their_live_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/touched.rs"), "pub fn before_touch() {}\n").unwrap();
+        std::fs::write(
+            root.join("src/untouched.rs"),
+            "pub fn before_no_touch() {}\n",
+        )
+        .unwrap();
+        let root_str = root.to_str().unwrap().to_string();
+
+        let st_store = Store::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        let grounder = StubGrounder {
+            by_query: HashMap::new(),
+        };
+        let deps = Deps {
+            store: &st_store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: root_str.clone(),
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let is_live = |file: &str, name: &str| -> bool {
+            graph
+                .subgraph(&[file.to_string()], 2)
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|n| {
+                    n.kind == contextgraph::KIND_CODE_ENTITY
+                        && n.attrs.get("name").map(String::as_str) == Some(name)
+                })
+        };
+
+        // Baseline: both files ingested (as a run-start `ingest_project_into_graph` would).
+        ctx.ingest_project_batches();
+        assert!(
+            is_live("src/touched.rs", "before_touch"),
+            "baseline touched"
+        );
+        assert!(
+            is_live("src/untouched.rs", "before_no_touch"),
+            "baseline untouched"
+        );
+
+        // Simulate an integration: BOTH files change on disk, but the merge only actually touched
+        // (and this call only names) src/touched.rs.
+        std::fs::write(root.join("src/touched.rs"), "pub fn after_touch() {}\n").unwrap();
+        std::fs::write(
+            root.join("src/untouched.rs"),
+            "pub fn after_no_touch() {}\n",
+        )
+        .unwrap();
+        ctx.ingest_files_into_graph(&["src/touched.rs".to_string()]);
+
+        // The NAMED file's graph reflects its NEW content.
+        assert!(
+            is_live("src/touched.rs", "after_touch"),
+            "the named file's live (post-integration) definition must be in the graph"
+        );
+        assert!(
+            !is_live("src/touched.rs", "before_touch"),
+            "the named file's stale pre-integration definition must be retired"
+        );
+        // The UNNAMED sibling is left exactly as the baseline ingest recorded it - never touched by
+        // a scoped call that did not name it, even though it also changed on disk.
+        assert!(
+            is_live("src/untouched.rs", "before_no_touch"),
+            "an unnamed file's baseline recording must survive an unrelated scoped reindex"
+        );
+        assert!(
+            !is_live("src/untouched.rs", "after_no_touch"),
+            "an unnamed file's NEW disk content must NOT be picked up by a reindex that never \
+             named it - this is the bounded-scope property itself"
         );
     }
 

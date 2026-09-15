@@ -3720,7 +3720,7 @@ fn render_section_3() -> String {
 /// rendering annotation, never a JSON field (spec 87 OUTPUT names no degree field for
 /// `dead-code.json`), so it lives beside the rendering, not the instrument. `src/ingest.rs`'s two
 /// `#[cfg(feature)]`-gated `ingest_project` sites share one lookup: the graph's own entity
-/// resolution for this shared name only ever returns the light-lane (`:468`) definition
+/// resolution for this shared name only ever returns the light-lane (`:615`) definition
 /// regardless of which line is asked for - a disclosed instrument-boundary quirk (section 4.2
 /// discloses it), not this function's own imprecision.
 fn kg_degree_for(file: &str, line: usize) -> u32 {
@@ -3737,7 +3737,8 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/grounder/symbols/model.rs", 201) => 7,
         ("src/grounder/symbols/model.rs", 211) => 10,
         ("src/ingest.rs", 124) => 3,
-        ("src/ingest.rs", 468) => 3,
+        ("src/ingest.rs", 615) => 3,
+        ("src/ingest.rs", 949) => 3,
         ("src/ledger.rs", 574) => 6,
         ("src/ledger.rs", 651) => 3,
         ("src/spawn.rs", 320) => 5,
@@ -6101,16 +6102,31 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              main.rs:4067) exclusively - the batched entry point this fn's own doc comment \
              already names as the thing 'existing callers discard [IngestStats] and are \
              unaffected' by, i.e. it documents its own supersession. Ambiguous with its \
-             #[cfg(not(feature = \"symbols\"))] sibling at ingest.rs:468 (the textual scanner \
+             #[cfg(not(feature = \"symbols\"))] sibling at ingest.rs:615 (the textual scanner \
              sees two same-named definitions where rustc, feature-gated, sees one); both carry \
              the identical finding and disposition.",
         ),
-        ("src/ingest.rs", 468) => (
+        ("src/ingest.rs", 615) => (
             Delete,
             "ingest_project (the #[cfg(not(feature = \"symbols\"))] light-lane no-op) has no \
              production caller, for the identical reason as its #[cfg(feature = \"symbols\")] \
              sibling at ingest.rs:124: production calls ingest_project_batched exclusively on \
-             both lanes.",
+             both lanes. (Line shifted 468 -> 615: spec 92 criterion 1's FRESH ON EVERY \
+             INTEGRATION unit added file_batches/ingest_files_batched/graph_index_lag/ \
+             graph_index_lag_sample earlier in this same file, ahead of this untouched \
+             definition.)",
+        ),
+        ("src/ingest.rs", 949) => (
+            Delete,
+            "record_current_generation (spec 92 criterion 1, FRESH ON EVERY INTEGRATION) has no \
+             production caller - a private fixture helper inside scoped_reindex_tests that \
+             appends `graph_index_lag`/`graph_index_lag_sample`'s test-double `prior: Vec<Event>` \
+             stream, factored out once graph_index_lag_sample_derives_its_candidates_from_..., \
+             graph_index_lag_sample_reports_a_file_that_changed_..., and \
+             graph_index_lag_sample_is_bounded_and_stays_silent_... all needed the identical \
+             stamping boilerplate (the same shape already inlined once in \
+             graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one, its own sibling \
+             test above it in this file). Never called outside this test module.",
         ),
         ("src/ledger.rs", 574) => (
             Delete,
@@ -10679,7 +10695,7 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (25, 22, 0, 3),
+            (26, 23, 0, 3),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}"
         );
