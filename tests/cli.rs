@@ -3256,6 +3256,51 @@ fn ground_ranks_by_intent_dedupes_by_entity_and_admits_a_weak_query() {
     );
 }
 
+/// Spec 92 criterion 3 remediation round 2/3 (adv-u92c3r2-contains-tier-commonness-collapses
+/// -to-spurious-zero, adj-u92c3-r2-verdict-reject, fixed by u92c3-r3-contains-tier-commonness
+/// -keyed-on-entity-name): end to end through the REAL `rigger ground` CLI - a unit test of
+/// `scored_hits` in isolation cannot see whether `cmd_ground`'s printed page actually reflects
+/// the fix, only the compiled binary's stdout can. Neither "cfg" nor "zorble" is ever itself a
+/// standalone name in this fixture, so every match is CONTAINS-tier, never EXACT - the exact
+/// tier the round-2 defect lived in (commonness keyed on the raw query token instead of the
+/// matched entity's own name, which silently collapsed every CONTAINS hit to an artificial
+/// rarest score of zero). `cfg_one`..`cfg_four` are four unrelated entities (each defined once,
+/// referenced twice - own commonness 3) sharing the substring "cfg"; `zorble_alone` (defined
+/// once, referenced nowhere - own commonness 1) is genuinely rarer and is placed LAST (highest
+/// line number) so a fall-through-to-line-order regression would rank it last, not first.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_via_symbols_grounder_ranks_a_genuinely_rare_contains_tier_entity_above_common_ones_sharing_its_substring(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    std::fs::write(
+        root.join("entities.rs"),
+        "fn cfg_one() {}\nfn cfg_two() {}\nfn cfg_three() {}\nfn cfg_four() {}\nfn zorble_alone() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("callers.rs"),
+        "fn go() {\n    cfg_one();\n    cfg_one();\n    cfg_two();\n    cfg_two();\n    \
+         cfg_three();\n    cfg_three();\n    cfg_four();\n    cfg_four();\n}\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "cfg zorble", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    let first = out.lines().next().unwrap_or_default();
+    assert!(
+        first.contains("zorble_alone"),
+        "the genuinely rare entity (own commonness 1) must outrank four entities that share its \
+         query substring but are each themselves more common (own commonness 3); a regression \
+         that keys CONTAINS-tier commonness on the raw query term instead of the matched \
+         entity's own name ties all five at an artificial zero and falls through to line order, \
+         which would rank zorble_alone LAST; stdout: {out:?}"
+    );
+}
+
 /// Spec 92 criterion 3's `cmd_ground` orchestration - NOT the `Grounder` trait itself: an
 /// explicit `k = 0` is the caller asking for NOTHING, so `cmd_ground` must stay silent even for
 /// a query that would otherwise trip the weak-match honest line (the very query that prints
