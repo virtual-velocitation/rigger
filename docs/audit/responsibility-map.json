@@ -1029,7 +1029,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "25d7d59c19fb16a6"
+    "content_hash": "1181dac83c69a86d"
   },
   {
     "file": "src/conductor.rs",
@@ -1537,11 +1537,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "recency_by_own_edge",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "ba0dd890c0791f32"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "write_capped_section",
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"write\" (generic write helper); grouped under `conductor::support`.",
-    "content_hash": "c9d1f16f0eeb46ca"
+    "content_hash": "9516da1d0d508172"
   },
   {
     "file": "src/conductor.rs",
@@ -6525,7 +6533,15 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "78226b2dad64be67"
+    "content_hash": "7b8618de0b4bf10a"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "print_around_subgraph",
+    "is_test": false,
+    "proposed_module": "main::render",
+    "reason": "name contains \"print_\" (human-readable output); grouped under `main::render`.",
+    "content_hash": "fdb2b38e2394d2a1"
   },
   {
     "file": "src/main.rs",
