@@ -901,4 +901,37 @@ mod tests {
             "the deleted file's symbols must be purged from the persisted index"
         );
     }
+
+    /// Spec 92 criterion 2: `docs/audit/2026-09-graph-vs-grep.md` questions 5 (the driver
+    /// `fresh` flag's semantics) and 8 (`OUTER_WALL_CLOCK_SEC`) both failed with "JS not
+    /// indexed" - `ground` surfaced only generic `new`/`driver` module noise. Proven here
+    /// against this project's OWN, REAL `workflows/rigger.js` (its exact bytes, copied into an
+    /// isolated fixture root at the same relative path - not a synthetic snippet), through the
+    /// production `Symbols` grounder: both constants must now ground to it.
+    #[test]
+    fn ground_answers_audit_questions_5_and_8_against_the_real_rigger_js() {
+        let real = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("workflows")
+                .join("rigger.js"),
+        )
+        .expect("this project's own workflows/rigger.js must be readable");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("workflows")).unwrap();
+        std::fs::write(dir.path().join("workflows").join("rigger.js"), &real).unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        // Q8: `OUTER_WALL_CLOCK_SEC` (a ternary-valued constant).
+        let outer = g.ground("OUTER_WALL_CLOCK_SEC", 6);
+        assert!(
+            outer.iter().any(|r| r.file == "workflows/rigger.js"),
+            "OUTER_WALL_CLOCK_SEC must ground to workflows/rigger.js; got {outer:?}"
+        );
+        // Q5: the driver `fresh` flag - its constant is named `FRESH` (`!!A.fresh`).
+        let fresh = g.ground("FRESH", 6);
+        assert!(
+            fresh.iter().any(|r| r.file == "workflows/rigger.js"),
+            "FRESH must ground to workflows/rigger.js; got {fresh:?}"
+        );
+    }
 }

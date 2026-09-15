@@ -4174,13 +4174,11 @@ impl RunCtx<'_> {
     /// The review panel a unit reviews ITSELF with (§3.2): the stage's own `review`
     /// override when it sets one, otherwise the workflow-wide `defaults.review`.
     /// Declared once and inherited by every implementer unit, including the
-    /// planner-proposed units that run through `run_single_stage`.
+    /// planner-proposed units that run through `run_single_stage`. Delegates to
+    /// [`crate::config::Workflow::effective_review_panel`] (spec 92 criterion 2), the ONE
+    /// fallback-rule authority the workflow-definition graph indexer also reads.
     fn effective_review_panel<'a>(&'a self, st: &'a Stage) -> &'a crate::config::ReviewPanel {
-        if st.review.is_empty() {
-            &self.cfg.workflow.defaults.review
-        } else {
-            &st.review
-        }
+        self.cfg.workflow.effective_review_panel(st)
     }
 
     /// Select the review panel for a unit by its observable risk (spec 03 / spec 13

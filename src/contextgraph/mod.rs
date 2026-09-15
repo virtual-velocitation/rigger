@@ -19,6 +19,15 @@ pub const KIND_AGENT: &str = "agent";
 pub const KIND_GATE: &str = "gate";
 pub const KIND_UNIT: &str = "unit";
 pub const KIND_LESSON: &str = "lesson";
+/// A workflow STAGE node (spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED): one entry of the
+/// project's own `.rigger/workflow.yml` `stages:` map (`plan`, `implement`, `checkin`, ...) - the
+/// workflow DEFINITION itself, never a live run's per-unit instance (spec 43 de-noised those; a
+/// `stage` node is definitional, folded from a `DocConceptExtracted` event exactly like a
+/// `design-doc`, never from a run's `UnitStarted`/`UnitIntegrated`). Its id is `stage:<name>`,
+/// matching the Design text's own `stage:implement` example. Distinct from [`KIND_UNIT`] (a
+/// de-noised run-instance kind no fold projects any more) and reuses [`KIND_GATE`] / [`KIND_AGENT`]
+/// for the sibling `gate:<name>` / `agent:<name>` definition nodes this same pass folds.
+pub const KIND_STAGE: &str = "stage";
 /// A review finding a lens / adversary raised about a unit's files. It is the
 /// cross-agent memory the three review tiers communicate THROUGH: a reviewer emits
 /// a ReviewFinding, the projector folds it ABOUT the files it concerns, and the
@@ -145,6 +154,25 @@ pub const REL_IN_COMMUNITY: &str = "IN_COMMUNITY";
 /// live concept. Folded at [`TIER_INFERRED`] - a derived grouping, one confidence step below the
 /// explicit intent edges it is detected over, mirroring the 53 `IN_COMMUNITY` split.
 pub const REL_REALIZES: &str = "REALIZES";
+/// A workflow `stage` NEEDS another stage (spec 92 criterion 2): the dependency edge folded from a
+/// stage's `needs:` list in `.rigger/workflow.yml` (`stage:implement --NEEDS--> stage:plan-critique`),
+/// so "how is a stage's needs satisfied" has both this definition edge and the conductor's
+/// `need_satisfied` function on one page. Folded from a `DocLinkExtracted` event at
+/// [`TIER_EXTRACTED`], mirroring the design-intent relations - a definitional fact, not a derived
+/// grouping.
+pub const REL_NEEDS: &str = "NEEDS";
+/// A workflow `stage` RUNS a gate or its assigned agent (spec 92 criterion 2): the edge folded from
+/// a stage's `gates:` list (`stage:checkin --RUNS--> gate:mutation`, matching the Design text's own
+/// example pair) and from its `agent:` / `agents:` field (`stage:implement --RUNS--> agent:rust-
+/// engineer`) - both read as "this stage's execution runs X". Folded from a `DocLinkExtracted` event
+/// at [`TIER_EXTRACTED`].
+pub const REL_RUNS: &str = "RUNS";
+/// An `agent` REVIEWS a workflow stage (spec 92 criterion 2): the edge from a reviewer role to the
+/// stage its verdict gates - a standalone stage's own `adversary:` / `adjudicator:` fields (e.g.
+/// `plan-critique`), or a per-unit stage's effective review panel (`defaults.review`, or its own
+/// `review:` override) - lenses, adversary, and adjudicator alike. Folded from a `DocLinkExtracted`
+/// event at [`TIER_EXTRACTED`].
+pub const REL_REVIEWS: &str = "REVIEWS";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
@@ -476,16 +504,22 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// The `DocConceptExtracted` payload (spec 29b): one design-intent concept the extraction pass
-/// emits. Like the 29a code payloads it is the ONE serialization contract shared by both sides of
-/// the log - the feature-gated design-intent emit pass constructs and serializes it, and the
-/// always-compiled fold deserializes it - so the field names can never drift between emitter and
-/// folder. The fold ingests it into a node whose kind is `kind` (one of the four design-intent
-/// `KIND_*` above); a payload carrying any other kind string folds nothing.
+/// The `DocConceptExtracted` payload: one entity a DEFINITION-extraction pass emits, either the
+/// design-intent pass (spec 29b: a reference-architecture doc, an ADR, a handbook rule, or an
+/// inline rationale comment) or the workflow-definition pass (spec 92 criterion 2: a
+/// `.rigger/workflow.yml` stage, gate, or agent role). Both are the SAME shape - a document parsed
+/// into typed, identified concepts - so they share this ONE serialization contract rather than a
+/// second entity-extraction event type (spec 92's no-new-event-type constraint): the feature-gated
+/// emit pass constructs and serializes it, and the always-compiled fold deserializes it, so the
+/// field names can never drift between emitter and folder. The fold ingests it into a node whose
+/// kind is `kind` (one of the seven `KIND_*` the two passes produce, below); a payload carrying any
+/// other kind string folds nothing.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct DocConceptExtracted {
-    /// The node kind, one of [`KIND_DESIGN_DOC`], [`KIND_ARCH_DECISION`], [`KIND_HANDBOOK_RULE`],
-    /// [`KIND_RATIONALE`]. The emit only ever produces these four.
+    /// The node kind: [`KIND_DESIGN_DOC`], [`KIND_ARCH_DECISION`], [`KIND_HANDBOOK_RULE`], or
+    /// [`KIND_RATIONALE`] from the design-intent pass; [`KIND_STAGE`], [`KIND_GATE`], or
+    /// [`KIND_AGENT`] from the workflow-definition pass. The two passes together only ever produce
+    /// these seven.
     pub kind: String,
     /// The stable node id: a doc's relative path (a `design-doc` whole-doc node), `<doc>#<slug>`
     /// (a section node), the source path of an ingested decision / rule doc, or `<file>#L<line>`
@@ -501,27 +535,30 @@ pub(crate) struct DocConceptExtracted {
     pub doc: String,
 }
 
-/// The `DocLinkExtracted` payload (spec 29b): one design-intent link the extraction pass emits.
-/// Like the 29a code payloads and [`DocConceptExtracted`] it is the ONE serialization contract
-/// shared by both sides of the log - the feature-gated design-intent emit pass constructs and
-/// serializes it, and the always-compiled fold deserializes it - so the field names can never
-/// drift between emitter and folder. The fold folds it into a typed edge whose relation is `rel`
-/// (one of the five design-intent relations: [`REL_SPECIFIES`], [`REL_CONSTRAINS`],
-/// [`REL_GOVERNS`], [`REL_EXPLAINS`], [`REL_DOC_REFERENCES`]); a payload carrying any other
-/// relation folds nothing (defensive - the emit only ever produces these five).
+/// The `DocLinkExtracted` payload: one typed link a DEFINITION-extraction pass emits, mirroring
+/// [`DocConceptExtracted`]'s two producers - the design-intent pass (spec 29b) or the
+/// workflow-definition pass (spec 92 criterion 2: a stage's `needs:` / `gates:` / `agent:` /
+/// review roster, read straight off `.rigger/workflow.yml`). One serialization contract, never a
+/// second edge-extraction event type: the feature-gated emit pass constructs and serializes it,
+/// and the always-compiled fold deserializes it, so the field names can never drift between
+/// emitter and folder. The fold folds it into a typed edge whose relation is `rel` (one of the
+/// eight relations the two passes produce, below); a payload carrying any other relation folds
+/// nothing (defensive).
 #[derive(Serialize, Deserialize)]
 pub(crate) struct DocLinkExtracted {
-    /// The link's source node id (the design-intent node the edge emanates from): a doc's relative
-    /// path (a `design-doc` / `arch-decision` / `handbook-rule` whole-doc node) or a `<file>#L<line>`
-    /// rationale comment site.
+    /// The link's source node id (the node the edge emanates from): a doc's relative path (a
+    /// `design-doc` / `arch-decision` / `handbook-rule` whole-doc node), a `<file>#L<line>`
+    /// rationale comment site, or a `stage:<name>` / `agent:<name>` workflow-definition node.
     pub from: String,
-    /// The link's target node id (the code / doc node the edge points at): a code file / entity
-    /// path (a `SPECIFIES` / `CONSTRAINS` / `GOVERNS` / `explains` target) or a cited doc / code
-    /// path (a `references` target).
+    /// The link's target node id (the node the edge points at): a code file / entity path (a
+    /// `SPECIFIES` / `CONSTRAINS` / `GOVERNS` / `explains` target), a cited doc / code path (a
+    /// `references` target), or a `stage:<name>` / `gate:<name>` / `agent:<name>`
+    /// workflow-definition node.
     pub to: String,
-    /// The design-intent relation, one of the five [`REL_SPECIFIES`] / [`REL_CONSTRAINS`] /
-    /// [`REL_GOVERNS`] / [`REL_EXPLAINS`] / [`REL_DOC_REFERENCES`]. The emit only ever produces
-    /// these five; a payload carrying any other relation folds nothing.
+    /// The relation: from the design-intent pass, one of [`REL_SPECIFIES`] / [`REL_CONSTRAINS`] /
+    /// [`REL_GOVERNS`] / [`REL_EXPLAINS`] / [`REL_DOC_REFERENCES`]; from the workflow-definition
+    /// pass, one of [`REL_NEEDS`] / [`REL_RUNS`] / [`REL_REVIEWS`]. The two passes together only
+    /// ever produce these eight; a payload carrying any other relation folds nothing.
     pub rel: String,
 }
 
