@@ -6501,7 +6501,15 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "78226b2dad64be67"
+    "content_hash": "7b8618de0b4bf10a"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "print_around_subgraph",
+    "is_test": false,
+    "proposed_module": "main::render",
+    "reason": "name contains \"print_\" (human-readable output); grouped under `main::render`.",
+    "content_hash": "37836de65ccf64a6"
   },
   {
     "file": "src/main.rs",
