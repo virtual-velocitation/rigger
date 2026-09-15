@@ -182,19 +182,25 @@ gates:                      # the project's verification library, referenced by 
   # `exclude_re` entry in `.cargo/mutants.toml` with a one-line reason, commit, and
   # record the deterministic per-mutant accounting as a DecisionMade. Declaring a
   # gate under this exact id requires `cargo-mutants` on PATH (`rigger validate`
-  # checks at run start). The per-mutant test budget is 3x the baseline suite time: the
-  # sweep runs two suites at once (-j 2), so a mutant that the suite catches only by a
-  # bounded wait (a hang-class mutant - a server that returns at once, an inverted loop
-  # guard) needs the full wait PLUS the rest of the suite at doubled load; at 1.5x the
-  # first live check-in (spec 89, 2026-09-14) timed out four such mutants at load 68 with
-  # zero misses and escalated a green unit. A timeout still fails the gate: it means a
-  # mutant the suite detects only by waiting, which is a test to tighten, never a pass.
+  # checks at run start). The gate fails on MISSED mutants only (spec 91: "fails while a
+  # missed mutant is neither killed nor justified"). A TIMEOUT is a detection, not a miss:
+  # the suite hangs or overruns under the mutant (a server that returns at once, an
+  # inverted loop guard - hang-class mutants the suite catches only by bounded waits), and
+  # cargo-mutants exits 3 for it. On the first live check-in (spec 89, 2026-09-14) the same
+  # four hang-class mutants timed out at 1.5x AND 3x the baseline with zero misses, and a
+  # remediation round of fast-failing contract tests still left two: cargo stops at the
+  # first FAILING test binary, and the binaries with the bounded waits run before the one
+  # that fails fast, so no test can make the whole suite finish early. Two green units
+  # escalated on that treadmill. The budget stays at 3x (two suites run at once); the
+  # sweep's own missed.txt is the verdict, and the accounting names every timeout.
   mutation:
     run: >-
       test -n "$RIGGER_RUN_BASE" &&
       git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff &&
       rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
-      TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 3 -j 2
+      { TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 3 -j 2;
+      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
+      test ! -s mutants.out/missed.txt
     kind: core
 
 stages:

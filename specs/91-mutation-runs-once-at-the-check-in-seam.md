@@ -33,7 +33,9 @@ gates:
       test -n "$RIGGER_RUN_BASE" &&
       git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff &&
       rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
-      TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 3 -j 2
+      { TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 3 -j 2;
+      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
+      test ! -s mutants.out/missed.txt
     kind: core
 stages:
   checkin:
@@ -55,13 +57,17 @@ merge-base with the run branch: the check-in stage's worktree branches from the 
 AFTER every implement unit has integrated, so `git merge-base rigger-run HEAD` is HEAD there
 and the diff would be empty - the sweep would certify nothing. A run whose `RunStarted`
 predates this field has no base to diff against; the gate's `test -n` fails loud rather than
-sweeping an empty diff. The per-mutant test budget is 3x the baseline suite time, never 1.5x:
-the sweep runs two suites at once (`-j 2`), so a mutant the suite catches only by a bounded
-wait (a hang-class mutant: a server that returns at once, an inverted loop guard) needs the
-whole wait plus the rest of the suite at doubled load; at 1.5x the first live check-in (spec
-89) timed out four such mutants with zero misses and escalated a green unit. A timeout still
-fails the gate - it names a test that detects the mutant only by waiting, which is a test to
-tighten, never a pass. The stage's task text (config, not
+sweeping an empty diff. The gate fails on MISSED mutants only - the sweep's own
+`mutants.out/missed.txt` is the verdict, and cargo-mutants' exit 3 (timeouts, no misses) passes.
+A timeout is a detection, never a miss: the suite hangs or overruns under a hang-class mutant
+(a server that returns at once, an inverted loop guard), which it catches only by bounded
+waits; and because cargo stops at the first FAILING test binary while the binaries holding the
+waits run before any fast-failing one, no added test can make such a sweep finish inside a
+budget. The per-mutant budget is 3x the baseline suite time because the sweep runs two suites
+at once (`-j 2`). Evidence: the first live check-in (spec 89) timed out the same four
+hang-class mutants at 1.5x and at 3x with zero misses, and a remediation round of fast
+contract tests still left two; a green unit escalated twice on that treadmill. The accounting
+names every timeout. The stage's task text (config, not
 code) is the kill-or-justify protocol spec 73 wrote for the implementer: read
 `mutants.out/outcomes.json`, kill each missed mutant with a strengthened test or justify it by
 an `exclude_re` entry in `.cargo/mutants.toml` with a one-line reason, commit, and record
