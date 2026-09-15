@@ -13146,7 +13146,7 @@ fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> Guard
             if !command_invokes_grep(command) {
                 return GuardDecision::Allow;
             }
-            if command.split_whitespace().any(|w| w == "--literal") {
+            if shell_command_words(command).any(|w| w == "--literal") {
                 return GuardDecision::Allow;
             }
             if guarded_command(command) {
@@ -13159,7 +13159,27 @@ fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> Guard
     }
 }
 
-/// True when `path` (a `Grep`-tool `path` argument, or one whitespace-separated token of a
+/// Splits a Bash command line into real shell WORD boundaries for [`command_invokes_grep`]
+/// and [`guarded_command`]: whitespace, plus the metacharacters that can fuse two commands
+/// together with no whitespace between them - a pipe `|`, a semicolon `;`, `&`
+/// (backgrounding/`&&`), `(` `)` (subshells and `$( )` command substitution), a backtick
+/// `` ` `` (the older command-substitution form), and `$` itself (so `$(` splits even
+/// though `(` alone already would). Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-
+/// bypass): plain `str::split_whitespace` left `cat f|grep p`, `true;grep p f`, and
+/// `$(grep -q p f)` each hiding the literal word `grep` (and any guarded path segment) in a
+/// token fused to its neighbor by one of these characters with no separating whitespace -
+/// an ordinary shell idiom, not an adversarial evasion. Coarse by the same design the rest
+/// of this guard already accepts (no real shell parser, no quoting/escaping awareness - a
+/// quoted pattern that happens to contain one of these characters splits too, the rare
+/// false positive `--literal` exists to pass through); the point is that a real invocation
+/// can now never hide from the scan, not that every split is a fully faithful shell word.
+fn shell_command_words(command: &str) -> impl DoubleEndedIterator<Item = &str> {
+    command
+        .split(|c: char| c.is_whitespace() || "|;&()`$".contains(c))
+        .filter(|w| !w.is_empty())
+}
+
+/// True when `path` (a `Grep`-tool `path` argument, or one [`shell_command_words`] token of a
 /// Bash command line) has one of [`GREP_GUARDED_TREES`]'s bare names (the trailing `/`
 /// stripped) as a WHOLE `/`-separated segment, anywhere in `path` - path MEMBERSHIP, not a
 /// literal trailing-slash substring (adj-u92c4 reject-fix): `src` matches (a bare segment,
@@ -13191,29 +13211,32 @@ fn guarded_path(path: &str) -> bool {
 }
 
 /// True when a `grep`-invoking Bash command line targets a guarded tree: one of its
-/// whitespace-separated tokens has a guarded tree as a path segment (see
+/// [`shell_command_words`] tokens has a guarded tree as a path segment (see
 /// [`path_has_guarded_segment`] - covers `grep -rn pattern src`, `grep -rn pattern src/`,
-/// `grep pattern src/main.rs`, a mid-pipeline `... | grep -r pattern tests/`, and an
-/// absolute path under a guarded tree), or its last whitespace-separated token is bare `.`
-/// (the common "search the whole project" invocation, `grep -rn pattern .`, which from a
-/// project root reaches every guarded tree). Anything else (a target outside all three
-/// trees, e.g. `grep pattern README.md`) is not guarded. Coarse by the same design the
-/// existing substring check already accepted (this scans every token, the search PATTERN
-/// included, not only the trailing path argument) - a pattern that happens to spell a
-/// guarded tree's name is the rare false-positive `--literal` exists to pass through.
+/// `grep pattern src/main.rs`, a mid-pipeline `... | grep -r pattern tests/`, a command
+/// FUSED to a guarded path with no whitespace (`cat src/main.rs|grep pattern`), and an
+/// absolute path under a guarded tree), or its last token is bare `.` (the common "search
+/// the whole project" invocation, `grep -rn pattern .`, which from a project root reaches
+/// every guarded tree). Anything else (a target outside all three trees, e.g.
+/// `grep pattern README.md`) is not guarded. Coarse by the same design the existing
+/// substring check already accepted (this scans every token, the search PATTERN included,
+/// not only the trailing path argument) - a pattern that happens to spell a guarded tree's
+/// name is the rare false-positive `--literal` exists to pass through.
 fn guarded_command(command: &str) -> bool {
-    if command.split_whitespace().any(path_has_guarded_segment) {
+    if shell_command_words(command).any(path_has_guarded_segment) {
         return true;
     }
-    command.split_whitespace().next_back() == Some(".")
+    shell_command_words(command).next_back() == Some(".")
 }
 
-/// True when a Bash command line contains `grep` as a whole word (not a substring of a
-/// longer word like `zgrep` or `--grep-something`) - the literal command name the
-/// Design text names ("a Grep or a `grep`"), never `rg`/`egrep`/`fgrep` or any other
-/// tool this criterion's stated scope does not cover.
+/// True when a Bash command line contains `grep` as a whole [`shell_command_words`] word
+/// (not a substring of a longer word like `zgrep` or `--grep-something`, and not hidden by
+/// fusion to an adjacent command via `|`/`;`/`&`/`$( )`/a backtick with no surrounding
+/// whitespace - adj-u92c4r2-verdict-reject-shell-metachar-bypass) - the literal command
+/// name the Design text names ("a Grep or a `grep`"), never `rg`/`egrep`/`fgrep` or any
+/// other tool this criterion's stated scope does not cover.
 fn command_invokes_grep(command: &str) -> bool {
-    command.split_whitespace().any(|w| w == "grep")
+    shell_command_words(command).any(|w| w == "grep")
 }
 
 /// `rigger grep-guard`: the command the installed PreToolUse hook runs (see
@@ -25782,5 +25805,48 @@ mod tests {
                 "{path:?} shares no WHOLE segment with a guarded tree; must be allowed"
             );
         }
+    }
+
+    /// Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-bypass /
+    /// adv-u92c4r2-command-invokes-grep-tokenizes-on-whitespace-only): a `grep` invocation
+    /// fused to an adjacent command with NO surrounding whitespace - via a pipe `|`, a
+    /// semicolon `;`, an `&`, or a `$( )` command substitution - must be denied exactly
+    /// like the spaced form already is. Before this fix `command_invokes_grep` and
+    /// `guarded_command` split on whitespace only, so a fused metacharacter hid the literal
+    /// word `grep` (and a guarded path segment) from the scan entirely - the exact three
+    /// probes the round-2 reject reproduced against the compiled binary, pinned here at the
+    /// pure-function level too (the layer the reject named as where the gap hid).
+    #[test]
+    fn grep_guard_decision_bounces_a_shell_metacharacter_fused_grep() {
+        for command in [
+            "cat src/main.rs|grep pattern",
+            "true;grep pattern src/main.rs",
+            "if $(grep -q pattern src/main.rs); then echo yes; fi",
+            "grep pattern src/main.rs&",
+            "echo hi&&grep pattern src/main.rs",
+            "echo `grep pattern src/main.rs`",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a grep fused to an adjacent command via a shell metacharacter must still \
+                 be denied: {command:?}"
+            );
+        }
+    }
+
+    /// The SAME fused shapes with `--literal` added must still pass through, proving the
+    /// escape hatch survives the new tokenizer rather than becoming unreachable once fusion
+    /// is detected.
+    #[test]
+    fn grep_guard_decision_still_allows_literal_on_a_shell_metacharacter_fused_grep() {
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "true;grep --literal pattern src/main.rs"})
+            ),
+            GuardDecision::Allow,
+            "--literal must still pass a fused command through"
+        );
     }
 }
