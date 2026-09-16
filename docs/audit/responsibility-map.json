@@ -6981,7 +6981,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "20b9a831fbb0e56c"
+    "content_hash": "ae49da04e0acb11f"
   },
   {
     "file": "src/main.rs",
@@ -7165,7 +7165,7 @@
     "is_test": false,
     "proposed_module": "main::liveness",
     "reason": "name contains \"live\" (liveness/heartbeat reporting); grouped under `main::liveness`.",
-    "content_hash": "b329697bf7a3a60a"
+    "content_hash": "c1d942caef3d9420"
   },
   {
     "file": "src/main.rs",
