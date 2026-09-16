@@ -1688,14 +1688,14 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1627 func
 
 ## 2. Duplication Catalog
 
-766 clusters (3717 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+766 clusters (3718 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
 - **Command::new call sites**: 379 site(s) - `dup-0006`
 - **/proc-path string literals**: 60 site(s) - `dup-0145`
 - **sqlite Connection::open call sites**: 46 site(s) - `dup-0123`
-- **.rigger-path string literals**: 708 site(s) - `dup-0061`
+- **.rigger-path string literals**: 709 site(s) - `dup-0061`
 - **error-shaping helper functions**: 8 site(s) - `dup-0080`
 
 ### Clusters (244 exact, 440 near, 82 semantic)
@@ -2362,7 +2362,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/conductor.rs:376-378` `adoption_provenance_key`
 - `src/conductor.rs:389-391` `quarantine_record_key`
-- `src/contextgraph/sqlite.rs:1943-1945` `code_entity_id`
+- `src/contextgraph/sqlite.rs:1946-1948` `code_entity_id`
 - `src/spawn.rs:441-443` `what`
 - `tests/no_os_kill_audit.rs:45-47` `join`
 
@@ -2388,9 +2388,9 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/eventstore/namespace.rs:69-71` `prefix_for`
 - `src/eventstore/sqlite.rs:1404-1406` `successor`
 - `src/grounder/mod.rs:216-222` `retired_grounder_error`
-- `src/grounder/workflowdef.rs:25-27` `stage_id`
-- `src/grounder/workflowdef.rs:29-31` `gate_id`
-- `src/grounder/workflowdef.rs:33-35` `agent_id`
+- `src/grounder/workflowdef.rs:27-29` `stage_id`
+- `src/grounder/workflowdef.rs:31-33` `gate_id`
+- `src/grounder/workflowdef.rs:35-37` `agent_id`
 - `src/main.rs:11766-11768` `skill_source_rel`
 - `src/main.rs:12783-12789` `spec_lint_next_step`
 - `src/spawn.rs:65-67` `lens_role`
@@ -2725,11 +2725,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:16863-16947` `a_bracketed_id_echo_with_a_paraphrase_still_supersedes_exactly_once`
 - `src/conductor.rs:16950-17022` `a_stale_non_matching_id_falls_back_to_the_verbatim_prose_match`
 
-#### `dup-0061` (semantic, 708 sites)
+#### `dup-0061` (semantic, 709 sites)
 
 Proposed home: `one .rigger-relative path-composition helper`
 
-mandatory sweep: .rigger-path string literals - 708 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: .rigger-path string literals - 709 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/conductor.rs:17229-17229` `"the repo's own .rigger config must load"`
 - `src/config.rs:831-831` `".rigger"`
@@ -2743,11 +2743,11 @@ mandatory sweep: .rigger-path string literals - 708 site(s), collected mechanica
 - `src/config.rs:2869-2869` `"create .rigger dir"`
 - `src/config.rs:2890-2890` `".rigger"`
 - `src/config.rs:2891-2891` `"create .rigger dir"`
-- `src/contextgraph/sqlite.rs:4533-4533` `".rigger/workflow.yml"`
-- `src/contextgraph/sqlite.rs:4541-4541` `".rigger/workflow.yml"`
-- `src/contextgraph/sqlite.rs:4549-4549` `".rigger/workflow.yml"`
-- `src/contextgraph/sqlite.rs:4557-4557` `".rigger/workflow.yml"`
-- `src/contextgraph/sqlite.rs:4565-4565` `".rigger/workflow.yml"`
+- `src/contextgraph/sqlite.rs:4536-4536` `".rigger/workflow.yml"`
+- `src/contextgraph/sqlite.rs:4544-4544` `".rigger/workflow.yml"`
+- `src/contextgraph/sqlite.rs:4552-4552` `".rigger/workflow.yml"`
+- `src/contextgraph/sqlite.rs:4560-4560` `".rigger/workflow.yml"`
+- `src/contextgraph/sqlite.rs:4568-4568` `".rigger/workflow.yml"`
 - `src/dash.rs:5073-5073` `"{root}/.rigger/events.db"`
 - `src/dash.rs:5122-5122` `"/.rigger/events.db"`
 - `src/docs.rs:203-203` `"The EVENT LOG accumulates separately from the graph, and has its own prune: `rigger \
@@ -2826,9 +2826,10 @@ mandatory sweep: .rigger-path string literals - 708 site(s), collected mechanica
 - `src/grounder/mod.rs:415-415` `".rigger"`
 - `src/grounder/symbols/store.rs:25-25` `".rigger"`
 - `src/grounder/symbols/store.rs:35-35` `".rigger"`
-- `src/grounder/workflowdef.rs:23-23` `".rigger/workflow.yml"`
-- `src/grounder/workflowdef.rs:179-179` `".rigger"`
-- `src/grounder/workflowdef.rs:421-421` `"this project's own .rigger/workflow.yml must extract at least one event"`
+- `src/grounder/workflowdef.rs:25-25` `".rigger/workflow.yml"`
+- `src/grounder/workflowdef.rs:230-230` `".rigger"`
+- `src/grounder/workflowdef.rs:499-499` `".rigger"`
+- `src/grounder/workflowdef.rs:587-587` `"this project's own .rigger/workflow.yml must extract at least one event"`
 - `src/ingest.rs:739-739` `".rigger"`
 - `src/ingest.rs:741-741` `".rigger"`
 - `src/ingest.rs:750-750` `"gw/.rigger/workflow.yml@"`
@@ -4598,7 +4599,7 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/mod.rs
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/mod.rs:520-522` `is_false`
+- `src/contextgraph/mod.rs:534-536` `is_false`
 - `src/dash.rs:1151-1153` `is_not_back`
 - `src/dash.rs:1158-1160` `is_not_shared`
 
@@ -4609,8 +4610,8 @@ Proposed home: `one sqlite-connection-opening adapter function every caller is i
 mandatory sweep: sqlite Connection::open call sites - 46 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/contextgraph/sqlite.rs:133-133` `Connection::open`
-- `src/contextgraph/sqlite.rs:6997-6997` `Connection::open`
-- `src/contextgraph/sqlite.rs:7807-7807` `Connection::open`
+- `src/contextgraph/sqlite.rs:7000-7000` `Connection::open`
+- `src/contextgraph/sqlite.rs:7810-7810` `Connection::open`
 - `src/eventstore/sqlite.rs:159-159` `Connection::open`
 - `src/eventstore/sqlite.rs:2792-2792` `Connection::open`
 - `src/eventstore/sqlite.rs:3484-3484` `Connection::open`
@@ -4680,7 +4681,7 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:1951-1956` `name_suffix`
+- `src/contextgraph/sqlite.rs:1954-1959` `name_suffix`
 - `src/dash.rs:1696-1701` `name_suffix`
 
 #### `dup-0127` (exact, 2 sites)
@@ -4689,8 +4690,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:1986-1992` `tier_rank`
-- `src/contextgraph/sqlite.rs:1998-2004` `tier_floor_rank`
+- `src/contextgraph/sqlite.rs:1989-1995` `tier_rank`
+- `src/contextgraph/sqlite.rs:2001-2007` `tier_floor_rank`
 
 #### `dup-0128` (near, 3 sites)
 
@@ -4698,9 +4699,9 @@ Proposed home: `sqlite::support (consolidate these 3 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:2071-2096` `calls_out`
-- `src/contextgraph/sqlite.rs:2129-2154` `callers_direct`
-- `src/contextgraph/sqlite.rs:2165-2193` `callers_via_bare`
+- `src/contextgraph/sqlite.rs:2074-2099` `calls_out`
+- `src/contextgraph/sqlite.rs:2132-2157` `callers_direct`
+- `src/contextgraph/sqlite.rs:2168-2196` `callers_via_bare`
 
 #### `dup-0129` (near, 5 sites)
 
@@ -4708,8 +4709,8 @@ Proposed home: `a new shared module (sites span 4 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:2832-2846` `apply_decision`
-- `src/contextgraph/sqlite.rs:4739-4746` `apply_batch_ref_caller`
+- `src/contextgraph/sqlite.rs:2835-2849` `apply_decision`
+- `src/contextgraph/sqlite.rs:4742-4749` `apply_batch_ref_caller`
 - `src/dash.rs:9906-9913` `apply_call`
 - `tests/calls_down_execution_path_periphery.rs:80-87` `apply_call`
 - `tests/graph_fold_dedup_live_only_scoping.rs:38-45` `apply_decision`
@@ -4720,8 +4721,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:2921-2934` `subgraph_finds_the_governing_decision`
-- `src/contextgraph/sqlite.rs:8164-8184` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
+- `src/contextgraph/sqlite.rs:2924-2937` `subgraph_finds_the_governing_decision`
+- `src/contextgraph/sqlite.rs:8167-8187` `recording_proof_never_wipes_the_entitys_own_name_kind_and_line_attrs`
 
 #### `dup-0131` (near, 3 sites)
 
@@ -4729,7 +4730,7 @@ Proposed home: `a new shared module (sites span 3 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:3065-3073` `apply_governs_at`
+- `src/contextgraph/sqlite.rs:3068-3076` `apply_governs_at`
 - `tests/graph_fold_dedup_live_edge.rs:38-46` `apply_governs`
 - `tests/graph_rebuild_collapses_dupes.rs:40-48` `apply_governs`
 
@@ -4739,11 +4740,11 @@ Proposed home: `a new shared module (sites span 6 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:3356-3374` `apply_code_entity`
-- `src/contextgraph/sqlite.rs:3390-3410` `apply_code_entity_partial`
-- `src/contextgraph/sqlite.rs:3459-3478` `apply_community`
-- `src/contextgraph/sqlite.rs:4713-4724` `apply_batch_def`
-- `src/contextgraph/sqlite.rs:5007-5027` `apply_batch_def_at`
+- `src/contextgraph/sqlite.rs:3359-3377` `apply_code_entity`
+- `src/contextgraph/sqlite.rs:3393-3413` `apply_code_entity_partial`
+- `src/contextgraph/sqlite.rs:3462-3481` `apply_community`
+- `src/contextgraph/sqlite.rs:4716-4727` `apply_batch_def`
+- `src/contextgraph/sqlite.rs:5010-5030` `apply_batch_def_at`
 - `src/dash.rs:9894-9905` `apply_def`
 - `tests/calls_down_execution_path_periphery.rs:63-74` `apply_def`
 - `tests/dash_calls_route_periphery.rs:741-751` `apply_def`
@@ -4756,14 +4757,14 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:3376-3381` `apply_edge_inferred`
-- `src/contextgraph/sqlite.rs:3416-3421` `apply_edge_inferred_evidence`
-- `src/contextgraph/sqlite.rs:3449-3455` `apply_ref_caller`
-- `src/contextgraph/sqlite.rs:4270-4278` `apply_doc_concept`
-- `src/contextgraph/sqlite.rs:4381-4389` `apply_doc_link`
-- `src/contextgraph/sqlite.rs:4728-4734` `apply_batch_ref`
-- `src/contextgraph/sqlite.rs:6342-6350` `apply_unit_integrated`
-- `src/contextgraph/sqlite.rs:7613-7623` `apply_def`
+- `src/contextgraph/sqlite.rs:3379-3384` `apply_edge_inferred`
+- `src/contextgraph/sqlite.rs:3419-3424` `apply_edge_inferred_evidence`
+- `src/contextgraph/sqlite.rs:3452-3458` `apply_ref_caller`
+- `src/contextgraph/sqlite.rs:4273-4281` `apply_doc_concept`
+- `src/contextgraph/sqlite.rs:4384-4392` `apply_doc_link`
+- `src/contextgraph/sqlite.rs:4731-4737` `apply_batch_ref`
+- `src/contextgraph/sqlite.rs:6345-6353` `apply_unit_integrated`
+- `src/contextgraph/sqlite.rs:7616-7626` `apply_def`
 - `tests/dash_calls_route_periphery.rs:755-761` `apply_call`
 
 #### `dup-0134` (near, 2 sites)
@@ -4772,8 +4773,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:4392-4515` `design_intent_link_events_fold_into_the_five_design_intent_edges`
-- `src/contextgraph/sqlite.rs:4518-4636` `workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges`
+- `src/contextgraph/sqlite.rs:4395-4518` `design_intent_link_events_fold_into_the_five_design_intent_edges`
+- `src/contextgraph/sqlite.rs:4521-4639` `workflow_definition_events_fold_into_stage_gate_agent_nodes_with_needs_runs_reviews_edges`
 
 #### `dup-0135` (near, 2 sites)
 
@@ -4781,8 +4782,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:4752-4766` `edges_from`
-- `src/contextgraph/sqlite.rs:7070-7088` `edges_touching`
+- `src/contextgraph/sqlite.rs:4755-4769` `edges_from`
+- `src/contextgraph/sqlite.rs:7073-7091` `edges_touching`
 
 #### `dup-0136` (near, 2 sites)
 
@@ -4790,8 +4791,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:5430-5570` `calls_down_walks_the_execution_path_as_a_layered_deduped_dag_with_a_back_edge`
-- `src/contextgraph/sqlite.rs:5768-5958` `calls_up_walks_the_call_sites_as_a_layered_deduped_dag_and_lists_referenced_but_not_called`
+- `src/contextgraph/sqlite.rs:5433-5573` `calls_down_walks_the_execution_path_as_a_layered_deduped_dag_with_a_back_edge`
+- `src/contextgraph/sqlite.rs:5771-5961` `calls_up_walks_the_call_sites_as_a_layered_deduped_dag_and_lists_referenced_but_not_called`
 
 #### `dup-0137` (near, 2 sites)
 
@@ -4799,8 +4800,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:6075-6108` `decision_fold_projects_no_agent_node_or_decided_edge`
-- `src/contextgraph/sqlite.rs:6162-6190` `review_finding_projects_no_raised_edge_even_with_an_event_actor`
+- `src/contextgraph/sqlite.rs:6078-6111` `decision_fold_projects_no_agent_node_or_decided_edge`
+- `src/contextgraph/sqlite.rs:6165-6193` `review_finding_projects_no_raised_edge_even_with_an_event_actor`
 
 #### `dup-0138` (near, 2 sites)
 
@@ -4808,8 +4809,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:6885-6894` `edge_projects`
-- `src/contextgraph/sqlite.rs:7972-7984` `index_names`
+- `src/contextgraph/sqlite.rs:6888-6897` `edge_projects`
+- `src/contextgraph/sqlite.rs:7975-7987` `index_names`
 
 #### `dup-0139` (near, 2 sites)
 
@@ -4817,8 +4818,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:6897-6979` `every_node_and_edge_carries_the_projects_scope_on_fold`
-- `src/contextgraph/sqlite.rs:7091-7182` `prune_is_project_scoped_leaving_another_projects_same_id_node_intact`
+- `src/contextgraph/sqlite.rs:6900-6982` `every_node_and_edge_carries_the_projects_scope_on_fold`
+- `src/contextgraph/sqlite.rs:7094-7185` `prune_is_project_scoped_leaving_another_projects_same_id_node_intact`
 
 #### `dup-0140` (exact, 2 sites)
 
@@ -4826,7 +4827,7 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:7626-7631` `apply_ref`
+- `src/contextgraph/sqlite.rs:7629-7634` `apply_ref`
 - `tests/calls_down_execution_path_periphery.rs:94-99` `apply_ref`
 
 #### `dup-0141` (near, 3 sites)
@@ -4835,8 +4836,8 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:7711-7752` `the_cross_file_inferred_tier_is_order_independent`
-- `src/contextgraph/sqlite.rs:7755-7770` `the_definition_upgrade_never_demotes_a_same_file_extracted_reference`
+- `src/contextgraph/sqlite.rs:7714-7755` `the_cross_file_inferred_tier_is_order_independent`
+- `src/contextgraph/sqlite.rs:7758-7773` `the_definition_upgrade_never_demotes_a_same_file_extracted_reference`
 - `tests/code_ingest_events.rs:1013-1045` `a_definition_upgrades_only_the_exact_name_cross_file_reference_never_a_substring`
 
 #### `dup-0142` (near, 2 sites)
@@ -4845,7 +4846,7 @@ Proposed home: `a new shared module (sites span 2 files: src/contextgraph/sqlite
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:7881-7883` `edge_desc`
+- `src/contextgraph/sqlite.rs:7884-7886` `edge_desc`
 - `src/main.rs:8323-8329` `runs_menu_line`
 
 #### `dup-0143` (near, 2 sites)
@@ -4854,8 +4855,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:8082-8101` `a_same_file_test_reference_increments_proven_by_and_records_its_evidence`
-- `src/contextgraph/sqlite.rs:8104-8127` `two_test_references_accumulate_proven_by_to_2_with_both_evidence_entries`
+- `src/contextgraph/sqlite.rs:8085-8104` `a_same_file_test_reference_increments_proven_by_and_records_its_evidence`
+- `src/contextgraph/sqlite.rs:8107-8130` `two_test_references_accumulate_proven_by_to_2_with_both_evidence_entries`
 
 #### `dup-0144` (near, 2 sites)
 
@@ -4863,8 +4864,8 @@ Proposed home: `sqlite::support (consolidate these 2 sites into one function in 
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/contextgraph/sqlite.rs:8206-8237` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
-- `src/contextgraph/sqlite.rs:8482-8513` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
+- `src/contextgraph/sqlite.rs:8209-8240` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
+- `src/contextgraph/sqlite.rs:8485-8516` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
 
 #### `dup-0145` (semantic, 60 sites)
 
@@ -5822,7 +5823,7 @@ mandatory sweep: same-named helper function defined independently in 2+ files - 
 
 - `src/grounder/design/events.rs:90-114` `project_batches`
 - `src/grounder/symbols/events.rs:89-91` `project_batches`
-- `src/grounder/workflowdef.rs:191-198` `project_batches`
+- `src/grounder/workflowdef.rs:242-249` `project_batches`
 
 #### `dup-0219` (near, 2 sites)
 
@@ -5888,7 +5889,7 @@ Proposed home: `one shared `extract_events` helper (e.g. relocated into `tests/c
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/grounder/symbols/events.rs:165-261` `extract_events`
-- `src/grounder/workflowdef.rs:140-170` `extract_events`
+- `src/grounder/workflowdef.rs:191-221` `extract_events`
 
 #### `dup-0226` (semantic, 3 sites)
 
@@ -5985,7 +5986,7 @@ Proposed home: `a new shared module (sites span 2 files: src/grounder/symbols/st
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `src/grounder/symbols/store.rs:255-259` `load_is_none_on_a_cold_start`
-- `src/grounder/workflowdef.rs:406-410` `project_events_on_a_missing_workflow_yields_nothing_never_a_crash`
+- `src/grounder/workflowdef.rs:572-576` `project_events_on_a_missing_workflow_yields_nothing_never_a_crash`
 
 #### `dup-0236` (semantic, 2 sites)
 
@@ -11507,38 +11508,38 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6684 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6688 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
-- `src/blocker.rs:392-405` `reject_recurrence_line_shows_n_over_max` - caught: `dup-0004`
-- `src/conductor.rs:5442-5802` `run_speculation` - no duplicate found by reading
-- `src/conductor.rs:10974-10976` `emitted_verdict_approves` - no duplicate found by reading
-- `src/conductor.rs:23826-23852` `path_is_high_risk_matches_by_prefix_and_by_glob` - no duplicate found by reading
-- `src/conductor.rs:38283-38351` `a_failing_deferred_gate_is_surfaced_and_the_run_is_not_done` - caught: `dup-0105`
-- `src/contextgraph/sqlite.rs:290-322` `count_prunable` - no duplicate found by reading
-- `src/contextgraph/sqlite.rs:1041-1052` `calls` - no duplicate found by reading
-- `src/driver/replay.rs:816-832` `answers_a_recorded_failure_as_an_error_not_a_fake_success` - no duplicate found by reading
-- `src/grounder/mod.rs:398-453` `grep_walk_scopes_to_the_project_via_gitignore_and_the_always_excluded_dotdirs` - no duplicate found by reading
-- `src/ingest.rs:432-437` `project_scoped_replay_keys` - no duplicate found by reading
-- `src/liveness.rs:386-399` `halt_reason` - no duplicate found by reading
-- `src/main.rs:12913-12915` `select_reindex_grounder` - no duplicate found by reading
-- `src/metrics.rs:2754-2815` `project_canary_folds_per_tier_catch_correctness_and_stability` - no duplicate found by reading
-- `src/run.rs:198-200` `current_run_base_tip` - no duplicate found by reading
-- `src/spec.rs:1676-1686` `disposition_check_resumes_scanning_after_a_quoted_span_closes_on_the_same_line` - no duplicate found by reading
-- `src/spec.rs:2033-2044` `disposition_check_a_quote_at_the_very_start_of_a_paragraph_is_a_valid_opener` - caught: `dup-0331`
-- `src/worktree.rs:2087-2091` `worktree_admin_is_corrupt` - no duplicate found by reading
-- `tests/cli.rs:2157-2231` `a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome` - caught: `dup-0435`
-- `tests/cli.rs:15318-15384` `setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config` - no duplicate found by reading
-- `tests/cli.rs:27055-27094` `step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site` - caught: `dup-0496`
-- `tests/code_entity_test_exclusion_periphery.rs:198-250` `a_pre86_persisted_index_with_no_is_test_key_loads_defaulting_every_item_to_false` - caught: `dup-0503`
-- `tests/common/mod.rs:247-254` `validated_target_pid` - no duplicate found by reading
-- `tests/graph_show_periphery.rs:216-271` `graph_show_degrades_to_stale_note_when_location_drifted` - caught: `dup-0614`
-- `tests/reap_before_removal_audit.rs:313-315` `takes_checked_root_arg` - no duplicate found by reading
-- `tests/reset_menu_identity_migration_periphery.rs:41-63` `run_stream_identity` - caught: `dup-0409`
-- `tests/simplification_audit.rs:8943-8960` `replace_sections_3_to_5_falls_back_to_end_of_string_when_no_section_6_heading_exists` - caught: `dup-0718`
-- `tests/simplification_audit.rs:9668-9684` `resolvers_agree_on_a_transitive_second_hop` - caught: `dup-0721`
-- `tests/spawn_target_dir_periphery.rs:104-108` `spawn_env_test_lock` - caught: `dup-0386`
-- `tests/step_attention_periphery.rs:655-677` `js_declaration` - caught: `dup-0273`
-- `tests/subject_lens_reprojection_contract.rs:493-526` `reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens` - caught: `dup-0756`
+- `src/canary.rs:2002-2030` `score_item_reports_the_resolved_model_the_driver_actually_returned_per_tier` - no duplicate found by reading
+- `src/conductor.rs:9673-9686` `grounded_seed` - no duplicate found by reading
+- `src/conductor.rs:33589-33684` `an_inline_gate_red_across_every_rerun_holds_for_infra_and_demotes_for_flaky` - no duplicate found by reading
+- `src/conductor.rs:34639-34658` `blast_radius_audits` - no duplicate found by reading
+- `src/conductor.rs:39883-39980` `a_parked_sdet_author_in_a_speculation_candidate_holds_the_unit` - no duplicate found by reading
+- `src/config.rs:1557-1561` `trailing_brace_is_payload_bound` - no duplicate found by reading
+- `src/dash.rs:3264-3270` `card_ref` - no duplicate found by reading
+- `src/driver/replay.rs:1019-1041` `parking_is_idempotent_across_replayed_steps` - no duplicate found by reading
+- `src/eventstore/contract.rs:844-846` `subscribe_stream` - caught: `dup-0185`
+- `src/grounder/symbols/extract.rs:784-826` `rust_grammar_kind_mapping_is_characterized` - no duplicate found by reading
+- `src/grounder/symbols/mod.rs:452-464` `reindex_replaces_only_the_named_file` - no duplicate found by reading
+- `src/liveness.rs:218-223` `classify_hung` - no duplicate found by reading
+- `src/main.rs:6929-6937` `dash_reap_idle_window` - no duplicate found by reading
+- `src/metrics.rs:145-151` `actor_tier` - no duplicate found by reading
+- `src/run.rs:1031-1062` `ensure_started_over_legacy_events_leaves_them_before_the_boundary` - no duplicate found by reading
+- `tests/cli.rs:82-100` `seed_run_events` - caught: `dup-0412`
+- `tests/cli.rs:2930-3011` `ingest_project_scopes_the_walk_to_the_project_across_both_halves` - no duplicate found by reading
+- `tests/cli.rs:4144-4200` `native_driver_scratch_policy_directs_the_worker_to_its_own_spawn_owned_container` - caught: `dup-0442`
+- `tests/community_detection_cli.rs:55-67` `project` - caught: `dup-0525`
+- `tests/plan_stage_commit_landing_periphery.rs:863-900` `cherry_pick_onto_run_branch_public_api_no_op_on_empty_shas` - no duplicate found by reading
+- `tests/reap_before_removal_audit.rs:1283-1308` `a_reap_call_only_in_a_sibling_function_never_covers_this_one` - caught: `dup-0659`
+- `tests/reset_menu_identity_migration_periphery.rs:140-218` `bare_reset_previews_the_migrated_stores_real_counts_when_history_predates_the_minted_project_identity` - no duplicate found by reading
+- `tests/simplification_audit.rs:6810-6822` `conductor_fn` - no duplicate found by reading
+- `tests/simplification_audit.rs:9738-9752` `a_fn_referenced_from_a_production_caller_does_not_appear` - caught: `dup-0722`
+- `tests/simplification_audit.rs:9838-9850` `recursion_through_the_fns_own_body_still_counts_as_a_reference` - caught: `dup-0722`
+- `tests/simplification_audit.rs:9985-10007` `a_bare_call_in_the_same_file_as_its_definition_attributes_locally_with_no_import_needed` - caught: `dup-0724`
+- `tests/spec_lint.rs:1251-1272` `validate_exempts_the_comma_separated_decided_disposition` - caught: `dup-0727`
+- `tests/subject_lens_overlay_served_page.rs:48-54` `node_available` - caught: `dup-0257`
+- `tests/subject_view_memory_rail_contract.rs:94-133` `memory_rail_is_reachable_and_correct_over_the_public_boundary` - no duplicate found by reading
+- `tests/validate_advisories.rs:179-204` `validate_warns_of_index_staleness_and_names_reindex` - no duplicate found by reading
 
 Two real recall gaps surfaced this way and were closed by widening the mechanical sweep with a new generalizable detector each - not a one-off citation - so the fix catches every present and future instance of its class, each pinned by a real-tree regression test: `find_proc_stat_or_status_readers` (decision `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or `/proc/<pid>/status` literal, closing the spec's own named worked example - `src/dash.rs:499-507` `process_state` next to `src/reap.rs:190-197` `pid_starttime`, the same job on the same file with a different field/shape, upheld at spec 62's capstone; `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) groups 2+ non-test functions per `(file, Self type)` that build a `Self { .. }` / `TypeName { .. }` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` reading MISSING from its own `ok`/`failed` cluster even though all three are parallel constructors for one struct. A third worked example, `exploration_graph` (independently defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass with no sweep needed - confirming the mechanical pass itself has real recall, not only the two widened sweeps. Two further real defects, found on review rather than in this draw, were closed the same way: a RECALL gap the architecture lens routed to this criterion by name across two prior review rounds - this file's own bespoke source-text lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the adversary found by reading every `same-named helper` cluster against `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/`subscribe_stream` across the `EventStore` trait's three backend adapters plus a test double, `blast_radius` across the `Grounder` trait's own default method, its override, and a test double) - closed by excluding members whose extracted Self type differs across the group when at least one comes from an actual `" for "` trait impl (decision `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) excluded this criterion's own citation-guard periphery file from the draw's population (see this subsection's opening paragraph) and redrew the sample; every one of the 19 functions above marked "no duplicate found by reading" was re-read by hand against its host file's surrounding context, exactly as this THOROUGHNESS check requires whenever the draw changes. 18 of the 19 are genuinely not duplicates; `apply` at `src/conductor.rs:29832-29834` is one shape worth naming so it is not mistaken for a miss - a `Projection` test double's own required trait-impl body, the same port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) already excludes from clustering by design, confirmed to still hold for this draw's own instance of it. The 19th is a genuine small duplicate this catalog's `fn`-only scanner (module doc, THE SCANNER) structurally cannot represent as a cluster: `gate_verdict_event` (`src/conductor.rs:29191-29200`) and the `verdict` closure inside `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` (`src/conductor.rs:30596-30605`) do the identical job - find the recorded `GateVerdict` for a `"<unit>/gate:g#<attempt>"` replay key, panicking with the same message when none exists - differing only in whether the unit segment is the literal `"s"` or a parameter. A `let`-bound closure is not a `fn` item, so no change to this scanner short of teaching it to see closures could catalog this pair as a cluster; named here, prominently, rather than silently, so a later refactor - or a scanner that learns to see closures - does not miss it.
 

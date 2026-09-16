@@ -3665,6 +3665,11 @@
       },
       {
         "file": "src/grounder/workflowdef.rs",
+        "name": "\".rigger\"",
+        "content_hash": "edbddea214457e40"
+      },
+      {
+        "file": "src/grounder/workflowdef.rs",
         "name": "\"this project's own .rigger/workflow.yml must extract at least one event\"",
         "content_hash": "25597419b8dbb616"
       },
@@ -7050,7 +7055,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 708 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 709 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0062",

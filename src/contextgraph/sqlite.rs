@@ -14,12 +14,12 @@ use super::{
     KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_GATE, KIND_HANDBOOK_RULE,
     KIND_LESSON, KIND_RATIONALE, KIND_STAGE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
     REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_NEEDS, REL_RAISED,
-    REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_RUNS, REL_SPECIFIES, REL_SUPERSEDES,
-    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED, TYPE_CONCEPT_DERIVED,
-    TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
-    TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_LESSON_LEARNED,
-    TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
+    REL_REALIZES, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES,
+    REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED, TYPE_ALIAS_DEFINED,
+    TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
+    TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
+    TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
+    TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{Event, Position};
 use crate::spawn::{SpawnResult, TYPE_SPAWN_RESULT};
@@ -1517,15 +1517,17 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
             // code, handbook-rule --GOVERNS--> code (REUSING REL_GOVERNS, never a second governs
             // relation), rationale --explains--> code, design-doc --references--> doc; or the
             // workflow-definition pass's stage --NEEDS--> stage, stage --RUNS--> gate/agent, and
-            // agent --REVIEWS--> stage - so both layers' links live in the event-sourced projection
-            // alongside the code half; a subgraph traversal from a touched file then reaches the RA
-            // section that designed it, the decision that constrains it, or the stage that owns it.
-            // ALWAYS compiled: the light lane folds either log with its extraction pass absent,
-            // which is why the edge relations and this arm live outside the feature that gates
-            // extraction, mirroring the 29a EdgeInferred arm.
+            // agent --REVIEWS--> stage (or, for a `tiers.light`-only reviewer, --REVIEWS_LIGHT-->
+            // stage - a DISTINCT relation, never unioned with REVIEWS, since a real run routes each
+            // unit to light XOR full exclusively by risk) - so both layers' links live in the
+            // event-sourced projection alongside the code half; a subgraph traversal from a touched
+            // file then reaches the RA section that designed it, the decision that constrains it, or
+            // the stage that owns it. ALWAYS compiled: the light lane folds either log with its
+            // extraction pass absent, which is why the edge relations and this arm live outside the
+            // feature that gates extraction, mirroring the 29a EdgeInferred arm.
             //
-            // The eight relations are matched exactly; a payload carrying any other relation string
-            // folds nothing (defensive - the two passes only ever produce these eight), mirroring
+            // The nine relations are matched exactly; a payload carrying any other relation string
+            // folds nothing (defensive - the two passes only ever produce these nine), mirroring
             // the concept arm's kind guard. Every such link is an explicit fact recorded on the log,
             // so it folds at TIER_EXTRACTED (addendum 6.2 - the precise seed) for both passes. Both
             // endpoints are alias-resolved and ensured exactly as the artifact-producing arms
@@ -1549,6 +1551,7 @@ fn fold(tx: &Transaction, e: &Event, project: &str) -> Result<(), Error> {
                 REL_NEEDS => REL_NEEDS,
                 REL_RUNS => REL_RUNS,
                 REL_REVIEWS => REL_REVIEWS,
+                REL_REVIEWS_LIGHT => REL_REVIEWS_LIGHT,
                 _ => return Ok(()),
             };
             let from = resolve_in_tx(tx, &l.from);
