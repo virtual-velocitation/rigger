@@ -28936,6 +28936,138 @@ fn grep_guard_still_allows_a_quoted_literal_on_a_quoted_grep_end_to_end() {
     );
 }
 
+/// SDET periphery gap closed (round-5 accounting, sdet-u92c4r4-backslash-newline-continuation-
+/// still-bypasses-the-guard): an ordinary bash line continuation - a backslash immediately
+/// followed by a newline, which a real shell removes with no separator - must not let `grep`
+/// hide from the guard by splitting into two dead fragments. The fix's own regression test
+/// (`grep_guard_decision_bounces_a_grep_split_by_a_line_continuation` in `src/main.rs`) proves
+/// this only at the pure-function level, in-process; this test drives the SAME shape through
+/// the compiled `rigger grep-guard` binary reading real PreToolUse JSON on stdin, proving the
+/// single-pass tokenizer actually reaches an operator's shell, not only the function under test.
+#[test]
+fn grep_guard_bounces_a_grep_split_by_a_line_continuation_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let payload = serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": {"command": "gr\\\nep pattern src/main.rs"}
+    })
+    .to_string();
+    let out = run_grep_guard(root, &payload);
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a grep split by a line continuation must be denied through the compiled binary, \
+         matching the round-5 fix's pure-function coverage; got:\n{out}"
+    );
+}
+
+/// The same line-continuation-split shape with `--literal` added must still pass through end
+/// to end, mirroring `grep_guard_decision_still_allows_literal_on_a_line_continuation_split_grep`
+/// (`src/main.rs`) at the compiled-binary boundary.
+#[test]
+fn grep_guard_still_allows_literal_on_a_line_continuation_split_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let payload = serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": {"command": "gr\\\nep --literal pattern src/main.rs"}
+    })
+    .to_string();
+    let out = run_grep_guard(root, &payload);
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "--literal must still pass a line-continuation-split grep through end to end; got:\n{out}"
+    );
+}
+
+/// SDET periphery gap closed (round-5 accounting, adv-u92c4-r4-path-qualified-grep-bypasses-
+/// command-check): a path-qualified spelling of the same binary (`/usr/bin/grep`, `./grep`, a
+/// relative `bin/grep`) must be denied exactly like the bare form already is. The fix's own
+/// regression test (`grep_guard_decision_bounces_a_path_qualified_grep` in `src/main.rs`) proves
+/// this only at the pure-function level, in-process; this test drives the SAME three shapes
+/// through the compiled `rigger grep-guard` binary reading real PreToolUse JSON on stdin,
+/// proving the basename comparison actually reaches an operator's shell.
+#[test]
+fn grep_guard_bounces_a_path_qualified_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in [
+        "/usr/bin/grep pattern src/main.rs",
+        "./grep pattern src/main.rs",
+        "bin/grep pattern src/main.rs",
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a path-qualified grep must be denied through the compiled binary: {command:?}; \
+             got:\n{out}"
+        );
+    }
+}
+
+/// The same path-qualified shapes with `--literal` added must still pass through end to end,
+/// mirroring `grep_guard_decision_still_allows_literal_on_a_path_qualified_grep` (`src/main.rs`)
+/// at the compiled-binary boundary.
+#[test]
+fn grep_guard_still_allows_literal_on_a_path_qualified_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in [
+        "/usr/bin/grep --literal pattern src/main.rs",
+        "./grep --literal pattern src/main.rs",
+        "bin/grep --literal pattern src/main.rs",
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_eq!(
+            out,
+            serde_json::json!({}),
+            "--literal must still pass a path-qualified grep through end to end: {command:?}; \
+             got:\n{out}"
+        );
+    }
+}
+
+/// The basename comparison round-5 introduced must not become a substring match: a
+/// path-qualified spelling of a DIFFERENT command (`/usr/bin/zgrep`, not `grep`) must still be
+/// allowed end to end - the sibling case to the pre-existing bare-`zgrep` proof
+/// (`grep_guard_never_bounces_a_substring_grep_or_a_merely_prefixed_tree_name_end_to_end`
+/// above), now exercised through a directory prefix too.
+#[test]
+fn grep_guard_never_bounces_a_path_qualified_non_grep_command_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"/usr/bin/zgrep pattern src/main.rs"}}"#,
+    );
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "a path-qualified different command must not be treated as grep end to end; got:\n{out}"
+    );
+}
+
 /// `rigger mcp`'s API edges: an unknown tool name, and the required-argument checks
 /// `rigger_ground`/`rigger_graph` state in their own error strings - none of which the
 /// happy-path test above (which only ever sends well-formed calls) sends. Each must answer a
