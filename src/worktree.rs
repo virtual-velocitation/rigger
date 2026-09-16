@@ -152,6 +152,7 @@ impl Worktree {
         // one crashed lifecycle can never permanently wedge the run. A healthy metadata dir
         // is a no-op, and a healthy registered worktree is never touched.
         heal_corrupt_worktree_admin(repo);
+        ensure_scratch_root_cargo_config(dir);
         if branch_exists(repo, branch) {
             // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
             // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
@@ -1551,6 +1552,43 @@ pub fn shared_build_cache_guard_path(scratch_root: &str) -> String {
     format!("{scratch_root}/{SHARED_BUILD_CACHE_NAME}.lock")
 }
 
+/// The scratch root's ONE build location for anything a driver cannot pin (spec 77,
+/// criterion 1, the mechanical half): every unit worktree lives directly under the scratch
+/// root, and cargo reads `.cargo/config.toml` from every parent directory of its cwd, so a
+/// `[build] target-dir` written once at the root catches every cargo run inside a unit
+/// worktree that carries no `CARGO_TARGET_DIR` - a worker whose driver could not set the
+/// variable, an operator's hand-run test - and sends it to `<root>/cargo-target-shared`
+/// instead of `<worktree>/target` (three such 50 GB trees filled the disk on 2026-09-15).
+/// The environment variable still wins, so the gates and compliant workers keep their
+/// per-unit `cargo-target-<unit>` siblings. Written only when absent, never rewritten: the
+/// root is rigger's, but an operator may tune the file. Best-effort by design - a scratch
+/// root that cannot take the file (read-only, or a unit dir with no parent) changes nothing
+/// about worktree creation, which must go on.
+pub const SCRATCH_CARGO_CONFIG: &str = "\
+# Written by rigger at scratch-root creation (spec 77, criterion 1): every cargo run inside a
+# unit worktree under this root that carries no CARGO_TARGET_DIR builds here, never into
+# `<worktree>/target`. The per-unit caches the gates use still win through the environment.
+[build]
+target-dir = \"cargo-target-shared\"
+";
+
+pub fn ensure_scratch_root_cargo_config(worktree_dir: &str) {
+    if unit_cache_sibling(worktree_dir).is_none() {
+        return;
+    }
+    let Some(root) = std::path::Path::new(worktree_dir).parent() else {
+        return;
+    };
+    let dir = root.join(".cargo");
+    let file = dir.join("config.toml");
+    if file.exists() {
+        return;
+    }
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(&file, SCRATCH_CARGO_CONFIG);
+    }
+}
+
 /// The per-unit build cache dir that is a SIBLING of the unit worktree at `worktree_dir`
 /// (Gap 19): `<root>/rigger-wt-<slug>` -> `<root>/cargo-target-<slug>`. Returns None for any
 /// dir that is not a unit worktree (e.g. a `rigger-review-*` review worktree, or the empty
@@ -2697,6 +2735,43 @@ mod tests {
             git(&repo_path, &["rev-parse", "HEAD"]).unwrap(),
             git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap(),
             "the run branch fast-forwarded to the unit branch"
+        );
+    }
+
+    #[test]
+    fn creating_a_unit_worktree_writes_the_scratch_roots_shared_build_location_once() {
+        // Spec 77 criterion 1's mechanical half: the first unit worktree under a scratch root
+        // leaves `<root>/.cargo/config.toml` pointing unpinned cargo runs at the root's shared
+        // cache; a second worktree leaves an existing file alone; a non-unit worktree writes
+        // nothing.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = std::env::temp_dir().join(format!("rigger-scratch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wt_a = root.join("rigger-wt-unit-a");
+        Worktree::create(&repo_path, wt_a.to_str().unwrap(), "rigger/u/unit-a", "").unwrap();
+        let cfg = root.join(".cargo").join("config.toml");
+        let written = std::fs::read_to_string(&cfg).expect("the root carries a cargo config");
+        assert!(
+            written.contains("[build]") && written.contains("target-dir = \"cargo-target-shared\""),
+            "unpinned cargo inside a unit worktree builds into the root's shared cache: {written}"
+        );
+        std::fs::write(&cfg, "[build]\ntarget-dir = \"operator-tuned\"\n").unwrap();
+        let wt_b = root.join("rigger-wt-unit-b");
+        Worktree::create(&repo_path, wt_b.to_str().unwrap(), "rigger/u/unit-b", "").unwrap();
+        assert!(
+            std::fs::read_to_string(&cfg)
+                .unwrap()
+                .contains("operator-tuned"),
+            "an existing file is never rewritten"
+        );
+        let other = std::env::temp_dir().join(format!("rigger-other-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&other).unwrap();
+        let review = other.join("rigger-review-panel-0");
+        Worktree::create(&repo_path, review.to_str().unwrap(), "rigger/review-0", "").unwrap();
+        assert!(
+            !other.join(".cargo").exists(),
+            "a review worktree is no unit and writes no build location"
         );
     }
 
