@@ -530,7 +530,13 @@ impl Grounder for Symbols {
     /// their own (unattributed) entity rather than being pinned to one of several candidates.
     /// `degree` is the real [`SymbolIndex::reference_degree`] for the entity's name and
     /// language - the same primitive [`SymbolIndex::is_hub`] already uses, not an approximate
-    /// count of what happened to be visible in this page.
+    /// count of what happened to be visible in this page - EXCEPT on an ambiguous name's own
+    /// Def row, which reports 0 rather than the tree-wide count (spec 92 criterion 3
+    /// remediation round 6, adj-u92c3-r5-verdict-reject /
+    /// adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): that count is exactly
+    /// the unattributed reference pool the Standalone row exists to carry, so a Def row that
+    /// cannot be pinned to any given reference must never claim it too - see the degree
+    /// computation below for the full reasoning.
     fn ground_ranked(&self, query: &str, k: usize) -> Vec<RankedRef> {
         if query.is_empty() || k == 0 {
             return Vec::new();
@@ -578,6 +584,10 @@ impl Grounder for Symbols {
         let mut seen: HashSet<EntityKey> = HashSet::new();
         let mut out: Vec<RankedRef> = Vec::new();
         for h in hits {
+            // How many SAME-LANGUAGE definitions this hit's own name has - independent of
+            // which hit kind matched, since a Def hit's own definition is always counted in
+            // `def_sites` and a Ref hit's sole-definer lookup below uses the identical key.
+            let def_count = def_sites.get(&h.entity()).map_or(0, Vec::len);
             let key = match h.kind {
                 HitKind::Def => EntityKey::Def(h.name, h.file, h.line),
                 HitKind::Ref => match def_sites.get(&h.entity()).map(Vec::as_slice) {
@@ -585,16 +595,33 @@ impl Grounder for Symbols {
                     _ => EntityKey::Standalone(h.name, h.lang),
                 },
             };
-            if !seen.insert(key) {
+            if !seen.insert(key.clone()) {
                 continue;
             }
+            // An AMBIGUOUS (more than one same-language definition) entity's own Def row
+            // reports an attributable degree of 0, never the tree-wide reference count (spec
+            // 92 criterion 3 remediation round 6, adj-u92c3-r5-verdict-reject /
+            // adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): the
+            // Standalone row for this same `(name, Lang)` exists SPECIFICALLY because a
+            // reference cannot be pinned to any one of its several candidates, so a Def row
+            // must never turn around and claim that identical unattributable pool as its own
+            // - the opposite of what creating the Standalone row already decided. An
+            // UNAMBIGUOUS (exactly one definer) Def row keeps the real
+            // `reference_degree` - every reference to that name genuinely IS this entity's
+            // own, nothing is pooled. A Standalone row always keeps the real
+            // `reference_degree` too - it IS the pooled, unattributed reference count, by
+            // construction of why it exists at all.
+            let degree = match key {
+                EntityKey::Def(..) if def_count > 1 => 0,
+                _ => idx.reference_degree(h.name, h.lang),
+            };
             out.push(RankedRef {
                 loc: Ref {
                     file: h.file.to_string(),
                     line: h.line,
                     text: h.name.to_string(),
                 },
-                degree: idx.reference_degree(h.name, h.lang),
+                degree,
             });
             if out.len() >= k {
                 break;
@@ -1425,6 +1452,72 @@ mod tests {
             ranked.len(),
             2,
             "no more than the two real definitions - never collapsed, never duplicated; got {ranked:?}"
+        );
+    }
+
+    /// Spec 92 criterion 3 remediation round 6 (adj-u92c3-r5-verdict-reject /
+    /// adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): an AMBIGUOUS name's
+    /// own Def rows must never claim the whole unattributed reference pool as their own
+    /// degree. Two same-language definitions of one name, PLUS real call sites, reproduces the
+    /// reject's own empirical repro (two Rust defs of `run` + five Rust refs -> three rows,
+    /// every row printing the same pooled degree) - here with a fixture name so the assertion
+    /// is exact and stable rather than depending on this crate's own real `run` population.
+    /// Every prior test either used zero-reference ambiguous defs
+    /// (`ground_ranked_keeps_two_definitions_of_the_same_name_as_separate_rows`) or an
+    /// unambiguous single def WITH references
+    /// (`ground_ranked_dedupes_a_functions_many_call_sites_into_one_row_with_its_degree`) -
+    /// never an ambiguous def combined with real references, the exact combination the reject
+    /// named as untested.
+    #[test]
+    fn ground_ranked_gives_ambiguous_definitions_zero_degree_and_pools_the_real_count_on_the_standalone_row(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn dup_name() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn dup_name() {}\n").unwrap();
+        for i in 0..5 {
+            std::fs::write(
+                dir.path().join(format!("caller{i}.rs")),
+                "fn go() { dup_name(); }\n",
+            )
+            .unwrap();
+        }
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let ranked = g.ground_ranked("dup_name", 10);
+        assert_eq!(
+            ranked.len(),
+            3,
+            "two ambiguous Def rows plus one pooled Standalone reference row; got {ranked:?}"
+        );
+        let def_rows: Vec<_> = ranked
+            .iter()
+            .filter(|r| r.loc.file == "a.rs" || r.loc.file == "b.rs")
+            .collect();
+        assert_eq!(
+            def_rows.len(),
+            2,
+            "both ambiguous definitions must still appear as separate rows; got {ranked:?}"
+        );
+        for row in &def_rows {
+            assert_eq!(
+                row.degree, 0,
+                "an ambiguous definition's own attributable degree is unknown - the code has \
+                 already decided (by creating a Standalone row at all) that its references \
+                 cannot be pinned to one candidate, so a Def row must never claim the whole \
+                 unattributed pool as its own; got {ranked:?}"
+            );
+        }
+        let standalone = ranked
+            .iter()
+            .find(|r| r.loc.file != "a.rs" && r.loc.file != "b.rs")
+            .unwrap_or_else(|| {
+                panic!("expected a pooled Standalone reference row; got {ranked:?}")
+            });
+        assert_eq!(
+            standalone.degree, 5,
+            "the Standalone row alone carries the real aggregate unattributed reference count - \
+             genuinely different from the ambiguous Def rows' degree, never a shared pooled \
+             number; got {ranked:?}"
         );
     }
 

@@ -103,7 +103,13 @@ pub struct Ref {
 /// reference it, so "six call sites of one function occupy one row with its degree" (the
 /// Design decision) is a single [`RankedRef`] rather than six separate [`Ref`]s. `degree` is 0
 /// for a non-structural grounder (grep / nop), which has no reference graph to count; only the
-/// `symbols` grounder computes a real degree.
+/// `symbols` grounder computes a real degree. `degree` is ALSO 0 for a row that is one of
+/// several AMBIGUOUS (multiple same-language) definitions of one name (spec 92 criterion 3
+/// remediation round 6, adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): its
+/// own attributable reference count is unknown by construction, since the grounder has already
+/// decided (by emitting a separate Standalone row for the same name) that no reference can be
+/// pinned to any one of the several candidates - that unattributed pool belongs to the
+/// Standalone row alone, never duplicated onto every ambiguous Def row.
 #[derive(Clone, Debug)]
 pub struct RankedRef {
     pub loc: Ref,
