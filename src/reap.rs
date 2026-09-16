@@ -758,7 +758,7 @@ mod tests {
     /// Build a symlink under `repo.tmp` that escapes it (a real target dir under an
     /// unrelated tempdir it does not contain) - the shared fixture for every symlink-escape
     /// test, so the two near-identical setups the audit's duplication scan flagged
-    /// (`dup-0295`) collapse onto ONE implementation. Returns the escaping symlink's own
+    /// (`dup-0300`) collapse onto ONE implementation. Returns the escaping symlink's own
     /// path and the `TempDir` guard the caller must keep alive for its target to still
     /// exist.
     fn escaping_symlink(repo: &FakeRepo) -> (tempfile::TempDir, PathBuf) {

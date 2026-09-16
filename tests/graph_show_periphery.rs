@@ -8,10 +8,16 @@
 //!     the line is past end-of-file, or the recorded line is 0 - a location that never named a real
 //!     source line), the site header is still printed with a stale-location note in place of a body,
 //!     and the command EXITS SUCCESS - the recorded graph facts survive a drifted working tree; only
-//!     the body is unavailable. Two further degrade arms live inside extent derivation (the `symbols`
-//!     lane, past the pre-read guards): the file's EXTENSION has no registered grammar, or the current
-//!     tree holds no definition of that name STARTING at the recorded line (a name/line drift) - both
-//!     degrade to a note with NO body (and never a wrong body from a neighbor at that line).
+//!     the body is unavailable. A further degrade arm lives inside extent derivation (the `symbols`
+//!     lane, past the pre-read guards): the file's EXTENSION has no registered grammar degrades to a
+//!     note with NO body.
+//!   - HEAL (spec 92, FRESH ON EVERY INTEGRATION): when the current tree holds no definition of that
+//!     name STARTING at the recorded line (a name/line drift - the definition moved within the file
+//!     since the graph was last indexed), the surface RE-LOCATES it by name within the SAME file
+//!     (never crossing files) and shows its LIVE body, with the header noting "recorded line N, now
+//!     M" - but ONLY when that name is UNAMBIGUOUS there: with more than one live candidate the surface
+//!     cannot tell which the caller meant, so it degrades to a note with NO body instead of guessing
+//!     (never a wrong body from a neighbor, or from an ambiguous same-named sibling).
 //!   - EXTENT: a definition's line-numbered body is bounded by the definition's OWN extent, derived
 //!     through the shared multi-grammar symbols authority (the grammar's own tree-sitter node
 //!     boundary) - so a nested `fn`, a brace inside a string/comment/char, a signature that itself
@@ -825,8 +831,9 @@ fn graph_show_clamps_body_to_the_max_window() {
 /// missing grammar) in place of the body, and EXITS SUCCESS - never an error, never a guessed body.
 /// This is a DISTINCT degrade arm from the light lane: here the build HAS the `symbols` feature and a
 /// present, readable file at a valid line, yet the extent is still unavailable because the extension
-/// is not one the grammar registry covers. It exercises `derive_extent_end`'s `registry::for_path`
-/// -> `None` branch, reachable only in the `symbols` lane (the light lane short-circuits before it).
+/// is not one the grammar registry covers. It exercises `locate_definition_extent`'s
+/// `registry::for_path` -> `None` branch, reachable only in the `symbols` lane (the light lane
+/// short-circuits before it).
 /// Only compiled under `symbols`; the extent faces above cover the registered-grammar happy path.
 #[cfg(feature = "symbols")]
 #[test]
@@ -885,31 +892,33 @@ fn graph_show_degrades_when_no_grammar_registered_for_the_file_extension() {
     );
 }
 
-/// NAME/LINE-DRIFT degrade (the symbols lane): a definition whose file IS present and whose recorded
-/// line IS a real line of that file, but where the CURRENT working tree holds no definition of that
-/// name STARTING at the recorded line (the code was edited so the definition moved off its recorded
-/// site). `derive_extent_end` matches on BOTH name and site line, so the drifted entity finds no
-/// extent and the surface degrades to a stale-location note with NO body - never a WRONG body lifted
-/// from whatever definition happens to sit at the recorded line. This is a distinct arm from the
-/// missing-file / past-EOF / line-0 degrades (all of which short-circuit BEFORE extent derivation):
-/// here every earlier guard passes and the miss is the `definition_extents` name+start_line filter
-/// returning empty. Reachable only in the `symbols` lane (the light lane never derives an extent).
+/// NAME/LINE-DRIFT HEAL (spec 92, FRESH ON EVERY INTEGRATION, the symbols lane): a definition whose
+/// file IS present and whose recorded line IS a real line of that file, but where the CURRENT working
+/// tree holds no definition of that name STARTING at the recorded line (the code was edited so the
+/// definition moved off its recorded site) - and the name is UNAMBIGUOUS elsewhere in the file. The
+/// surface RE-LOCATES it by name and shows its LIVE body, noting the drift in the site header, rather
+/// than refusing: a moved function must still resolve in the CURRENT tree. This is a distinct arm
+/// from the missing-file / past-EOF / line-0 degrades (all of which short-circuit BEFORE extent
+/// derivation): here every earlier guard passes and the exact name+start_line match misses, so the
+/// surface falls back to a name-only search of the same file. Reachable only in the `symbols` lane
+/// (the light lane never derives an extent, so it never attempts the fallback either).
 #[cfg(feature = "symbols")]
 #[test]
-fn graph_show_degrades_when_no_definition_of_that_name_at_the_recorded_line() {
+fn graph_show_heals_to_the_live_line_when_the_moved_name_is_unambiguous() {
     let dir = temp_project();
     let root = dir.path();
     seed_rigger_dir(root);
 
     // drift.rs: an UNRELATED `other` really sits at line 1 (with a distinctive body token), and the
-    // queried `moved` really sits at line 3. The graph records `moved` at line 1 (a stale site: the
-    // definition was edited upward since the graph was built). Every pre-extent guard passes - the
-    // file exists, line 1 is a real line, it is not 0 and not past EOF - so the degrade is entirely
-    // the name+start_line filter miss: no definition NAMED `moved` STARTS at line 1.
+    // queried `moved` really sits at line 4. The graph records `moved` at line 1 (a stale site: the
+    // definition was edited downward since the graph was built). Every pre-extent guard passes - the
+    // file exists, line 1 is a real line, it is not 0 and not past EOF - so the exact name+start_line
+    // match misses and the surface falls back to a name-only search: `moved` is UNAMBIGUOUS in this
+    // file (it occurs at exactly one line), so the fallback resolves it.
     std::fs::write(
         root.join("drift.rs"),
         "fn other() {\n\
-         \x20\x20\x20\x20let wrong_body_shown = 1;\n\
+         \x20\x20\x20\x20let neighbour_body_never_shown = 1;\n\
          }\n\
          fn moved() {\n\
          \x20\x20\x20\x20let the_real_moved_body = 2;\n\
@@ -918,42 +927,101 @@ fn graph_show_degrades_when_no_definition_of_that_name_at_the_recorded_line() {
     .unwrap();
     {
         let p = open_graph(root);
-        // Record `moved` at the STALE line 1 (its real current site is line 3).
+        // Record `moved` at the STALE line 1 (its real current site is line 4).
         seed_def(&p, 1, "drift.rs", "moved", "function", 1);
     }
 
     let (out, err, ok) = run_rigger(root, &["graph", "--show", "moved"]);
     assert!(
         ok,
-        "a name/line-drifted location degrades gracefully (exit SUCCESS); stderr: {err}"
+        "a healed name/line drift still exits SUCCESS; stderr: {err}"
     );
-    // The recorded site header survives (the graph facts stand even when the body cannot be bounded).
+    // The LIVE line is the header's site now, with the recorded (stale) line noted alongside it -
+    // never silently swapped with no trace of the drift.
     assert!(
-        out.contains("drift.rs:1"),
-        "the recorded (stale) site header survives the drift; got:\n{out}"
-    );
-    // A stale-location note stands in for the body - the recorded line no longer names that def.
-    // Pin the DISTINCTIVE filter-miss phrasing so this guards the derive_extent_end name+line arm,
-    // not a pre-read guard (missing-file / past-EOF / line-0 notes share the word "stale" but never
-    // say "no definition named ..." - and all three short-circuit before extent derivation anyway).
-    assert!(
-        out.contains("no definition named") && out.contains("stale"),
-        "a name/line drift degrades to the derive-extent stale-location note; got:\n{out}"
-    );
-    // CRITICAL: no WRONG body. The `other` definition that really sits at line 1 must NOT be shown
-    // under the `moved` header - the name+line match is exactly what prevents lifting a neighbor's
-    // body. Nor is the real `moved` body shown (its recorded line is stale).
-    assert!(
-        !out.contains("wrong_body_shown"),
-        "the definition that sits at the recorded line is NOT shown under the drifted entity's header; got:\n{out}"
+        out.contains("drift.rs:4"),
+        "the site header shows the LIVE line the name now resolves to; got:\n{out}"
     );
     assert!(
-        !out.contains("the_real_moved_body"),
-        "the drifted definition's own body is not shown from its stale recorded line; got:\n{out}"
+        out.contains("recorded line 1") && out.contains("now 4"),
+        "the header notes the recorded line differs from the live one; got:\n{out}"
+    );
+    // CRITICAL: no WRONG body. The `other` definition that really sits at the recorded line 1 must
+    // NEVER be shown under the `moved` header - only a match on the QUERIED NAME is ever shown.
+    assert!(
+        !out.contains("neighbour_body_never_shown"),
+        "the neighbour at the stale recorded line is NEVER shown under the drifted entity's header; got:\n{out}"
+    );
+    // The definition's own LIVE body IS shown - this is the fix: a moved function resolves in the
+    // current tree instead of refusing.
+    assert!(
+        out.contains("the_real_moved_body"),
+        "the moved definition's own LIVE body is shown, healed to its current line; got:\n{out}"
+    );
+    assert_eq!(
+        body_line_count(&out),
+        3,
+        "the healed body is exactly moved's own three live lines (4-6); got:\n{out}"
+    );
+}
+
+/// NAME/LINE-DRIFT, AMBIGUOUS (spec 92): when the queried name occurs at MORE than one live line in
+/// the file (none of them the recorded one), the surface cannot tell which the caller meant - it
+/// degrades to a note with NO body, exactly as the pre-heal behavior did for every drift, rather than
+/// guessing one of the candidates. This is the boundary the heal above must never cross: healing is
+/// safe only when the name is unambiguous in its file.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_degrades_when_the_moved_name_is_ambiguous_in_the_file() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_rigger_dir(root);
+
+    // twins.rs: TWO live definitions named `dup` (lines 4 and 7), neither at the recorded line 1
+    // (where an unrelated `other` really sits). A name-only fallback with no tiebreak would have to
+    // guess between them - the surface must refuse instead.
+    std::fs::write(
+        root.join("twins.rs"),
+        "fn other() {\n\
+         \x20\x20\x20\x20let unrelated = 1;\n\
+         }\n\
+         fn dup() {\n\
+         \x20\x20\x20\x20let first_twin_body = 1;\n\
+         }\n\
+         fn dup() {\n\
+         \x20\x20\x20\x20let second_twin_body = 2;\n\
+         }\n",
+    )
+    .unwrap();
+    {
+        let p = open_graph(root);
+        // Record `dup` at the STALE line 1 (neither real `dup` is there).
+        seed_def(&p, 1, "twins.rs", "dup", "function", 1);
+    }
+
+    let (out, err, ok) = run_rigger(root, &["graph", "--show", "dup"]);
+    assert!(
+        ok,
+        "an ambiguous drift still degrades gracefully (exit SUCCESS); stderr: {err}"
+    );
+    assert!(
+        out.contains("twins.rs:1"),
+        "the recorded (stale, unhealed) site header survives an ambiguous drift; got:\n{out}"
+    );
+    assert!(
+        out.contains("stale") || out.contains("cannot resolve"),
+        "an ambiguous drift degrades to a note explaining the surface cannot pick one; got:\n{out}"
+    );
+    // Neither twin's body is guessed, and the recorded line's real occupant is not shown either.
+    assert!(
+        !out.contains("unrelated")
+            && !out.contains("first_twin_body")
+            && !out.contains("second_twin_body"),
+        "no candidate body is guessed when the moved name is ambiguous in the file; got:\n{out}"
     );
     assert_eq!(
         body_line_count(&out),
         0,
-        "no line-numbered body is printed for a name/line-drifted location; got:\n{out}"
+        "no line-numbered body is printed for an ambiguous drift; got:\n{out}"
     );
 }
