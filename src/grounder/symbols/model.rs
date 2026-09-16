@@ -8,8 +8,10 @@ use std::collections::BTreeMap;
 
 /// The languages the registry can extract. A rigger-owned enum so the model never names a
 /// tree-sitter type; per-language scoping keys the cross-reference graph on it (a `parse` in
-/// a `.rs` file never links one in a `.py` file, 5.5.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// a `.rs` file never links one in a `.py` file, 5.5.2). `Hash` (spec 92 criterion 3
+/// remediation round 5) so `(name, Lang)` can key a `HashSet`/`HashMap` - the entity-resolution
+/// scoping `grounder.rs` needs to stop conflating same-named entities across languages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Lang {
     Rust,
     CSharp,
@@ -140,6 +142,19 @@ pub struct FileSymbols {
     pub lang: Lang,
     pub defs: Vec<Def>,
     pub refs: Vec<SymRef>,
+    /// Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
+    /// `adv-u2c2-partial-marker-unimplemented`): whether tree-sitter's parse of this file's
+    /// source contained an ERROR node - `tree_sitter::Node::has_error()` on the parsed root -
+    /// meaning the grammar could not fully parse it and `defs`/`refs` above only cover as far as
+    /// the parse reached, never a guarantee of completeness. Computed once during extraction
+    /// ([`crate::grounder::symbols::extract::extract`]) from the SAME parsed tree
+    /// `test_regions` already walks there (never a second parse). `#[serde(default)]` so an
+    /// index persisted before this field existed loads with every file `partial: false` - the
+    /// safe default, never manufacturing a false degraded marker for old data - and the
+    /// overwhelmingly common well-formed case serializes with no key at all, byte-identical to
+    /// before this field existed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 /// The whole-project index. Deterministic containers only (`BTreeMap`): iterating it for
@@ -270,24 +285,32 @@ impl SymbolIndex {
             return false;
         }
         let mut degrees: Vec<usize> = counts.into_values().collect();
-        degrees.sort_unstable();
-        // Nearest-rank percentile over the distinct-name degree distribution, drawn as the degree
-        // at 0-based rank `floor((N - 1) * percentile)` - always in bounds (the index never exceeds
-        // `N - 1`), so no clamp is needed. This lands the cutoff on a TYPICAL degree the outliers
-        // rise above rather than on the top element itself: with a two-name distribution [1, 20] at
-        // the 90th percentile it picks 1, and the STRICT `>` below then flags only `20` as a hub,
-        // never the degree-1 name. On a long tail dominated by degree-1 names the cutoff is 1 and
-        // `>` flags only the names that genuinely rise above the tail; on a FLAT distribution the
-        // cutoff equals the shared degree and `>` flags nothing (no meaningful spread, no hub). A
-        // `floor(N * percentile)` index with `>=` would instead sit ON the tail value and flag
-        // every referenced name - the degeneration this outlier definition exists to prevent.
-        let cutoff_idx = (((degrees.len() - 1) as f64) * percentile).floor() as usize;
-        let cutoff = degrees[cutoff_idx];
+        let cutoff = percentile_cutoff(&mut degrees, percentile);
         // STRICTLY above the cutoff: the name must be a genuine high-degree outlier, not merely
         // reach the typical degree. Every counted degree is >= 1, so `cutoff >= 1` and a hub needs
         // degree >= 2 at minimum - a lone or flat reference set can never manufacture a hub.
         self.reference_degree(name, lang) > cutoff
     }
+}
+
+/// The nearest-rank percentile cutoff over a distribution of per-name counts (spec 92 criterion
+/// 3 remediation, adj-u92c3-verdict-reject / arch-u92c3-cutoff-formula-duplicated-not-shared):
+/// the ONE cutoff formula [`SymbolIndex::is_hub`] (per-language reference-degree, the fan-out
+/// hub signal) and the `symbols` grounder's tree-wide-ambiguity gate BOTH draw their cutoff
+/// from - so the two thresholds can be retuned only in one place and can never silently drift
+/// apart from re-deriving the same nearest-rank formula twice. Sorts `counts` in place and
+/// returns the value at 0-based rank `floor((counts.len() - 1) * percentile)` - always in
+/// bounds for a non-empty slice, so no clamp is needed. Every caller here already special-cases
+/// an empty distribution (there IS no cutoff over zero names), so this panics on an empty
+/// `counts` rather than silently returning a meaningless default.
+pub fn percentile_cutoff(counts: &mut [usize], percentile: f64) -> usize {
+    assert!(
+        !counts.is_empty(),
+        "percentile_cutoff requires a non-empty distribution; callers must special-case empty"
+    );
+    counts.sort_unstable();
+    let idx = (((counts.len() - 1) as f64) * percentile).floor() as usize;
+    counts[idx]
 }
 
 #[cfg(test)]
@@ -316,6 +339,7 @@ mod tests {
                     enclosing: None,
                     is_test: false,
                 }],
+                partial: false,
             },
         );
         idx.insert_file(
@@ -332,6 +356,7 @@ mod tests {
                     enclosing_inline_module_path: None,
                 }],
                 refs: vec![],
+                partial: false,
             },
         );
         // Name lookup finds both definitions of `parse`, across languages.
@@ -359,6 +384,7 @@ mod tests {
                         enclosing: None,
                         is_test: false,
                     }],
+                    partial: false,
                 },
             );
         }
@@ -381,6 +407,7 @@ mod tests {
                     enclosing: None,
                     is_test: false,
                 }],
+                partial: false,
             },
         );
         assert_eq!(idx.reference_degree("new", Lang::Rust), 20);
@@ -436,6 +463,7 @@ mod tests {
                 lang: Lang::Rust,
                 defs: vec![],
                 refs,
+                partial: false,
             },
         );
 
@@ -489,6 +517,7 @@ mod tests {
                 lang: Lang::Rust,
                 defs: vec![],
                 refs: flat_refs,
+                partial: false,
             },
         );
         for name in ["alpha", "beta", "gamma", "delta"] {
@@ -518,6 +547,7 @@ mod tests {
                         enclosing: None,
                         is_test: false,
                     }],
+                    partial: false,
                 },
             );
         }
@@ -533,6 +563,7 @@ mod tests {
                     enclosing: None,
                     is_test: false,
                 }],
+                partial: false,
             },
         );
         for i in 0..10 {
@@ -547,6 +578,7 @@ mod tests {
                         enclosing: None,
                         is_test: false,
                     }],
+                    partial: false,
                 },
             );
         }
@@ -597,6 +629,7 @@ mod tests {
                     enclosing: None,
                     is_test: false,
                 }],
+                partial: false,
             },
         );
         let json = serde_json::to_string(&idx).expect("model serializes with plain serde");
@@ -620,6 +653,7 @@ mod tests {
                 lang: Lang::Rust,
                 defs: vec![],
                 refs: vec![],
+                partial: false,
             },
         );
         idx.remove_file("a.rs");
@@ -638,6 +672,7 @@ mod tests {
                 lang: Lang::Rust,
                 defs: vec![],
                 refs: vec![],
+                partial: false,
             },
         );
         let mut json: serde_json::Value = serde_json::to_value(&idx).unwrap();

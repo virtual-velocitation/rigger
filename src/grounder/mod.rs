@@ -18,6 +18,15 @@ pub mod symbols;
 #[cfg(feature = "symbols")]
 pub mod design;
 
+// The workflow-DEFINITION grounding axis (spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED): a
+// `.rigger/workflow.yml` extraction pass that lowers its stages, gates and agent roles into the
+// SAME DocConceptExtracted/DocLinkExtracted events `design` above emits (never a second
+// entity/edge-fold authority; see [`crate::contextgraph`]'s fold arm doc). Gated behind
+// `symbols` exactly like `design` - it is the EMIT half; the always-compiled fold folds a
+// workflow-definition log with this pass absent, so the light lane never links it.
+#[cfg(feature = "symbols")]
+pub mod workflowdef;
+
 use std::ops::ControlFlow;
 use std::path::Path;
 
@@ -98,6 +107,24 @@ pub struct Ref {
     pub text: String,
 }
 
+/// One ranked, entity-deduplicated row of the RANKED-BY-INTENT page (spec 92 criterion 3): the
+/// entity's best-ranked location, plus `degree` - how many locations across the tree define or
+/// reference it, so "six call sites of one function occupy one row with its degree" (the
+/// Design decision) is a single [`RankedRef`] rather than six separate [`Ref`]s. `degree` is 0
+/// for a non-structural grounder (grep / nop), which has no reference graph to count; only the
+/// `symbols` grounder computes a real degree. `degree` is ALSO 0 for a row that is one of
+/// several AMBIGUOUS (multiple same-language) definitions of one name (spec 92 criterion 3
+/// remediation round 6, adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): its
+/// own attributable reference count is unknown by construction, since the grounder has already
+/// decided (by emitting a separate Standalone row for the same name) that no reference can be
+/// pinned to any one of the several candidates - that unattributed pool belongs to the
+/// Standalone row alone, never duplicated onto every ambiguous Def row.
+#[derive(Clone, Debug)]
+pub struct RankedRef {
+    pub loc: Ref,
+    pub degree: usize,
+}
+
 /// The two-view blast radius of a query (architecture 5.5.1, spec 16 unit 1). Blast-radius has
 /// OPPOSITE error costs for its two consumers, so it delivers TWO views over the same query:
 ///
@@ -171,6 +198,31 @@ pub trait Grounder: Send + Sync {
     /// non-empty `<index-content-hash>/<grammar-tags-version>` stamp.
     fn index_stamp(&self) -> String {
         String::new()
+    }
+
+    /// The RANKED-BY-INTENT page (spec 92 criterion 3, "the top page is deduplicated by
+    /// entity"): up to `k` DISTINCT entities for `query`, each the entity's best-ranked
+    /// location plus its degree. The DEFAULT (grep / nop, and any grounder with no
+    /// entity/reference concept) is simply `ground`'s own top-`k` rows, each wrapped with
+    /// degree 0 (unknown) and NO dedup - never a silent behavior change for a non-structural
+    /// grounder (mirroring the [`Self::blast_radius`] / [`Self::index_stamp`] default
+    /// pattern). Only the `symbols` grounder overrides this with real ranking, entity dedup,
+    /// and a real degree.
+    fn ground_ranked(&self, query: &str, k: usize) -> Vec<RankedRef> {
+        self.ground(query, k)
+            .into_iter()
+            .map(|loc| RankedRef { loc, degree: 0 })
+            .collect()
+    }
+
+    /// Whether `query` has at least one matching entity that is NOT tree-wide-common (spec 92
+    /// criterion 3, "a query with no strong token returns the honest 'no entity matches
+    /// strongly' line instead of noise") - the gate a caller checks BEFORE printing
+    /// [`Self::ground_ranked`]'s page. The DEFAULT (grep / nop) has no commonness concept, so
+    /// every query is trivially "strong" - never suppressed, matching today's behavior. Only
+    /// the `symbols` grounder overrides this with the real repo-relative commonness check.
+    fn has_strong_match(&self, _query: &str, _k: usize) -> bool {
+        true
     }
 }
 
@@ -500,6 +552,50 @@ mod tests {
         assert!(
             Nop.index_stamp().is_empty(),
             "nop grounds nothing and stamps nothing"
+        );
+    }
+
+    /// Spec 92 criterion 3 (RANKED BY INTENT), the trait-default contract: a non-structural
+    /// grounder (grep / nop) has no entity/reference concept, so `ground_ranked` is simply
+    /// `ground`'s own rows wrapped with degree 0 (no dedup, no reordering), and
+    /// `has_strong_match` is unconditionally true - never suppressing a match the old
+    /// behavior would have printed. Only the `symbols` grounder overrides either.
+    #[test]
+    fn default_ground_ranked_and_has_strong_match_never_change_a_non_structural_grounders_behavior()
+    {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("combat.rs"),
+            "fn apply_damage() {}\nfn apply_damage() {}\n",
+        )
+        .unwrap();
+        let g = Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+
+        let plain = g.ground("apply_damage", 5);
+        let ranked = g.ground_ranked("apply_damage", 5);
+        assert_eq!(
+            ranked.len(),
+            plain.len(),
+            "the default must not dedup a non-structural grounder's rows; got {ranked:?}"
+        );
+        for (r, p) in ranked.iter().zip(plain.iter()) {
+            assert_eq!(r.loc.file, p.file);
+            assert_eq!(r.loc.line, p.line);
+            assert_eq!(r.loc.text, p.text);
+            assert_eq!(
+                r.degree, 0,
+                "a non-structural grounder has no degree concept"
+            );
+        }
+        assert!(
+            g.has_strong_match("apply_damage", 5),
+            "grep has no commonness concept, so every match is trivially strong"
+        );
+        assert!(
+            Nop.has_strong_match("anything at all", 5),
+            "nop's default is also trivially strong - never suppressed"
         );
     }
 

@@ -160,8 +160,12 @@ const OUTER_WALL_CLOCK_SEC = Number(A.outer_wall_clock) > 0 ? Number(A.outer_wal
 
 // The JSON shape `rigger step` prints (see spawn::Step / spawn::SpawnRequest): the wave it
 // newly parked and a `done` fixpoint flag. The wave items carry everything the driver needs
-// to spawn each agent. Optional SpawnRequest fields are omitted from the wire when empty, so
-// only id/unit/stage/prompt are required; extra fields are tolerated (additionalProperties).
+// to spawn each agent. The fields the driver builds a worker's instructions from - `dir`,
+// `max_wall_clock`, `marker_path`, `cargo_target_dir` - are ALWAYS on the wire (null when
+// absent) and REQUIRED here: the wave arrives through a courier agent's structured return,
+// and a key this schema does not require is a key the courier can drop while retyping (it
+// dropped `marker_path` and `cargo_target_dir` on 2026-09-15, costing a worker its heartbeat
+// and its build location). Other optional fields are omitted when empty and tolerated.
 // `halted` is the spawn-budget HALT reason (Gap 13): present (distinct from a clean `done`)
 // when the breaker stopped the run with work undone, so the driver stops LOUDLY on it.
 // `error` is the courier's own out-of-band channel: if `rigger step` itself fails, the
@@ -184,11 +188,15 @@ const STEP = {
       items: {
         type: 'object',
         additionalProperties: true,
-        required: ['id', 'unit', 'stage'],
+        required: ['id', 'unit', 'stage', 'dir', 'max_wall_clock', 'marker_path', 'cargo_target_dir'],
         properties: {
           id: { type: 'string' },
           unit: { type: 'string' },
           stage: { type: 'string' },
+          // Always present on the wire (see the note above); null when the spawn has none.
+          max_wall_clock: { type: ['integer', 'null'] },
+          marker_path: { type: ['string', 'null'] },
+          cargo_target_dir: { type: ['string', 'null'] },
           // The live work-line (spec 19a, c4): the unit's criterion, carried on the wave item
           // so the driver narrates the actual WORK, not just `${unit}:${stage}`. Omitted from
           // the wire for an untitled spawn; wave items stay open (additionalProperties: true).
@@ -629,6 +637,16 @@ async function runWorker(req, fatal) {
     `LIVE PROGRESS (spec 14): after each significant step - a search, a file read, a build, a commit, a decision - report ONE short line of what you just did, from ${REPO}, using Bash:\n` +
     `  rigger progress '${req.id}' '<one line: what you just did>'\n` +
     `This is how an observer sees you working between the milestones you record, so a long silent stretch is never mistaken for a stall. Keep it flowing WHILE you work; do not batch it at the end.\n`
+  // One build location per unit (spec 77, criterion 1). The conductor pins the unit's
+  // `cargo-target-<unit>` sibling as CARGO_TARGET_DIR in the spawn's environment for drivers
+  // that can set one; this driver runs workers through an agent tool with no environment, so
+  // the wave names the directory and the worker is told to export it. Without this, every
+  // `cargo test` a worker runs builds a fresh 50 GB `target/` inside its worktree.
+  const buildLocation = req.cargo_target_dir
+    ? `BUILD LOCATION (hard rule): every cargo command you run inside your worktree (build, test, clippy, mutants, anything that compiles) MUST run with\n` +
+      `  export CARGO_TARGET_DIR='${req.cargo_target_dir}'\n` +
+      `set first, in the same shell. That directory is your unit's ONE build cache, shared with its gates, so nothing compiles twice; a \`target/\` inside the worktree itself is a defect that fills the disk - never create one.\n`
+    : ''
   const prompt =
     `You are the rigger worker for spawn ${req.id} (unit ${req.unit}). ` +
     `Your persona and full task are recorded in the run log - FETCH THEM FIRST by running, from ${REPO}, using Bash:\n` +
@@ -639,6 +657,7 @@ async function runWorker(req, fatal) {
     `SCRATCH POLICY (hard rule): before creating ANY scratch - probe repos, verification worktrees, test builds, setup rehearsals - fetch YOUR OWN rigger-assigned scratch container, from ${REPO}, using Bash:\n` +
     `  rigger scratch '${req.id}'\n` +
     `Everything you create lives INSIDE that one printed path, NEVER under /tmp or your own session scratchpad (those are on the operator's small OS partition, and a single cargo target or \`rigger setup\` shim install there fills the disk). For any cargo you run outside your assigned worktree, export CARGO_TARGET_DIR to a subdir of that same printed path first - never the shared build cache. It is reaped the moment your result records - do not store anything durable there.\n` +
+    buildLocation +
     heartbeat +
     progressNote +
     `The rigger context tools your task refers to (rigger_emit, rigger_peers) are available here as the CLI commands \`rigger emit --spawn '${req.id}' <Type> '<json>'\` and \`rigger peers <file>...\`, run from ${REPO}. The \`--spawn '${req.id}'\` stamps the emit with YOUR spawn id so the conductor attributes it to you exactly (spec 18) - always include it on every \`rigger emit\`.\n` +

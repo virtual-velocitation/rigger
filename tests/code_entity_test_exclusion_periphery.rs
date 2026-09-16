@@ -124,6 +124,7 @@ fn is_test_false_serializes_byte_identically_to_the_pre86_form() {
                 enclosing: None,
                 is_test: false,
             }],
+            partial: false,
         },
     );
     store::save(&idx, root).unwrap();
@@ -164,6 +165,7 @@ fn is_test_true_serializes_the_key_and_round_trips() {
                 enclosing: Some("it_works".into()),
                 is_test: true,
             }],
+            partial: false,
         },
     );
     store::save(&idx, root).unwrap();
@@ -277,6 +279,7 @@ fn is_out_of_line_module_false_serializes_byte_identically_to_the_pre_round6_for
                 enclosing_inline_module_path: None,
             }],
             refs: vec![],
+            partial: false,
         },
     );
     store::save(&idx, root).unwrap();
@@ -307,6 +310,7 @@ fn is_out_of_line_module_true_serializes_the_key_and_round_trips() {
                 enclosing_inline_module_path: None,
             }],
             refs: vec![],
+            partial: false,
         },
     );
     store::save(&idx, root).unwrap();
@@ -392,6 +396,7 @@ fn path_override_none_serializes_byte_identically_to_the_pre_round7_form() {
                 enclosing_inline_module_path: None,
             }],
             refs: vec![],
+            partial: false,
         },
     );
     store::save(&idx, root).unwrap();
@@ -422,6 +427,7 @@ fn path_override_some_serializes_the_key_and_round_trips() {
                 enclosing_inline_module_path: None,
             }],
             refs: vec![],
+            partial: false,
         },
     );
     store::save(&idx, root).unwrap();
@@ -513,6 +519,7 @@ fn enclosing_inline_module_path_none_serializes_byte_identically_to_the_pre_roun
                 enclosing_inline_module_path: None,
             }],
             refs: vec![],
+            partial: false,
         },
     );
     store::save(&idx, root).unwrap();
@@ -543,6 +550,7 @@ fn enclosing_inline_module_path_some_serializes_the_key_and_round_trips() {
                 enclosing_inline_module_path: Some("outer/middle".into()),
             }],
             refs: vec![],
+            partial: false,
         },
     );
     store::save(&idx, root).unwrap();
@@ -1761,6 +1769,7 @@ fn a_non_module_definitions_stray_out_of_line_flag_never_triggers_cross_file_exc
                 enclosing_inline_module_path: None,
             }],
             refs: vec![],
+            partial: false,
         }
     }
 

@@ -45,6 +45,75 @@ const CSHARP_TAGS: &str = r#"
 (namespace_declaration name: (identifier) @name) @definition.module
 "#;
 
+/// Additional JS/TS tags-query patterns (spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED): the
+/// upstream `tags.scm` tags a `const`/`let`/`var` declarator ONLY when its value is an
+/// arrow/function expression (or, for an ES-module-style export, an `export X = <literal>`
+/// assignment-form export this project's plain CommonJS-style scripts never use), so a plain
+/// top-level constant - a ternary, a boolean coercion, a string, a call result - never became a
+/// graph entity at all. `docs/audit/2026-09-graph-vs-grep.md` questions 5 and 8 are exactly this
+/// gap, measured against `workflows/rigger.js`'s own `OUTER_WALL_CLOCK_SEC` (a ternary) and
+/// `FRESH` (`!!A.fresh`, a unary coercion) constants.
+///
+/// The value's node type is enumerated EXPLICITLY (never a bare wildcard `(_)`), so this pattern
+/// can never also match an `arrow_function` / `function_expression` / `class` /
+/// `generator_function` value - those stay the upstream function/class patterns' own captures,
+/// never double-tagged here as a SECOND, conflicting definition of the same declarator.
+///
+/// Appended to BOTH the plain JavaScript query ([`javascript_tags_query`]) and the composed
+/// TypeScript one ([`typescript_tags_query`]) - the TypeScript grammar parses this same
+/// declarator shape - so the two grammars never diverge on what counts as a constant: one query
+/// fragment, not two hand-copies that could drift apart.
+const JS_CONSTANT_TAGS: &str = r#"
+(
+  (comment)* @doc
+  .
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: [
+        (number) (string) (true) (false) (null) (undefined) (regex)
+        (identifier) (member_expression) (subscript_expression)
+        (call_expression) (new_expression) (binary_expression) (unary_expression)
+        (ternary_expression) (template_string) (object) (array)
+        (parenthesized_expression) (sequence_expression) (await_expression)
+      ]) @definition.constant)
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.constant)
+)
+
+(
+  (comment)* @doc
+  .
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @name
+      value: [
+        (number) (string) (true) (false) (null) (undefined) (regex)
+        (identifier) (member_expression) (subscript_expression)
+        (call_expression) (new_expression) (binary_expression) (unary_expression)
+        (ternary_expression) (template_string) (object) (array)
+        (parenthesized_expression) (sequence_expression) (await_expression)
+      ]) @definition.constant)
+  (#strip! @doc "^[\\s\\*/]+|^[\\s\\*/]$")
+  (#select-adjacent! @doc @definition.constant)
+)
+"#;
+
+/// The JavaScript `tags` query, composed ONCE: the upstream query plus [`JS_CONSTANT_TAGS`].
+/// Returned as `&'static str` via a process-lifetime `OnceLock`, mirroring
+/// [`typescript_tags_query`] below.
+fn javascript_tags_query() -> &'static str {
+    static Q: OnceLock<String> = OnceLock::new();
+    Q.get_or_init(|| {
+        format!(
+            "{}\n{}",
+            tree_sitter_javascript::TAGS_QUERY,
+            JS_CONSTANT_TAGS
+        )
+    })
+    .as_str()
+}
+
 /// The TypeScript `tags` query, composed ONCE. The upstream `tree-sitter-typescript` crate
 /// ships a `tags.scm` that tags only TypeScript-specific SIGNATURES (interfaces, ambient
 /// function/method signatures, abstract classes, modules) - NOT concrete `function`/`class`/
@@ -58,9 +127,10 @@ fn typescript_tags_query() -> &'static str {
     static Q: OnceLock<String> = OnceLock::new();
     Q.get_or_init(|| {
         format!(
-            "{}\n{}",
+            "{}\n{}\n{}",
             tree_sitter_javascript::TAGS_QUERY,
-            tree_sitter_typescript::TAGS_QUERY
+            tree_sitter_typescript::TAGS_QUERY,
+            JS_CONSTANT_TAGS
         )
     })
     .as_str()
@@ -106,7 +176,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         "js" | "mjs" | "cjs" | "jsx" => (
             Lang::Js,
             tree_sitter_javascript::LANGUAGE.into(),
-            tree_sitter_javascript::TAGS_QUERY,
+            javascript_tags_query(),
         ),
         "go" => (
             Lang::Go,
@@ -164,7 +234,7 @@ pub fn for_path(path: &str, override_lang: Option<Lang>) -> Option<LanguageEntry
 mod tests {
     use super::*;
     use crate::grounder::symbols::extract::extract;
-    use crate::grounder::symbols::model::Lang;
+    use crate::grounder::symbols::model::{Kind, Lang};
 
     #[test]
     fn auto_detects_all_five_languages_by_extension() {
@@ -260,5 +330,55 @@ mod tests {
                 fs.defs
             );
         }
+    }
+
+    #[test]
+    fn js_plain_const_declarations_extract_as_constant_definitions() {
+        // Spec 92 criterion 2 (THE WHOLE PRODUCT IS COVERED): the upstream
+        // tree-sitter-javascript tags.scm tags a `const`/`let` ONLY when its value is an
+        // arrow/function expression, or an ES `export X = <literal>` assignment-form export -
+        // a syntax this project's plain CommonJS-style `workflows/rigger.js` never uses. A
+        // plain top-level constant therefore never became a graph entity at all - exactly
+        // the gap docs/audit/2026-09-graph-vs-grep.md questions 5 and 8 measured against that
+        // file's own `OUTER_WALL_CLOCK_SEC` (a ternary) and `FRESH` (a boolean coercion)
+        // constants. Both must now extract as `Kind::Constant` definitions.
+        let entry = for_extension("js").unwrap();
+        let src = "const OUTER_WALL_CLOCK_SEC = Number(x) > 0 ? Number(x) : 900\nconst FRESH = !!a.fresh\n";
+        let fs = extract(src, entry.lang, &entry.language, entry.tags_query).unwrap();
+        assert!(
+            fs.defs
+                .iter()
+                .any(|d| d.name == "OUTER_WALL_CLOCK_SEC" && d.kind == Kind::Constant),
+            "a ternary-valued top-level const must extract as a Kind::Constant definition, \
+             got {:?}",
+            fs.defs
+        );
+        assert!(
+            fs.defs
+                .iter()
+                .any(|d| d.name == "FRESH" && d.kind == Kind::Constant),
+            "a boolean-coercion-valued top-level const must extract as a Kind::Constant \
+             definition, got {:?}",
+            fs.defs
+        );
+        // A function-valued const (already covered by the upstream query) must NOT also
+        // double-tag as a constant - the new pattern is additive only for non-function values.
+        let fn_src = "const greet = () => 1\n";
+        let fn_fs = extract(fn_src, entry.lang, &entry.language, entry.tags_query).unwrap();
+        assert!(
+            fn_fs
+                .defs
+                .iter()
+                .any(|d| d.name == "greet" && d.kind == Kind::Function),
+            "an arrow-valued const still extracts as a function, got {:?}",
+            fn_fs.defs
+        );
+        assert_eq!(
+            fn_fs.defs.iter().filter(|d| d.name == "greet").count(),
+            1,
+            "an arrow-valued const must extract exactly ONCE (as a function), never a second \
+             time as a constant, got {:?}",
+            fn_fs.defs
+        );
     }
 }

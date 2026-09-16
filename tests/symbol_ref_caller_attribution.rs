@@ -65,6 +65,7 @@ fn a_caller_less_reference_serializes_byte_identically_to_the_pre37_form() {
                     is_test: false,
                 },
             ],
+            partial: false,
         },
     );
     store::save(&idx, root).unwrap();
@@ -105,6 +106,7 @@ fn a_caller_attributed_reference_serializes_and_reloads_its_enclosing_name() {
                 enclosing: Some("f".into()),
                 is_test: false,
             }],
+            partial: false,
         },
     );
     store::save(&idx, root).unwrap();

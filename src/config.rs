@@ -766,6 +766,23 @@ pub struct Workflow {
 }
 
 impl Workflow {
+    /// The review panel a unit reviews ITSELF with (§3.2): a stage's own `review` override when it
+    /// sets one, otherwise this workflow's `defaults.review`. Declared once and inherited by every
+    /// implementer unit, including planner-proposed units.
+    ///
+    /// Extracted here (spec 92 criterion 2) from `conductor::RunCtx::effective_review_panel`, which
+    /// now delegates to this - the ONE fallback-rule authority, so the live run's per-unit review
+    /// routing and the workflow-DEFINITION graph indexer (which needs the identical rule to derive
+    /// a stage's `REVIEWS` edges from `.rigger/workflow.yml` without a live run) read the same
+    /// answer rather than two copies that could drift.
+    pub(crate) fn effective_review_panel<'a>(&'a self, st: &'a Stage) -> &'a ReviewPanel {
+        if st.review.is_empty() {
+            &self.defaults.review
+        } else {
+            &st.review
+        }
+    }
+
     /// Whether the always-on dash auto-ensure is enabled for this workflow (spec 50, criterion
     /// 4) - the SINGLE resolution authority the step-path opt-out reads. ON unless the workflow
     /// explicitly opts out: `off` (the documented form) or its `false`/`no` synonyms, matched
@@ -920,7 +937,14 @@ pub fn split_frontmatter(s: &str) -> Result<(&str, &str), Error> {
     Ok((front, body))
 }
 
-fn load_workflow(path: &Path) -> Result<Workflow, Error> {
+/// Parse the workflow definition at `path` (no agents-dir read, no referential validation) -
+/// `pub(crate)` (spec 92 criterion 2) so the workflow-DEFINITION graph indexer
+/// (`grounder::workflowdef`) can read stages/gates/agents straight off `.rigger/workflow.yml`
+/// without depending on the agents directory being valid, mirroring the reasoning
+/// [`read_store_config`] below already established for the lightweight `store:`-only probe:
+/// indexing what the definition NAMES must not fail because an unrelated agent frontmatter file
+/// is malformed. [`load`] above stays the FULL, validating entry every run-starting path uses.
+pub(crate) fn load_workflow(path: &Path) -> Result<Workflow, Error> {
     let b = std::fs::read_to_string(path).map_err(|e| err(format!("read workflow: {e}")))?;
     let mut wf: Workflow =
         serde_yaml::from_str(&b).map_err(|e| err(format!("parse workflow: {e}")))?;

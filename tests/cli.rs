@@ -2668,6 +2668,81 @@ fn ground_returns_references_from_the_repo() {
     );
 }
 
+/// Spec 92 criterion 3 (RANKED BY INTENT), end to end through the REAL `rigger ground` CLI for
+/// the LITERAL grep grounder: `Grounder::ground_ranked` and `Grounder::has_strong_match` are
+/// trait DEFAULT methods, and grep never overrides either, but a unit test that calls them
+/// in-process cannot see whether `cmd_ground` actually WIRES them into the printed page - only
+/// the compiled binary's stdout can. Grep has no commonness concept, so its default
+/// `has_strong_match` is unconditionally true (never the honest no-match line, even for a token
+/// that would read as tree-wide-common under the `symbols` grounder), and its default
+/// `ground_ranked` is `ground`'s own rows wrapped with degree 0, undeduplicated.
+#[test]
+fn ground_via_grep_backend_prints_the_degree_suffix_and_never_suppresses_a_match() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "5"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert_eq!(
+        out.trim(),
+        "combat.rs:1: fn apply_damage() {} (degree 0)",
+        "the grep backend's default ground_ranked must print the trait default's degree-0 \
+         suffix on the exact matched line, undeduplicated; got {out:?}"
+    );
+
+    // Six occurrences of one token - the shape that reads as tree-wide-common under the
+    // symbols grounder's commonness concept. Grep has no such concept: it must still print
+    // every match, never the "no entity matches strongly" honest line.
+    for i in 0..6 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn run() {}\n").unwrap();
+    }
+    let (out, err, ok) = run_rigger(root, &["ground", "run", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "grep has no commonness concept, so has_strong_match's default must never suppress a \
+         real match, even one that would read as tree-wide-common under symbols; got {out:?}"
+    );
+    assert_eq!(
+        out.lines().filter(|l| l.contains("(degree 0)")).count(),
+        6,
+        "grep's default ground_ranked never dedupes - one row per matching line; got {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 (RANKED BY INTENT), end to end through the REAL `rigger ground` CLI for
+/// the `nop` backend - a second real, CLI-selectable `Grounder` (alongside grep) that never
+/// overrides `ground_ranked` or `has_strong_match`, riding the exact same trait-default code
+/// path `cmd_ground` now gates EVERY backend through before printing. `Nop::ground` is always
+/// empty and `Nop::has_strong_match` is the unconditionally-true default, so `rigger ground`
+/// with `nop` configured must stay silent - neither a `(degree N)` row nor the new "no entity
+/// matches strongly" line - exactly as before this unit's change. A wiring defect in
+/// `cmd_ground`'s new `k > 0 && !has_strong_match` gate (e.g. treating an empty match set as
+/// weak for every backend, not only ones with a real commonness concept) would surface ONLY as
+/// `nop` suddenly printing that line where it used to print nothing at all.
+#[test]
+fn ground_via_nop_backend_stays_silent_and_never_prints_the_weak_match_line() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "nop");
+    std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "5"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        out.trim().is_empty(),
+        "nop grounds nothing; it must print neither a row nor the honest no-match line; \
+         got {out:?}"
+    );
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "nop's has_strong_match default is unconditionally true, so the honest line must \
+         never appear for it, even though it also never grounds anything; got {out:?}"
+    );
+}
+
 /// `rigger reindex <file>` requires at least one file and is a clear error otherwise:
 /// a workflow agent calling it with no files must get a non-zero exit, not a silent
 /// no-op. (This holds for every grounder, so it needs no model and runs in both lanes.)
@@ -3115,6 +3190,339 @@ fn ground_via_symbols_grounder_ranks_a_definition_first() {
     assert!(
         !out.contains("notes.rs"),
         "an incidental prose mention must not be grounded as a symbol; stdout: {out}"
+    );
+}
+
+/// Spec 92 criterion 3 (RANKED BY INTENT), end to end through the REAL `rigger ground` CLI:
+/// the audit's own failure shape (docs/audit/2026-09-graph-vs-grep.md question 3 - six `run`
+/// definitions drowning a rare, specific match) is fixed; every call site of one function
+/// collapses to a single line carrying its degree; and a query whose only match is
+/// tree-wide-common prints the honest line instead of noise.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranks_by_intent_dedupes_by_entity_and_admits_a_weak_query() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    for i in 0..6 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn run() {}\n").unwrap();
+    }
+    std::fs::write(root.join("zzz_dash.rs"), "fn dash() {}\n").unwrap();
+    std::fs::write(root.join("def.rs"), "fn apply_damage() {}\n").unwrap();
+    for i in 0..3 {
+        std::fs::write(
+            root.join(format!("caller{i}.rs")),
+            "fn go() { apply_damage(); }\n",
+        )
+        .unwrap();
+    }
+
+    // The rare token outranks the six tree-wide `run` definitions - the audit's own shape.
+    let (out, err, ok) = run_rigger(root, &["ground", "dash run", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    let first = out.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with("zzz_dash.rs:") && first.contains("dash"),
+        "the rare token must rank first, not the six tree-wide `run` hits; stdout: {out}"
+    );
+
+    // apply_damage's definition and its three call sites collapse into one displayed row,
+    // annotated with its real degree.
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    let apply_damage_lines: Vec<&str> =
+        out.lines().filter(|l| l.contains("apply_damage")).collect();
+    assert_eq!(
+        apply_damage_lines.len(),
+        1,
+        "the definition and its three call sites must dedupe to one row; stdout: {out}"
+    );
+    assert!(
+        apply_damage_lines[0].contains("degree 3"),
+        "the row must carry its real degree; stdout: {out}"
+    );
+
+    // A query whose only match is a tree-wide-common token prints the honest line, never noise.
+    let (out, err, ok) = run_rigger(root, &["ground", "run", "10"]);
+    assert!(
+        ok,
+        "ground must succeed even on a weak query; stderr: {err}"
+    );
+    assert!(
+        out.to_lowercase().contains("no entity matches strongly"),
+        "a weak query (only a tree-wide-common token) must print the honest line, not noise; \
+         stdout: {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 remediation round 2/3 (adv-u92c3r2-contains-tier-commonness-collapses
+/// -to-spurious-zero, adj-u92c3-r2-verdict-reject, fixed by u92c3-r3-contains-tier-commonness
+/// -keyed-on-entity-name): end to end through the REAL `rigger ground` CLI - a unit test of
+/// `scored_hits` in isolation cannot see whether `cmd_ground`'s printed page actually reflects
+/// the fix, only the compiled binary's stdout can. Neither "cfg" nor "zorble" is ever itself a
+/// standalone name in this fixture, so every match is CONTAINS-tier, never EXACT - the exact
+/// tier the round-2 defect lived in (commonness keyed on the raw query token instead of the
+/// matched entity's own name, which silently collapsed every CONTAINS hit to an artificial
+/// rarest score of zero). `cfg_one`..`cfg_four` are four unrelated entities (each defined once,
+/// referenced twice - own commonness 3) sharing the substring "cfg"; `zorble_alone` (defined
+/// once, referenced nowhere - own commonness 1) is genuinely rarer and is placed LAST (highest
+/// line number) so a fall-through-to-line-order regression would rank it last, not first.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_via_symbols_grounder_ranks_a_genuinely_rare_contains_tier_entity_above_common_ones_sharing_its_substring(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    std::fs::write(
+        root.join("entities.rs"),
+        "fn cfg_one() {}\nfn cfg_two() {}\nfn cfg_three() {}\nfn cfg_four() {}\nfn zorble_alone() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("callers.rs"),
+        "fn go() {\n    cfg_one();\n    cfg_one();\n    cfg_two();\n    cfg_two();\n    \
+         cfg_three();\n    cfg_three();\n    cfg_four();\n    cfg_four();\n}\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "cfg zorble", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    let first = out.lines().next().unwrap_or_default();
+    assert!(
+        first.contains("zorble_alone"),
+        "the genuinely rare entity (own commonness 1) must outrank four entities that share its \
+         query substring but are each themselves more common (own commonness 3); a regression \
+         that keys CONTAINS-tier commonness on the raw query term instead of the matched \
+         entity's own name ties all five at an artificial zero and falls through to line order, \
+         which would rank zorble_alone LAST; stdout: {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3's `cmd_ground` orchestration - NOT the `Grounder` trait itself: an
+/// explicit `k = 0` is the caller asking for NOTHING, so `cmd_ground` must stay silent even for
+/// a query that would otherwise trip the weak-match honest line (the very query that prints
+/// "no entity matches strongly" at k=10 in the test above). The `k > 0` gate lives ONLY in
+/// `cmd_ground`'s own `if` (main.rs), not in `has_strong_match` or `ground_ranked` - a unit
+/// test of either trait method in isolation cannot see this seam; only driving the real CLI
+/// with an explicit k=0 can.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_with_explicit_k_zero_stays_silent_even_for_a_weak_query() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+    // The whole fixture is written BEFORE the first `ground` call, so the cold index build
+    // (the persisted index is not auto-refreshed by a later call - it needs an explicit
+    // `reindex`) sees it all at once: six tree-wide `run` definitions (weak) plus a rare
+    // `apply_damage` definition with three call sites (strong) - the same shape the test
+    // above proves is weak-for-`run`, strong-for-`apply_damage` at k=10.
+    for i in 0..6 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn run() {}\n").unwrap();
+    }
+    std::fs::write(root.join("def.rs"), "fn apply_damage() {}\n").unwrap();
+    for i in 0..3 {
+        std::fs::write(
+            root.join(format!("caller{i}.rs")),
+            "fn go() { apply_damage(); }\n",
+        )
+        .unwrap();
+    }
+
+    // k=0 on a query that is weak at k>0 (proven above) must print nothing at all - neither
+    // rows nor the honest no-match line.
+    let (out, err, ok) = run_rigger(root, &["ground", "run", "0"]);
+    assert!(ok, "ground with k=0 must still succeed; stderr: {err}");
+    assert!(
+        out.trim().is_empty(),
+        "k=0 asks for nothing; it must print neither rows nor the honest no-match line; \
+         got {out:?}"
+    );
+
+    // k=0 on a query that is STRONG at k>0 is silent for the same reason - k=0 bypasses the
+    // strength check entirely, it does not merely happen to pass it.
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "0"]);
+    assert!(ok, "ground with k=0 must still succeed; stderr: {err}");
+    assert!(
+        out.trim().is_empty(),
+        "k=0 asks for nothing regardless of query strength; got {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 remediation round 5 (adj-u92c3-r4-verdict-reject,
+/// adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption, fixed by
+/// u92c3-r5-cross-language-name-scoping): end to end through the REAL `rigger ground` CLI -
+/// a unit test of `ground_ranked`'s entity resolution in isolation cannot see whether
+/// `cmd_ground`'s printed page actually reflects the fix, only the compiled binary's stdout
+/// can. This is the literal live repro that failed round 4 (`rigger ground unwrap 50` against
+/// the real tree returning only the JS shim's row): a JS file defines the ONLY tree-wide
+/// definition of `unwrap`, five unrelated Rust files each reference that same bare name with
+/// no local Rust definition (mirroring Rust's own `.unwrap()` call sites). Before the fix,
+/// every Rust reference resolved through a bare-name-keyed `def_sites` lookup to the JS
+/// definition's sole entry and absorbed into it, collapsing the whole Rust reference
+/// population into ONE foreign-language row - erasing it from the page at any k instead of
+/// merely down-weighting it.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranked_via_cli_keeps_a_cross_language_reference_as_its_own_entity_not_absorbed_into_a_foreign_definition(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    std::fs::write(root.join("shim.mjs"), "function unwrap() {}\n").unwrap();
+    for i in 0..5 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn go() { unwrap(); }\n").unwrap();
+    }
+
+    let (out, err, ok) = run_rigger(root, &["ground", "unwrap", "50"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+
+    let unwrap_lines: Vec<&str> = out.lines().filter(|l| l.contains("unwrap")).collect();
+    assert_eq!(
+        unwrap_lines.len(),
+        2,
+        "a same-named foreign-language definition must never collapse the Rust reference \
+         population into its own row - exactly two rows expected (the JS definition, the \
+         Rust standalone entity); got {out:?}"
+    );
+    assert!(
+        unwrap_lines.iter().any(|l| l.starts_with("shim.mjs:")),
+        "the JS definition must still surface its own row; got {out:?}"
+    );
+    let rust_row = *unwrap_lines
+        .iter()
+        .find(|l| l.contains(".rs:"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the Rust reference population must surface its OWN row, never be absorbed \
+                 into a same-named foreign-language definition; got {out:?}"
+            )
+        });
+    assert!(
+        rust_row.contains("(degree 5)"),
+        "the Rust entity's degree must be its own in-language reference count (5), never the \
+         JS definition's; got {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 remediation round 5 (adj-u92c3-r4-verdict-reject,
+/// adv-u92c3r4-ambiguity-map-bleeds-across-languages, fixed by
+/// u92c3-r5-cross-language-name-scoping): end to end through the REAL `rigger ground` CLI.
+/// `collide` is defined exactly once in Rust (alongside nine unrelated Rust filler
+/// definitions, so Rust's own definition-count distribution has no outlier) and, separately,
+/// exactly once in Python. Before the fix, `has_strong_match`'s ambiguity cutoff pooled both
+/// languages' definition counts into one bare-name bucket, manufacturing a tree-wide
+/// ambiguity of 2 against the nine Rust filler names' baseline of 1 each - an outlier that
+/// wrongly printed the honest "no entity matches strongly" line for a name genuinely
+/// unambiguous within either language alone.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranked_via_cli_never_pools_cross_language_definition_counts_into_a_false_ambiguity() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    let filler: String = (0..9).map(|i| format!("fn filler{i}() {{}}\n")).collect();
+    std::fs::write(root.join("filler.rs"), filler).unwrap();
+    std::fs::write(root.join("combat.rs"), "fn collide() {}\n").unwrap();
+    std::fs::write(root.join("other.py"), "def collide():\n    pass\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "collide", "8"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "collide has exactly one definition within Rust and, separately, one within Python - \
+         each language's own ambiguity is 1, genuinely unambiguous. Pooling both languages' \
+         definition counts into one bare-name bucket must never manufacture a false \
+         tree-wide-ambiguous verdict for either language's own genuinely unambiguous entity; \
+         got {out:?}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("combat.rs:") && l.contains("collide")),
+        "the Rust collide entity must appear in the ranked page; got {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 remediation round 6 (adj-u92c3-r5-verdict-reject,
+/// adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated, fixed by
+/// fix-u92c3r6-ambiguous-def-degree-zeroed): end to end through the REAL `rigger ground` CLI -
+/// a unit test of `ground_ranked` in isolation cannot see whether `cmd_ground`'s printed page
+/// actually reflects the fix, only the compiled binary's stdout can. This is the round-5
+/// reject's own live repro shape (two same-language definitions of one name PLUS real call
+/// sites - the exact combination every test shipped before round 6 left untested): before the
+/// fix, every row sharing an ambiguous name printed the SAME pooled tree-wide reference count,
+/// so an agent grounding a genuinely ambiguous, heavily-referenced real-world name (the spec's
+/// own motivating example, `run`) saw N+1 rows all claiming the identical maximal degree - the
+/// opposite of ranking by intent.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranked_via_cli_gives_ambiguous_definitions_zero_degree_and_pools_the_real_count_on_the_standalone_row(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    // Two same-language (Rust) definitions of one name - genuinely ambiguous - plus five real
+    // call sites, so the ambiguous name's own reference pool is non-empty and non-trivial.
+    std::fs::write(root.join("a.rs"), "fn dup_name() {}\n").unwrap();
+    std::fs::write(root.join("b.rs"), "fn dup_name() {}\n").unwrap();
+    for i in 0..5 {
+        std::fs::write(
+            root.join(format!("caller{i}.rs")),
+            "fn go() { dup_name(); }\n",
+        )
+        .unwrap();
+    }
+
+    let (out, err, ok) = run_rigger(root, &["ground", "dup_name", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "an exact-name query against its own ambiguous entity must never itself read as too \
+         weak to answer; got {out:?}"
+    );
+
+    let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "two ambiguous definitions plus one pooled Standalone reference row - never a shared \
+         row per call site, never a single collapsed row; got {out:?}"
+    );
+
+    let def_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| l.starts_with("a.rs:") || l.starts_with("b.rs:"))
+        .copied()
+        .collect();
+    assert_eq!(
+        def_lines.len(),
+        2,
+        "both ambiguous definitions must still appear as separate rows; got {out:?}"
+    );
+    for l in &def_lines {
+        assert!(
+            l.contains("(degree 0)"),
+            "an ambiguous definition's own attributable degree is unknown - the page has \
+             already decided (by printing a separate row for the name at all) that a \
+             reference cannot be pinned to one candidate, so a definition row must never \
+             claim the whole unattributed pool as its own; got {out:?}"
+        );
+    }
+
+    let standalone = *lines
+        .iter()
+        .find(|l| !l.starts_with("a.rs:") && !l.starts_with("b.rs:"))
+        .unwrap_or_else(|| panic!("expected a pooled Standalone reference row; got {out:?}"));
+    assert!(
+        standalone.contains("(degree 5)"),
+        "the Standalone row alone must carry the real aggregate unattributed reference count - \
+         genuinely different from the ambiguous definitions' degree, never a shared pooled \
+         number printed on every row; got {out:?}"
     );
 }
 
@@ -29566,4 +29974,61 @@ fn docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbo
             "{label} must not name the retired guarded-tree list; got:\n{out}"
         );
     }
+}
+
+#[test]
+fn reset_scratch_orphans_reclaims_cache_roots_whose_repo_is_gone_and_keeps_the_rest() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let cache = tempfile::tempdir().unwrap();
+    let rigger_dir = cache.path().join("rigger");
+    let enc = |p: &str| rigger::liveness::marker_filename(p).unwrap();
+    let live = rigger_dir.join(enc(root.to_str().unwrap()));
+    let gone = rigger_dir.join(enc(&format!("{}/deleted-checkout", root.to_str().unwrap())));
+    let plain = rigger_dir.join("test-tmp");
+    for d in [&live, &gone, &plain] {
+        std::fs::create_dir_all(d.join("rigger-wt-unit")).unwrap();
+    }
+    let envs = [("XDG_CACHE_HOME", cache.path().to_str().unwrap())];
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--scratch-orphans"], &envs);
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains("reclaimed 1 scratch root(s)"), "{out}");
+    assert!(
+        !gone.exists(),
+        "the root keyed on a deleted checkout is reclaimed"
+    );
+    assert!(live.exists(), "the root keyed on this live project is kept");
+    assert!(
+        plain.exists(),
+        "an entry that is not an encoded repo path is kept"
+    );
+    let (out, _err, ok) = run_rigger_envs(root, &["reset", "--scratch-orphans"], &envs);
+    assert!(ok);
+    assert!(
+        out.contains("reclaimed 0 scratch root(s)"),
+        "second pass is a no-op: {out}"
+    );
+}
+
+#[test]
+fn status_reports_a_run_without_creating_the_projects_scratch_root() {
+    // A read-only report never conjures the cache-home scratch root (and so never runs the
+    // orphan-root reclaim that creating one does); only a command that places work under
+    // the root creates it.
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let scratch = common::default_scratch_root(root);
+    assert!(
+        !scratch.exists(),
+        "fixture precondition: no scratch root yet"
+    );
+    let (_out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "stderr: {err}");
+    assert!(
+        !scratch.exists(),
+        "rigger status resolved the scratch root without creating it: {}",
+        scratch.display()
+    );
 }
