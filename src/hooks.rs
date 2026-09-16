@@ -10,8 +10,31 @@ pub struct Error(pub String);
 
 /// Merge a SessionStart hook that runs `command` into the settings JSON. Idempotent
 /// (installing twice does not duplicate the hook) and preserves all other settings.
-/// `existing` may be empty.
+/// `existing` may be empty. A thin wrapper over [`merge_hook_block`] fixed to the
+/// `SessionStart` event with an empty matcher (rigger installs the only entry that will
+/// ever exist there).
 pub fn install_session_start(existing: &[u8], command: &str) -> Result<Vec<u8>, Error> {
+    merge_hook_block(existing, "SessionStart", "", command)
+}
+
+/// Merge one hook block that runs `command` into `existing` settings JSON, under the
+/// named top-level hook `event_key` (`"SessionStart"`, `"PreToolUse"`, ...), matched
+/// against tool calls by `matcher` (empty for an event `rigger` never matcher-filters,
+/// e.g. `SessionStart`). Idempotent (installing the same `command` under the same
+/// `event_key` twice does not duplicate the block) and preserves every other setting,
+/// every other event key, and every other block already present under THIS event key -
+/// a general-purpose event (`PreToolUse`) may already carry entries for a different
+/// tool, matcher, or command a person or another tool installed, so this always APPENDS
+/// a new block rather than ever replacing the array wholesale, and touches nothing under
+/// any matcher/command this call did not itself install. `existing` may be empty. The
+/// one mutation authority both [`install_session_start`] and [`install_pretooluse_hook`]
+/// build on, so the two event kinds can never diverge on what "merge a hook block" means.
+fn merge_hook_block(
+    existing: &[u8],
+    event_key: &str,
+    matcher: &str,
+    command: &str,
+) -> Result<Vec<u8>, Error> {
     let mut root: Value = if existing.iter().all(u8::is_ascii_whitespace) {
         json!({})
     } else {
@@ -24,13 +47,13 @@ pub fn install_session_start(existing: &[u8], command: &str) -> Result<Vec<u8>, 
     let hooks_obj = hooks
         .as_object_mut()
         .ok_or_else(|| Error("\"hooks\" is not an object".into()))?;
-    let session = hooks_obj.entry("SessionStart").or_insert_with(|| json!([]));
-    let session_arr = session
+    let event = hooks_obj.entry(event_key).or_insert_with(|| json!([]));
+    let event_arr = event
         .as_array_mut()
-        .ok_or_else(|| Error("\"SessionStart\" is not an array".into()))?;
-    if !has_command(session_arr, command) {
-        session_arr.push(json!({
-            "matcher": "",
+        .ok_or_else(|| Error(format!("\"{event_key}\" is not an array")))?;
+    if !has_command(event_arr, command) {
+        event_arr.push(json!({
+            "matcher": matcher,
             "hooks": [{"type": "command", "command": command}],
         }));
     }
@@ -55,45 +78,16 @@ fn has_command(session_start: &[Value], command: &str) -> bool {
 
 /// Merge a PreToolUse hook that runs `command` (matched against tool calls by `matcher`,
 /// e.g. `"Grep|Bash"`) into the settings JSON (spec 92, criterion 4: the graph-first lookup
-/// hook). Sibling to [`install_session_start`], with the same idempotence and
-/// other-settings-preserving guarantees, but for a DIFFERENT event: unlike `SessionStart`
-/// (where rigger installs the only entry that will ever exist there), `PreToolUse` is a
-/// general-purpose event a machine may already carry OTHER entries under - for a different
-/// tool, a different matcher, a formatter, a linter, anything a person or another tool
-/// installed. So this merge APPENDS a new block rather than ever replacing the array
-/// wholesale, and touches nothing under any matcher/command this call did not itself
-/// install. `existing` may be empty.
+/// hook). A thin wrapper over [`merge_hook_block`] fixed to the `PreToolUse` event - see
+/// there for the shared idempotence and other-settings-preserving guarantees `PreToolUse`'s
+/// general-purpose nature (a machine may already carry entries for a different tool,
+/// matcher, or command under this same event) relies on. `existing` may be empty.
 pub fn install_pretooluse_hook(
     existing: &[u8],
     matcher: &str,
     command: &str,
 ) -> Result<Vec<u8>, Error> {
-    let mut root: Value = if existing.iter().all(u8::is_ascii_whitespace) {
-        json!({})
-    } else {
-        serde_json::from_slice(existing).map_err(|e| Error(format!("parse settings.json: {e}")))?
-    };
-    let obj = root
-        .as_object_mut()
-        .ok_or_else(|| Error("settings.json is not a JSON object".into()))?;
-    let hooks = obj.entry("hooks").or_insert_with(|| json!({}));
-    let hooks_obj = hooks
-        .as_object_mut()
-        .ok_or_else(|| Error("\"hooks\" is not an object".into()))?;
-    let pretool = hooks_obj.entry("PreToolUse").or_insert_with(|| json!([]));
-    let pretool_arr = pretool
-        .as_array_mut()
-        .ok_or_else(|| Error("\"PreToolUse\" is not an array".into()))?;
-    if !has_command(pretool_arr, command) {
-        pretool_arr.push(json!({
-            "matcher": matcher,
-            "hooks": [{"type": "command", "command": command}],
-        }));
-    }
-    let mut out = serde_json::to_vec_pretty(&root)
-        .map_err(|e| Error(format!("encode settings.json: {e}")))?;
-    out.push(b'\n');
-    Ok(out)
+    merge_hook_block(existing, "PreToolUse", matcher, command)
 }
 
 /// Merge one stdio MCP server entry into `.mcp.json`'s `mcpServers` object (spec 92,
