@@ -174,7 +174,20 @@ pub fn extract(
             }
         }
     }
-    Ok(FileSymbols { lang, defs, refs })
+    // Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
+    // `adv-u2c2-partial-marker-unimplemented`): whether this parse hit an ERROR node anywhere -
+    // `has_error()` on `tree`'s root is true iff the tree contains a syntax-error or missing-token
+    // node, the tree-sitter-native signal that the grammar could not fully parse `source`. Read off
+    // the SAME `tree` `test_regions`/the out-of-line-module walk above already parsed (never a
+    // second parse), so a malformed file's `defs`/`refs` are carried exactly as far as the parse
+    // reached, tagged as partial rather than silently presented as complete.
+    let partial = tree.root_node().has_error();
+    Ok(FileSymbols {
+        lang,
+        defs,
+        refs,
+        partial,
+    })
 }
 
 /// The byte ranges of every SELF-ATTRIBUTED test definition in `def_ranges` - one whose own
@@ -729,6 +742,42 @@ mod tests {
         assert!(fs.refs.iter().any(|r| r.name == "parse" && r.line == 2));
         // The extracted file carries the language it was parsed as.
         assert_eq!(fs.lang, Lang::Rust);
+    }
+
+    #[test]
+    fn a_malformed_js_file_sets_partial_true_while_still_indexing_the_well_formed_part() {
+        // Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
+        // `adv-u2c2-partial-marker-unimplemented`): a JS file the grammar cannot fully parse must
+        // set `FileSymbols::partial`, and its extraction must still cover as far as the parse
+        // reached rather than dropping the well-formed part silently. `broken(` is left with no
+        // closing paren or body, which tree-sitter recovers from via an ERROR node while still
+        // parsing the earlier, well-formed `greet` function normally.
+        let src = "function greet() { return 1; }\nfunction broken(\n";
+        let language: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
+        let fs = extract(src, Lang::Js, &language, tree_sitter_javascript::TAGS_QUERY).unwrap();
+        assert!(
+            fs.partial,
+            "a JS source containing an unrecoverable syntax error must set partial: true; got {fs:?}"
+        );
+        assert!(
+            fs.defs.iter().any(|d| d.name == "greet"),
+            "the well-formed part of a partially-malformed file must still be indexed as far as \
+             the parse reached, not dropped silently; got {:?}",
+            fs.defs
+        );
+    }
+
+    #[test]
+    fn a_well_formed_js_file_never_sets_partial() {
+        // The negative case this same criterion's Done-when requires: an ordinary, fully-parseable
+        // file must NEVER carry the degraded marker.
+        let src = "function greet() { return 1; }\n";
+        let language: tree_sitter::Language = tree_sitter_javascript::LANGUAGE.into();
+        let fs = extract(src, Lang::Js, &language, tree_sitter_javascript::TAGS_QUERY).unwrap();
+        assert!(
+            !fs.partial,
+            "a well-formed JS file must never set partial: true; got {fs:?}"
+        );
     }
 
     #[test]
