@@ -779,7 +779,7 @@
       }
     ],
     "disposition": "delete",
-    "reason": "ingest_project (the #[cfg(feature = \"symbols\")] single-event lane) has no production caller. Production calls ingest_project_batched (conductor.rs:8050/15473, main.rs:4067) exclusively - the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession. Ambiguous with its #[cfg(not(feature = \"symbols\"))] sibling at ingest.rs:481 (the textual scanner sees two same-named definitions where rustc, feature-gated, sees one); both carry the identical finding and disposition. (Line shifted 124 -> 126: spec 92 criterion 2 grew two doc-comment lines directly above this fn - one added clause each in the ingest_project_batched_paced doc block and the shared-walk doc block immediately above it - naming the new workflow- definition ('gw') batch this file's walk now also emits.)"
+    "reason": "ingest_project - both the #[cfg(feature = \"symbols\")] single-event lane and the #[cfg(not(feature = \"symbols\"))] light-lane no-op, one name at two cfg-gated sites - has no production caller on either lane. Production calls ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession."
   },
   {
     "name": "ingest_project",
@@ -813,7 +813,30 @@
       }
     ],
     "disposition": "delete",
-    "reason": "ingest_project (the #[cfg(not(feature = \"symbols\"))] light-lane no-op) has no production caller, for the identical reason as its #[cfg(feature = \"symbols\")] sibling at ingest.rs:126: production calls ingest_project_batched exclusively on both lanes. (Line shifted 468 -> 481: the same two-line doc-comment growth above, plus the workflow-definition batch loop spec 92 criterion 2 inserted into walk_batches (11 lines, folding `workflowdef::project_batches` into the shared walk under its own `gw` key) sitting between this fn and its symbols-feature sibling.)"
+    "reason": "ingest_project - both the #[cfg(feature = \"symbols\")] single-event lane and the #[cfg(not(feature = \"symbols\"))] light-lane no-op, one name at two cfg-gated sites - has no production caller on either lane. Production calls ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession."
+  },
+  {
+    "name": "record_current_generation",
+    "file": "src/ingest.rs",
+    "content_hash": "7858308ba392e9be",
+    "visibility": "private",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/ingest.rs",
+        "content_hash": "5011d77193b2a84d"
+      },
+      {
+        "file": "src/ingest.rs",
+        "content_hash": "c2161b9e620f26e3"
+      },
+      {
+        "file": "src/ingest.rs",
+        "content_hash": "5011d77193b2a84d"
+      }
+    ],
+    "disposition": "delete",
+    "reason": "record_current_generation (spec 92 criterion 1, FRESH ON EVERY INTEGRATION) has no production caller - a private fixture helper inside scoped_reindex_tests that appends `graph_index_lag`/`graph_index_lag_sample`'s test-double `prior: Vec<Event>` stream, factored out once graph_index_lag_sample_derives_its_candidates_from_..., graph_index_lag_sample_reports_a_file_that_changed_..., and graph_index_lag_sample_is_bounded_and_stays_silent_... all needed the identical stamping boilerplate (the same shape already inlined once in graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one, its own sibling test above it in this file). Never called outside this test module."
   },
   {
     "name": "fully_done",

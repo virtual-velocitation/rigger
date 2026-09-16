@@ -388,6 +388,117 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
 }
 
 // ---------------------------------------------------------------------------------------
+// (c) GRAPH INDEX LAG (spec 92 criterion 1, FRESH ON EVERY INTEGRATION)
+// ---------------------------------------------------------------------------------------
+
+/// Record `file`'s CURRENT extraction as `graph.db`'s "latest generation" for it, by appending
+/// real `gc/<file>@<hash>#<i>`-keyed events into the project's own event stream - exactly the
+/// shape `RunCtx::ingest_files_into_graph`/`ingest_project_batches` append at integration and run
+/// start. Drives it through the SAME `rigger::ingest::ingest_files_batched` authority
+/// `rigger::ingest::graph_index_lag_sample` re-extracts through at validate time, so a caller who
+/// seeds a file's CURRENT content and never edits it afterward is recording a graph that agrees
+/// with the tree; editing the file afterward (without re-seeding) is what provokes disagreement.
+fn seed_graph_generation(root: &Path, file: &str) {
+    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let mut events: Vec<Event> = vec![Event::new("RunStarted", b"{}".to_vec())];
+    rigger::ingest::ingest_files_batched(root.to_str().unwrap(), &[file.to_string()], |keyed| {
+        for (key, ev) in keyed {
+            events.push(
+                (*ev)
+                    .clone()
+                    .with_meta(rigger::ingest::META_REPLAY_KEY, key.as_str()),
+            );
+        }
+    });
+    store
+        .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
+        .unwrap();
+}
+
+/// The `symbols` feature is what compiles the extraction pass `ingest_files_batched` needs to
+/// find `fn original() {}`/`fn renamed() {}` as real definitions in the first place (mirrors
+/// [`locate_definition_extent`]'s own light-lane stub, main.rs): the light lane's
+/// `graph_index_lag_sample` is unconditionally a no-op stub, exactly like its INDEX STALENESS
+/// counterpart is NOT (that one is content-hash-only, ungated) - so this positive case is
+/// `symbols`-only; the two SILENT cases below hold in both lanes (nothing can ever disagree in
+/// the light lane, so "no warning" is trivially true there too).
+#[cfg(feature = "symbols")]
+#[test]
+fn validate_warns_of_graph_index_lag_and_names_reindex() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    // The graph recorded churn.rs's ORIGINAL content, then the file was edited on disk without
+    // an integration ever reindexing it into the graph - the exact drift the audit
+    // (docs/audit/2026-09-graph-vs-grep.md, findings 9/11/12) found: a `graph.db` generation the
+    // tree has since moved past.
+    std::fs::write(root.join("churn.rs"), "fn original() {}\n").unwrap();
+    seed_graph_generation(root, "churn.rs");
+    std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
+
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "an advisory must never fail validate's exit status; stderr:\n{err}"
+    );
+    assert!(
+        err.to_lowercase().contains("context graph")
+            || err.to_lowercase().contains("graph index lag")
+            || err.to_lowercase().contains("fallen behind"),
+        "validate must warn that the context graph has fallen behind; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("churn.rs"),
+        "the warning must name the lagging file; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("rigger reindex"),
+        "the graph-lag warning must name `rigger reindex` as the fix; stderr:\n{err}"
+    );
+}
+
+#[test]
+fn validate_is_silent_on_graph_index_lag_when_the_graph_matches_the_tree() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    // The graph recorded churn.rs's CURRENT content, and it is never edited afterward - a fresh
+    // graph, exactly what an integration that just reindexed it leaves behind.
+    std::fs::write(root.join("churn.rs"), "fn stable() {}\n").unwrap();
+    seed_graph_generation(root, "churn.rs");
+
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        !err.to_lowercase().contains("fallen behind"),
+        "a graph that agrees with the tree must draw no index-lag warning; stderr:\n{err}"
+    );
+}
+
+#[test]
+fn validate_is_silent_on_graph_index_lag_when_the_graph_has_recorded_nothing() {
+    // No `gc/`-keyed event was ever recorded (no integration has run yet) - there is nothing to
+    // compare, so this must never manufacture a warning from the mere absence of a graph.
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    std::fs::write(root.join("untracked.rs"), "fn untracked() {}\n").unwrap();
+
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        !err.to_lowercase().contains("fallen behind"),
+        "a project the graph has never indexed must draw no index-lag warning; stderr:\n{err}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
 // A CLEAN store draws neither advisory, and the exit status is unchanged either way
 // ---------------------------------------------------------------------------------------
 
@@ -416,5 +527,9 @@ fn a_clean_store_with_no_symbols_index_and_no_duplication_draws_neither_advisory
     assert!(
         !err.contains("rigger reset --derived"),
         "a project with no duplication must draw no bloat warning; stderr:\n{err}"
+    );
+    assert!(
+        !err.to_lowercase().contains("fallen behind"),
+        "a project the graph has never indexed must draw no graph-index-lag warning; stderr:\n{err}"
     );
 }

@@ -101,6 +101,40 @@ pub fn marker_filename(spawn_id: &str) -> Option<String> {
     }
 }
 
+/// The inverse of [`marker_filename`]: the id an encoded name was produced from, or None
+/// when the name is not something [`marker_filename`] could have produced - a bare byte
+/// outside `[A-Za-z0-9-]`, or an `_` not followed by exactly two hex digits. The encoding is
+/// injective, so a well-formed name decodes to exactly one id. The cache-home scratch-root
+/// sweep ([`crate::worktree::sweep_orphan_scratch_roots`]) uses this to recover the repo
+/// path a root was keyed on and ask whether that repo still exists.
+pub fn decode_marker_filename(encoded: &str) -> Option<String> {
+    let bytes = encoded.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'_' => {
+                let hex = bytes.get(i + 1..i + 3)?;
+                if !hex.iter().all(u8::is_ascii_hexdigit) {
+                    return None;
+                }
+                let text = std::str::from_utf8(hex).ok()?;
+                out.push(u8::from_str_radix(text, 16).ok()?);
+                i += 3;
+            }
+            b if b.is_ascii_alphanumeric() || b == b'-' => {
+                out.push(b);
+                i += 1;
+            }
+            _ => return None,
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    String::from_utf8(out).ok()
+}
+
 /// The absolute marker path for a spawn:
 /// `<scratch_root>/agent-live/<run_id>/<sanitized id>`.
 ///
@@ -481,6 +515,33 @@ pub fn write_hung_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_marker_filename_inverts_the_encoding_and_refuses_a_name_the_encoder_never_makes() {
+        for id in [
+            "a b:c/d#e.f-g_h",
+            "/home/x/.cache/rigger/test-tmp/.tmpAb12/repo",
+            "..",
+            "unit-3/implementer#1",
+            "\u{fc}n\u{ef}code/\u{3c0}",
+        ] {
+            let encoded = marker_filename(id).expect("non-empty ids always encode");
+            assert_eq!(
+                decode_marker_filename(&encoded).as_deref(),
+                Some(id),
+                "round trip through {encoded}"
+            );
+        }
+        // A bare disallowed byte, a truncated or non-hex escape, a sign the integer parser
+        // would otherwise accept, and the empty name are all refused rather than guessed at.
+        for bad in ["", "_", "_2", "_zz", "a/b", "a.b", "_+2", "a_2fb_", "a_2Gb"] {
+            assert_eq!(
+                decode_marker_filename(bad),
+                None,
+                "{bad:?} is not an encoded id"
+            );
+        }
+    }
 
     #[test]
     fn marker_filename_hex_escapes_every_byte_outside_alphanumeric_and_hyphen() {

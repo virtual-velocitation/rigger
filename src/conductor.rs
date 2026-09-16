@@ -1019,6 +1019,12 @@ const STATUS_INTEGRATE_CONFLICT_REGEN: &str = "integrate-conflict-regenerate-pen
 /// returns `None` for every one and folding is a no-op on `Unit.status`; all ride the
 /// existing `TYPE_UNIT_STATUS` vocabulary, no new event type.
 const STATUS_INTEGRATE_MERGE_ATTEMPT: &str = "integrate-merge-attempt";
+/// A landing found the run branch moved after the worktree merge (spec 88's integrate
+/// rows, one more): the pass is recorded and repeated against the new tip.
+const STATUS_INTEGRATE_TIP_MOVED: &str = "integrate-tip-moved";
+/// How many landing passes may find the tip moved before the stage fails loud - the run
+/// branch moving under every pass is a sibling storm or an operator loop, not progress.
+const TIP_MOVED_PASS_BOUND: u32 = 8;
 /// See [`STATUS_INTEGRATE_MERGE_ATTEMPT`] - this is its paired after-record's status.
 const STATUS_INTEGRATE_MERGE_OUTCOME: &str = "integrate-merge-outcome";
 /// Round 4 TABLE row 2's after-record status: `paths` finished placeholder-staging via
@@ -4672,7 +4678,7 @@ impl RunCtx<'_> {
         // turns a resumable state into a hard, no-attempt-charged error instead of ever
         // reaching the idempotent path built to handle exactly this.
         let halted_commit = match wt {
-            Some(w) if !w.merge_in_progress() => w.commit(&format!(
+            Some(w) if !w.merge_in_progress() => w.commit_checkpoint(&format!(
                 "wip({}): tree of halted spawn {}",
                 st.name,
                 spawn_id(
@@ -5115,7 +5121,11 @@ impl RunCtx<'_> {
                     // worktree-less path (no `wt`, e.g. an `isolation: none` agent or a
                     // repo-less run) has no commit step and is unchanged.
                     if let Some(w) = wt {
-                        w.commit(&format!("rigger: {} attempt {}", st.name, attempts + 1))?;
+                        w.commit_checkpoint(&format!(
+                            "rigger: {} attempt {}",
+                            st.name,
+                            attempts + 1
+                        ))?;
                     }
                     // Blast-radius gate selection (spec 12, unit 3): the implement/remediate
                     // INNER LOOP runs only the gates whose `inputs:` intersect the unit's grounded
@@ -5557,7 +5567,10 @@ impl RunCtx<'_> {
                     // lane-L candidate spawn id with lane-0 remediation attempt L). Keeping the
                     // unit `Fresh` across phase B makes a resume re-enter `run_speculation`
                     // deterministically (replaying the recorded candidates + gates + review).
-                    wt.commit(&format!("rigger: {} speculation candidate {lane}", st.name))?;
+                    wt.commit_checkpoint(&format!(
+                        "rigger: {} speculation candidate {lane}",
+                        st.name
+                    ))?;
                     candidates.push(SpecCandidate {
                         lane,
                         wt,
@@ -8512,7 +8525,29 @@ impl RunCtx<'_> {
                         // conflict's placeholder-staged version lands now; the real regeneration,
                         // if any, lands as a SEPARATE, later pass's own row 4).
                         self.record_landing_intent(&st.name, attempt, pass, &c, &pre_merge)?;
-                        wt.land()?;
+                        if wt.land()? == worktree::LandOutcome::TipMoved {
+                            // The run branch moved after the worktree merge (an operator
+                            // commit, a sibling's landing): a fast-forward is impossible and
+                            // a real merge would only re-resolve in the wrong place. Record
+                            // it and go around again - the next pass merges the NEW tip into
+                            // the worktree (regenerable conflicts resolve themselves there)
+                            // and lands as a fast-forward. Bounded like every other pass.
+                            self.record_integrate_row(
+                                &format!("{}/tip-moved#{attempt}~{pass}", st.name),
+                                STATUS_INTEGRATE_TIP_MOVED,
+                                &st.name,
+                                attempt,
+                                json!({"run_tip": pre_merge, "unit_tip": c}),
+                            )?;
+                            if pass >= TIP_MOVED_PASS_BOUND {
+                                return Err(Error(format!(
+                                    "integrate {}: the run branch moved under every one of \
+                                     {pass} landing passes",
+                                    st.name
+                                )));
+                            }
+                            continue;
+                        }
                         self.record_landed(&st.name, attempt, pass, &c)?;
                         // Spec 88, criterion 1 round 2 (adv-u88c1r1-crash-resume-permanently-
                         // skips-regeneration): a MIXED conflict's source side can clear (the
@@ -8720,6 +8755,16 @@ impl RunCtx<'_> {
             if let Some(g) = self.deps.grounder {
                 g.reindex(&self.deps.repo, &files);
             }
+            // FRESH ON EVERY INTEGRATION (spec 92, criterion 1): the CONTEXT GRAPH (`graph.db`,
+            // what `graph --show`/`graph --around` read) used to populate only ONCE per process
+            // (`ingest_project_into_graph`'s once-per-process guard) - so a unit that integrated
+            // earlier in a long-lived driver process never made the graph learn of it, and a
+            // moved function kept resolving at its stale recorded line (docs/audit/2026-09-
+            // graph-vs-grep.md findings 4/9/11/12). This reindexes exactly the files THIS
+            // integration touched - bounded by the merge's own file list, never a whole-project
+            // walk - right alongside the grounder's own (already-existing) reindex above, so the
+            // two stay in lockstep from every integration on.
+            self.ingest_files_into_graph(&files);
         }
         // Staleness propagation (spec 12, unit 2): now that this unit's files are merged and
         // the grounder is reindexed, mark every DOWNSTREAM unit whose blast radius intersects
@@ -9115,7 +9160,7 @@ impl RunCtx<'_> {
         for cmd in commands {
             self.run_regenerate_command(&wt.dir, cmd)?;
         }
-        let committed = wt.commit(&format!(
+        let committed = wt.commit_checkpoint(&format!(
             "rigger: regenerate conflicting artifacts for {unit}"
         ))?;
         if committed.is_empty() {
@@ -9959,6 +10004,32 @@ impl RunCtx<'_> {
     /// compiled fold still folds a design/code log if one exists, but PRODUCING it is extraction.
     #[cfg(not(feature = "symbols"))]
     fn ingest_project_into_graph(&self) {}
+
+    /// Reindex the CONTEXT GRAPH for exactly `files` (spec 92 criterion 1, FRESH ON EVERY
+    /// INTEGRATION): the scoped counterpart to [`ingest_project_batches`](RunCtx::
+    /// ingest_project_batches), called from [`integrate_and_emit`](RunCtx::integrate_and_emit)
+    /// right after every landed merge, right alongside the grounder's own (pre-existing) reindex.
+    /// Bounded by `files` - the merge's OWN touched-file list - never a whole-project walk, so an
+    /// integration that touches hundreds of files stays bounded by that count, not the project's.
+    /// Reuses the SAME scoped extraction and keyed-emit sink `ingest_project_batches` uses for the
+    /// whole tree ([`crate::ingest::ingest_files_batched`] + [`Self::emit_keyed_batch`]) - never a
+    /// second lowering or dedup path - so a file's scoped generation here is byte-identical to what
+    /// a full walk would have produced for it. Off (a no-op) when there is no graph to fold into,
+    /// mirroring [`ingest_project_into_graph`](RunCtx::ingest_project_into_graph)'s own guard.
+    #[cfg(feature = "symbols")]
+    fn ingest_files_into_graph(&self, files: &[String]) {
+        if self.deps.graph.is_none() || self.deps.repo.is_empty() || files.is_empty() {
+            return;
+        }
+        let root = self.deps.repo.clone();
+        crate::ingest::ingest_files_batched(&root, files, |keyed| {
+            let _ = self.emit_keyed_batch(keyed);
+        });
+    }
+
+    /// Light lane: no extraction pass is compiled, so there is nothing to reindex.
+    #[cfg(not(feature = "symbols"))]
+    fn ingest_files_into_graph(&self, _files: &[String]) {}
 
     fn emit_lesson(&self, wt: Option<&Worktree>, unit_name: &str, summary: &str) {
         // The lesson is ABOUT the files the unit touched. The conductor commits the
@@ -11281,6 +11352,33 @@ fn render_capped_section<'a>(
 /// shared; the decisions and findings sections pass `false`, making relevance uniformly 0,
 /// which collapses the order back to (recency, id) BYTE-IDENTICALLY to before (spec exclusion:
 /// only the lessons slice gains relevance ranking).
+/// The recency-dating core shared by every recency-ranked graph reader (spec 92 u92c6):
+/// a node's recency is the max `source` position of its OWN edges whose `rel` equals
+/// `recency_rel`, keyed on the `from` (node) side ONLY - never an edge that merely touches
+/// the node as `to`. A decision's `GOVERNS` edge and a lesson/finding's `ABOUT` edge both
+/// point node -> file, so `from` is always the narrative node itself; a `SUPERSEDES` edge
+/// runs superseder -> superseded (`from` = the NEW decision), so keying on `from` alone
+/// means a superseded decision is dated off its own (invalidated) `GOVERNS` edge, never off
+/// the inbound `SUPERSEDES` edge carrying its superseder's fresh position. Dating off any
+/// edge touching the node as EITHER endpoint would let a stale/superseded node inherit its
+/// superseder's recency and crowd a genuinely live node out of a newest-N cap - the exact
+/// bug this core exists to make impossible in more than one place. Shared by
+/// [`write_capped_section`]'s budgeted prompt sections and `main`'s `rigger graph --around`
+/// governance cap, so every reader of a subgraph dates "newest" the same one way (this is
+/// `pub`, not `pub(crate)`, because the binary crate that calls it - `src/main.rs` - links
+/// against this library crate as an external consumer, same as [`is_parked`]).
+pub fn recency_by_own_edge<'a>(g: &'a Graph, recency_rel: &str) -> BTreeMap<&'a str, u64> {
+    let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
+    for e in &g.edges {
+        if e.rel != recency_rel {
+            continue;
+        }
+        let slot = recency.entry(e.from.as_str()).or_insert(0);
+        *slot = (*slot).max(e.source);
+    }
+    recency
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_capped_section<'g>(
     b: &mut String,
@@ -11295,25 +11393,25 @@ fn write_capped_section<'g>(
     by_relevance: bool,
     line: impl Fn(&contextgraph::Node) -> String,
 ) {
-    // Recency per node id: the max source position of its own `recency_rel` edges. Those
-    // edges point node -> file, so key on the `from` (node) side only; a SUPERSEDES edge
-    // (from = superseder) never dates the superseded node. When `by_relevance`, the SAME
-    // edge walk also tallies how many DISTINCT seed files each node is `recency_rel` to -
-    // its blast-radius relevance (0 for every node when the flag is off).
+    // Recency per node id: the max source position of its own `recency_rel` edges, via the
+    // shared core above. When `by_relevance`, a second walk over the SAME edges tallies how
+    // many DISTINCT seed files each node is `recency_rel` to - its blast-radius relevance (0
+    // for every node when the flag is off); kept as its own pass so the recency core stays
+    // one thing, reused as-is rather than parameterized for a second, unrelated tally.
     let seed_set: BTreeSet<&str> = seed.iter().map(String::as_str).collect();
-    let mut recency: BTreeMap<&str, u64> = BTreeMap::new();
+    let recency = recency_by_own_edge(g, recency_rel);
     let mut relevance: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for e in &g.edges {
-        if e.rel != recency_rel {
-            continue;
-        }
-        let slot = recency.entry(e.from.as_str()).or_insert(0);
-        *slot = (*slot).max(e.source);
-        if by_relevance && seed_set.contains(e.to.as_str()) {
-            relevance
-                .entry(e.from.as_str())
-                .or_default()
-                .insert(e.to.as_str());
+    if by_relevance {
+        for e in &g.edges {
+            if e.rel != recency_rel {
+                continue;
+            }
+            if seed_set.contains(e.to.as_str()) {
+                relevance
+                    .entry(e.from.as_str())
+                    .or_default()
+                    .insert(e.to.as_str());
+            }
         }
     }
     let relevance_of = |id: &str| relevance.get(id).map(BTreeSet::len).unwrap_or(0);
@@ -18793,6 +18891,100 @@ mod tests {
             g.nodes.iter().any(|n| n.kind == contextgraph::KIND_CODE_ENTITY
                 && n.attrs.get("name").map(String::as_str) == Some("replacement_symbol")),
             "the re-ingest must fold the changed file's new symbol into the graph; graph was:\n{g:#?}"
+        );
+    }
+
+    /// Spec 92 criterion 1 (FRESH ON EVERY INTEGRATION): [`RunCtx::ingest_files_into_graph`] is
+    /// BOUNDED to exactly the files it is handed - the property `ingest_project_batches` (a
+    /// whole-project walk) does not have, and the one an integration's own reindex needs
+    /// (Design/Constraints Walk: "the reindex is bounded by the merge's file list"). BOTH files
+    /// change on disk, but only `src/touched.rs` is named: the graph must reflect its NEW content
+    /// while `src/untouched.rs` - edited too, but never named - is left exactly as the FIRST
+    /// (baseline) ingest recorded it, proving the scope rather than merely "the named file works".
+    #[cfg(feature = "symbols")]
+    #[test]
+    fn ingest_files_into_graph_is_bounded_to_the_named_files_and_reflects_their_live_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/touched.rs"), "pub fn before_touch() {}\n").unwrap();
+        std::fs::write(
+            root.join("src/untouched.rs"),
+            "pub fn before_no_touch() {}\n",
+        )
+        .unwrap();
+        let root_str = root.to_str().unwrap().to_string();
+
+        let st_store = Store::open(":memory:").unwrap();
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let driver = Stub::new();
+        let grounder = StubGrounder {
+            by_query: HashMap::new(),
+        };
+        let deps = Deps {
+            store: &st_store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: root_str.clone(),
+            grounder: Some(&grounder),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+        };
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let is_live = |file: &str, name: &str| -> bool {
+            graph
+                .subgraph(&[file.to_string()], 2)
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|n| {
+                    n.kind == contextgraph::KIND_CODE_ENTITY
+                        && n.attrs.get("name").map(String::as_str) == Some(name)
+                })
+        };
+
+        // Baseline: both files ingested (as a run-start `ingest_project_into_graph` would).
+        ctx.ingest_project_batches();
+        assert!(
+            is_live("src/touched.rs", "before_touch"),
+            "baseline touched"
+        );
+        assert!(
+            is_live("src/untouched.rs", "before_no_touch"),
+            "baseline untouched"
+        );
+
+        // Simulate an integration: BOTH files change on disk, but the merge only actually touched
+        // (and this call only names) src/touched.rs.
+        std::fs::write(root.join("src/touched.rs"), "pub fn after_touch() {}\n").unwrap();
+        std::fs::write(
+            root.join("src/untouched.rs"),
+            "pub fn after_no_touch() {}\n",
+        )
+        .unwrap();
+        ctx.ingest_files_into_graph(&["src/touched.rs".to_string()]);
+
+        // The NAMED file's graph reflects its NEW content.
+        assert!(
+            is_live("src/touched.rs", "after_touch"),
+            "the named file's live (post-integration) definition must be in the graph"
+        );
+        assert!(
+            !is_live("src/touched.rs", "before_touch"),
+            "the named file's stale pre-integration definition must be retired"
+        );
+        // The UNNAMED sibling is left exactly as the baseline ingest recorded it - never touched by
+        // a scoped call that did not name it, even though it also changed on disk.
+        assert!(
+            is_live("src/untouched.rs", "before_no_touch"),
+            "an unnamed file's baseline recording must survive an unrelated scoped reindex"
+        );
+        assert!(
+            !is_live("src/untouched.rs", "after_no_touch"),
+            "an unnamed file's NEW disk content must NOT be picked up by a reindex that never \
+             named it - this is the bounded-scope property itself"
         );
     }
 
