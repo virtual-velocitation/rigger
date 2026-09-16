@@ -409,6 +409,148 @@ fn graph_around_reflects_the_review_panel_fallback_rule_for_a_real_workflow_yml(
     );
 }
 
+/// REVIEWS vs REVIEWS_LIGHT, off a REAL `.rigger/workflow.yml` with an opt-in `tiers.light` roster
+/// configured, end to end through the CLI: round 5's fix (`u2c2-r5-reviews-light-distinct-relation`)
+/// split `workflowdef::reviewers_of` into a full roster and a light roster so a `tiers.light`-only
+/// reviewer is never indistinguishable from a full-panel one on the same stage - proven here only
+/// in-process (an in-memory fixture and `config::load_workflow`), never through the compiled
+/// binary's cold `rigger graph build` -> persisted `graph.db` -> `--around` path a reader actually
+/// queries, nor through the new `REL_REVIEWS_LIGHT` fold arm (`contextgraph/sqlite.rs` `fold()`)
+/// which this exercises for the first time off REAL extraction output. Covers BOTH call sites the
+/// round-5 diff changed: a stage naming its OWN `review:` block with its own `tiers` (`checkin`,
+/// the direct, non-fallback path), and a gated stage naming no review fields of its own so it falls
+/// back to `defaults.review`'s `tiers` (`implement`, the fallback path `reviewers_of` also gained a
+/// light half on).
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_around_tags_a_tiers_light_reviewer_with_reviews_light_never_the_plain_reviews_edge() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        "defaults:\n\
+         \x20\x20review:\n\
+         \x20\x20\x20\x20lenses: [architecture-reviewer, sdet]\n\
+         \x20\x20\x20\x20adversary: adversary\n\
+         \x20\x20\x20\x20adjudicator: adjudicator\n\
+         \x20\x20\x20\x20tiers:\n\
+         \x20\x20\x20\x20\x20\x20threshold: 1\n\
+         \x20\x20\x20\x20\x20\x20light:\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20lenses: [fast-lens]\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20adjudicator: light-adjudicator\n\
+         \n\
+         gates:\n\
+         \x20\x20fmt:\n\
+         \x20\x20\x20\x20run: \"cargo fmt --check\"\n\
+         \n\
+         stages:\n\
+         \x20\x20implement:\n\
+         \x20\x20\x20\x20agent: rust-engineer\n\
+         \x20\x20\x20\x20gates: [fmt]\n\
+         \x20\x20checkin:\n\
+         \x20\x20\x20\x20needs: [implement]\n\
+         \x20\x20\x20\x20agent: rust-engineer\n\
+         \x20\x20\x20\x20gates: [fmt]\n\
+         \x20\x20\x20\x20review:\n\
+         \x20\x20\x20\x20\x20\x20lenses: [ci-lens]\n\
+         \x20\x20\x20\x20\x20\x20adjudicator: ci-adjudicator\n\
+         \x20\x20\x20\x20\x20\x20tiers:\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20threshold: 1\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20light:\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20lenses: [ci-fast-lens]\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\x20\x20adjudicator: ci-light-adjudicator\n",
+    )
+    .unwrap();
+
+    let (build_out, build_err, build_ok) = run_rigger(root, &["graph", "build"]);
+    assert!(
+        build_ok,
+        "graph build must succeed over a tiers-configured workflow.yml; stderr: {build_err}; \
+         stdout: {build_out}"
+    );
+
+    // implement: no review fields of its own, but it DOES run a gate - falls back to
+    // defaults.review, which now carries a tiers.light roster. Both halves of that ONE panel must
+    // land, split onto their own relations.
+    let (imp, err, ok) = run_rigger(
+        root,
+        &["graph", "--around", "stage:implement", "--depth", "1"],
+    );
+    assert!(
+        ok,
+        "graph --around stage:implement must succeed; stderr: {err}"
+    );
+    for full_edge in [
+        "edge agent:architecture-reviewer -REVIEWS-> stage:implement",
+        "edge agent:sdet -REVIEWS-> stage:implement",
+        "edge agent:adversary -REVIEWS-> stage:implement",
+        "edge agent:adjudicator -REVIEWS-> stage:implement",
+    ] {
+        assert!(
+            imp.contains(full_edge),
+            "the fallback panel's own full-only roster must still land on the plain REVIEWS \
+             edge, untouched by tiering; expected {full_edge:?} in:\n{imp}"
+        );
+    }
+    for light_edge in [
+        "edge agent:fast-lens -REVIEWS_LIGHT-> stage:implement",
+        "edge agent:light-adjudicator -REVIEWS_LIGHT-> stage:implement",
+    ] {
+        assert!(
+            imp.contains(light_edge),
+            "the fallback panel's tiers.light roster must land on the distinct REVIEWS_LIGHT \
+             edge; expected {light_edge:?} in:\n{imp}"
+        );
+    }
+    assert!(
+        !imp.contains("agent:fast-lens -REVIEWS->")
+            && !imp.contains("agent:light-adjudicator -REVIEWS->"),
+        "a tiers.light-only reviewer must never also appear on the plain REVIEWS edge - that \
+         would make it indistinguishable from a full-panel reviewer; got:\n{imp}"
+    );
+    assert!(
+        !imp.contains("agent:architecture-reviewer -REVIEWS_LIGHT->")
+            && !imp.contains("agent:sdet -REVIEWS_LIGHT->")
+            && !imp.contains("agent:adversary -REVIEWS_LIGHT->")
+            && !imp.contains("agent:adjudicator -REVIEWS_LIGHT->"),
+        "the full panel's own roster must never double onto the light edge either; got:\n{imp}"
+    );
+
+    // checkin: names its OWN review: block (its own lenses/adjudicator, its own tiers) - the
+    // direct, non-fallback path reviewers_of also splits. Its edges must come ONLY from its own
+    // panel, never the workflow-wide defaults.review panel it does not inherit.
+    let (chk, err2, ok2) = run_rigger(
+        root,
+        &["graph", "--around", "stage:checkin", "--depth", "1"],
+    );
+    assert!(
+        ok2,
+        "graph --around stage:checkin must succeed; stderr: {err2}"
+    );
+    assert!(
+        chk.contains("edge agent:ci-lens -REVIEWS-> stage:checkin")
+            && chk.contains("edge agent:ci-adjudicator -REVIEWS-> stage:checkin"),
+        "checkin's own review panel's full-only roster must land on REVIEWS; got:\n{chk}"
+    );
+    assert!(
+        chk.contains("edge agent:ci-fast-lens -REVIEWS_LIGHT-> stage:checkin")
+            && chk.contains("edge agent:ci-light-adjudicator -REVIEWS_LIGHT-> stage:checkin"),
+        "checkin's own review panel's tiers.light roster must land on REVIEWS_LIGHT; got:\n{chk}"
+    );
+    assert!(
+        !chk.contains("agent:ci-fast-lens -REVIEWS->")
+            && !chk.contains("agent:ci-light-adjudicator -REVIEWS->"),
+        "checkin's own light-only reviewers must never also appear on its plain REVIEWS edge; \
+         got:\n{chk}"
+    );
+    assert!(
+        !chk.contains("agent:architecture-reviewer") && !chk.contains("agent:sdet"),
+        "a stage naming its own review: block must NOT also inherit the workflow-wide \
+         defaults.review panel; got:\n{chk}"
+    );
+}
+
 /// API + FOLD, off REAL `workflows/rigger.js` and `shim/relay.mjs` files: a plain top-level
 /// constant (never an arrow/function expression - the ONLY shape the upstream `tags.scm` tagged
 /// before this criterion) must surface as a `kind constant` entity through `rigger graph --show`
