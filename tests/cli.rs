@@ -28726,6 +28726,101 @@ fn grep_guard_never_bounces_a_substring_grep_command_end_to_end() {
     );
 }
 
+/// SDET periphery gap (round-9 accounting, d-spec92-hook-no-target-axis): three shapes a
+/// PRIOR round's committed test suite proved must stay ALLOWED - a `..` that descends into an
+/// unrelated sibling directory rather than climbing back to the project root
+/// (`grep_guard_bounces_an_ancestor_of_the_project_root_end_to_end`'s own control, deleted by
+/// this round's diff with no replacement), a Bash grep target spelled `src-old/` (a
+/// differently-named tree that merely shares a prefix with `src`), and a `Grep` tool `path` of
+/// `mysrc/foo.rs` (merely shares a prefix with the bare segment `src`) - are exactly the
+/// three false-positive exemptions the RETIRED target-axis apparatus (`guarded_command`'s own
+/// doc comment) named as its own precision proof. Retiring that apparatus outright means
+/// EVERY ONE of these three now flips from ALLOW to DENY (no path is ever inspected again,
+/// per the round's own doc comment on `grep_guard_decision`), yet nothing - not this round's
+/// pure-function tests, not its periphery tests - re-proves the flip; a regression that
+/// silently reintroduced any one of these three as a path-based exemption would pass every
+/// currently-committed test at either layer.
+#[test]
+fn grep_guard_denies_the_formerly_exempt_target_shapes_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    // Bash grep targets: a sibling reached via `..` (never touches the project root), and a
+    // differently-named tree that merely shares `src`'s first three characters.
+    for command in [
+        "grep -rn TODO ../a-sibling-directory",
+        "grep -rn TODO src-old/",
+    ] {
+        let out = run_grep_guard(
+            root,
+            &serde_json::json!({"tool_name": "Bash", "tool_input": {"command": command}})
+                .to_string(),
+        );
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "the hook has no target axis - a formerly-exempt target must now be denied too: \
+             {command:?}; got:\n{out}"
+        );
+    }
+
+    // The built-in `Grep` tool: the same sibling-via-`..` shape, and a differently-named tree
+    // that merely shares a prefix with `src`.
+    for path in ["../a-sibling-directory", "mysrc/foo.rs"] {
+        let out = run_grep_guard(
+            root,
+            &serde_json::json!({"tool_name": "Grep", "tool_input": {"path": path}}).to_string(),
+        );
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "the hook has no target axis - a formerly-exempt Grep path must now be denied \
+             too: {path:?}; got:\n{out}"
+        );
+    }
+}
+
+/// SDET periphery gap (round-9 accounting): the round's own pure-function test
+/// (`grep_guard_decision_denies_every_bash_grep_target_and_passes_literal` /
+/// `grep_guard_decision_denies_every_grep_tool_path`, `main.rs`) proves an ancestor target
+/// (`..`) is denied, and that `--literal` still escapes a Bash grep targeting it - but only
+/// in-process, against the pure decision function. Neither shape reaches the compiled binary
+/// anywhere else in this suite: the end-to-end "every target" test above pins `src/`, `docs/`,
+/// `README.md`, and `.`, never `..`; the end-to-end `Grep`-tool test pins `src/`, `docs/`, an
+/// omitted path, and an unrelated absolute path, never `..` either. This drives the exact
+/// ancestor shape through `rigger grep-guard` itself for both call forms, plus the
+/// `--literal` escape on the Bash form.
+#[test]
+fn grep_guard_denies_an_ancestor_target_end_to_end_and_passes_literal() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let grep_tool = run_grep_guard(root, r#"{"tool_name":"Grep","tool_input":{"path":".."}}"#);
+    assert_eq!(
+        grep_tool["hookSpecificOutput"]["permissionDecision"], "deny",
+        "Grep path=\"..\" must be denied; got:\n{grep_tool}"
+    );
+
+    let bash = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO .."}}"#,
+    );
+    assert_eq!(
+        bash["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a Bash grep targeting .. must be denied; got:\n{bash}"
+    );
+
+    let literal = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal -rn TODO .."}}"#,
+    );
+    let stripped = assert_grep_guard_allows_with_literal_stripped(&literal);
+    assert_eq!(
+        stripped, "grep -rn TODO ..",
+        "the marker and its one adjacent space must be removed, nothing else rewritten"
+    );
+}
+
 /// Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-bypass), end to end through the
 /// compiled binary: a `grep` invocation fused to an adjacent command with NO surrounding
 /// whitespace - a pipe, a semicolon, a `$( )` command substitution, a backgrounded `&`, a
@@ -29453,6 +29548,22 @@ fn docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbo
         assert!(
             out.contains("--literal"),
             "{label} must name the --literal escape hatch; got:\n{out}"
+        );
+        // SDET periphery gap (round-9 accounting, d-spec92-hook-no-target-axis): the
+        // implementer's own docs.rs unit tests prove the render FUNCTION states a
+        // bounce-everywhere rule and never a guarded-tree list; nothing before this proved
+        // the REAL installed file agrees - a stale cached render, or a wiring bug between
+        // `docs_context()` and the file `rigger docs` writes, could leave the old
+        // `src/, tests/, workflows/` tree list on disk even after the render function itself
+        // was fixed.
+        assert!(
+            out.contains("every"),
+            "{label} must state the hook bounces EVERY Grep call and Bash grep invocation, \
+             not a guarded-tree subset; got:\n{out}"
+        );
+        assert!(
+            !out.contains("src/, tests/, workflows/") && !out.contains("tests/, workflows/"),
+            "{label} must not name the retired guarded-tree list; got:\n{out}"
         );
     }
 }

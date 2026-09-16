@@ -5748,6 +5748,16 @@
       {
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
+        "content_hash": "090bbeba5641ea09"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "090bbeba5641ea09"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
       },
       {
@@ -7027,7 +7037,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 712 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 714 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0061",
@@ -17772,7 +17782,7 @@
       {
         "file": "tests/cli.rs",
         "name": "docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook",
-        "content_hash": "577e2dd41a27b940"
+        "content_hash": "d9e70cf7c241d354"
       }
     ],
     "proposed_home": "cli::support (consolidate these 3 sites into one function in this file)",
@@ -18283,6 +18293,34 @@
     "sites": [
       {
         "file": "tests/cli.rs",
+        "name": "grep_guard_denies_an_ancestor_target_end_to_end_and_passes_literal",
+        "content_hash": "98e48b0b4d851b69"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "grep_guard_still_allows_literal_on_a_shell_metacharacter_fused_grep_end_to_end",
+        "content_hash": "8a3bfc70625146b0"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "grep_guard_still_allows_a_quoted_literal_on_a_quoted_grep_end_to_end",
+        "content_hash": "8a3bfc70625146b0"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "grep_guard_bounces_an_output_redirect_metacharacter_fused_grep_end_to_end",
+        "content_hash": "ac9c7aa6fe4a0361"
+      }
+    ],
+    "proposed_home": "cli::support (consolidate these 4 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-0508",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/cli.rs",
         "name": "grep_guard_bounces_a_shell_metacharacter_fused_grep_end_to_end",
         "content_hash": "df8d253cc7be7c27"
       },
@@ -18303,29 +18341,6 @@
       }
     ],
     "proposed_home": "cli::support (consolidate these 4 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-0508",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "tests/cli.rs",
-        "name": "grep_guard_still_allows_literal_on_a_shell_metacharacter_fused_grep_end_to_end",
-        "content_hash": "8a3bfc70625146b0"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "grep_guard_still_allows_a_quoted_literal_on_a_quoted_grep_end_to_end",
-        "content_hash": "8a3bfc70625146b0"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "grep_guard_bounces_an_output_redirect_metacharacter_fused_grep_end_to_end",
-        "content_hash": "ac9c7aa6fe4a0361"
-      }
-    ],
-    "proposed_home": "cli::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
