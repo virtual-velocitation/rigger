@@ -29234,6 +29234,123 @@ fn grep_guard_stripped_literal_command_actually_runs_via_a_real_shell() {
     );
 }
 
+/// SDET periphery gap (round-6 accounting): the redirect-metachar fix (`<` and `>` both added
+/// to the tokenizer's delimiter set this round) was proven end to end only for `<` (an INPUT
+/// redirect fused to a guarded path) and one combined `>` control where the fix rode along on
+/// an already-guarded READ target (`grep pattern src/main.rs >out.txt` - denied because of
+/// `src/main.rs`, not because of `>out.txt`). `>` needs the same proof in ISOLATION: a
+/// `grep` whose ONLY guarded token is an OUTPUT redirect target must be denied purely on that
+/// account, and the identical shape writing outside every guarded tree must stay allowed -
+/// proving the guard reacts to the fused redirect target itself, not to `>` in general.
+#[test]
+fn grep_guard_bounces_an_output_redirect_metacharacter_fused_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in [
+        "grep pattern file.txt >src/output.log",
+        "grep pattern file.txt >tests/output.log",
+        "grep pattern file.txt >workflows/output.log",
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "an output redirect fused to a guarded path must be denied on its own, with no \
+             other guarded token anywhere in the command: {command:?}; got:\n{out}"
+        );
+    }
+
+    let unguarded = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep pattern file.txt >output.log"}}"#,
+    );
+    assert_eq!(
+        unguarded,
+        serde_json::json!({}),
+        "the same shape redirecting OUTSIDE every guarded tree must stay allowed; got:\n{unguarded}"
+    );
+
+    // --literal must still pass an output-redirect-guarded command through, the redirection
+    // itself surviving the marker's removal untouched.
+    let literal_out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal pattern file.txt >src/output.log"}}"#,
+    );
+    let stripped = assert_grep_guard_allows_with_literal_stripped(&literal_out);
+    assert_eq!(
+        stripped, "grep pattern file.txt >src/output.log",
+        "only the marker and its one adjacent space must be removed, the redirect untouched"
+    );
+}
+
+/// SDET periphery gap (round-6 accounting): `grep_guard_bounces_an_ancestor_of_the_project_root_end_to_end`
+/// proves a Grep path exactly EQUAL to the real project root is denied end to end, but the
+/// adjudicator's finding (adv-u92c4r5-ancestor-path-bypasses-guard-with-no-shell-tricks) names
+/// a PROPER ancestor - strictly above the root, never equal to it - as the other half of the
+/// same bypass shape; that half was proven only at the pure-function level against a
+/// hand-written string (`grep_guard_decision_bounces_an_absolute_ancestor_of_the_project_root`
+/// in `src/main.rs`), never through the real compiled binary's own `current_dir` resolution.
+/// Spawns from a directory nested two levels under a REAL project root, so the root itself is
+/// a genuine proper ancestor of the spawn's own cwd, not merely equal to it.
+#[test]
+fn grep_guard_bounces_a_proper_absolute_ancestor_of_the_project_root_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    let nested = root.join("nested").join("deeper");
+    std::fs::create_dir_all(nested.join(".rigger")).unwrap();
+
+    let ancestor = serde_json::json!({
+        "tool_name": "Grep",
+        "tool_input": {"path": root.to_string_lossy()}
+    })
+    .to_string();
+    let out = run_grep_guard(&nested, &ancestor);
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a Grep path that is a PROPER ancestor of the real spawn cwd (not merely equal to it) \
+         must be denied - recursing from there reaches every guarded tree beneath the cwd \
+         too; got:\n{out}"
+    );
+
+    let bash_ancestor = run_grep_guard(
+        &nested,
+        &serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": format!("grep -rn TODO {}", root.to_string_lossy())}
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        bash_ancestor["hookSpecificOutput"]["permissionDecision"], "deny",
+        "the same proper-ancestor bypass via a Bash grep target must be denied too; \
+         got:\n{bash_ancestor}"
+    );
+
+    // Control: a wholly unrelated REAL absolute path (a genuine directory on disk, not a
+    // hand-written string) must stay allowed - guards against a `strip_prefix` boundary bug
+    // that only a real filesystem path, with its own real separators, could expose.
+    let unrelated = tempfile::tempdir().unwrap();
+    let control = run_grep_guard(
+        &nested,
+        &serde_json::json!({
+            "tool_name": "Grep",
+            "tool_input": {"path": unrelated.path().to_string_lossy()}
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        control,
+        serde_json::json!({}),
+        "a wholly unrelated real absolute path must stay allowed; got:\n{control}"
+    );
+}
+
 /// `rigger mcp`'s API edges: an unknown tool name, and the required-argument checks
 /// `rigger_ground`/`rigger_graph` state in their own error strings - none of which the
 /// happy-path test above (which only ever sends well-formed calls) sends. Each must answer a
