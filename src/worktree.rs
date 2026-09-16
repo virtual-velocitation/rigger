@@ -347,7 +347,11 @@ impl Worktree {
             let _ = run_git(repo, &["revert", "--abort"]);
             return Err(Error(format!("revert {commit}: {out}")));
         }
-        match run_git(repo, &["commit", "--no-edit", "-m", message]) {
+        // Rigger's own compensation-revert commit (d-checkin-rigger-own-commits-bypass-
+        // hooks): the same class as the merge-into-worktree bookkeeping commits above -
+        // machine provenance of a rollback, not a commit an agent or a person means to
+        // make, so it bypasses hooks too.
+        match run_git(repo, &["commit", "--no-edit", "--no-verify", "-m", message]) {
             Ok(_) => {}
             // The commit's effect was already absent, so there is nothing to revert: leave
             // HEAD where it is (idempotent), never an error.
@@ -541,26 +545,33 @@ impl Worktree {
     /// subsequent [`Self::integrate`] merges. Without it a gate could pass on
     /// uncommitted files that never reach the base - a false green.
     ///
-    /// This is the ONE shared authority every conductor commit into a unit worktree
-    /// runs through - the per-attempt checkpoint above [`Self::merge_into_worktree`]'s
-    /// own pre-merge commit (the "integration merge"), and the halt `wip` commit a
-    /// re-parked spawn's recovery makes - so [`Self::conflict_markers_present`]'s
-    /// refusal (spec 89, criterion 1: A CHECKPOINT NEVER COMMITS A HALF-MERGE)
-    /// protects all three from ONE place, never a second parallel check reconciled
-    /// after the fact.
+    /// This runs [`Self::conflict_markers_present`]'s refusal (spec 89, criterion 1: A
+    /// CHECKPOINT NEVER COMMITS A HALF-MERGE) and the repository's own git hooks - the
+    /// hook-RESPECTING half of the pair with [`Self::commit_checkpoint`], for a commit
+    /// an agent or a person actually MEANS to make. Every commit rigger itself makes as
+    /// its own machine bookkeeping (the pre-gate attempt commit, the merge-into-worktree
+    /// steps, a halt `wip` commit, a compensation revert) goes through
+    /// [`Self::commit_checkpoint`] instead (spec 92 escalation ruling
+    /// d-checkin-rigger-own-commits-bypass-hooks) - a hook enforcing content policy has
+    /// no commit of THIS one's shape to police.
     pub fn commit(&self, message: &str) -> Result<String, Error> {
         self.commit_with(message, false)
     }
 
-    /// A CHECKPOINT commit: the conductor preserving whatever a halted or superseded spawn
-    /// left in its worktree so no tree is ever lost (spec 89, criterion 1). It runs the
+    /// A machine-bookkeeping commit: rigger recording its OWN provenance - a checkpoint
+    /// preserving whatever a halted or superseded spawn left in its worktree (spec 89,
+    /// criterion 1), the conductor's pre-gate attempt commit, [`Self::merge_into_worktree`]'s
+    /// pre-merge and merge-conclusion commits, and [`Self::revert_on_base`]'s compensation
+    /// commit - never a commit an agent's or a person's own work produces. It runs the
     /// half-merge guard like [`Self::commit`] but bypasses the repository's git hooks
     /// (`--no-verify`): a hook enforces content policy on a commit an agent or a person
-    /// MEANS to make, and a checkpoint is machine bookkeeping of a tree mid-work - a hook
-    /// refusing it (the docs-drift hook did, when a unit's rendered docs were ahead of the
-    /// binary on PATH) turned "never lose a tree" into a dead step. The policy still holds
-    /// where it belongs: the agent's own commits run the hooks, and the gates and
-    /// `rigger validate` check the drift the hook checks.
+    /// MEANS to make, and every one of these is machine bookkeeping of a tree mid-work - a
+    /// hook refusing one (the docs-drift hook did, when a unit's rendered docs were ahead of
+    /// the binary on PATH) turned "never lose a tree" (and, for the merge/revert sites,
+    /// "integration always lands") into a dead step (spec 92 escalation ruling
+    /// d-checkin-rigger-own-commits-bypass-hooks). The policy still holds where it belongs:
+    /// the agent's own commits run the hooks, and the gates and `rigger validate` check the
+    /// drift the hook checks.
     pub fn commit_checkpoint(&self, message: &str) -> Result<String, Error> {
         self.commit_with(message, true)
     }
@@ -843,7 +854,13 @@ impl Worktree {
         // re-entry (the block below is skipped entirely) or when no merge was even needed.
         let mut merge_attempt: Option<String> = None;
         if !self.merge_in_progress() {
-            let committed = self.commit(message)?;
+            // Rigger's own integration bookkeeping commit (spec 92 escalation ruling
+            // d-checkin-rigger-own-commits-bypass-hooks): the same class as the
+            // conductor's pre-gate attempt commit (`commit_checkpoint`, commit
+            // 066ceaaf) - a hook enforces content policy on a commit an agent or a
+            // person MEANS to make, never on the machine's own merge-into-worktree
+            // step, so this bypasses hooks exactly like that call site.
+            let committed = self.commit_checkpoint(message)?;
             // Nothing at all for this unit to contribute (no fresh commit here, and its
             // branch already sits exactly at the run branch's tip): true read-only no-op,
             // matching the historical short circuit exactly - never even attempt a merge.
@@ -876,8 +893,11 @@ impl Worktree {
         }
         if self.merge_in_progress() {
             // Every conflict (if any arose) is resolved and staged: finalize the merge
-            // commit on the unit's OWN branch before landing it on the run branch.
-            match run_git(&self.dir, &["commit", "--no-edit"]) {
+            // commit on the unit's OWN branch before landing it on the run branch. Same
+            // bypass as the pre-merge commit just above (d-checkin-rigger-own-commits-
+            // bypass-hooks) - this is rigger's own merge-conclusion bookkeeping, not a
+            // commit an agent or a person means to make.
+            match run_git(&self.dir, &["commit", "--no-edit", "--no-verify"]) {
                 Ok(_) => {}
                 Err(out) if out.contains("nothing to commit") => {}
                 Err(out) => return Err(Error(format!("commit merge: {out}"))),
@@ -3094,11 +3114,19 @@ mod tests {
     ) {
         // worktree.rs:635 treats ONLY a "nothing to commit" failure from the finalizing
         // `git commit --no-edit` as a benign no-op (an already-empty resolution, tolerated
-        // for crash-resume idempotency). Any OTHER failure - a hook rejecting the commit,
-        // a signing failure, disk full - must propagate as a genuine `Err`, never be
-        // silently swallowed as if the merge had finished; swallowing it would let
-        // `integrate` fall through to `git merge --no-edit` on the run branch believing a
-        // merge commit exists that was never actually made.
+        // for crash-resume idempotency). Any OTHER failure - a signing failure, disk full -
+        // must propagate as a genuine `Err`, never be silently swallowed as if the merge had
+        // finished; swallowing it would let `integrate` fall through to `git merge --no-edit`
+        // on the run branch believing a merge commit exists that was never actually made.
+        // Injected via a permission-denied object write, not a refusing hook: this finalizing
+        // commit is rigger's own merge-conclusion bookkeeping, so it now runs `--no-verify`
+        // (d-checkin-rigger-own-commits-bypass-hooks) and a hook is no longer an available
+        // failure instrument here. A forced signing failure is not available either - per
+        // spec 90, the whole suite runs under the hermetic test-git runner's own commit-signing
+        // suppression (see `tests/hermetic_test_git_audit.rs`), the SOLE authority for that
+        // override, so a repo-local config can never re-enable signing here. A read-only object
+        // database is an OS-level failure that override does not touch, so it still proves a
+        // genuine, unrelated failure propagates.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wa = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
@@ -3120,31 +3148,36 @@ mod tests {
         std::fs::write(wb.join("shared.txt"), "RESOLVED\n").unwrap();
         run_git(wb.to_str().unwrap(), &["add", "--", "shared.txt"]).unwrap();
 
-        // A worktree's hooks are the MAIN repo's (git worktree add shares one hooks dir) -
-        // install a pre-commit hook there that always rejects with a message that does NOT
-        // contain "nothing to commit": a genuine, unrelated failure.
-        let hooks_dir = repo.path().join(".git").join("hooks");
-        std::fs::create_dir_all(&hooks_dir).unwrap();
-        let hook_path = hooks_dir.join("pre-commit");
-        std::fs::write(
-            &hook_path,
-            "#!/bin/sh\necho 'boom: forced hook failure' >&2\nexit 1\n",
-        )
-        .unwrap();
+        // A worktree's object database is the MAIN repo's (git worktree add shares one
+        // `.git/objects`) - strip write permission from it so the finalizing commit cannot
+        // write its new tree/commit objects: a genuine, unrelated, OS-level failure.
+        let objects_dir = repo.path().join(".git").join("objects");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&hook_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&hook_path, perms).unwrap();
+            let mut perms = std::fs::metadata(&objects_dir).unwrap().permissions();
+            perms.set_mode(0o555);
+            std::fs::set_permissions(&objects_dir, perms).unwrap();
         }
 
-        let err = match b.integrate("rigger: integrate b (finalize)") {
+        let result = b.integrate("rigger: integrate b (finalize)");
+
+        // Restore write permission before any assertion can panic and before `repo` drops -
+        // otherwise the read-only directory would make its own teardown fail.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&objects_dir).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&objects_dir, perms).unwrap();
+        }
+
+        let err = match result {
             Err(e) => e,
             Ok(_) => panic!("a genuine commit failure must surface as an Err, not a silent no-op"),
         };
         assert!(
-            err.0.contains("boom: forced hook failure"),
+            err.0.contains("insufficient permission"),
             "the real failure must propagate verbatim: {}",
             err.0
         );
