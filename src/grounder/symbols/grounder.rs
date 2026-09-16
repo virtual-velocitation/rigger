@@ -120,55 +120,62 @@ fn query_terms(query: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Every distinct name's occurrence count across the WHOLE index and every language, counting
+/// Every distinct `(name, language)` pair's occurrence count across the WHOLE index, counting
 /// DEFINITIONS always and REFERENCES only when `count_refs` is set - the ONE counting pass
 /// [`commonness_map`] and [`ambiguity_map`] both share (spec 92 criterion 3 remediation,
 /// arch-u92c3-cutoff-formula-duplicated-not-shared's DRY finding applied to this pair too: two
-/// near-identical scan loops over the same data, one function body now covers both).
-fn name_occurrence_map(idx: &SymbolIndex, count_refs: bool) -> BTreeMap<&str, usize> {
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+/// near-identical scan loops over the same data, one function body now covers both). Keyed by
+/// `(name, Lang)`, never a bare name (spec 92 criterion 3 remediation round 5,
+/// adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages): a bare-name
+/// key sums an entity's popularity/ambiguity across every language sharing that name, exactly
+/// the cross-language collision [`SymbolIndex::reference_degree`] and [`SymbolIndex::is_hub`]
+/// already guard against (5.5.2) - a `run` over-defined in Python must never inflate the same
+/// bare name's Rust count, in either direction.
+fn name_occurrence_map(idx: &SymbolIndex, count_refs: bool) -> BTreeMap<(&str, Lang), usize> {
+    let mut counts: BTreeMap<(&str, Lang), usize> = BTreeMap::new();
     for fs in idx.files().values() {
         for d in &fs.defs {
-            *counts.entry(d.name.as_str()).or_insert(0) += 1;
+            *counts.entry((d.name.as_str(), fs.lang)).or_insert(0) += 1;
         }
         if count_refs {
             for r in &fs.refs {
-                *counts.entry(r.name.as_str()).or_insert(0) += 1;
+                *counts.entry((r.name.as_str(), fs.lang)).or_insert(0) += 1;
             }
         }
     }
     counts
 }
 
-/// Every distinct name's total DEFINITION+REFERENCE occurrence count (spec 92 criterion 3,
-/// RANKED BY INTENT): the inverse-document-frequency proxy Design names - "a token in hundreds
-/// of files - `run`, `new`, `tests` - carries near-zero weight." The ONE authority
+/// Every distinct `(name, language)` pair's total DEFINITION+REFERENCE occurrence count (spec 92
+/// criterion 3, RANKED BY INTENT): the inverse-document-frequency proxy Design names - "a token
+/// in hundreds of files - `run`, `new`, `tests` - carries near-zero weight." The ONE authority
 /// [`scored_hits`] draws a matched ENTITY's own commonness from (looked up by the entity's OWN
-/// resolved name, never the raw query term - a CONTAINS-tier term is by definition a substring
-/// and so is almost never itself a key here), for ranking (rarer wins a tie). NOT
-/// the signal [`Symbols::has_strong_match`] gates on - a popular but UNAMBIGUOUS entity (one
-/// definition, many call sites, e.g. `criterion_stable_id`) must rank low here (it is genuinely
-/// the specific thing a caller meant when they typed its exact name) without being misread as
-/// "too common to be a confident match" - that second, distinct question is [`ambiguity_map`]'s
-/// (spec 92 criterion 3 remediation, adj-u92c3-verdict-reject: the two were wrongly conflated by
-/// an earlier round of this unit).
-fn commonness_map(idx: &SymbolIndex) -> BTreeMap<&str, usize> {
+/// resolved `(name, Lang)` pair, never the raw query term - a CONTAINS-tier term is by
+/// definition a substring and so is almost never itself a key here), for ranking (rarer wins a
+/// tie). NOT the signal [`Symbols::has_strong_match`] gates on - a popular but UNAMBIGUOUS
+/// entity (one definition, many call sites, e.g. `criterion_stable_id`) must rank low here (it
+/// is genuinely the specific thing a caller meant when they typed its exact name) without being
+/// misread as "too common to be a confident match" - that second, distinct question is
+/// [`ambiguity_map`]'s (spec 92 criterion 3 remediation, adj-u92c3-verdict-reject: the two were
+/// wrongly conflated by an earlier round of this unit).
+fn commonness_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
     name_occurrence_map(idx, true)
 }
 
-/// Every distinct name's DISTINCT-DEFINITION count (spec 92 criterion 3 remediation,
-/// adj-u92c3-verdict-reject): the genuine tree-wide AMBIGUITY signal - "how many different
-/// things could this name mean" - independent of how often any ONE of those definitions is
-/// called. A name defined exactly once is entirely unambiguous no matter how many places
-/// reference it (`criterion_stable_id`: 1 definition, 37 references in this very repo, must read
-/// as a confident match); a name defined many times over in unrelated places (`run`, `new`,
-/// `parse`) is genuinely ambiguous regardless of reference volume. This is the ONE authority
-/// [`Symbols::has_strong_match`] gates its cutoff on - never [`commonness_map`]'s raw def+ref
-/// occurrence volume, which conflates one entity's own popularity with tree-wide name ambiguity
-/// (the defect this map exists to fix). Shares its percentile-cutoff formula with
-/// [`SymbolIndex::is_hub`] via [`crate::grounder::symbols::model::percentile_cutoff`] rather
-/// than re-deriving it, per arch-u92c3-cutoff-formula-duplicated-not-shared.
-fn ambiguity_map(idx: &SymbolIndex) -> BTreeMap<&str, usize> {
+/// Every distinct `(name, language)` pair's DISTINCT-DEFINITION count (spec 92 criterion 3
+/// remediation, adj-u92c3-verdict-reject): the genuine tree-wide AMBIGUITY signal - "how many
+/// different things could this name mean, WITHIN this language" - independent of how often any
+/// ONE of those definitions is called. A name defined exactly once (within its own language) is
+/// entirely unambiguous no matter how many places reference it (`criterion_stable_id`: 1
+/// definition, 37 references in this very repo, must read as a confident match); a name defined
+/// many times over in unrelated places (`run`, `new`, `parse`) is genuinely ambiguous regardless
+/// of reference volume. This is the ONE authority [`Symbols::has_strong_match`] gates its cutoff
+/// on - never [`commonness_map`]'s raw def+ref occurrence volume, which conflates one entity's
+/// own popularity with tree-wide name ambiguity (the defect this map exists to fix). Shares its
+/// percentile-cutoff formula with [`SymbolIndex::is_hub`] via
+/// [`crate::grounder::symbols::model::percentile_cutoff`] rather than re-deriving it, per
+/// arch-u92c3-cutoff-formula-duplicated-not-shared.
+fn ambiguity_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
     name_occurrence_map(idx, false)
 }
 
@@ -206,6 +213,17 @@ struct ScoredHit<'a> {
     kind: HitKind,
 }
 
+impl ScoredHit<'_> {
+    /// The `(name, Lang)` key that identifies this hit's matched entity within
+    /// [`commonness_map`]/[`ambiguity_map`]/`def_sites` - the ONE pairing every cross-language
+    /// scoping lookup in this module uses, so a same-named entity in an unrelated language can
+    /// never be looked up, absorbed into, or pooled with this one (spec 92 criterion 3
+    /// remediation round 5, adj-u92c3-r4-verdict-reject).
+    fn entity(&self) -> (&str, Lang) {
+        (self.name, self.lang)
+    }
+}
+
 /// Score every (file, line) definition/reference location in `idx` against `terms`, ranked
 /// tier-first, then rarest-commonness-first, then definition-over-reference, then by file/line
 /// (a total, deterministic order) - the ONE scored, sorted pass both [`Symbols::ground`] and
@@ -221,14 +239,18 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
         let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8| {
             // The best TIER any query term gives this name: an EXACT match (some term equals the
             // name) always wins over a CONTAINS match (some term merely occurs within it).
-            // `commonness` is the MATCHED ENTITY's own tree-wide occurrence count - `name`, never
-            // the raw query term `t` - so it is the same value regardless of which term matched.
-            // A CONTAINS-tier term is by definition a substring, so it is almost never itself an
-            // indexed name; keying the lookup on `t` instead of `name` (round-2 defect,
-            // adv-u92c3r2-contains-tier-commonness-collapses-to-spurious-zero) silently missed
-            // `commonness_map` for nearly every CONTAINS hit and handed it the artificial
-            // rarest score (`unwrap_or(0)`), drowning a genuinely rare entity under unrelated
-            // ones that merely share a common substring.
+            // `commonness` is the MATCHED ENTITY's own tree-wide occurrence count - `(name,
+            // fs.lang)`, never the raw query term `t` - so it is the same value regardless of
+            // which term matched. A CONTAINS-tier term is by definition a substring, so it is
+            // almost never itself an indexed name; keying the lookup on `t` instead of `name`
+            // (round-2 defect, adv-u92c3r2-contains-tier-commonness-collapses-to-spurious-zero)
+            // silently missed `commonness_map` for nearly every CONTAINS hit and handed it the
+            // artificial rarest score (`unwrap_or(0)`), drowning a genuinely rare entity under
+            // unrelated ones that merely share a common substring. Keying on `name` ALONE,
+            // ignoring `fs.lang` (round-4 defect, adv-u92c3r4-ambiguity-map-bleeds-across-
+            // languages), pooled a same-named entity's commonness across every language sharing
+            // it; `(name, fs.lang)` scopes the lookup to this hit's OWN language, exactly as
+            // `SymbolIndex::reference_degree`/`is_hub` already scope the fan-out signal (5.5.2).
             let mut hit_tier = 0u8;
             for t in terms {
                 let tier = if name == *t {
@@ -245,7 +267,7 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
             if hit_tier == 0 {
                 return;
             }
-            let hit_commonness = commonness.get(name).copied().unwrap_or(0);
+            let hit_commonness = commonness.get(&(name, fs.lang)).copied().unwrap_or(0);
             best.entry((path.as_str(), line))
                 .and_modify(|slot| {
                     let better = hit_tier > slot.tier
@@ -520,16 +542,23 @@ impl Grounder for Symbols {
         let idx = self.idx.lock().unwrap();
         let hits = scored_hits(&idx, &terms);
 
-        // Every matched name's definition sites, so a REFERENCE hit can look up whether it has
-        // a SOLE definer to absorb into. Built over the WHOLE index (not just the hits), since a
-        // name's definition is only a "hit" itself when it also matches a term - the absorption
-        // question ("how many definitions does this name have, tree-wide") is independent of
-        // that.
-        let mut def_sites: BTreeMap<&str, Vec<(&str, u32)>> = BTreeMap::new();
+        // Every matched (name, language) pair's definition sites, so a REFERENCE hit can look up
+        // whether it has a SOLE, SAME-LANGUAGE definer to absorb into. Built over the WHOLE
+        // index (not just the hits), since a name's definition is only a "hit" itself when it
+        // also matches a term - the absorption question ("how many definitions does this name
+        // have, within this language") is independent of that. Keyed by `(name, Lang)`, never a
+        // bare name (spec 92 criterion 3 remediation round 5, adj-u92c3-r4-verdict-reject /
+        // adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption): a bare-name key let a
+        // Rust reference with NO Rust definition (e.g. a `.unwrap()` call site, matching only
+        // `SymRef::name`) resolve through a same-named definition in an unrelated language (a JS
+        // `unwrap` helper) as if it were that entity's own sole definer - silently absorbing and
+        // deduplicating the entire cross-language reference population into ONE foreign row,
+        // erasing rather than down-weighting the Design's own poster-child tree-wide-common case.
+        let mut def_sites: BTreeMap<(&str, Lang), Vec<(&str, u32)>> = BTreeMap::new();
         for (path, fs) in idx.files() {
             for d in &fs.defs {
                 def_sites
-                    .entry(d.name.as_str())
+                    .entry((d.name.as_str(), fs.lang))
                     .or_default()
                     .push((path.as_str(), d.line));
             }
@@ -539,9 +568,11 @@ impl Grounder for Symbols {
         enum EntityKey<'a> {
             /// A specific definition site - always a distinct entity.
             Def(&'a str, &'a str, u32),
-            /// A name with zero or ambiguous (multiple) definitions - its references stand
-            /// alone, keyed by name only (there is only ever one such row per name).
-            Standalone(&'a str),
+            /// A `(name, Lang)` with zero or ambiguous (multiple SAME-LANGUAGE) definitions -
+            /// its references stand alone, keyed by name AND language (never a bare name: a
+            /// standalone Rust `unwrap` and a standalone Python `unwrap` are different entities,
+            /// there is only ever one such row per `(name, Lang)` pair).
+            Standalone(&'a str, Lang),
         }
 
         let mut seen: HashSet<EntityKey> = HashSet::new();
@@ -549,9 +580,9 @@ impl Grounder for Symbols {
         for h in hits {
             let key = match h.kind {
                 HitKind::Def => EntityKey::Def(h.name, h.file, h.line),
-                HitKind::Ref => match def_sites.get(h.name).map(Vec::as_slice) {
+                HitKind::Ref => match def_sites.get(&h.entity()).map(Vec::as_slice) {
                     Some([(file, line)]) => EntityKey::Def(h.name, file, *line),
-                    _ => EntityKey::Standalone(h.name),
+                    _ => EntityKey::Standalone(h.name, h.lang),
                 },
             };
             if !seen.insert(key) {
@@ -585,11 +616,19 @@ impl Grounder for Symbols {
     ///    strong" - an absent-key sentinel inversion against `scored_hits`' own
     ///    `unwrap_or(0)` = rarest convention. Judging `scored_hits`' resolved
     ///    [`ScoredHit::name`] (the entity actually matched) instead closes that gap.
-    /// 2. Draws its cutoff from [`ambiguity_map`] (distinct-DEFINITION count per name) rather
-    ///    than [`commonness_map`] (raw def+ref occurrence count): a single-definition,
+    /// 2. Draws its cutoff from [`ambiguity_map`] (distinct-DEFINITION count per `(name, Lang)`)
+    ///    rather than [`commonness_map`] (raw def+ref occurrence count): a single-definition,
     ///    heavily-referenced entity (`criterion_stable_id`, `sweep_terminal` - this repo's own
     ///    Done-when audit fixtures) is completely unambiguous and must never be misclassified
     ///    as tree-wide-common merely because it is called often.
+    /// 3. Scopes BOTH the per-hit ambiguity lookup AND the cutoff distribution itself by the
+    ///    hit's OWN language (spec 92 criterion 3 remediation round 5,
+    ///    adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages),
+    ///    mirroring [`SymbolIndex::is_hub`]'s own per-language cutoff exactly: a name defined
+    ///    once in Rust and, separately, once in an unrelated language is genuinely unambiguous
+    ///    in EACH language alone; pooling the two definition counts into one bare-name bucket
+    ///    manufactures a tree-wide-ambiguous verdict neither language's own distribution
+    ///    supports.
     ///
     /// A query with no matches at all is not strong either - it has no candidate to be
     /// confident about.
@@ -604,17 +643,30 @@ impl Grounder for Symbols {
             return false;
         }
         let ambiguity = ambiguity_map(&idx);
-        let cutoff = if ambiguity.is_empty() {
-            // No definition anywhere in the index: nothing has EVER been observed as ambiguous,
-            // so every present hit (necessarily reference-only) trivially clears the cutoff -
-            // `ambiguity.get` below returns `None` -> `unwrap_or(0)` for every hit regardless.
-            0
-        } else {
-            let mut degrees: Vec<usize> = ambiguity.values().copied().collect();
-            percentile_cutoff(&mut degrees, HUB_DEGREE_PERCENTILE)
-        };
-        hits.iter()
-            .any(|h| ambiguity.get(h.name).copied().unwrap_or(0) <= cutoff)
+        // The ambiguity cutoff, drawn SEPARATELY per language from that language's OWN
+        // distinct-definition distribution - never one pooled cutoff across every language
+        // present, exactly as `SymbolIndex::is_hub` draws its degree cutoff from only the
+        // queried language's own reference-degree distribution (5.5.2). A language absent from
+        // `ambiguity` (no definition anywhere in it) falls back to 0: nothing has EVER been
+        // observed as ambiguous there, so every hit in that language trivially clears the
+        // cutoff, matching `ambiguity.get(..).unwrap_or(0)` below for every such hit regardless.
+        let mut cutoffs: BTreeMap<Lang, usize> = BTreeMap::new();
+        for lang in hits.iter().map(|h| h.lang).collect::<BTreeSet<Lang>>() {
+            let mut degrees: Vec<usize> = ambiguity
+                .iter()
+                .filter_map(|(&(_, l), &count)| (l == lang).then_some(count))
+                .collect();
+            let cutoff = if degrees.is_empty() {
+                0
+            } else {
+                percentile_cutoff(&mut degrees, HUB_DEGREE_PERCENTILE)
+            };
+            cutoffs.insert(lang, cutoff);
+        }
+        hits.iter().any(|h| {
+            let cutoff = cutoffs.get(&h.lang).copied().unwrap_or(0);
+            ambiguity.get(&h.entity()).copied().unwrap_or(0) <= cutoff
+        })
     }
 }
 
@@ -1010,6 +1062,89 @@ mod tests {
             at_line_1.len(),
             1,
             "the def+ref at one location must collapse to a single grounded ref; got {refs:?}"
+        );
+    }
+
+    /// Spec 92 criterion 3 remediation round 5 (adj-u92c3-r4-verdict-reject,
+    /// adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption): `ground_ranked`'s
+    /// entity-resolution (`def_sites`) must scope by `(name, Lang)`, never a bare name. JS
+    /// defines the ONLY tree-wide definition of `unwrap`; five UNRELATED Rust files each
+    /// reference that same bare name (mirroring Rust's own `.unwrap()` call sites, which are
+    /// pure references with no local Rust definition). Before this fix, every Rust reference
+    /// absorbed into the JS definition's entity (the sole bare-name def site) and collapsed to
+    /// ONE row - erasing the entire Rust reference population rather than surfacing it as its
+    /// own (unattributed) in-language entity, exactly the live `rigger ground unwrap 50` repro
+    /// against this repo's own tree.
+    #[test]
+    fn ground_ranked_keeps_a_cross_language_reference_as_its_own_in_language_entity_not_absorbed_into_a_foreign_definition(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shim.mjs"), "function unwrap() {}\n").unwrap();
+        for i in 0..5 {
+            std::fs::write(
+                dir.path().join(format!("r{i}.rs")),
+                "fn go() { unwrap(); }\n",
+            )
+            .unwrap();
+        }
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let ranked = g.ground_ranked("unwrap", 50);
+        assert!(
+            ranked.iter().any(|r| r.loc.file == "shim.mjs"),
+            "the JS definition must still surface its own row; got {ranked:?}"
+        );
+        let rust_row = ranked
+            .iter()
+            .find(|r| r.loc.file.ends_with(".rs"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the Rust reference population must surface its OWN row, never be absorbed \
+                 into a same-named foreign-language definition; got {ranked:?}"
+                )
+            });
+        assert_eq!(
+            rust_row.degree, 5,
+            "the Rust entity's degree must be its own in-language reference count (5), never \
+             the JS definition's; got {ranked:?}"
+        );
+        assert_eq!(
+            ranked.len(),
+            2,
+            "a same-named foreign-language definition must never collapse the Rust reference \
+             population into the JS row - exactly 2 rows (the JS def, the Rust standalone \
+             entity); got {ranked:?}"
+        );
+    }
+
+    /// Spec 92 criterion 3 remediation round 5 (adj-u92c3-r4-verdict-reject,
+    /// adv-u92c3r4-ambiguity-map-bleeds-across-languages): `ambiguity_map` (and therefore
+    /// `has_strong_match`'s cutoff) must scope by `(name, Lang)`, never a bare name.
+    /// `collide` is defined EXACTLY ONCE in Rust (genuinely unambiguous within Rust alone) and,
+    /// separately, EXACTLY ONCE in Python (also genuinely unambiguous within Python alone).
+    /// Pooling the two languages' definition counts into one bare-name bucket manufactures a
+    /// tree-wide ambiguity of 2 - an outlier against the nine Rust filler names' baseline of 1
+    /// each - so the old bare-name-keyed cutoff wrongly read Rust's own unambiguous `collide` as
+    /// tree-wide-common and answered "no entity matches strongly". Scoped per-language, Rust's
+    /// own ambiguity distribution is nine names at 1 plus `collide` at 1: no outlier, so
+    /// `collide` correctly reads as a confident, unambiguous match.
+    #[test]
+    fn has_strong_match_scopes_definition_ambiguity_by_language_a_cross_language_pool_never_taints_an_unambiguous_in_language_definition(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let filler: String = (0..9).map(|i| format!("fn filler{i}() {{}}\n")).collect();
+        std::fs::write(dir.path().join("filler.rs"), filler).unwrap();
+        std::fs::write(dir.path().join("combat.rs"), "fn collide() {}\n").unwrap();
+        std::fs::write(dir.path().join("other.py"), "def collide():\n    pass\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        assert!(
+            g.has_strong_match("collide", 8),
+            "collide has exactly ONE definition within Rust and, separately, exactly one \
+             within Python - each language's OWN ambiguity is 1, genuinely unambiguous. \
+             Pooling both languages' definition counts into one bare-name bucket must never \
+             manufacture a false tree-wide-ambiguous verdict for either language's own \
+             genuinely unambiguous entity."
         );
     }
 

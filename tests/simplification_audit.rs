@@ -3734,8 +3734,8 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         ("src/eventstore/sqlite.rs", 192) => 32,
         ("src/gate.rs", 463) => 3,
         ("src/grounder/symbols/events.rs", 29) => 17,
-        ("src/grounder/symbols/model.rs", 201) => 7,
-        ("src/grounder/symbols/model.rs", 211) => 10,
+        ("src/grounder/symbols/model.rs", 203) => 7,
+        ("src/grounder/symbols/model.rs", 213) => 10,
         ("src/ingest.rs", 124) => 3,
         ("src/ingest.rs", 468) => 3,
         ("src/ledger.rs", 574) => 6,
@@ -6083,13 +6083,13 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              again on the current tree (now 64 test references at line 29, having grown with the \
              test suite): no production caller anywhere.",
         ),
-        ("src/grounder/symbols/model.rs", 201) => (
+        ("src/grounder/symbols/model.rs", 203) => (
             Delete,
             "definitions_named has no production caller - only its own module's assertion-style \
              tests (symbols/mod.rs) use it to check index state after a build/update, never a \
              production edge-resolution path.",
         ),
-        ("src/grounder/symbols/model.rs", 211) => (
+        ("src/grounder/symbols/model.rs", 213) => (
             Delete,
             "references_named has no production caller - the same test-only accessor shape as \
              its sibling definitions_named immediately above it.",

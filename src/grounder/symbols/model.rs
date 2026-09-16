@@ -8,8 +8,10 @@ use std::collections::BTreeMap;
 
 /// The languages the registry can extract. A rigger-owned enum so the model never names a
 /// tree-sitter type; per-language scoping keys the cross-reference graph on it (a `parse` in
-/// a `.rs` file never links one in a `.py` file, 5.5.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+/// a `.rs` file never links one in a `.py` file, 5.5.2). `Hash` (spec 92 criterion 3
+/// remediation round 5) so `(name, Lang)` can key a `HashSet`/`HashMap` - the entity-resolution
+/// scoping `grounder.rs` needs to stop conflating same-named entities across languages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Lang {
     Rust,
     CSharp,

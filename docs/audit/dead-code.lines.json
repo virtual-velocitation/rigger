@@ -648,7 +648,7 @@
   {
     "file": "src/grounder/symbols/model.rs",
     "name": "definitions_named",
-    "line": 201,
+    "line": 203,
     "test_only_references": [
       {
         "file": "src/grounder/symbols/mod.rs",
@@ -680,22 +680,22 @@
       },
       {
         "file": "src/grounder/symbols/model.rs",
-        "line": 346
+        "line": 348
       }
     ]
   },
   {
     "file": "src/grounder/symbols/model.rs",
     "name": "references_named",
-    "line": 211,
+    "line": 213,
     "test_only_references": [
       {
         "file": "src/grounder/symbols/model.rs",
-        "line": 348
+        "line": 350
       },
       {
         "file": "src/grounder/symbols/model.rs",
-        "line": 351
+        "line": 353
       }
     ]
   },
