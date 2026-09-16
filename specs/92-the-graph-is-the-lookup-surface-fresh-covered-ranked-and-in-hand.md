@@ -54,6 +54,19 @@ rigger_graph for code lookups; grep is for literal text - add `--literal` to pro
 graph is the path of least resistance and a grep is a deliberate act. The shipped skill's
 lookup section states the same rule for a human reader.
 
+HOOK SCOPE, decided here so no round has to relitigate it: the hook is a nudge, not a
+sandbox. A Bash command is a grep when, after ONE pass over the raw text that resolves shell
+quoting and backslash escapes (a backslash-newline continuation vanishes with no separator,
+as in a real shell) and splits words on unquoted blanks and the metacharacters `; | & ( ) < >`
+and newline, any word's path basename is `grep` - so `/usr/bin/grep`, `./grep`, `xargs grep`
+and `sudo grep` all count, and a pattern that happens to spell `grep` is the false positive
+the marker exists for. The marker `--literal` anywhere in the command passes the hook, and
+the hook REMOVES the marker from the command it allows (the hook's `updatedInput`), because
+grep itself has no such flag. Other tools (`rg`, `egrep`, `fgrep`, `git grep`, `ack`, `ag`)
+and indirection (`eval`, `sh -c` strings, variables, substitutions, aliases, functions) are
+OUT OF SCOPE by the Design's own words - typing them is the deliberate act - and are not
+review findings.
+
 CONSTRAINTS WALK: a name defined in two files - `--show` prints the ambiguity list (as
 today) and `ground` returns both entities as separate rows. A file deleted by the integration
 - its entities are retired through the existing supersession, not left dangling. An
