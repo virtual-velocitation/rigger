@@ -9,12 +9,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::{
-    CallEdge, CallGraph, CallNode, Direction, Edge, Error, Graph, Node, Projection,
-    KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT,
-    KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE, KIND_LESSON,
-    KIND_RATIONALE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES,
-    REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_RAISED, REL_REALIZES, REL_REFERENCES,
-    REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    CallEdge, CallGraph, CallNode, Candidate, Direction, Edge, EntitySite, Error, Graph, Located,
+    Node, Projection, KIND_ARCH_DECISION, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY,
+    KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, KIND_FINDING, KIND_HANDBOOK_RULE,
+    KIND_LESSON, KIND_RATIONALE, REL_ABOUT, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS,
+    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_RAISED, REL_REALIZES,
+    REL_REFERENCES, REL_SPECIFIES, REL_SUPERSEDES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
     TYPE_ALIAS_DEFINED, TYPE_ALIAS_UNRESOLVED, TYPE_CODE_ENTITY_EXTRACTED, TYPE_COMMUNITY_ASSIGNED,
     TYPE_CONCEPT_DERIVED, TYPE_CONCEPT_REALIZED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
     TYPE_DOC_LINK_EXTRACTED, TYPE_EDGE_INFERRED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
@@ -78,49 +78,10 @@ pub struct PruneStats {
     pub superseded_edges: usize,
 }
 
-/// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup).
-/// [`Projector::locate`] resolves the query exactly the way the graph's other surfaces do - a full
-/// `<file>::<name>` node id, or a bare name matched by the pinned name-suffix expression - and
-/// returns one of three honest outcomes, never a guess among candidates.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Located {
-    /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
-    /// the line-numbered body out of the working tree.
-    One(EntitySite),
-    /// An ambiguous bare name (several definitions share it): the SORTED candidate sites the caller
-    /// picks from. The show surface prints these and NO body (the call-views honesty rule).
-    Many(Vec<Candidate>),
-    /// Nothing in the graph matched the query.
-    None,
-}
-
-/// A single located code entity (spec 58): where its definition lives and how it sits in the graph,
-/// so the show surface can print the site header and bound the body it reads from the working tree.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EntitySite {
-    /// The full `<file>::<name>` node id.
-    pub id: String,
-    /// The definition kind (`function`, `type`, ...), from the node's `kind` attr; falls back to
-    /// the node's graph kind when a bare placeholder carries no definition attr.
-    pub kind: String,
-    /// The definition's file (the id prefix before `::`) - the working-tree path the body reads.
-    pub file: String,
-    /// The 1-based line of the definition site, from the node's `line` attr (`0` when unknown).
-    pub line: u32,
-    /// The entity's one-hop degree: the count of currently-live edges incident to it, so the reader
-    /// knows how connected the entity is.
-    pub degree: usize,
-}
-
-/// One disambiguation candidate for an ambiguous bare name (spec 58): the full node id and its
-/// file. [`Projector::locate`] returns these SORTED by id, so the listing is deterministic.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Candidate {
-    /// The candidate's full `<file>::<name>` node id.
-    pub id: String,
-    /// The candidate's file (the id prefix before `::`).
-    pub file: String,
-}
+// `Located`, `EntitySite` and `Candidate` (the `rigger graph --show <entity>` resolution, spec 58)
+// are PORT-owned types defined in `super` (spec 92's fix round): every sibling `Projection` method
+// returns a port-owned type, so `Projector::locate` and its `Projection::locate` override do too,
+// converting to/from no internal representation because these are already plain data.
 
 impl Projector {
     /// Open (or create) the graph at `path`, scoped to `project` - the plain project string

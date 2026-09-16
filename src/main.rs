@@ -18,8 +18,8 @@ use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{
     self,
-    sqlite::{Located, Projector, PruneStats},
-    Projection,
+    sqlite::{Projector, PruneStats},
+    Located, Projection,
 };
 use rigger::dash;
 use rigger::driver::cli;
@@ -4217,7 +4217,7 @@ fn cmd_graph_show(entity: &str) -> Res {
 /// the line-numbered body bounded through the shared multi-grammar symbols authority - or an
 /// explicit note (a drifted location, or a build without the extraction grammar) in place of the
 /// body, so the surface is never silently wrong (a graceful degrade, never an error).
-fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
+fn print_entity_site(site: &contextgraph::EntitySite) {
     let kind = if site.kind.is_empty() {
         "?"
     } else {
@@ -13173,10 +13173,56 @@ fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> Guard
 /// quoted pattern that happens to contain one of these characters splits too, the rare
 /// false positive `--literal` exists to pass through); the point is that a real invocation
 /// can now never hide from the scan, not that every split is a fully faithful shell word.
-fn shell_command_words(command: &str) -> impl DoubleEndedIterator<Item = &str> {
+fn shell_command_words(command: &str) -> impl DoubleEndedIterator<Item = String> + '_ {
     command
         .split(|c: char| c.is_whitespace() || "|;&()`$".contains(c))
         .filter(|w| !w.is_empty())
+        .map(shell_word_value)
+}
+
+/// Resolves ONE raw [`shell_command_words`] token to the value a real shell would pass as argv
+/// once its quoting and backslash-escaping are resolved (reject-fix round 4:
+/// adv-u92c4r3-quoted-or-escaped-grep-still-bypasses-the-guard). A real shell removes quote
+/// characters rather than treating them as content: single quotes bracket a LITERAL run (no
+/// escape has meaning inside them), double quotes bracket a run where only `\\`, `\"`, `` \` ``
+/// and `\$` are escapes (any other backslash stays literal), and outside any quote a backslash
+/// escapes the very next character. Quoting can open and close more than once within one word -
+/// `g''rep` is `g` + an EMPTY single-quoted run + `rep` = `grep`, the same word `"grep"`,
+/// `'grep'`, and `gr\ep` each also resolve to - so this walks the whole token rather than only
+/// stripping a pair at its two ends. This is quote REMOVAL only, not full shell grammar: it never
+/// re-examines whitespace or the metacharacters [`shell_command_words`] already split on, so a
+/// quoted run that happens to contain one of those characters was already separated into its own
+/// token upstream (the same coarse tradeoff every prior round of this guard accepted). Applying
+/// this to every token before the `grep`/`--literal`/guarded-path comparisons is what makes those
+/// comparisons see the word a shell would actually run, not its raw quoted/escaped spelling.
+fn shell_word_value(word: &str) -> String {
+    let mut out = String::with_capacity(word.len());
+    let mut quote: Option<char> = None;
+    let mut chars = word.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some('\'') => out.push(c),
+            Some(_) => {
+                // Inside double quotes: backslash escapes only \\, \", \$, and a backtick.
+                if c == '\\' && matches!(chars.peek(), Some('\\' | '"' | '$' | '`')) {
+                    out.push(chars.next().expect("peeked Some above"));
+                } else {
+                    out.push(c);
+                }
+            }
+            None => match c {
+                '\'' | '"' => quote = Some(c),
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        out.push(next);
+                    }
+                }
+                _ => out.push(c),
+            },
+        }
+    }
+    out
 }
 
 /// True when `path` (a `Grep`-tool `path` argument, or one [`shell_command_words`] token of a
@@ -13223,10 +13269,10 @@ fn guarded_path(path: &str) -> bool {
 /// not only the trailing path argument) - a pattern that happens to spell a guarded tree's
 /// name is the rare false-positive `--literal` exists to pass through.
 fn guarded_command(command: &str) -> bool {
-    if shell_command_words(command).any(path_has_guarded_segment) {
+    if shell_command_words(command).any(|w| path_has_guarded_segment(&w)) {
         return true;
     }
-    shell_command_words(command).next_back() == Some(".")
+    shell_command_words(command).next_back().as_deref() == Some(".")
 }
 
 /// True when a Bash command line contains `grep` as a whole [`shell_command_words`] word
@@ -25847,6 +25893,44 @@ mod tests {
             ),
             GuardDecision::Allow,
             "--literal must still pass a fused command through"
+        );
+    }
+
+    /// Reject-fix (adv-u92c4r3-quoted-or-escaped-grep-still-bypasses-the-guard): a `grep` word
+    /// wrapped in double quotes, wrapped in single quotes, split by a backslash escape, or split
+    /// by an EMPTY quoted run in the middle of the word - four ordinary shell idioms a real shell
+    /// resolves to the plain word `grep`, none of them adversarial - must all still be denied.
+    /// Before this fix `command_invokes_grep`'s exact-token check (`w == "grep"`) never saw the
+    /// word `grep` once it was quoted or escaped, because `shell_command_words` split on
+    /// whitespace and metacharacters but carried no quote/escape awareness at all.
+    #[test]
+    fn grep_guard_decision_bounces_a_quoted_or_escaped_grep() {
+        for command in [
+            r#""grep" pattern src/main.rs"#,
+            "'grep' pattern src/main.rs",
+            r"gr\ep pattern src/main.rs",
+            "g''rep pattern src/main.rs",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a quoted or escaped grep must still be denied: {command:?}"
+            );
+        }
+    }
+
+    /// The same quoted/escaped shapes with a quoted `--literal` must still pass through -
+    /// proving the escape hatch itself survives quote/escape normalization rather than becoming
+    /// unreachable once the command name is normalized.
+    #[test]
+    fn grep_guard_decision_still_allows_a_quoted_literal_on_a_quoted_grep() {
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": r#""grep" "--literal" pattern src/main.rs"#})
+            ),
+            GuardDecision::Allow,
+            "a quoted --literal must still pass a quoted grep through"
         );
     }
 }

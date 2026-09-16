@@ -253,6 +253,53 @@ pub struct CallGraph {
     pub referenced_not_called: Vec<Node>,
 }
 
+/// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup).
+/// A PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
+/// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
+/// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query exactly
+/// the way the graph's other surfaces do - a full `<file>::<name>` node id, or a bare name matched
+/// by the pinned name-suffix expression - and returns one of three honest outcomes, never a guess
+/// among candidates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Located {
+    /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
+    /// the line-numbered body out of the working tree.
+    One(EntitySite),
+    /// An ambiguous bare name (several definitions share it): the SORTED candidate sites the caller
+    /// picks from. The show surface prints these and NO body (the call-views honesty rule).
+    Many(Vec<Candidate>),
+    /// Nothing in the graph matched the query.
+    None,
+}
+
+/// A single located code entity (spec 58): where its definition lives and how it sits in the graph,
+/// so the show surface can print the site header and bound the body it reads from the working tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntitySite {
+    /// The full `<file>::<name>` node id.
+    pub id: String,
+    /// The definition kind (`function`, `type`, ...), from the node's `kind` attr; falls back to
+    /// the node's graph kind when a bare placeholder carries no definition attr.
+    pub kind: String,
+    /// The definition's file (the id prefix before `::`) - the working-tree path the body reads.
+    pub file: String,
+    /// The 1-based line of the definition site, from the node's `line` attr (`0` when unknown).
+    pub line: u32,
+    /// The entity's one-hop degree: the count of currently-live edges incident to it, so the reader
+    /// knows how connected the entity is.
+    pub degree: usize,
+}
+
+/// One disambiguation candidate for an ambiguous bare name (spec 58): the full node id and its
+/// file. [`sqlite::Projector::locate`] returns these SORTED by id, so the listing is deterministic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    /// The candidate's full `<file>::<name>` node id.
+    pub id: String,
+    /// The candidate's file (the id prefix before `::`).
+    pub file: String,
+}
+
 // Event type discriminators carried in Event.type_.
 pub const TYPE_DECISION_MADE: &str = "DecisionMade";
 pub const TYPE_FILE_TOUCHED: &str = "FileTouched";
@@ -689,11 +736,12 @@ pub trait Projection: Send + Sync {
     /// boundary - the DI extension that retired the operator MCP surface's second read loop
     /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<name>` id
     /// resolves directly, a bare name matches by the pinned name-suffix expression, and the three
-    /// outcomes ([`sqlite::Located`]) are never a guess among candidates. The default returns
-    /// `Located::None`, so a projection with no locate support (a test double) degrades honestly
-    /// rather than erroring - the sqlite `Projector` OVERRIDES it with the real lookup.
-    fn locate(&self, _entity: &str) -> Result<sqlite::Located, Error> {
-        Ok(sqlite::Located::None)
+    /// outcomes ([`Located`], a port-owned type - see its doc) are never a guess among candidates.
+    /// The default returns `Located::None`, so a projection with no locate support (a test double)
+    /// degrades honestly rather than erroring - the sqlite `Projector` OVERRIDES it with the real
+    /// lookup.
+    fn locate(&self, _entity: &str) -> Result<Located, Error> {
+        Ok(Located::None)
     }
 }
 
@@ -788,8 +836,7 @@ mod caller_wire_contract {
 /// re-declaring it.
 #[cfg(test)]
 mod locate_default {
-    use super::{Error, Graph, Projection};
-    use crate::contextgraph::sqlite::Located;
+    use super::{Error, Graph, Located, Projection};
     use crate::eventstore::Event;
 
     struct NoLocate;

@@ -56,15 +56,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 13635
+        "line": 13681
       },
       {
         "file": "src/main.rs",
-        "line": 13656
+        "line": 13702
       },
       {
         "file": "src/main.rs",
-        "line": 14171
+        "line": 14217
       },
       {
         "file": "tests/cli.rs",
@@ -142,11 +142,11 @@
     "test_only_references": [
       {
         "file": "src/mcpserver.rs",
-        "line": 911
+        "line": 910
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 952
+        "line": 951
       }
     ]
   },
@@ -829,7 +829,7 @@
       "src/eventstore/namespace.rs:28",
       "src/failure.rs:218",
       "src/ledger.rs:441",
-      "src/mcpserver.rs:117",
+      "src/mcpserver.rs:116",
       "src/watch.rs:577"
     ],
     "test_only_references": [
@@ -947,51 +947,51 @@
       },
       {
         "file": "src/main.rs",
-        "line": 16758
+        "line": 16804
       },
       {
         "file": "src/main.rs",
-        "line": 16791
+        "line": 16837
       },
       {
         "file": "src/main.rs",
-        "line": 16810
+        "line": 16856
       },
       {
         "file": "src/main.rs",
-        "line": 16813
+        "line": 16859
       },
       {
         "file": "src/main.rs",
-        "line": 16816
+        "line": 16862
       },
       {
         "file": "src/main.rs",
-        "line": 18686
+        "line": 18732
       },
       {
         "file": "src/main.rs",
-        "line": 18699
+        "line": 18745
       },
       {
         "file": "src/main.rs",
-        "line": 18714
+        "line": 18760
       },
       {
         "file": "src/main.rs",
-        "line": 24135
+        "line": 24181
       },
       {
         "file": "src/main.rs",
-        "line": 24136
+        "line": 24182
       },
       {
         "file": "src/main.rs",
-        "line": 24137
+        "line": 24183
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 1064
+        "line": 1063
       },
       {
         "file": "src/metrics.rs",
