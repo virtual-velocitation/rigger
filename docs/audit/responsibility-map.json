@@ -7221,7 +7221,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "630f062b9b0238ac"
+    "content_hash": "1a40e01571b20518"
   },
   {
     "file": "src/main.rs",
@@ -7253,7 +7253,15 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"reset_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "d50b365c4eede2b9"
+    "content_hash": "981fffb999aafe57"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "reset_scratch_orphans",
+    "is_test": false,
+    "proposed_module": "main::store",
+    "reason": "name contains \"reset_\" (store hygiene); grouped under `main::store`.",
+    "content_hash": "f78f98a9e07d0066"
   },
   {
     "file": "src/main.rs",
@@ -10830,6 +10838,14 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "679100954eb73c17"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "reset_modes_parses_scratch_orphans_alone_and_composed_and_rejects_duplicates",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "982aa776e1097f38"
   },
   {
     "file": "src/main.rs",

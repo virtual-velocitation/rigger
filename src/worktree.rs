@@ -1422,9 +1422,85 @@ fn current_branch(repo: &str) -> Option<String> {
 /// dirs, and on the common small-root/large-home partition layout the OS disk is the one
 /// that cannot absorb them (design-intent Gap 14). The resolved dir is created if absent.
 pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) -> String {
-    let expanded = scratch_root_path(repo, configured, env_override);
+    scratch_root_with(
+        repo,
+        configured,
+        env_override,
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// [`scratch_root`] with the caller's own `XDG_CACHE_HOME`/`HOME` values as plain arguments
+/// (the shape [`cache_scratch_root_from`] already has), so a unit test drives the whole
+/// create-and-sweep path against a throwaway cache home without touching the process
+/// environment.
+///
+/// Creating a root on the cache-home DEFAULT rung also reclaims every sibling root whose
+/// repo no longer exists ([`sweep_orphan_scratch_roots`]). The cache-home directory is the
+/// one place rigger names for itself, so rigger owns its lifecycle: a root keyed on a repo
+/// that is gone - a test fixture's tempdir, a checkout the operator deleted - has no owner
+/// left to reclaim it, and without this sweep such roots only ever accumulate (105k of them,
+/// 55 GB, gathered under one operator's `~/.cache/rigger` in three days of self-hosted runs
+/// before a shell glob over that directory exhausted the machine's memory). A configured
+/// (`defaults.workdir`) or env-overridden (`RIGGER_TMPDIR`) root is the operator's own
+/// directory and is never swept.
+pub fn scratch_root_with(
+    repo: &str,
+    configured: &str,
+    env_override: Option<&str>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> String {
+    let expanded =
+        scratch_root_path_with(repo, configured, env_override, xdg.clone(), home.clone());
     let _ = std::fs::create_dir_all(&expanded);
+    let on_default_rung = cache_scratch_root_from(repo, xdg, home)
+        .is_some_and(|default| default == std::path::Path::new(&expanded));
+    if on_default_rung {
+        if let Some(cache_dir) = std::path::Path::new(&expanded).parent() {
+            sweep_orphan_scratch_roots(cache_dir);
+        }
+    }
     expanded
+}
+
+/// Reclaim every entry of `cache_dir` (the `<cache-home>/rigger` directory) that is a
+/// scratch root keyed on a repo which no longer exists: an entry whose name decodes
+/// ([`crate::liveness::decode_marker_filename`]) to an ABSOLUTE path that is absent from
+/// the filesystem. Everything else is left alone - a root whose repo is present (live or
+/// merely idle), a name that is not an encoded path at all (`test-tmp`, an operator's own
+/// file), a name that decodes to a relative path, and any non-directory. Each root is
+/// reaped before it is removed ([`crate::reap::reap_processes_rooted_under`], authorized
+/// by `cache_dir` itself - spec 79, criterion 1): a build a dead spawn left running in an
+/// orphan's cache must not outlive the directory. Returns the number of roots removed; a
+/// missing or unreadable `cache_dir` reclaims nothing. Best-effort and idempotent: a root
+/// another sweep removed concurrently is simply not counted.
+pub fn sweep_orphan_scratch_roots(cache_dir: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(cache_dir) else {
+        return 0;
+    };
+    let mut reclaimed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(repo) = crate::liveness::decode_marker_filename(name) else {
+            continue;
+        };
+        let repo = std::path::Path::new(&repo);
+        if !repo.is_absolute() || repo.exists() {
+            continue;
+        }
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let root = entry.path();
+        crate::reap::reap_processes_rooted_under(&root, cache_dir);
+        if std::fs::remove_dir_all(&root).is_ok() {
+            reclaimed += 1;
+        }
+    }
+    reclaimed
 }
 
 /// Resolve the scratch root PATH by the SAME precedence as [`scratch_root`] but WITHOUT
@@ -1445,16 +1521,30 @@ pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) ->
 /// criterion leaves alone, since a real spawn (this criterion's actual subject) always has
 /// both a real repo and a real machine `HOME`.
 pub fn scratch_root_path(repo: &str, configured: &str, env_override: Option<&str>) -> String {
+    scratch_root_path_with(
+        repo,
+        configured,
+        env_override,
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// [`scratch_root_path`] with the caller's own `XDG_CACHE_HOME`/`HOME` values as plain
+/// arguments - the pure resolver both [`scratch_root_path`] and [`scratch_root_with`] share.
+pub fn scratch_root_path_with(
+    repo: &str,
+    configured: &str,
+    env_override: Option<&str>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> String {
     let chosen = match env_override {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ if !configured.trim().is_empty() => configured.trim().to_string(),
-        _ => cache_scratch_root_from(
-            repo,
-            std::env::var_os("XDG_CACHE_HOME"),
-            std::env::var_os("HOME"),
-        )
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| format!("{}/.rigger/tmp", if repo.is_empty() { "." } else { repo })),
+        _ => cache_scratch_root_from(repo, xdg, home)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("{}/.rigger/tmp", if repo.is_empty() { "." } else { repo })),
     };
     match (chosen.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),
@@ -2772,6 +2862,68 @@ mod tests {
         assert!(
             !other.join(".cargo").exists(),
             "a review worktree is no unit and writes no build location"
+        );
+    }
+
+    #[test]
+    fn sweep_orphan_scratch_roots_reclaims_only_roots_whose_decoded_repo_is_gone() {
+        let cache = tempfile::tempdir().unwrap();
+        let live_repo = tempfile::tempdir().unwrap();
+        let live_path = live_repo.path().to_str().unwrap().to_string();
+        let enc = |p: &str| crate::liveness::marker_filename(p).unwrap();
+        let live = cache.path().join(enc(&live_path));
+        let gone = cache
+            .path()
+            .join(enc(&format!("{live_path}/vanished-checkout")));
+        let plain = cache.path().join("test-tmp");
+        let relative = cache.path().join(enc("relative/repo"));
+        for dir in [&live, &gone, &plain, &relative] {
+            std::fs::create_dir_all(dir.join("cargo-target-x")).unwrap();
+            std::fs::write(dir.join("cargo-target-x").join("f"), "x").unwrap();
+        }
+        let file = cache.path().join(enc("/some/where/absent"));
+        std::fs::write(&file, "not a root").unwrap();
+        assert_eq!(sweep_orphan_scratch_roots(cache.path()), 1);
+        assert!(!gone.exists(), "a root whose repo is gone is reclaimed");
+        assert!(live.exists(), "a root whose repo exists is kept");
+        assert!(plain.exists(), "a name that is not an encoded path is kept");
+        assert!(
+            relative.exists(),
+            "a name that decodes to a relative path is kept"
+        );
+        assert!(file.exists(), "a non-directory is kept");
+        assert_eq!(sweep_orphan_scratch_roots(cache.path()), 0, "idempotent");
+        assert_eq!(sweep_orphan_scratch_roots(&cache.path().join("absent")), 0);
+    }
+
+    #[test]
+    fn creating_the_cache_default_scratch_root_reclaims_orphaned_siblings_but_a_configured_root_never_sweeps(
+    ) {
+        let xdg = tempfile::tempdir().unwrap();
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let rigger_dir = xdg.path().join("rigger");
+        let orphan = rigger_dir
+            .join(crate::liveness::marker_filename(&format!("{repo_path}-gone")).unwrap());
+        std::fs::create_dir_all(orphan.join("rigger-wt-old")).unwrap();
+        let xdg_os = Some(xdg.path().as_os_str().to_os_string());
+        let root = scratch_root_with(&repo_path, "", None, xdg_os.clone(), None);
+        assert_eq!(
+            std::path::Path::new(&root),
+            rigger_dir.join(crate::liveness::marker_filename(&repo_path).unwrap())
+        );
+        assert!(std::path::Path::new(&root).is_dir(), "the root is created");
+        assert!(
+            !orphan.exists(),
+            "the default rung reclaims a sibling whose repo is gone"
+        );
+        std::fs::create_dir_all(orphan.join("rigger-wt-old")).unwrap();
+        let configured = xdg.path().join("operator-chosen");
+        let root2 = scratch_root_with(&repo_path, configured.to_str().unwrap(), None, xdg_os, None);
+        assert_eq!(std::path::Path::new(&root2), configured);
+        assert!(
+            orphan.exists(),
+            "an operator's configured root sweeps nothing"
         );
     }
 

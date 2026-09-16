@@ -1608,6 +1608,14 @@ own accumulation); reports the exact bytes reclaimed,\n                         
 or 0 when there was nothing to reclaim. Refuses loudly\n                              \
 - never waiting - while a rigger-launched build still\n                              \
 holds the cache's guard lock; retry once it is idle\n  \
+rigger reset --scratch-orphans\n                              \
+reclaim every cache-home scratch root (under\n                              \
+$XDG_CACHE_HOME/rigger, else ~/.cache/rigger) whose repo\n                              \
+no longer exists: a root keyed on a deleted checkout or a\n                              \
+test fixture's tempdir has no owner left to reclaim it.\n                              \
+Rigger does this itself whenever it creates a default-\n                              \
+placed root; this is the explicit on-demand form. Reports\n                              \
+the number of roots reclaimed; composes with the others\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -8444,6 +8452,9 @@ fn cmd_reset(args: &[String]) -> Res {
         // for, reproduced independently before this fix landed).
         reset_build_cache(&loc)?;
     }
+    if modes.scratch_orphans {
+        reset_scratch_orphans()?;
+    }
     if modes.derived {
         // Decided up front, before compacting: deleting rows and reclaiming the file are
         // mechanics of the embedded log, not port operations, so `--derived` names the
@@ -8575,6 +8586,10 @@ struct ResetModes {
     /// a pure cache (always safe to cold-rebuild), so this mode carries no store-mutation
     /// implication at all and composes freely with `runs`/`derived`.
     build_cache: bool,
+    /// Reclaim every cache-home scratch root whose repo no longer exists - the on-demand
+    /// form of the sweep [`rigger::worktree::scratch_root_with`] runs whenever it creates a
+    /// default-placed root. Touches no store and composes with every other mode.
+    scratch_orphans: bool,
     /// The override for `--derived`'s live-writer guard (spec 71, criterion 2): skips
     /// [`refuse_derived_reset_if_live`] entirely rather than acting on what it would have found -
     /// the operator asked to compact WHATEVER the run machinery looks like, and this flag owns
@@ -8596,6 +8611,7 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
         runs: false,
         derived: false,
         build_cache: false,
+        scratch_orphans: false,
         force_live: false,
     };
     for arg in args {
@@ -8603,12 +8619,14 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
             "--runs" => &mut modes.runs,
             "--derived" => &mut modes.derived,
             "--build-cache" => &mut modes.build_cache,
+            "--scratch-orphans" => &mut modes.scratch_orphans,
             "--force-live" => &mut modes.force_live,
             other => {
                 return Err(format!(
-                    "reset: expected --runs and/or --derived and/or --build-cache (with an \
-                     optional --force-live), got {other}: rigger reset --runs | rigger reset \
-                     --derived [--force-live] | rigger reset --build-cache"
+                    "reset: expected --runs and/or --derived and/or --build-cache and/or \
+                     --scratch-orphans (with an optional --force-live), got {other}: rigger \
+                     reset --runs | rigger reset --derived [--force-live] | rigger reset \
+                     --build-cache | rigger reset --scratch-orphans"
                 )
                 .into())
             }
@@ -8618,11 +8636,12 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
         }
         *slot = true;
     }
-    if !modes.runs && !modes.derived && !modes.build_cache {
+    if !modes.runs && !modes.derived && !modes.build_cache && !modes.scratch_orphans {
         return Err(
             "reset: expected at least one mode: rigger reset --runs (prune the context \
-                    graph), rigger reset --derived (compact the event log), and/or rigger \
-                    reset --build-cache (reclaim the shared gate build cache)"
+                    graph), rigger reset --derived (compact the event log), rigger reset \
+                    --build-cache (reclaim the shared gate build cache), and/or rigger reset \
+                    --scratch-orphans (reclaim cache-home scratch roots whose repo is gone)"
                 .into(),
         );
     }
@@ -8649,6 +8668,32 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
 /// authority over this resource, and reports what happened via
 /// [`build_cache_reclaim_report`]: bytes reclaimed on success, or a loud, non-zero-exit
 /// refusal when a rigger-launched shared-cache build holds the guard.
+/// `rigger reset --scratch-orphans`: reclaim every root under `<cache-home>/rigger` whose
+/// repo no longer exists ([`rigger::worktree::sweep_orphan_scratch_roots`]) and report how
+/// many went. The directory is resolved from the ambient `XDG_CACHE_HOME`/`HOME` exactly as
+/// the default scratch-root rung resolves it, so the sweep and the placement can never name
+/// different directories.
+fn reset_scratch_orphans() -> Res {
+    let Some(cache_home) = rigger::driver::replay::cache_home_from(
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    ) else {
+        return Err(
+            "reset --scratch-orphans: neither XDG_CACHE_HOME nor HOME is set, so \
+                    there is no cache-home scratch directory to sweep"
+                .into(),
+        );
+    };
+    let dir = cache_home.join("rigger");
+    let reclaimed = rigger::worktree::sweep_orphan_scratch_roots(&dir);
+    println!(
+        "--scratch-orphans: reclaimed {reclaimed} scratch root(s) whose repo no longer exists \
+         under {}",
+        dir.display()
+    );
+    Ok(())
+}
+
 fn reset_build_cache(loc: &StoreLocation) -> Res {
     let repo = loc
         .dir
@@ -24862,6 +24907,31 @@ mod tests {
     /// `--runs`/`--derived` - parses alone, composes with either sibling, is rejected on
     /// a duplicate, and (matching every other mode) never implied on its own from a bare
     /// `reset` with no flags at all.
+    #[test]
+    fn reset_modes_parses_scratch_orphans_alone_and_composed_and_rejects_duplicates() {
+        let modes = reset_modes(&["--scratch-orphans".to_string()]).expect("alone");
+        assert!(modes.scratch_orphans && !modes.runs && !modes.derived && !modes.build_cache);
+        let modes = reset_modes(&["--build-cache".to_string(), "--scratch-orphans".to_string()])
+            .expect("composed with another mode");
+        assert!(modes.scratch_orphans && modes.build_cache);
+        let err = reset_modes(&[
+            "--scratch-orphans".to_string(),
+            "--scratch-orphans".to_string(),
+        ])
+        .err()
+        .expect("a duplicate is refused")
+        .to_string();
+        assert!(err.contains("more than once"), "{err}");
+        let err = reset_modes(&["--bogus".to_string()])
+            .err()
+            .expect("unknown")
+            .to_string();
+        assert!(
+            err.contains("--scratch-orphans"),
+            "the usage names the new mode: {err}"
+        );
+    }
+
     #[test]
     fn reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates() {
         let modes = reset_modes(&["--build-cache".to_string()]).expect("--build-cache alone");
