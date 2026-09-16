@@ -3351,6 +3351,102 @@ fn ground_with_explicit_k_zero_stays_silent_even_for_a_weak_query() {
     );
 }
 
+/// Spec 92 criterion 3 remediation round 5 (adj-u92c3-r4-verdict-reject,
+/// adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption, fixed by
+/// u92c3-r5-cross-language-name-scoping): end to end through the REAL `rigger ground` CLI -
+/// a unit test of `ground_ranked`'s entity resolution in isolation cannot see whether
+/// `cmd_ground`'s printed page actually reflects the fix, only the compiled binary's stdout
+/// can. This is the literal live repro that failed round 4 (`rigger ground unwrap 50` against
+/// the real tree returning only the JS shim's row): a JS file defines the ONLY tree-wide
+/// definition of `unwrap`, five unrelated Rust files each reference that same bare name with
+/// no local Rust definition (mirroring Rust's own `.unwrap()` call sites). Before the fix,
+/// every Rust reference resolved through a bare-name-keyed `def_sites` lookup to the JS
+/// definition's sole entry and absorbed into it, collapsing the whole Rust reference
+/// population into ONE foreign-language row - erasing it from the page at any k instead of
+/// merely down-weighting it.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranked_via_cli_keeps_a_cross_language_reference_as_its_own_entity_not_absorbed_into_a_foreign_definition(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    std::fs::write(root.join("shim.mjs"), "function unwrap() {}\n").unwrap();
+    for i in 0..5 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn go() { unwrap(); }\n").unwrap();
+    }
+
+    let (out, err, ok) = run_rigger(root, &["ground", "unwrap", "50"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+
+    let unwrap_lines: Vec<&str> = out.lines().filter(|l| l.contains("unwrap")).collect();
+    assert_eq!(
+        unwrap_lines.len(),
+        2,
+        "a same-named foreign-language definition must never collapse the Rust reference \
+         population into its own row - exactly two rows expected (the JS definition, the \
+         Rust standalone entity); got {out:?}"
+    );
+    assert!(
+        unwrap_lines.iter().any(|l| l.starts_with("shim.mjs:")),
+        "the JS definition must still surface its own row; got {out:?}"
+    );
+    let rust_row = *unwrap_lines
+        .iter()
+        .find(|l| l.contains(".rs:"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the Rust reference population must surface its OWN row, never be absorbed \
+                 into a same-named foreign-language definition; got {out:?}"
+            )
+        });
+    assert!(
+        rust_row.contains("(degree 5)"),
+        "the Rust entity's degree must be its own in-language reference count (5), never the \
+         JS definition's; got {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 remediation round 5 (adj-u92c3-r4-verdict-reject,
+/// adv-u92c3r4-ambiguity-map-bleeds-across-languages, fixed by
+/// u92c3-r5-cross-language-name-scoping): end to end through the REAL `rigger ground` CLI.
+/// `collide` is defined exactly once in Rust (alongside nine unrelated Rust filler
+/// definitions, so Rust's own definition-count distribution has no outlier) and, separately,
+/// exactly once in Python. Before the fix, `has_strong_match`'s ambiguity cutoff pooled both
+/// languages' definition counts into one bare-name bucket, manufacturing a tree-wide
+/// ambiguity of 2 against the nine Rust filler names' baseline of 1 each - an outlier that
+/// wrongly printed the honest "no entity matches strongly" line for a name genuinely
+/// unambiguous within either language alone.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranked_via_cli_never_pools_cross_language_definition_counts_into_a_false_ambiguity() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    let filler: String = (0..9).map(|i| format!("fn filler{i}() {{}}\n")).collect();
+    std::fs::write(root.join("filler.rs"), filler).unwrap();
+    std::fs::write(root.join("combat.rs"), "fn collide() {}\n").unwrap();
+    std::fs::write(root.join("other.py"), "def collide():\n    pass\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "collide", "8"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "collide has exactly one definition within Rust and, separately, one within Python - \
+         each language's own ambiguity is 1, genuinely unambiguous. Pooling both languages' \
+         definition counts into one bare-name bucket must never manufacture a false \
+         tree-wide-ambiguous verdict for either language's own genuinely unambiguous entity; \
+         got {out:?}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("combat.rs:") && l.contains("collide")),
+        "the Rust collide entity must appear in the ranked page; got {out:?}"
+    );
+}
+
 /// End-to-end reindex wiring (spec 15, unit 4): with `defaults.grounder: symbols`, the shipped
 /// `rigger reindex <file>` CLI must resolve the SAME real `Symbols` grounder through
 /// `select_reindex_grounder` that `rigger ground` resolves through `select_grounder` - NOT die
