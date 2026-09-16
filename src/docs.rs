@@ -72,9 +72,6 @@ pub struct DocsContext {
     /// with, so the skill's lookup section can never describe a different rule than the
     /// installed hook actually enforces.
     pub grep_guard_message: String,
-    /// The trees the graph-first lookup hook guards (spec 92, criterion 4), in the
-    /// order the hook itself checks them.
-    pub grep_guarded_trees: Vec<String>,
 }
 
 /// One `rigger watch` signal's canonical name and response (spec 69), carried on
@@ -193,11 +190,11 @@ fn discipline_body(ctx: &DocsContext) -> String {
         "`rigger setup` puts these same lookups directly in THIS session's hands too: it \
          registers a `rigger` MCP server (`.mcp.json`) exposing `rigger_peers`, `rigger_ground`, \
          and `rigger_graph` as tools here - the same three lookups a loop agent has, instead of a \
-         shell - and installs a PreToolUse hook that intercepts a `Grep` tool call or a `grep` \
-         command over {trees} with the message \"{message}\". The graph stays the path of least \
-         resistance in this very session, and a literal-text grep is the deliberate act \
-         `--literal` names, not a habit.\n",
-        trees = ctx.grep_guarded_trees.join(", "),
+         shell - and installs a PreToolUse hook that bounces every `Grep` tool call and every \
+         `grep`-invoking Bash command in this project, with no target it lets through, with the \
+         message \"{message}\" - unless the Bash command carries `--literal` (stripped before it \
+         reaches a real shell). The graph stays the path of least resistance in this very \
+         session, and a literal-text grep is the deliberate act `--literal` names, not a habit.\n",
         message = ctx.grep_guard_message,
     );
 
@@ -1306,7 +1303,6 @@ mod tests {
             watch_poll_interval_secs: 424_242,
             reject_recurrence_diagnose_threshold: 909_090,
             grep_guard_message: "sentinel grep-guard message".to_string(),
-            grep_guarded_trees: vec!["sentinel-src/".to_string(), "sentinel-tests/".to_string()],
         }
     }
 
@@ -1359,10 +1355,6 @@ mod tests {
             out.contains("sentinel grep-guard message"),
             "grep_guard_message not rendered"
         );
-        assert!(
-            out.contains("sentinel-src/"),
-            "grep_guarded_trees not rendered"
-        );
     }
 
     #[test]
@@ -1384,10 +1376,6 @@ mod tests {
         assert!(
             out.contains("sentinel grep-guard message"),
             "grep_guard_message not rendered"
-        );
-        assert!(
-            out.contains("sentinel-src/"),
-            "grep_guarded_trees not rendered"
         );
     }
 
@@ -1430,9 +1418,19 @@ mod tests {
                 "the hook event the lookup hook installs under must be named; got:\n{out}"
             );
             assert!(
-                out.contains("sentinel grep-guard message") && out.contains("sentinel-src/"),
-                "the hook's real bounce message and guarded trees must be interpolated, not \
-                 hand-copied; got:\n{out}"
+                out.contains("sentinel grep-guard message"),
+                "the hook's real bounce message must be interpolated, not hand-copied; \
+                 got:\n{out}"
+            );
+            // d-spec92-hook-no-target-axis: the hook has no target axis, so the section
+            // must state a bounce-everywhere rule, never a list of guarded trees.
+            assert!(
+                out.contains("every")
+                    && out.contains("Grep")
+                    && out.contains("grep")
+                    && out.contains("--literal"),
+                "the section must state the hook bounces EVERY Grep call and every \
+                 grep-invoking Bash command unless --literal is carried; got:\n{out}"
             );
         }
     }

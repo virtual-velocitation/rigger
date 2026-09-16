@@ -12761,11 +12761,10 @@ fn docs_context() -> rigger::docs::DocsContext {
         reject_recurrence_diagnose_threshold: watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
         // Spec 92, criterion 4 (IN EVERY SESSION'S HAND): the discipline docs' "Looking
         // things up" section states the graph-first rule for a human reader by
-        // interpolating the SAME message and guarded trees `rigger grep-guard` (the
-        // installed hook's command) decides against - never a hand-copy that could drift
-        // from what the hook actually enforces.
+        // interpolating the SAME message `rigger grep-guard` (the installed hook's
+        // command) denies with - never a hand-copy that could drift from what the hook
+        // actually enforces.
         grep_guard_message: GREP_GUARD_MESSAGE.to_string(),
-        grep_guarded_trees: GREP_GUARDED_TREES.iter().map(|t| t.to_string()).collect(),
     }
 }
 
@@ -13116,43 +13115,27 @@ const GREP_GUARD_MESSAGE: &str =
     "use rigger_ground / rigger_graph for code lookups; grep is for literal text - add \
      `--literal` to proceed";
 
-/// The three guarded top-level trees (spec 92, criterion 4's Design text): a lookup
-/// outside all three - `docs/`, a single unrelated file, anything else - is never
-/// bounced, so the hook narrows to exactly what the spec names, not every grep anywhere.
-const GREP_GUARDED_TREES: [&str; 3] = ["src/", "tests/", "workflows/"];
-
-/// The pure decision core of `rigger grep-guard` (spec 92, criterion 4): given the
-/// PreToolUse tool name, its raw `tool_input`, and `project_root` (the real absolute path
-/// [`cmd_grep_guard`] resolves at the I/O edge, empty when unknown), decide whether this is
-/// a bare-text lookup over src/, tests/, or workflows/ that should bounce toward
-/// `rigger_ground`/`rigger_graph`, whether it should pass through untouched, or whether it
-/// should pass through with its `tool_input` rewritten first. Pure (no I/O - `project_root`
-/// is a plain string the caller resolved, never read from the environment in here), so the
-/// decision is unit-testable against synthesized hook payloads without spawning a real hook
-/// process or touching a real filesystem. `--literal` on a `Bash` `grep` command is the
-/// deliberate escape hatch (Design's CONSTRAINTS WALK: "a literal-text lookup - \
-/// `--literal` passes the hook"; the HOOK SCOPE amendment: the hook STRIPS the marker from
-/// the command it allows, via `updatedInput`, because grep itself has no such flag); the
-/// built-in `Grep` tool carries no such flag slot, so a genuinely literal search through it
-/// is `grep --literal` via `Bash` instead - "grep is for literal text - add `--literal` to
-/// proceed" names exactly that path.
-fn grep_guard_decision(
-    tool_name: &str,
-    tool_input: &serde_json::Value,
-    project_root: &str,
-) -> GuardDecision {
+/// The pure decision core of `rigger grep-guard` (spec 92, criterion 4, HOOK SCOPE
+/// amendment d-spec92-hook-no-target-axis): given the PreToolUse tool name and its raw
+/// `tool_input`, decide whether this call should bounce toward `rigger_ground`/
+/// `rigger_graph`, pass through untouched, or pass through with its `tool_input` rewritten
+/// first. The hook has NO target axis - a shell command's real search target is
+/// undecidable from its text alone (`..`, `*`, `~`, `$(pwd)`, a redirection, a symlink all
+/// defeat a path-based guess) - so every `Grep` tool call and every `grep`-invoking `Bash`
+/// command is denied inside a rigger project, with no path/target ever inspected; the
+/// FORMER guarded-tree apparatus (a `GREP_GUARDED_TREES` allowlist of trees, and the path-
+/// containment machinery built on it) is retired outright, not kept beside this rule. Pure
+/// (no I/O), so the decision is unit-testable against synthesized hook payloads without
+/// spawning a real hook process or touching a real filesystem. `--literal` on a `Bash`
+/// `grep` command is the sole, deliberate escape hatch (Design's CONSTRAINTS WALK: "a
+/// literal-text lookup - `--literal` passes the hook"; the HOOK SCOPE amendment: the hook
+/// STRIPS the marker from the command it allows, via `updatedInput`, because grep itself
+/// has no such flag); the built-in `Grep` tool carries no such flag slot, so a genuinely
+/// literal search through it is `grep --literal` via `Bash` instead - "grep is for literal
+/// text - add `--literal` to proceed" names exactly that path.
+fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> GuardDecision {
     match tool_name {
-        "Grep" => {
-            let path = tool_input
-                .get("path")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            if guarded_path(path, project_root) {
-                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
-            } else {
-                GuardDecision::Allow
-            }
-        }
+        "Grep" => GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
         "Bash" => {
             let command = tool_input
                 .get("command")
@@ -13171,11 +13154,7 @@ fn grep_guard_decision(
                 }
                 return GuardDecision::AllowWithUpdatedInput(updated_input);
             }
-            if guarded_command(command, project_root) {
-                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
-            } else {
-                GuardDecision::Allow
-            }
+            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
         }
         _ => GuardDecision::Allow,
     }
@@ -13332,110 +13311,6 @@ fn strip_literal_marker(command: &str) -> String {
     result
 }
 
-/// Resolves `path` LEXICALLY - no filesystem access, no dependence on whether `path` even
-/// exists - into the sequence of named segments REMAINING once every `.` segment is dropped
-/// and every `..` cancels the immediately preceding named segment when there is one to
-/// cancel (a `..` with nothing left to cancel, because the path already climbed above
-/// everything it had descended, is simply dropped too - see [`path_has_guarded_segment`] for
-/// why that is exactly the "reached the anchor or one of its ancestors" case, not an error):
-/// `"src"` -> `["src"]`, `"src/../docs"` -> `["docs"]` (the two cancel; NOT `"src"`, unlike a
-/// naive per-segment scan of the raw text), `".."` -> `[]`, `"../sibling"` -> `["sibling"]`,
-/// `"../../src"` -> `["src"]`.
-fn resolve_path_segments(path: &str) -> Vec<&str> {
-    let mut stack: Vec<&str> = Vec::new();
-    for seg in path.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                stack.pop();
-            }
-            name => stack.push(name),
-        }
-    }
-    stack
-}
-
-/// True when ABSOLUTE `path` is exactly `project_root`, or a proper ancestor of it at a real
-/// `/`-segment boundary (`/a/b` is an ancestor of `/a/b/c` but NOT of `/a/bc`) - reject-fix
-/// adv-u92c4r5-ancestor-path-bypasses-guard-with-no-shell-tricks: recursing from either walks
-/// back DOWN through the real project root and therefore through every guarded tree beneath
-/// it, structurally, regardless of what `path` is itself literally spelled as (the worktree's
-/// own absolute root has no `src`/`tests`/`workflows` segment of its own, yet a `Grep` rooted
-/// there reads every file under all three). `project_root` empty (the caller could not
-/// resolve `current_dir`, or this is a pure-function test with nothing to compare against)
-/// means this never fires; the caller falls back to plain segment membership.
-fn path_is_root_or_ancestor(path: &str, project_root: &str) -> bool {
-    if project_root.is_empty() {
-        return false;
-    }
-    let path = path.trim_end_matches('/');
-    let root = project_root.trim_end_matches('/');
-    path == root
-        || root
-            .strip_prefix(path)
-            .is_some_and(|rest| rest.starts_with('/'))
-}
-
-/// True when `path` (a `Grep`-tool `path` argument, or one [`shell_command_words`] token of a
-/// Bash command line) targets a guarded tree, judged by real containment rather than a
-/// per-shape patch (reject-fix adv-u92c4r5-ancestor-path-bypasses-guard-with-no-shell-tricks:
-/// five prior rounds each closed one literal SHAPE - a trailing slash, a leading `./`, an
-/// absolute prefix - while a structurally different shape reaching the same guarded trees
-/// stayed open). Two independent ways in: (1) `path` LEXICALLY resolves (see
-/// [`resolve_path_segments`]) to an EMPTY remaining-segment stack - the project root itself
-/// or one of its own ancestors (`""`, `"."`, `".."`, `"src/.."`, `"../.."` all empty out) -
-/// recursing from there walks back down through the root and hence every guarded tree
-/// beneath it, with no named segment of its own left to check; or a REMAINING segment equals
-/// one of [`GREP_GUARDED_TREES`]'s bare names (the trailing `/` stripped) - `src` matches
-/// (with or without a trailing slash or a leading `./`), `src/main.rs` matches (the `src`
-/// segment ahead of the rest), and so does an ABSOLUTE path landing inside it (`/repo/src` -
-/// `src` is still a segment, the leading `/` just produces one leading empty segment already
-/// dropped). `docs/`, `mysrc/`, and `src-old/` do NOT match (a differently-named or merely
-/// `src`-prefixed segment is not the `src` segment). (2) `path` is ABSOLUTE and is `project_root`
-/// itself, or a segment-boundary ancestor of it (see [`path_is_root_or_ancestor`]) - the
-/// second bypass shape this same round closed, needing an entirely different mechanism
-/// because no named segment of `path` itself is involved at all. The shared predicate
-/// [`guarded_path`] and [`guarded_command`] both build on, so the two callers can never
-/// diverge on what "targets a guarded tree" means.
-fn path_has_guarded_segment(path: &str, project_root: &str) -> bool {
-    if path.starts_with('/') && path_is_root_or_ancestor(path, project_root) {
-        return true;
-    }
-    let segs = resolve_path_segments(path);
-    segs.is_empty()
-        || segs.iter().any(|seg| {
-            GREP_GUARDED_TREES
-                .iter()
-                .any(|t| t.trim_end_matches('/') == *seg)
-        })
-}
-
-/// True when the `Grep` tool's `path` argument targets a guarded tree - see
-/// [`path_has_guarded_segment`] for the full containment rule (covers the omitted/`.`/`./`
-/// default - the current working directory, which for a rigger project IS the project root
-/// the three guarded trees live under - along with every other shape that rule names).
-fn guarded_path(path: &str, project_root: &str) -> bool {
-    path_has_guarded_segment(path, project_root)
-}
-
-/// True when a `grep`-invoking Bash command line targets a guarded tree: one of its
-/// [`shell_command_words`] tokens - the search PATTERN included, coarse by the same design
-/// already accepted (this scans every token, not only the trailing path argument - a
-/// pattern that happens to spell a guarded tree's name, or a bare `.`/`..`, is the rare
-/// false-positive `--literal` exists to pass through) - targets a guarded tree via
-/// [`path_has_guarded_segment`], the SAME authority [`guarded_path`] uses for the `Grep`
-/// tool's `path` argument, so the two can never diverge. Covers `grep -rn pattern src`,
-/// `grep -rn pattern src/`, `grep pattern src/main.rs`, a mid-pipeline
-/// `... | grep -r pattern tests/`, a command FUSED to a guarded path with no whitespace via
-/// `|;&()<>`, a backtick, or `$` (`cat src/main.rs|grep pattern`, `grep pattern <src/main.rs`),
-/// an absolute path under a guarded tree, the whole-project convention `grep -rn pattern .`
-/// (an empty resolved segment stack, exactly like the `Grep` tool's own default), and a `..`
-/// that walks back up to the project root or one of its own ancestors
-/// (`grep -rn pattern ..`).
-fn guarded_command(command: &str, project_root: &str) -> bool {
-    shell_command_words(command).any(|w| path_has_guarded_segment(&w, project_root))
-}
-
 /// The PATH BASENAME of one [`shell_command_words`] word - the substring after its last `/`,
 /// or the whole word when it has none - the same notion a shell uses to resolve a command
 /// name regardless of how it was invoked.
@@ -13468,11 +13343,10 @@ fn command_invokes_grep(command: &str) -> bool {
 /// command reports "deny" through the JSON body alone, never a nonzero exit (a transport
 /// hiccup stays tellable apart from a deliberate block). Inert outside a rigger project (no
 /// [`RIGGER_DIR`] in the current tree) - malformed or unreadable stdin degrades to an allow
-/// rather than erroring, so the hook never blocks a tool call it failed to understand. The
-/// ONE place this command does I/O beyond stdin/stdout: it resolves the real project root
-/// via `current_dir` (empty on failure, never a panic) and hands that plain string into the
-/// pure [`grep_guard_decision`] - the decision logic itself never touches the environment or
-/// filesystem, only the string this edge resolved once.
+/// rather than erroring, so the hook never blocks a tool call it failed to understand. This
+/// command does no I/O beyond stdin/stdout and the [`RIGGER_DIR`] check: since the hook has
+/// no target axis (d-spec92-hook-no-target-axis), the pure [`grep_guard_decision`] needs no
+/// resolved project root to decide against.
 fn cmd_grep_guard(_args: &[String]) -> Res {
     let mut input = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
@@ -13489,10 +13363,7 @@ fn cmd_grep_guard(_args: &[String]) -> Res {
             .get("tool_input")
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));
-        let project_root = std::env::current_dir()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        grep_guard_decision(tool_name, &tool_input, &project_root)
+        grep_guard_decision(tool_name, &tool_input)
     };
     let out = match decision {
         GuardDecision::Allow => serde_json::json!({}),
@@ -15487,16 +15358,9 @@ mod tests {
             ctx.reject_recurrence_diagnose_threshold,
             watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
         );
-        // Spec 92, criterion 4: the discipline docs' lookup-hook facts are read from the
-        // SAME consts `rigger grep-guard` decides against, not a hand copy.
+        // Spec 92, criterion 4: the discipline docs' lookup-hook message is read from the
+        // SAME const `rigger grep-guard` decides against, not a hand copy.
         assert_eq!(ctx.grep_guard_message, GREP_GUARD_MESSAGE);
-        assert_eq!(
-            ctx.grep_guarded_trees,
-            GREP_GUARDED_TREES
-                .iter()
-                .map(|t| t.to_string())
-                .collect::<Vec<_>>()
-        );
     }
 
     /// Spec 20, unit 1 (the golden fact test): known code facts appear VERBATIM in BOTH
@@ -25920,57 +25784,45 @@ mod tests {
         }
     }
 
-    /// The pure decision core: a `Bash` `grep` over the guarded trees is denied with the
-    /// stated message; the SAME command with `--literal` passes, with the marker genuinely
-    /// REMOVED from the command carried onward (spec 92's HOOK SCOPE amendment - reject-fix
+    /// The pure decision core, d-spec92-hook-no-target-axis (spec 92's Design amended after
+    /// round 5 to retire the guarded-tree apparatus): a `Bash` `grep` invocation is denied
+    /// with the stated message NO MATTER WHAT it targets - a guarded tree from the old rule
+    /// (`src/`), a tree that rule never covered (`docs/`), a single unrelated file
+    /// (`README.md`), the whole-project convention (`.`), an ancestor (`..`), or an absolute
+    /// path nowhere near this project - because the hook inspects only whether the command
+    /// INVOKES grep, never what it points at. The SAME command with `--literal` passes for
+    /// every one of those targets too, with the marker genuinely REMOVED from the command
+    /// carried onward (spec 92's HOOK SCOPE amendment - reject-fix
     /// arch-u92c4r5-literal-escape-hatch-never-strips-marker: a bare `Allow` left the marker
     /// in place for a real shell to choke on, since GNU grep has no such flag).
     #[test]
-    fn grep_guard_decision_bounces_bash_grep_over_guarded_trees_and_passes_literal() {
-        for target in ["src/", "tests/", "workflows/"] {
+    fn grep_guard_decision_denies_every_bash_grep_target_and_passes_literal() {
+        for target in [
+            "src/",
+            "docs/",
+            "README.md",
+            ".",
+            "..",
+            "/unrelated/absolute/path",
+        ] {
             let command = format!("grep -rn foo {target}");
-            let decision =
-                grep_guard_decision("Bash", &serde_json::json!({"command": command}), "");
+            let decision = grep_guard_decision("Bash", &serde_json::json!({"command": command}));
             match decision {
                 GuardDecision::Deny(msg) => assert_eq!(msg, GREP_GUARD_MESSAGE),
-                other => panic!("grep over {target} must be denied, got {other:?}"),
+                other => panic!("grep targeting {target:?} must be denied, got {other:?}"),
             }
 
             let literal_command = format!("grep --literal -rn foo {target}");
             let decision =
-                grep_guard_decision("Bash", &serde_json::json!({"command": literal_command}), "");
+                grep_guard_decision("Bash", &serde_json::json!({"command": literal_command}));
             let stripped = assert_allows_with_literal_stripped(decision, &literal_command);
             assert_eq!(
                 stripped,
                 format!("grep -rn foo {target}"),
                 "the marker and exactly one adjacent space must be removed, nothing else \
-                 rewritten, for {target}"
+                 rewritten, for target {target:?}"
             );
         }
-    }
-
-    /// A `grep` with no target that reaches for `.` (the whole project from its root, the
-    /// common "search everywhere" invocation) is guarded too, since it reaches every one of
-    /// the three trees; a grep outside all three - a single unrelated file - is not.
-    #[test]
-    fn grep_guard_decision_covers_whole_project_grep_and_ignores_unrelated_targets() {
-        assert_eq!(
-            grep_guard_decision(
-                "Bash",
-                &serde_json::json!({"command": "grep -rn foo ."}),
-                ""
-            ),
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
-        );
-        assert_eq!(
-            grep_guard_decision(
-                "Bash",
-                &serde_json::json!({"command": "grep foo README.md"}),
-                ""
-            ),
-            GuardDecision::Allow,
-            "a target outside src/, tests/, workflows/ is not guarded"
-        );
     }
 
     /// A `Bash` command that is not a `grep` invocation at all - even one that merely
@@ -25979,134 +25831,55 @@ mod tests {
     #[test]
     fn grep_guard_decision_allows_non_grep_bash_commands() {
         assert_eq!(
-            grep_guard_decision("Bash", &serde_json::json!({"command": "ls src/"}), ""),
+            grep_guard_decision("Bash", &serde_json::json!({"command": "ls src/"})),
             GuardDecision::Allow
         );
         assert_eq!(
             grep_guard_decision(
                 "Bash",
                 &serde_json::json!({"command": "zgrep foo src/a.gz"}),
-                ""
             ),
             GuardDecision::Allow,
             "zgrep is a different tool than the literal `grep` this hook names"
         );
     }
 
-    /// The built-in `Grep` tool call is bounced when its `path` targets a guarded tree, or is
-    /// omitted (defaults to the current working directory, which for a rigger project IS the
-    /// guarded root) - and left alone when the path is explicitly elsewhere.
+    /// The built-in `Grep` tool call is denied for EVERY `path` (d-spec92-hook-no-target-axis:
+    /// no target axis survives - a guarded tree from the old rule, a tree it never covered,
+    /// an omitted path defaulting to the cwd, an absolute path nowhere near this project),
+    /// and carries no `--literal` escape hatch of its own - the built-in tool has no flag
+    /// slot for it, so a genuinely literal search runs through `Bash` `grep --literal`
+    /// instead.
     #[test]
-    fn grep_guard_decision_bounces_the_grep_tool_over_guarded_trees() {
-        assert_eq!(
-            grep_guard_decision("Grep", &serde_json::json!({"path": "src/"}), ""),
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
-        );
-        assert_eq!(
-            grep_guard_decision("Grep", &serde_json::json!({}), ""),
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-            "an omitted path defaults to the guarded project root"
-        );
-        assert_eq!(
-            grep_guard_decision("Grep", &serde_json::json!({"path": "docs/"}), ""),
-            GuardDecision::Allow
-        );
+    fn grep_guard_decision_denies_every_grep_tool_path() {
+        for path in ["src/", "docs/", "", "/unrelated/absolute/path", ".."] {
+            assert_eq!(
+                grep_guard_decision("Grep", &serde_json::json!({"path": path})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "Grep path={path:?} must be denied - the hook has no target axis"
+            );
+        }
     }
 
     /// A tool other than `Grep`/`Bash` is never touched by this hook.
     #[test]
     fn grep_guard_decision_ignores_other_tools() {
         assert_eq!(
-            grep_guard_decision("Read", &serde_json::json!({"file_path": "src/main.rs"}), ""),
+            grep_guard_decision("Read", &serde_json::json!({"file_path": "src/main.rs"})),
             GuardDecision::Allow
         );
-    }
-
-    /// Reject-fix (adj-u92c4-guard-keys-on-literal-trailing-slash-not-path-membership): a
-    /// bare `src` (no trailing slash - the Grep tool's own natural spelling, and the exact
-    /// operator instinct this whole spec exists to intercept) must be denied exactly like
-    /// `src/` already is, for BOTH the `Grep` tool's `path` and a `Bash` `grep`'s target
-    /// token. Before this fix, `guarded_path`/`guarded_command` matched on a literal
-    /// trailing-slash SUBSTRING, so this exact natural invocation bypassed the hook.
-    #[test]
-    fn grep_guard_decision_bounces_a_bare_tree_name_with_no_trailing_slash() {
-        for tree in ["src", "tests", "workflows"] {
-            assert_eq!(
-                grep_guard_decision("Grep", &serde_json::json!({"path": tree}), ""),
-                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-                "Grep path={tree:?} (no trailing slash) must be denied"
-            );
-            let command = format!("grep -rn TODO {tree}");
-            assert_eq!(
-                grep_guard_decision("Bash", &serde_json::json!({"command": command}), ""),
-                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-                "`grep -rn TODO {tree}` (no trailing slash) must be denied"
-            );
-        }
-    }
-
-    /// Reject-fix: an ABSOLUTE path landing inside a guarded tree is denied too - `src` is
-    /// still a path SEGMENT, matched by membership rather than a prefix string a leading
-    /// `/` would defeat. Before this fix `guarded_path` used `path.starts_with("src/")`,
-    /// which no absolute path could ever satisfy. `project_root` is deliberately left
-    /// unknown (`""`) here - this must hold on the plain segment-membership fallback alone,
-    /// with no dependence on knowing the real root at all.
-    #[test]
-    fn grep_guard_decision_bounces_an_absolute_path_under_a_guarded_tree() {
-        assert_eq!(
-            grep_guard_decision(
-                "Grep",
-                &serde_json::json!({"path": "/home/dev/rigger/src"}),
-                ""
-            ),
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-            "an absolute path AT a guarded tree must be denied"
-        );
-        assert_eq!(
-            grep_guard_decision(
-                "Grep",
-                &serde_json::json!({"path": "/home/dev/rigger/src/main.rs"}),
-                ""
-            ),
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-            "an absolute path UNDER a guarded tree must be denied"
-        );
-        assert_eq!(
-            grep_guard_decision(
-                "Bash",
-                &serde_json::json!({"command": "grep -rn TODO /home/dev/rigger/src"}),
-                ""
-            ),
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-            "a Bash grep over an absolute path under a guarded tree must be denied"
-        );
-    }
-
-    /// A path/command that merely shares a PREFIX with a guarded tree name - never a whole
-    /// path segment equal to it - must stay allowed: `src-old/`, `mysrc/`, and a plain
-    /// `docs/` target are all outside the three guarded trees.
-    #[test]
-    fn grep_guard_decision_ignores_a_merely_prefixed_or_unrelated_segment() {
-        for path in ["src-old/", "src-old", "mysrc/foo.rs", "docs/"] {
-            assert_eq!(
-                grep_guard_decision("Grep", &serde_json::json!({"path": path}), ""),
-                GuardDecision::Allow,
-                "{path:?} shares no WHOLE segment with a guarded tree; must be allowed"
-            );
-        }
     }
 
     /// Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-bypass /
     /// adv-u92c4r2-command-invokes-grep-tokenizes-on-whitespace-only): a `grep` invocation
     /// fused to an adjacent command with NO surrounding whitespace - via a pipe `|`, a
-    /// semicolon `;`, an `&`, or a `$( )` command substitution - must be denied exactly
-    /// like the spaced form already is. Before this fix `command_invokes_grep` and
-    /// `guarded_command` split on whitespace only, so a fused metacharacter hid the literal
-    /// word `grep` (and a guarded path segment) from the scan entirely - the exact three
-    /// probes the round-2 reject reproduced against the compiled binary, pinned here at the
-    /// pure-function level too (the layer the reject named as where the gap hid).
+    /// semicolon `;`, an `&`, a `$( )` command substitution, or a backtick - must be denied
+    /// exactly like the spaced form already is. Before that fix `command_invokes_grep` split
+    /// on whitespace only, so a fused metacharacter hid the literal word `grep` from the scan
+    /// entirely; this proof survives d-spec92-hook-no-target-axis unchanged, since detecting
+    /// the invocation (not its target) is still exactly what the tokenizer must get right.
     #[test]
-    fn grep_guard_decision_bounces_a_shell_metacharacter_fused_grep() {
+    fn grep_guard_decision_denies_a_shell_metacharacter_fused_grep() {
         for command in [
             "cat src/main.rs|grep pattern",
             "true;grep pattern src/main.rs",
@@ -26116,7 +25889,7 @@ mod tests {
             "echo `grep pattern src/main.rs`",
         ] {
             assert_eq!(
-                grep_guard_decision("Bash", &serde_json::json!({"command": command}), ""),
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
                 GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
                 "a grep fused to an adjacent command via a shell metacharacter must still \
                  be denied: {command:?}"
@@ -26125,37 +25898,37 @@ mod tests {
     }
 
     /// The SAME fused shapes with `--literal` added must still pass through (with the marker
-    /// stripped), proving the escape hatch survives the new tokenizer rather than becoming
+    /// stripped), proving the escape hatch survives the tokenizer rather than becoming
     /// unreachable once fusion is detected.
     #[test]
-    fn grep_guard_decision_still_allows_literal_on_a_shell_metacharacter_fused_grep() {
+    fn grep_guard_decision_literal_survives_a_shell_metacharacter_fused_grep() {
         let decision = grep_guard_decision(
             "Bash",
             &serde_json::json!({"command": "true;grep --literal pattern src/main.rs"}),
-            "",
         );
         assert_allows_with_literal_stripped(decision, "true;grep --literal pattern src/main.rs");
     }
 
     /// Reject-fix (sdet-u92c4r5-redirect-metachar-fuses-guarded-path-first-segment): `<` and
     /// `>` must end a shell word exactly like `;`/`|`/`&`/`(`/`)` already do - spec 92's HOOK
-    /// SCOPE amendment names `; | & ( ) < >` verbatim. Before this fix an input/output
-    /// redirection fused to a guarded path with no whitespace (`grep pattern <src/main.rs`)
-    /// corrupted the path's first segment into `<src`, which never equals the bare tree name
-    /// `src`, so `path_has_guarded_segment` never matched and the guard was bypassed with no
-    /// shell trickery beyond a completely ordinary redirection.
+    /// SCOPE amendment names `; | & ( ) < >` verbatim. This still matters after
+    /// d-spec92-hook-no-target-axis: a redirection fused directly to the command name with no
+    /// whitespace (`grep<file.txt`, a real shell equivalent of `grep <file.txt`) would
+    /// otherwise merge into one word neither equal to nor ending in the bare basename `grep`,
+    /// hiding the invocation from `command_invokes_grep` entirely - independent of what the
+    /// command targets.
     #[test]
-    fn grep_guard_decision_bounces_a_redirect_metacharacter_fused_grep() {
+    fn grep_guard_decision_denies_a_redirect_metacharacter_fused_grep() {
         for command in [
-            "grep pattern <src/main.rs",
-            "grep pattern <tests/foo.rs",
-            "grep pattern <workflows/rigger.js",
-            "grep pattern src/main.rs >out.txt",
+            "grep<file.txt pattern",
+            "grep>out.txt pattern file.txt",
+            "true;grep pattern <file.txt",
         ] {
             assert_eq!(
-                grep_guard_decision("Bash", &serde_json::json!({"command": command}), ""),
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
                 GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-                "a grep fused to a guarded path via < or > must still be denied: {command:?}"
+                "a grep fused to < or > with no surrounding whitespace must still be \
+                 denied: {command:?}"
             );
         }
     }
@@ -26163,11 +25936,10 @@ mod tests {
     /// The same redirect-fused shape with `--literal` added must still pass through, with the
     /// redirection itself surviving the marker's removal untouched.
     #[test]
-    fn grep_guard_decision_still_allows_literal_on_a_redirect_metacharacter_fused_grep() {
+    fn grep_guard_decision_literal_survives_a_redirect_metacharacter_fused_grep() {
         let decision = grep_guard_decision(
             "Bash",
             &serde_json::json!({"command": "grep --literal pattern <src/main.rs"}),
-            "",
         );
         let stripped =
             assert_allows_with_literal_stripped(decision, "grep --literal pattern <src/main.rs");
@@ -26181,11 +25953,8 @@ mod tests {
     /// wrapped in double quotes, wrapped in single quotes, split by a backslash escape, or split
     /// by an EMPTY quoted run in the middle of the word - four ordinary shell idioms a real shell
     /// resolves to the plain word `grep`, none of them adversarial - must all still be denied.
-    /// Before this fix `command_invokes_grep`'s exact-token check (`w == "grep"`) never saw the
-    /// word `grep` once it was quoted or escaped, because `shell_command_words` split on
-    /// whitespace and metacharacters but carried no quote/escape awareness at all.
     #[test]
-    fn grep_guard_decision_bounces_a_quoted_or_escaped_grep() {
+    fn grep_guard_decision_denies_a_quoted_or_escaped_grep() {
         for command in [
             r#""grep" pattern src/main.rs"#,
             "'grep' pattern src/main.rs",
@@ -26193,7 +25962,7 @@ mod tests {
             "g''rep pattern src/main.rs",
         ] {
             assert_eq!(
-                grep_guard_decision("Bash", &serde_json::json!({"command": command}), ""),
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
                 GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
                 "a quoted or escaped grep must still be denied: {command:?}"
             );
@@ -26204,11 +25973,10 @@ mod tests {
     /// entire quoted marker excised by its real span - proving the escape hatch itself
     /// survives quote/escape normalization AND marker stripping together.
     #[test]
-    fn grep_guard_decision_still_allows_a_quoted_literal_on_a_quoted_grep() {
+    fn grep_guard_decision_literal_survives_a_quoted_literal_on_a_quoted_grep() {
         let decision = grep_guard_decision(
             "Bash",
             &serde_json::json!({"command": r#""grep" "--literal" pattern src/main.rs"#}),
-            "",
         );
         let stripped = assert_allows_with_literal_stripped(
             decision,
@@ -26223,17 +25991,13 @@ mod tests {
     /// Reject-fix (sdet-u92c4r4-backslash-newline-continuation-still-bypasses-the-guard): a
     /// backslash immediately followed by a newline is an ordinary shell line continuation - it
     /// vanishes with NO separator, joining what looks like two words into one, exactly as a real
-    /// shell does before word splitting ever runs. Before this fix `shell_command_words` split the
-    /// raw command on delimiters FIRST, so the continuation's newline was already treated as a word
-    /// boundary and permanently separated `gr` from `ep` into two dead fragments no downstream
-    /// quote/escape normalization could ever reunite.
+    /// shell does before word splitting ever runs.
     #[test]
-    fn grep_guard_decision_bounces_a_grep_split_by_a_line_continuation() {
+    fn grep_guard_decision_denies_a_grep_split_by_a_line_continuation() {
         assert_eq!(
             grep_guard_decision(
                 "Bash",
                 &serde_json::json!({"command": "gr\\\nep pattern src/main.rs"}),
-                ""
             ),
             GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
             "a backslash-newline line continuation splitting `grep` must still be denied"
@@ -26242,11 +26006,10 @@ mod tests {
 
     /// The same line-continuation shape with `--literal` added must still pass through.
     #[test]
-    fn grep_guard_decision_still_allows_literal_on_a_line_continuation_split_grep() {
+    fn grep_guard_decision_literal_survives_a_line_continuation_split_grep() {
         let decision = grep_guard_decision(
             "Bash",
             &serde_json::json!({"command": "gr\\\nep --literal pattern src/main.rs"}),
-            "",
         );
         assert_allows_with_literal_stripped(decision, "gr\\\nep --literal pattern src/main.rs");
     }
@@ -26254,17 +26017,16 @@ mod tests {
     /// Reject-fix (adv-u92c4-r4-path-qualified-grep-bypasses-command-check): a path-qualified
     /// spelling of the same binary - `/usr/bin/grep`, `./grep`, a relative `bin/grep` - is the
     /// same command a bare `grep` names, so it must be denied exactly like the bare form already
-    /// is. Before this fix `command_invokes_grep` compared a whole token to the literal `grep`
-    /// (`w == "grep"`), so any directory prefix defeated the match entirely.
+    /// is.
     #[test]
-    fn grep_guard_decision_bounces_a_path_qualified_grep() {
+    fn grep_guard_decision_denies_a_path_qualified_grep() {
         for command in [
             "/usr/bin/grep pattern src/main.rs",
             "./grep pattern src/main.rs",
             "bin/grep pattern src/main.rs",
         ] {
             assert_eq!(
-                grep_guard_decision("Bash", &serde_json::json!({"command": command}), ""),
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
                 GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
                 "a path-qualified grep must still be denied: {command:?}"
             );
@@ -26273,14 +26035,13 @@ mod tests {
 
     /// The same path-qualified shapes with `--literal` added must still pass through.
     #[test]
-    fn grep_guard_decision_still_allows_literal_on_a_path_qualified_grep() {
+    fn grep_guard_decision_literal_survives_a_path_qualified_grep() {
         for command in [
             "/usr/bin/grep --literal pattern src/main.rs",
             "./grep --literal pattern src/main.rs",
             "bin/grep --literal pattern src/main.rs",
         ] {
-            let decision =
-                grep_guard_decision("Bash", &serde_json::json!({"command": command}), "");
+            let decision = grep_guard_decision("Bash", &serde_json::json!({"command": command}));
             assert_allows_with_literal_stripped(decision, command);
         }
     }
@@ -26293,147 +26054,9 @@ mod tests {
             grep_guard_decision(
                 "Bash",
                 &serde_json::json!({"command": "/usr/bin/zgrep pattern src/main.rs"}),
-                ""
             ),
             GuardDecision::Allow,
             "a path-qualified different command must not be treated as grep"
-        );
-    }
-
-    /// Reject-fix (adv-u92c4r5-ancestor-path-bypasses-guard-with-no-shell-tricks, RELATIVE
-    /// half): a `Grep`-tool `path` (or a Bash `grep`'s target token) that lexically resolves
-    /// to the project root itself or one of its own ancestors - `..`, `../..`, or the
-    /// self-cancelling `src/..` - has no `src`/`tests`/`workflows` segment of its OWN left
-    /// once `.`/`..` are resolved away, yet a recursive search rooted there walks back DOWN
-    /// through the project root and hence every guarded tree beneath it. Needs zero shell-
-    /// tokenizer trickery: the single simplest possible `Grep` tool call with `path=".."`
-    /// already defeated every guard before this fix, on a code path unchanged since round 1.
-    #[test]
-    fn grep_guard_decision_bounces_a_relative_ancestor_of_the_project_root() {
-        for path in ["..", "../..", "src/.."] {
-            assert_eq!(
-                grep_guard_decision("Grep", &serde_json::json!({"path": path}), ""),
-                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-                "Grep path={path:?} resolves to the project root or an ancestor of it; a \
-                 recursive search from there reaches every guarded tree: must be denied"
-            );
-        }
-        assert_eq!(
-            grep_guard_decision(
-                "Bash",
-                &serde_json::json!({"command": "grep -rn TODO .."}),
-                ""
-            ),
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-            "the same ancestor bypass via a Bash grep target must be denied too"
-        );
-    }
-
-    /// A `..` that walks back DOWN into a genuinely different, unrelated SIBLING directory -
-    /// never touching the project root at all - must stay allowed: the ancestor rule fires
-    /// only when the fully resolved path has no named segment of its own left, not merely
-    /// because it started with `..`.
-    #[test]
-    fn grep_guard_decision_allows_a_relative_sibling_reached_via_dot_dot() {
-        assert_eq!(
-            grep_guard_decision(
-                "Grep",
-                &serde_json::json!({"path": "../sibling-project"}),
-                ""
-            ),
-            GuardDecision::Allow,
-            "a `..` that descends back into an unrelated sibling directory must stay allowed"
-        );
-        assert_eq!(
-            grep_guard_decision("Grep", &serde_json::json!({"path": "src/../docs"}), ""),
-            GuardDecision::Allow,
-            "src/../docs resolves to docs, not src - the cancellation must be lexically real"
-        );
-    }
-
-    /// Reject-fix (adv-u92c4r5-ancestor-path-bypasses-guard-with-no-shell-tricks, ABSOLUTE
-    /// half): an ABSOLUTE `Grep` `path` exactly equal to the real project root - resolved by
-    /// `cmd_grep_guard` at the I/O edge and threaded in here as `project_root` - has no
-    /// `src`/`tests`/`workflows` segment of its own (a worktree's checkout directory is
-    /// rarely named any of those), yet a recursive search rooted there reads every file under
-    /// all three. This is the SECOND, structurally different bypass shape this same round
-    /// closed - no shell tokenizer or lexical `..` resolution is involved at all, only real
-    /// root containment.
-    #[test]
-    fn grep_guard_decision_bounces_the_absolute_project_root_itself() {
-        assert_eq!(
-            grep_guard_decision(
-                "Grep",
-                &serde_json::json!({"path": "/home/dev/rigger"}),
-                "/home/dev/rigger",
-            ),
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-            "the Grep path exactly equal to the project root must be denied"
-        );
-        assert_eq!(
-            grep_guard_decision(
-                "Grep",
-                &serde_json::json!({"path": "/home/dev/rigger/"}),
-                "/home/dev/rigger",
-            ),
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-            "a trailing slash on either side must not defeat the equality check"
-        );
-    }
-
-    /// An ABSOLUTE `path` that is a proper ancestor of the real project root - not equal to
-    /// it, further up the tree - must be denied for the same structural reason: recursing
-    /// from there reaches the root and hence every guarded tree beneath it.
-    #[test]
-    fn grep_guard_decision_bounces_an_absolute_ancestor_of_the_project_root() {
-        assert_eq!(
-            grep_guard_decision(
-                "Grep",
-                &serde_json::json!({"path": "/home/dev"}),
-                "/home/dev/rigger",
-            ),
-            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
-            "an absolute path that is a proper ancestor of the project root must be denied"
-        );
-    }
-
-    /// An ABSOLUTE `path` unrelated to the real project root - neither equal to it, an
-    /// ancestor of it, nor under a guarded tree - must stay allowed; and a path that merely
-    /// shares a textual PREFIX with the root (not a real `/`-segment boundary) must not be
-    /// mistaken for an ancestor.
-    #[test]
-    fn grep_guard_decision_allows_an_absolute_path_unrelated_to_the_project_root() {
-        assert_eq!(
-            grep_guard_decision(
-                "Grep",
-                &serde_json::json!({"path": "/home/dev/other-project"}),
-                "/home/dev/rigger",
-            ),
-            GuardDecision::Allow,
-            "a wholly unrelated absolute path must stay allowed"
-        );
-        assert_eq!(
-            grep_guard_decision(
-                "Grep",
-                &serde_json::json!({"path": "/home/devx"}),
-                "/home/dev/rigger",
-            ),
-            GuardDecision::Allow,
-            "a merely textual prefix of the root, not a segment-boundary ancestor, must not \
-             be treated as one"
-        );
-    }
-
-    /// With no known project root (`cmd_grep_guard` could not resolve `current_dir`, or a
-    /// pure-function test simply has nothing to compare against), an absolute path with no
-    /// `src`/`tests`/`workflows` segment of its own falls back to the plain segment check and
-    /// stays allowed, rather than guessing at containment it cannot actually verify.
-    #[test]
-    fn grep_guard_decision_with_unknown_project_root_falls_back_to_segment_matching() {
-        assert_eq!(
-            grep_guard_decision("Grep", &serde_json::json!({"path": "/home/dev/rigger"}), ""),
-            GuardDecision::Allow,
-            "with project_root empty, an absolute path with no guarded segment stays allowed"
         );
     }
 }

@@ -56,15 +56,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 13870
+        "line": 13741
       },
       {
         "file": "src/main.rs",
-        "line": 13891
+        "line": 13762
       },
       {
         "file": "src/main.rs",
-        "line": 14406
+        "line": 14277
       },
       {
         "file": "tests/cli.rs",
@@ -303,7 +303,7 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "line": 2177
+        "line": 2176
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -947,47 +947,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 16993
+        "line": 16857
       },
       {
         "file": "src/main.rs",
-        "line": 17026
+        "line": 16890
       },
       {
         "file": "src/main.rs",
-        "line": 17045
+        "line": 16909
       },
       {
         "file": "src/main.rs",
-        "line": 17048
+        "line": 16912
       },
       {
         "file": "src/main.rs",
-        "line": 17051
+        "line": 16915
       },
       {
         "file": "src/main.rs",
-        "line": 18921
+        "line": 18785
       },
       {
         "file": "src/main.rs",
-        "line": 18934
+        "line": 18798
       },
       {
         "file": "src/main.rs",
-        "line": 18949
+        "line": 18813
       },
       {
         "file": "src/main.rs",
-        "line": 24370
+        "line": 24234
       },
       {
         "file": "src/main.rs",
-        "line": 24371
+        "line": 24235
       },
       {
         "file": "src/main.rs",
-        "line": 24372
+        "line": 24236
       },
       {
         "file": "src/mcpserver.rs",
