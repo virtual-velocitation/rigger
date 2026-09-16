@@ -3605,7 +3605,7 @@ fn render_section_3() -> String {
         catalogued duplicate cluster (`dup-0218`: \
         `src/grounder/design/events.rs:90-114`, \
         `src/grounder/symbols/events.rs:89-91`, and this diff's own new third site, \
-        `src/grounder/workflowdef.rs:191-198` - all three named `project_batches`), \
+        `src/grounder/workflowdef.rs:242-249` - all three named `project_batches`), \
         so this boundary violation and that duplication finding are two symptoms of \
         one root cause - `ingest.rs` naming each concrete grounder submodule \
         because no port exposes either. The `Grounder` port's own methods \
