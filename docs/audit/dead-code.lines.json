@@ -56,15 +56,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 13681
+        "line": 13709
       },
       {
         "file": "src/main.rs",
-        "line": 13702
+        "line": 13730
       },
       {
         "file": "src/main.rs",
-        "line": 14217
+        "line": 14245
       },
       {
         "file": "tests/cli.rs",
@@ -947,31 +947,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 16804
+        "line": 16832
       },
       {
         "file": "src/main.rs",
-        "line": 16837
+        "line": 16865
       },
       {
         "file": "src/main.rs",
-        "line": 16856
+        "line": 16884
       },
       {
         "file": "src/main.rs",
-        "line": 16859
+        "line": 16887
       },
       {
         "file": "src/main.rs",
-        "line": 16862
-      },
-      {
-        "file": "src/main.rs",
-        "line": 18732
-      },
-      {
-        "file": "src/main.rs",
-        "line": 18745
+        "line": 16890
       },
       {
         "file": "src/main.rs",
@@ -979,15 +971,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 24181
+        "line": 18773
       },
       {
         "file": "src/main.rs",
-        "line": 24182
+        "line": 18788
       },
       {
         "file": "src/main.rs",
-        "line": 24183
+        "line": 24209
+      },
+      {
+        "file": "src/main.rs",
+        "line": 24210
+      },
+      {
+        "file": "src/main.rs",
+        "line": 24211
       },
       {
         "file": "src/mcpserver.rs",

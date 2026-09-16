@@ -8173,15 +8173,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "0ff569c942f4ac69"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "shell_word_value",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "5fe458e7e81b77b7"
+    "content_hash": "cc90976058dd4182"
   },
   {
     "file": "src/main.rs",
@@ -8209,11 +8201,19 @@
   },
   {
     "file": "src/main.rs",
+    "name": "word_basename",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "d37e9537434b2ab8"
+  },
+  {
+    "file": "src/main.rs",
     "name": "command_invokes_grep",
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "7f4800a386b401ae"
+    "content_hash": "04be4b9756d5ae22"
   },
   {
     "file": "src/main.rs",
@@ -11078,6 +11078,46 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "ee895701a5ffc4c9"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_bounces_a_grep_split_by_a_line_continuation",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a64066b072f669ac"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_still_allows_literal_on_a_line_continuation_split_grep",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "48fdd3be101ce4f3"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_bounces_a_path_qualified_grep",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "978e1125ece7ecfa"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_still_allows_literal_on_a_path_qualified_grep",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "12d4e9cc0bcd32d6"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "grep_guard_decision_allows_a_path_qualified_non_grep_command",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "0722fef2e5313235"
   },
   {
     "file": "src/dash.rs",

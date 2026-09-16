@@ -13159,70 +13159,85 @@ fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> Guard
     }
 }
 
-/// Splits a Bash command line into real shell WORD boundaries for [`command_invokes_grep`]
-/// and [`guarded_command`]: whitespace, plus the metacharacters that can fuse two commands
-/// together with no whitespace between them - a pipe `|`, a semicolon `;`, `&`
+/// Splits a Bash command line into real shell WORDS for [`command_invokes_grep`] and
+/// [`guarded_command`], already resolved to the value a real shell would pass as argv: ONE
+/// coherent walk over the raw command string, not two disjoint passes (reject-fix round 5:
+/// sdet-u92c4r4-backslash-newline-continuation-still-bypasses-the-guard). A prior version
+/// split the raw text on delimiters FIRST and only then resolved quoting/escaping per token,
+/// so a delimiter a real shell would not treat as a separator - a backslash-newline line
+/// continuation - permanently split one command name into two dead fragments before the
+/// escape logic ever ran. This walk instead tracks quote state and finds word boundaries in
+/// the SAME scan: outside any quote, whitespace and the metacharacters that can fuse two
+/// commands together with no whitespace between them (a pipe `|`, a semicolon `;`, `&`
 /// (backgrounding/`&&`), `(` `)` (subshells and `$( )` command substitution), a backtick
-/// `` ` `` (the older command-substitution form), and `$` itself (so `$(` splits even
-/// though `(` alone already would). Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-
-/// bypass): plain `str::split_whitespace` left `cat f|grep p`, `true;grep p f`, and
-/// `$(grep -q p f)` each hiding the literal word `grep` (and any guarded path segment) in a
-/// token fused to its neighbor by one of these characters with no separating whitespace -
-/// an ordinary shell idiom, not an adversarial evasion. Coarse by the same design the rest
-/// of this guard already accepts (no real shell parser, no quoting/escaping awareness - a
-/// quoted pattern that happens to contain one of these characters splits too, the rare
-/// false positive `--literal` exists to pass through); the point is that a real invocation
-/// can now never hide from the scan, not that every split is a fully faithful shell word.
-fn shell_command_words(command: &str) -> impl DoubleEndedIterator<Item = String> + '_ {
-    command
-        .split(|c: char| c.is_whitespace() || "|;&()`$".contains(c))
-        .filter(|w| !w.is_empty())
-        .map(shell_word_value)
-}
-
-/// Resolves ONE raw [`shell_command_words`] token to the value a real shell would pass as argv
-/// once its quoting and backslash-escaping are resolved (reject-fix round 4:
-/// adv-u92c4r3-quoted-or-escaped-grep-still-bypasses-the-guard). A real shell removes quote
-/// characters rather than treating them as content: single quotes bracket a LITERAL run (no
-/// escape has meaning inside them), double quotes bracket a run where only `\\`, `\"`, `` \` ``
-/// and `\$` are escapes (any other backslash stays literal), and outside any quote a backslash
-/// escapes the very next character. Quoting can open and close more than once within one word -
-/// `g''rep` is `g` + an EMPTY single-quoted run + `rep` = `grep`, the same word `"grep"`,
-/// `'grep'`, and `gr\ep` each also resolve to - so this walks the whole token rather than only
-/// stripping a pair at its two ends. This is quote REMOVAL only, not full shell grammar: it never
-/// re-examines whitespace or the metacharacters [`shell_command_words`] already split on, so a
-/// quoted run that happens to contain one of those characters was already separated into its own
-/// token upstream (the same coarse tradeoff every prior round of this guard accepted). Applying
-/// this to every token before the `grep`/`--literal`/guarded-path comparisons is what makes those
-/// comparisons see the word a shell would actually run, not its raw quoted/escaped spelling.
-fn shell_word_value(word: &str) -> String {
-    let mut out = String::with_capacity(word.len());
+/// (the older command-substitution form), and `$` itself) end the current word (reject-fix
+/// adj-u92c4r2-verdict-reject-shell-metachar-bypass: plain `str::split_whitespace` hid `grep`
+/// fused to a neighbor by one of these with no separating whitespace); single quotes bracket
+/// a LITERAL run (no escape has meaning inside them); double quotes bracket a run where only
+/// `\\`, `\"`, `` \` ``, `\$` and a line continuation are escapes (any other backslash stays
+/// literal); and outside any quote a backslash escapes the very next character LITERALLY -
+/// including a delimiter, which is why an escaped delimiter can no longer split a word -
+/// except a backslash immediately followed by a newline, which vanishes with NO separator
+/// and no output, exactly the join point a real shell removes before word splitting ever
+/// sees it. Quoting can open and close more than once within one word - `g''rep` is `g` + an
+/// EMPTY single-quoted run + `rep` = `grep`, the same word `"grep"`, `'grep'`, and `gr\ep`
+/// each also resolve to. Quote state resets at each new word (coarse by the same design this
+/// guard already accepts: a quoted metacharacter still ends the word, the rare false positive
+/// `--literal` exists to pass through) - the point is that a real invocation, however it
+/// wraps a line or spells its command name, can now never hide from the scan.
+fn shell_command_words(command: &str) -> std::vec::IntoIter<String> {
+    let mut words: Vec<String> = Vec::new();
+    let mut current = String::new();
     let mut quote: Option<char> = None;
-    let mut chars = word.chars().peekable();
+    let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
         match quote {
-            Some(q) if c == q => quote = None,
-            Some('\'') => out.push(c),
-            Some(_) => {
-                // Inside double quotes: backslash escapes only \\, \", \$, and a backtick.
-                if c == '\\' && matches!(chars.peek(), Some('\\' | '"' | '$' | '`')) {
-                    out.push(chars.next().expect("peeked Some above"));
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
                 } else {
-                    out.push(c);
+                    current.push(c);
+                }
+            }
+            Some(_) => {
+                // Inside double quotes: backslash escapes only \\, \", \$, a backtick, or (like
+                // outside any quote) a line continuation - a backslash immediately followed by a
+                // newline vanishes with no separator.
+                if c == '"' {
+                    quote = None;
+                } else if c == '\\' && matches!(chars.peek(), Some('\\' | '"' | '$' | '`')) {
+                    current.push(chars.next().expect("peeked Some above"));
+                } else if c == '\\' && chars.peek() == Some(&'\n') {
+                    chars.next();
+                } else {
+                    current.push(c);
                 }
             }
             None => match c {
                 '\'' | '"' => quote = Some(c),
+                '\\' if chars.peek() == Some(&'\n') => {
+                    // Line continuation (reject-fix round 5): removed with zero separator,
+                    // so it can never again split one word into two dead fragments.
+                    chars.next();
+                }
                 '\\' => {
                     if let Some(next) = chars.next() {
-                        out.push(next);
+                        current.push(next);
                     }
                 }
-                _ => out.push(c),
+                _ if c.is_whitespace() || "|;&()`$".contains(c) => {
+                    if !current.is_empty() {
+                        words.push(std::mem::take(&mut current));
+                    }
+                }
+                _ => current.push(c),
             },
         }
     }
-    out
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words.into_iter()
 }
 
 /// True when `path` (a `Grep`-tool `path` argument, or one [`shell_command_words`] token of a
@@ -13275,14 +13290,27 @@ fn guarded_command(command: &str) -> bool {
     shell_command_words(command).next_back().as_deref() == Some(".")
 }
 
-/// True when a Bash command line contains `grep` as a whole [`shell_command_words`] word
-/// (not a substring of a longer word like `zgrep` or `--grep-something`, and not hidden by
-/// fusion to an adjacent command via `|`/`;`/`&`/`$( )`/a backtick with no surrounding
-/// whitespace - adj-u92c4r2-verdict-reject-shell-metachar-bypass) - the literal command
-/// name the Design text names ("a Grep or a `grep`"), never `rg`/`egrep`/`fgrep` or any
-/// other tool this criterion's stated scope does not cover.
+/// The PATH BASENAME of one [`shell_command_words`] word - the substring after its last `/`,
+/// or the whole word when it has none - the same notion a shell uses to resolve a command
+/// name regardless of how it was invoked.
+fn word_basename(word: &str) -> &str {
+    match word.rsplit_once('/') {
+        Some((_, base)) => base,
+        None => word,
+    }
+}
+
+/// True when a Bash command line contains `grep` as a whole [`shell_command_words`] word's
+/// PATH BASENAME (reject-fix round 5, adv-u92c4-r4-path-qualified-grep-bypasses-command-check:
+/// `/usr/bin/grep`, `./grep`, and a relative `bin/grep` all name the same binary a bare
+/// `grep` does, so a directory prefix must not defeat the match), not a substring of a longer
+/// word like `zgrep` or `--grep-something`, and not hidden by fusion to an adjacent command
+/// via `|`/`;`/`&`/`$( )`/a backtick with no surrounding whitespace (adj-u92c4r2-verdict-
+/// reject-shell-metachar-bypass) - the literal command name the Design text names ("a Grep or
+/// a `grep`"), never `rg`/`egrep`/`fgrep` or any other tool this criterion's stated scope
+/// does not cover.
 fn command_invokes_grep(command: &str) -> bool {
-    shell_command_words(command).any(|w| w == "grep")
+    shell_command_words(command).any(|w| word_basename(&w) == "grep")
 }
 
 /// `rigger grep-guard`: the command the installed PreToolUse hook runs (see
@@ -25931,6 +25959,88 @@ mod tests {
             ),
             GuardDecision::Allow,
             "a quoted --literal must still pass a quoted grep through"
+        );
+    }
+
+    /// Reject-fix (sdet-u92c4r4-backslash-newline-continuation-still-bypasses-the-guard): a
+    /// backslash immediately followed by a newline is an ordinary shell line continuation - it
+    /// vanishes with NO separator, joining what looks like two words into one, exactly as a real
+    /// shell does before word splitting ever runs. Before this fix `shell_command_words` split the
+    /// raw command on delimiters FIRST, so the continuation's newline was already treated as a word
+    /// boundary and permanently separated `gr` from `ep` into two dead fragments no downstream
+    /// quote/escape normalization could ever reunite.
+    #[test]
+    fn grep_guard_decision_bounces_a_grep_split_by_a_line_continuation() {
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "gr\\\nep pattern src/main.rs"})
+            ),
+            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+            "a backslash-newline line continuation splitting `grep` must still be denied"
+        );
+    }
+
+    /// The same line-continuation shape with `--literal` added must still pass through.
+    #[test]
+    fn grep_guard_decision_still_allows_literal_on_a_line_continuation_split_grep() {
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "gr\\\nep --literal pattern src/main.rs"})
+            ),
+            GuardDecision::Allow,
+            "--literal must still pass a line-continuation-split grep through"
+        );
+    }
+
+    /// Reject-fix (adv-u92c4-r4-path-qualified-grep-bypasses-command-check): a path-qualified
+    /// spelling of the same binary - `/usr/bin/grep`, `./grep`, a relative `bin/grep` - is the
+    /// same command a bare `grep` names, so it must be denied exactly like the bare form already
+    /// is. Before this fix `command_invokes_grep` compared a whole token to the literal `grep`
+    /// (`w == "grep"`), so any directory prefix defeated the match entirely.
+    #[test]
+    fn grep_guard_decision_bounces_a_path_qualified_grep() {
+        for command in [
+            "/usr/bin/grep pattern src/main.rs",
+            "./grep pattern src/main.rs",
+            "bin/grep pattern src/main.rs",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a path-qualified grep must still be denied: {command:?}"
+            );
+        }
+    }
+
+    /// The same path-qualified shapes with `--literal` added must still pass through.
+    #[test]
+    fn grep_guard_decision_still_allows_literal_on_a_path_qualified_grep() {
+        for command in [
+            "/usr/bin/grep --literal pattern src/main.rs",
+            "./grep --literal pattern src/main.rs",
+            "bin/grep --literal pattern src/main.rs",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
+                GuardDecision::Allow,
+                "--literal must still pass a path-qualified grep through: {command:?}"
+            );
+        }
+    }
+
+    /// A path-qualified spelling of a DIFFERENT command (not `grep`) must still be allowed - the
+    /// basename comparison must not become a substring match.
+    #[test]
+    fn grep_guard_decision_allows_a_path_qualified_non_grep_command() {
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "/usr/bin/zgrep pattern src/main.rs"})
+            ),
+            GuardDecision::Allow,
+            "a path-qualified different command must not be treated as grep"
         );
     }
 }
