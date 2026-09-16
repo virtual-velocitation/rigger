@@ -6834,8 +6834,18 @@
       },
       {
         "file": "tests/workflow_definition_and_js_constants_periphery.rs",
-        "start_line": 537,
-        "end_line": 537
+        "start_line": 429,
+        "end_line": 429
+      },
+      {
+        "file": "tests/workflow_definition_and_js_constants_periphery.rs",
+        "start_line": 431,
+        "end_line": 431
+      },
+      {
+        "file": "tests/workflow_definition_and_js_constants_periphery.rs",
+        "start_line": 679,
+        "end_line": 679
       },
       {
         "file": "tests/workflow_driver_resolved_model_periphery.rs",
@@ -15364,31 +15374,6 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 1982,
-        "end_line": 2005
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 16904,
-        "end_line": 16924
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 16931,
-        "end_line": 16953
-      },
-      {
-        "file": "tests/cli.rs",
-        "start_line": 16962,
-        "end_line": 16996
-      }
-    ]
-  },
-  {
-    "id": "dup-0435",
-    "sites": [
-      {
-        "file": "tests/cli.rs",
         "start_line": 2070,
         "end_line": 2141
       },
@@ -15400,7 +15385,7 @@
     ]
   },
   {
-    "id": "dup-0436",
+    "id": "dup-0435",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15425,7 +15410,7 @@
     ]
   },
   {
-    "id": "dup-0437",
+    "id": "dup-0436",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15445,7 +15430,7 @@
     ]
   },
   {
-    "id": "dup-0438",
+    "id": "dup-0437",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15460,7 +15445,7 @@
     ]
   },
   {
-    "id": "dup-0439",
+    "id": "dup-0438",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15475,7 +15460,7 @@
     ]
   },
   {
-    "id": "dup-0440",
+    "id": "dup-0439",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15500,7 +15485,7 @@
     ]
   },
   {
-    "id": "dup-0441",
+    "id": "dup-0440",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15535,7 +15520,7 @@
     ]
   },
   {
-    "id": "dup-0442",
+    "id": "dup-0441",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15550,7 +15535,7 @@
     ]
   },
   {
-    "id": "dup-0443",
+    "id": "dup-0442",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15565,7 +15550,7 @@
     ]
   },
   {
-    "id": "dup-0444",
+    "id": "dup-0443",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15655,7 +15640,7 @@
     ]
   },
   {
-    "id": "dup-0445",
+    "id": "dup-0444",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15675,7 +15660,7 @@
     ]
   },
   {
-    "id": "dup-0446",
+    "id": "dup-0445",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15690,7 +15675,7 @@
     ]
   },
   {
-    "id": "dup-0447",
+    "id": "dup-0446",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15715,7 +15700,7 @@
     ]
   },
   {
-    "id": "dup-0448",
+    "id": "dup-0447",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15735,7 +15720,7 @@
     ]
   },
   {
-    "id": "dup-0449",
+    "id": "dup-0448",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15765,7 +15750,7 @@
     ]
   },
   {
-    "id": "dup-0450",
+    "id": "dup-0449",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15780,7 +15765,7 @@
     ]
   },
   {
-    "id": "dup-0451",
+    "id": "dup-0450",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15795,7 +15780,7 @@
     ]
   },
   {
-    "id": "dup-0452",
+    "id": "dup-0451",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15806,6 +15791,21 @@
         "file": "tests/step_attention_periphery.rs",
         "start_line": 252,
         "end_line": 351
+      }
+    ]
+  },
+  {
+    "id": "dup-0452",
+    "sites": [
+      {
+        "file": "tests/cli.rs",
+        "start_line": 8311,
+        "end_line": 8321
+      },
+      {
+        "file": "tests/step_attention_periphery.rs",
+        "start_line": 416,
+        "end_line": 426
       }
     ]
   },
@@ -15829,21 +15829,6 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 8311,
-        "end_line": 8321
-      },
-      {
-        "file": "tests/step_attention_periphery.rs",
-        "start_line": 416,
-        "end_line": 426
-      }
-    ]
-  },
-  {
-    "id": "dup-0455",
-    "sites": [
-      {
-        "file": "tests/cli.rs",
         "start_line": 9213,
         "end_line": 9261
       },
@@ -15855,7 +15840,7 @@
     ]
   },
   {
-    "id": "dup-0456",
+    "id": "dup-0455",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15875,7 +15860,7 @@
     ]
   },
   {
-    "id": "dup-0457",
+    "id": "dup-0456",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15890,7 +15875,7 @@
     ]
   },
   {
-    "id": "dup-0458",
+    "id": "dup-0457",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15905,7 +15890,7 @@
     ]
   },
   {
-    "id": "dup-0459",
+    "id": "dup-0458",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -15921,6 +15906,26 @@
         "file": "tests/cli.rs",
         "start_line": 11443,
         "end_line": 11486
+      }
+    ]
+  },
+  {
+    "id": "dup-0459",
+    "sites": [
+      {
+        "file": "tests/cli.rs",
+        "start_line": 11823,
+        "end_line": 11825
+      },
+      {
+        "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
+        "start_line": 134,
+        "end_line": 136
+      },
+      {
+        "file": "tests/step_attention_periphery.rs",
+        "start_line": 143,
+        "end_line": 145
       }
     ]
   },
@@ -15949,26 +15954,6 @@
     "sites": [
       {
         "file": "tests/cli.rs",
-        "start_line": 11823,
-        "end_line": 11825
-      },
-      {
-        "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 134,
-        "end_line": 136
-      },
-      {
-        "file": "tests/step_attention_periphery.rs",
-        "start_line": 143,
-        "end_line": 145
-      }
-    ]
-  },
-  {
-    "id": "dup-0462",
-    "sites": [
-      {
-        "file": "tests/cli.rs",
         "start_line": 12440,
         "end_line": 12457
       },
@@ -15990,7 +15975,7 @@
     ]
   },
   {
-    "id": "dup-0463",
+    "id": "dup-0462",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16005,7 +15990,7 @@
     ]
   },
   {
-    "id": "dup-0464",
+    "id": "dup-0463",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16020,7 +16005,7 @@
     ]
   },
   {
-    "id": "dup-0465",
+    "id": "dup-0464",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16035,7 +16020,7 @@
     ]
   },
   {
-    "id": "dup-0466",
+    "id": "dup-0465",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16075,7 +16060,7 @@
     ]
   },
   {
-    "id": "dup-0467",
+    "id": "dup-0466",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16090,7 +16075,7 @@
     ]
   },
   {
-    "id": "dup-0468",
+    "id": "dup-0467",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16105,7 +16090,7 @@
     ]
   },
   {
-    "id": "dup-0469",
+    "id": "dup-0468",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16120,7 +16105,7 @@
     ]
   },
   {
-    "id": "dup-0470",
+    "id": "dup-0469",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16135,7 +16120,7 @@
     ]
   },
   {
-    "id": "dup-0471",
+    "id": "dup-0470",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16155,7 +16140,7 @@
     ]
   },
   {
-    "id": "dup-0472",
+    "id": "dup-0471",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16170,7 +16155,7 @@
     ]
   },
   {
-    "id": "dup-0473",
+    "id": "dup-0472",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16200,7 +16185,7 @@
     ]
   },
   {
-    "id": "dup-0474",
+    "id": "dup-0473",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16215,7 +16200,7 @@
     ]
   },
   {
-    "id": "dup-0475",
+    "id": "dup-0474",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16245,7 +16230,7 @@
     ]
   },
   {
-    "id": "dup-0476",
+    "id": "dup-0475",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16256,6 +16241,26 @@
         "file": "tests/watchdog_cli_periphery.rs",
         "start_line": 224,
         "end_line": 246
+      }
+    ]
+  },
+  {
+    "id": "dup-0476",
+    "sites": [
+      {
+        "file": "tests/cli.rs",
+        "start_line": 16904,
+        "end_line": 16924
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 16931,
+        "end_line": 16953
+      },
+      {
+        "file": "tests/cli.rs",
+        "start_line": 16962,
+        "end_line": 16996
       }
     ]
   },
