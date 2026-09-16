@@ -5,13 +5,15 @@
 //! `crate::contextgraph`'s fold-arm doc) - so the workflow definition becomes graph entities
 //! (`stage:<name>`, `gate:<name>`, `agent:<name>`, matching the Design text's own
 //! `stage:implement` / `gate:mutation` / `agent:rust-engineer` example) with `needs` / `runs` /
-//! `reviews` relations. This is the emit half; the fold half lives in `contextgraph::sqlite` and
-//! stays compiled in both lanes.
+//! `reviews` relations - the last split into a plain edge for a panel's full-only roster and a
+//! distinctly-tagged one for its opt-in `tiers.light` roster (see `reviewers_of`'s own doc for
+//! why the two are never unioned). This is the emit half; the fold half lives in
+//! `contextgraph::sqlite` and stays compiled in both lanes.
 
-use crate::config::{self, Stage, Workflow};
+use crate::config::{self, ReviewPanel, Stage, Workflow};
 use crate::contextgraph::{
     DocConceptExtracted, DocLinkExtracted, KIND_AGENT, KIND_GATE, KIND_STAGE, REL_NEEDS,
-    REL_REVIEWS, REL_RUNS, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
+    REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
 };
 use crate::eventstore::Event;
 use std::collections::BTreeSet;
@@ -84,8 +86,13 @@ fn extract(workflow: &Workflow) -> (Vec<ConceptTuple>, Vec<LinkTuple>) {
             agent_names.insert(a.clone());
         }
 
-        for r in reviewers_of(workflow, stage) {
+        let (full_reviewers, light_reviewers) = reviewers_of(workflow, stage);
+        for r in full_reviewers {
             links.push((agent_id(&r), REL_REVIEWS, stage_id(name)));
+            agent_names.insert(r);
+        }
+        for r in light_reviewers {
+            links.push((agent_id(&r), REL_REVIEWS_LIGHT, stage_id(name)));
             agent_names.insert(r);
         }
     }
@@ -109,23 +116,67 @@ fn extract(workflow: &Workflow) -> (Vec<ConceptTuple>, Vec<LinkTuple>) {
     (concepts, links)
 }
 
-/// The reviewer agent ids a stage's `REVIEWS` edges are drawn from - see [`extract`]'s own doc for
-/// the source-selection rule this implements. Never empty-string entries (an unset `adversary:` /
-/// `adjudicator:` field defaults to `""`, filtered here rather than by every caller).
-fn reviewers_of(workflow: &Workflow, stage: &Stage) -> Vec<String> {
-    let mut reviewers: Vec<String> = Vec::new();
+/// The FULL-panel-only reviewer agent ids a review panel names on its own top-level roster
+/// (lenses, adversary, adjudicator) - the roster a unit at this panel's stage reviews itself with
+/// whenever it is NOT routed to the panel's opt-in `tiers.light` reduced roster instead.
+/// Deliberately excludes that light roster (see [`light_reviewers_of`]): unlike
+/// [`config::ReviewPanel::agent_ids`], which unions both rosters for REFERENTIAL VALIDATION (a
+/// different question - "does this id resolve to a real agent"), this asks "which agent reviews a
+/// unit that stays on the full panel", and a light-only agent is never that.
+fn full_reviewers_of(panel: &ReviewPanel) -> Vec<String> {
+    let mut ids = panel.lenses.clone();
+    if !panel.adversary.is_empty() {
+        ids.push(panel.adversary.clone());
+    }
+    if !panel.adjudicator.is_empty() {
+        ids.push(panel.adjudicator.clone());
+    }
+    ids
+}
+
+/// The reviewer agent ids a review panel's OPT-IN `tiers.light` reduced roster names, if
+/// configured - the roster a LOW-risk unit routes to INSTEAD of [`full_reviewers_of`]'s roster,
+/// never alongside it. Empty when the panel names no depth policy (the shipped default),
+/// mirroring [`config::ReviewPanel::depth`].
+fn light_reviewers_of(panel: &ReviewPanel) -> Vec<String> {
+    panel
+        .depth()
+        .map(|depth| full_reviewers_of(&depth.light))
+        .unwrap_or_default()
+}
+
+/// The reviewer agent ids a stage's `REVIEWS` / `REVIEWS_LIGHT` edges are drawn from, split by
+/// which relation each belongs on - see [`extract`]'s own doc for the source-selection rule (a
+/// stage's own direct fields/review panel, else - when gated - the workflow's `defaults.review`).
+/// `.0` feeds the plain [`REL_REVIEWS`] edge: a stage's own direct `adversary:`/`adjudicator:`
+/// fields (which carry no tiers concept of their own) plus the resolved panel's FULL-only roster
+/// ([`full_reviewers_of`]). `.1` feeds the distinctly-tagged [`REL_REVIEWS_LIGHT`] edge: the SAME
+/// resolved panel's `tiers.light` roster ([`light_reviewers_of`]). Kept apart rather than folded
+/// into one `.agent_ids()` union because a real run routes each unit to light XOR full exclusively
+/// by its observable risk (`config::Workflow::tiers` doc): an undistinguished edge would assert
+/// that a light-tier-only agent reviews a HIGH-risk unit at this stage (and the reverse for a
+/// full-panel-only agent under a LOW-risk routing) - a real accuracy defect, not mere
+/// incompleteness. Never empty-string entries (an unset `adversary:` / `adjudicator:` field
+/// defaults to `""`, filtered here rather than by every caller).
+fn reviewers_of(workflow: &Workflow, stage: &Stage) -> (Vec<String>, Vec<String>) {
+    let mut full: Vec<String> = Vec::new();
+    let mut light: Vec<String> = Vec::new();
     if !stage.adversary.is_empty() {
-        reviewers.push(stage.adversary.clone());
+        full.push(stage.adversary.clone());
     }
     if !stage.adjudicator.is_empty() {
-        reviewers.push(stage.adjudicator.clone());
+        full.push(stage.adjudicator.clone());
     }
-    reviewers.extend(stage.review.agent_ids());
-    if reviewers.is_empty() && !stage.gates.is_empty() {
-        reviewers = workflow.effective_review_panel(stage).agent_ids();
+    full.extend(full_reviewers_of(&stage.review));
+    light.extend(light_reviewers_of(&stage.review));
+    if full.is_empty() && light.is_empty() && !stage.gates.is_empty() {
+        let panel = workflow.effective_review_panel(stage);
+        full.extend(full_reviewers_of(panel));
+        light.extend(light_reviewers_of(panel));
     }
-    reviewers.retain(|r| !r.is_empty());
-    reviewers
+    full.retain(|r| !r.is_empty());
+    light.retain(|r| !r.is_empty());
+    (full, light)
 }
 
 /// Lower `workflow`'s stages, gates and agent roles into events: one `DocConceptExtracted` per
@@ -200,7 +251,7 @@ pub fn project_batches(root: &str) -> Vec<(String, Vec<Event>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Gate, ReviewPanel};
+    use crate::config::Gate;
     use std::collections::BTreeMap;
 
     /// A small fixture workflow mirroring this project's OWN `.rigger/workflow.yml` shape closely
@@ -382,6 +433,121 @@ mod tests {
                 .any(|(_, r, t)| *r == REL_REVIEWS && t == "stage:plan"),
             "a gate-less, review-less stage must get no REVIEWS edge at all, got {links:?}"
         );
+    }
+
+    #[test]
+    fn a_tiers_light_only_reviewer_never_shows_up_as_an_indistinguishable_full_panel_reviewer() {
+        // A real run routes each unit to the light OR the full panel EXCLUSIVELY by observable
+        // risk (`Workflow::tiers` doc) - never both. So a light-only agent (never on the full
+        // panel's own lenses/adversary/adjudicator) must land on a DISTINCTLY-TAGGED edge, never
+        // the plain REL_REVIEWS edge the full panel's own roster gets - and vice versa.
+        let mut wf = fixture();
+        wf.defaults.review.tiers = Some(Box::new(config::ReviewDepth {
+            light: ReviewPanel {
+                lenses: vec!["fast-lens".to_string()],
+                adjudicator: "light-adjudicator".to_string(),
+                ..Default::default()
+            },
+            threshold: 4,
+            ..Default::default()
+        }));
+
+        let (_concepts, links) = extract(&wf);
+        let has = |from: &str, rel: &str, to: &str| {
+            links
+                .iter()
+                .any(|(f, r, t)| f == from && *r == rel && t == to)
+        };
+
+        for stage in ["stage:implement", "stage:checkin"] {
+            // The light-only roster lands on its own, distinctly-tagged edge...
+            assert!(
+                has("agent:fast-lens", REL_REVIEWS_LIGHT, stage),
+                "got {links:?}"
+            );
+            assert!(
+                has("agent:light-adjudicator", REL_REVIEWS_LIGHT, stage),
+                "got {links:?}"
+            );
+            // ...and NEVER on the plain REVIEWS edge the full panel's own roster gets - that
+            // would make it indistinguishable from a full-panel reviewer.
+            assert!(
+                !has("agent:fast-lens", REL_REVIEWS, stage),
+                "a light-only reviewer must never be indistinguishable from a full-panel \
+                 reviewer; got {links:?}"
+            );
+            assert!(
+                !has("agent:light-adjudicator", REL_REVIEWS, stage),
+                "got {links:?}"
+            );
+            // The full panel's own roster is untouched by tiering: still the plain edge.
+            assert!(has("agent:architecture-reviewer", REL_REVIEWS, stage));
+            assert!(has("agent:sdet", REL_REVIEWS, stage));
+            assert!(has("agent:adversary", REL_REVIEWS, stage));
+            assert!(has("agent:adjudicator", REL_REVIEWS, stage));
+            // ...and the full panel's own roster never doubles onto the light edge either.
+            assert!(!has("agent:adjudicator", REL_REVIEWS_LIGHT, stage));
+        }
+    }
+
+    #[test]
+    fn a_real_on_disk_workflow_yml_with_tiers_still_tags_the_light_roster_distinctly() {
+        // Same guarantee as the in-process fixture above, but through a REAL on-disk
+        // `.rigger/workflow.yml` parsed by `config::load_workflow` (via `project_events`) - not a
+        // hand-built `Workflow` struct - proving the split survives real YAML parsing end to end.
+        let dir = tempfile::tempdir().unwrap();
+        let rigger_dir = dir.path().join(".rigger");
+        std::fs::create_dir_all(&rigger_dir).unwrap();
+        let yaml = "name: w\n\
+defaults:\n  \
+review:\n    \
+lenses: [archlens]\n    \
+adversary: adv\n    \
+adjudicator: adj\n    \
+tiers:\n      \
+threshold: 1\n      \
+light:\n        \
+lenses: [fast-lens]\n        \
+adjudicator: light-adjudicator\n\
+stages:\n  \
+implement:\n    \
+agent: worker\n    \
+gates: [fmt]\n\
+gates:\n  \
+fmt:\n    \
+run: cargo fmt --check\n";
+        std::fs::write(rigger_dir.join("workflow.yml"), yaml).unwrap();
+
+        let events = project_events(dir.path().to_str().unwrap());
+        let has_link = |from: &str, rel: &str, to: &str| {
+            events.iter().any(|e| {
+                if e.type_ != TYPE_DOC_LINK_EXTRACTED {
+                    return false;
+                }
+                let l: DocLinkExtracted = serde_json::from_slice(&e.data).unwrap();
+                l.from == from && l.rel == rel && l.to == to
+            })
+        };
+        assert!(
+            has_link("agent:fast-lens", REL_REVIEWS_LIGHT, "stage:implement"),
+            "got {events:?}"
+        );
+        assert!(
+            has_link(
+                "agent:light-adjudicator",
+                REL_REVIEWS_LIGHT,
+                "stage:implement"
+            ),
+            "got {events:?}"
+        );
+        assert!(
+            !has_link("agent:fast-lens", REL_REVIEWS, "stage:implement"),
+            "the light-only lens must never be indistinguishable from a full-panel reviewer; \
+             got {events:?}"
+        );
+        assert!(has_link("agent:archlens", REL_REVIEWS, "stage:implement"));
+        assert!(has_link("agent:adv", REL_REVIEWS, "stage:implement"));
+        assert!(has_link("agent:adj", REL_REVIEWS, "stage:implement"));
     }
 
     #[test]

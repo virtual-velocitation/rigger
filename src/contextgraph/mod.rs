@@ -169,10 +169,24 @@ pub const REL_NEEDS: &str = "NEEDS";
 pub const REL_RUNS: &str = "RUNS";
 /// An `agent` REVIEWS a workflow stage (spec 92 criterion 2): the edge from a reviewer role to the
 /// stage its verdict gates - a standalone stage's own `adversary:` / `adjudicator:` fields (e.g.
-/// `plan-critique`), or a per-unit stage's effective review panel (`defaults.review`, or its own
-/// `review:` override) - lenses, adversary, and adjudicator alike. Folded from a `DocLinkExtracted`
-/// event at [`TIER_EXTRACTED`].
+/// `plan-critique`), or a per-unit stage's effective review panel's OWN top-level roster
+/// (`defaults.review`, or its own `review:` override) - lenses, adversary, and adjudicator alike.
+/// Deliberately EXCLUDES a panel's opt-in `tiers.light` reduced roster (see
+/// [`REL_REVIEWS_LIGHT`]): a real run routes each unit to the light OR the full panel exclusively
+/// by observable risk (`config::Workflow::tiers` doc), never both, so this edge must name only the
+/// roster a unit at this edge's stage actually gets when it is NOT routed light. Folded from a
+/// `DocLinkExtracted` event at [`TIER_EXTRACTED`].
 pub const REL_REVIEWS: &str = "REVIEWS";
+/// An `agent` REVIEWS a workflow stage under its `tiers.light` REDUCED roster only (spec 92
+/// criterion 2, spec 03 "adaptive review depth"): the edge from a light-tier-only reviewer role to
+/// the stage a LOW-risk unit routes it to. Kept as a DISTINCT relation from [`REL_REVIEWS`] on
+/// purpose - `config::ReviewPanel::agent_ids()` unions this roster with the full panel's for
+/// REFERENTIAL VALIDATION (a different question: "does this id resolve to a real agent"), but
+/// folding both into one undistinguished edge would assert that a light-only agent reviews a
+/// HIGH-risk unit at that stage (and the reverse for a full-panel-only agent under a LOW-risk
+/// routing) - a real accuracy defect this relation exists to avoid. Folded from a
+/// `DocLinkExtracted` event at [`TIER_EXTRACTED`].
+pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
@@ -559,7 +573,7 @@ pub(crate) struct DocConceptExtracted {
 /// second edge-extraction event type: the feature-gated emit pass constructs and serializes it,
 /// and the always-compiled fold deserializes it, so the field names can never drift between
 /// emitter and folder. The fold folds it into a typed edge whose relation is `rel` (one of the
-/// eight relations the two passes produce, below); a payload carrying any other relation folds
+/// nine relations the two passes produce, below); a payload carrying any other relation folds
 /// nothing (defensive).
 #[derive(Serialize, Deserialize)]
 pub(crate) struct DocLinkExtracted {
@@ -574,8 +588,9 @@ pub(crate) struct DocLinkExtracted {
     pub to: String,
     /// The relation: from the design-intent pass, one of [`REL_SPECIFIES`] / [`REL_CONSTRAINS`] /
     /// [`REL_GOVERNS`] / [`REL_EXPLAINS`] / [`REL_DOC_REFERENCES`]; from the workflow-definition
-    /// pass, one of [`REL_NEEDS`] / [`REL_RUNS`] / [`REL_REVIEWS`]. The two passes together only
-    /// ever produce these eight; a payload carrying any other relation folds nothing.
+    /// pass, one of [`REL_NEEDS`] / [`REL_RUNS`] / [`REL_REVIEWS`] / [`REL_REVIEWS_LIGHT`]. The
+    /// two passes together only ever produce these nine; a payload carrying any other relation
+    /// folds nothing.
     pub rel: String,
 }
 

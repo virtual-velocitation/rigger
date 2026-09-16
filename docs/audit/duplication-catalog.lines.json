@@ -2534,8 +2534,8 @@
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 1943,
-        "end_line": 1945
+        "start_line": 1946,
+        "end_line": 1948
       },
       {
         "file": "src/spawn.rs",
@@ -2604,18 +2604,18 @@
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 25,
-        "end_line": 27
+        "start_line": 27,
+        "end_line": 29
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 29,
-        "end_line": 31
+        "start_line": 31,
+        "end_line": 33
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 33,
-        "end_line": 35
+        "start_line": 35,
+        "end_line": 37
       },
       {
         "file": "src/main.rs",
@@ -3389,28 +3389,28 @@
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4533,
-        "end_line": 4533
+        "start_line": 4536,
+        "end_line": 4536
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4541,
-        "end_line": 4541
+        "start_line": 4544,
+        "end_line": 4544
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4549,
-        "end_line": 4549
+        "start_line": 4552,
+        "end_line": 4552
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4557,
-        "end_line": 4557
+        "start_line": 4560,
+        "end_line": 4560
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4565,
-        "end_line": 4565
+        "start_line": 4568,
+        "end_line": 4568
       },
       {
         "file": "src/dash.rs",
@@ -3474,18 +3474,23 @@
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 23,
-        "end_line": 23
+        "start_line": 25,
+        "end_line": 25
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 179,
-        "end_line": 179
+        "start_line": 230,
+        "end_line": 230
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 421,
-        "end_line": 421
+        "start_line": 499,
+        "end_line": 499
+      },
+      {
+        "file": "src/grounder/workflowdef.rs",
+        "start_line": 587,
+        "end_line": 587
       },
       {
         "file": "src/ingest.rs",
@@ -7989,8 +7994,8 @@
     "sites": [
       {
         "file": "src/contextgraph/mod.rs",
-        "start_line": 520,
-        "end_line": 522
+        "start_line": 534,
+        "end_line": 536
       },
       {
         "file": "src/dash.rs",
@@ -8014,13 +8019,13 @@
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6997,
-        "end_line": 6997
+        "start_line": 7000,
+        "end_line": 7000
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7807,
-        "end_line": 7807
+        "start_line": 7810,
+        "end_line": 7810
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -8279,8 +8284,8 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 1951,
-        "end_line": 1956
+        "start_line": 1954,
+        "end_line": 1959
       },
       {
         "file": "src/dash.rs",
@@ -8294,13 +8299,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 1986,
-        "end_line": 1992
+        "start_line": 1989,
+        "end_line": 1995
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 1998,
-        "end_line": 2004
+        "start_line": 2001,
+        "end_line": 2007
       }
     ]
   },
@@ -8309,18 +8314,18 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2071,
-        "end_line": 2096
+        "start_line": 2074,
+        "end_line": 2099
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2129,
-        "end_line": 2154
+        "start_line": 2132,
+        "end_line": 2157
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2165,
-        "end_line": 2193
+        "start_line": 2168,
+        "end_line": 2196
       }
     ]
   },
@@ -8329,13 +8334,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2832,
-        "end_line": 2846
+        "start_line": 2835,
+        "end_line": 2849
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4739,
-        "end_line": 4746
+        "start_line": 4742,
+        "end_line": 4749
       },
       {
         "file": "src/dash.rs",
@@ -8359,13 +8364,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 2921,
-        "end_line": 2934
+        "start_line": 2924,
+        "end_line": 2937
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8164,
-        "end_line": 8184
+        "start_line": 8167,
+        "end_line": 8187
       }
     ]
   },
@@ -8374,8 +8379,8 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3065,
-        "end_line": 3073
+        "start_line": 3068,
+        "end_line": 3076
       },
       {
         "file": "tests/graph_fold_dedup_live_edge.rs",
@@ -8394,28 +8399,28 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3356,
-        "end_line": 3374
+        "start_line": 3359,
+        "end_line": 3377
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3390,
-        "end_line": 3410
+        "start_line": 3393,
+        "end_line": 3413
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3459,
-        "end_line": 3478
+        "start_line": 3462,
+        "end_line": 3481
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4713,
-        "end_line": 4724
+        "start_line": 4716,
+        "end_line": 4727
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5007,
-        "end_line": 5027
+        "start_line": 5010,
+        "end_line": 5030
       },
       {
         "file": "src/dash.rs",
@@ -8449,43 +8454,43 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3376,
-        "end_line": 3381
+        "start_line": 3379,
+        "end_line": 3384
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3416,
-        "end_line": 3421
+        "start_line": 3419,
+        "end_line": 3424
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 3449,
-        "end_line": 3455
+        "start_line": 3452,
+        "end_line": 3458
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4270,
-        "end_line": 4278
+        "start_line": 4273,
+        "end_line": 4281
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4381,
-        "end_line": 4389
+        "start_line": 4384,
+        "end_line": 4392
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4728,
-        "end_line": 4734
+        "start_line": 4731,
+        "end_line": 4737
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6342,
-        "end_line": 6350
+        "start_line": 6345,
+        "end_line": 6353
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7613,
-        "end_line": 7623
+        "start_line": 7616,
+        "end_line": 7626
       },
       {
         "file": "tests/dash_calls_route_periphery.rs",
@@ -8499,13 +8504,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4392,
-        "end_line": 4515
+        "start_line": 4395,
+        "end_line": 4518
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4518,
-        "end_line": 4636
+        "start_line": 4521,
+        "end_line": 4639
       }
     ]
   },
@@ -8514,13 +8519,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 4752,
-        "end_line": 4766
+        "start_line": 4755,
+        "end_line": 4769
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7070,
-        "end_line": 7088
+        "start_line": 7073,
+        "end_line": 7091
       }
     ]
   },
@@ -8529,13 +8534,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5430,
-        "end_line": 5570
+        "start_line": 5433,
+        "end_line": 5573
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 5768,
-        "end_line": 5958
+        "start_line": 5771,
+        "end_line": 5961
       }
     ]
   },
@@ -8544,13 +8549,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6075,
-        "end_line": 6108
+        "start_line": 6078,
+        "end_line": 6111
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6162,
-        "end_line": 6190
+        "start_line": 6165,
+        "end_line": 6193
       }
     ]
   },
@@ -8559,13 +8564,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6885,
-        "end_line": 6894
+        "start_line": 6888,
+        "end_line": 6897
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7972,
-        "end_line": 7984
+        "start_line": 7975,
+        "end_line": 7987
       }
     ]
   },
@@ -8574,13 +8579,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 6897,
-        "end_line": 6979
+        "start_line": 6900,
+        "end_line": 6982
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7091,
-        "end_line": 7182
+        "start_line": 7094,
+        "end_line": 7185
       }
     ]
   },
@@ -8589,8 +8594,8 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7626,
-        "end_line": 7631
+        "start_line": 7629,
+        "end_line": 7634
       },
       {
         "file": "tests/calls_down_execution_path_periphery.rs",
@@ -8604,13 +8609,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7711,
-        "end_line": 7752
+        "start_line": 7714,
+        "end_line": 7755
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7755,
-        "end_line": 7770
+        "start_line": 7758,
+        "end_line": 7773
       },
       {
         "file": "tests/code_ingest_events.rs",
@@ -8624,8 +8629,8 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 7881,
-        "end_line": 7883
+        "start_line": 7884,
+        "end_line": 7886
       },
       {
         "file": "src/main.rs",
@@ -8639,13 +8644,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8082,
-        "end_line": 8101
+        "start_line": 8085,
+        "end_line": 8104
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8104,
-        "end_line": 8127
+        "start_line": 8107,
+        "end_line": 8130
       }
     ]
   },
@@ -8654,13 +8659,13 @@
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8206,
-        "end_line": 8237
+        "start_line": 8209,
+        "end_line": 8240
       },
       {
         "file": "src/contextgraph/sqlite.rs",
-        "start_line": 8482,
-        "end_line": 8513
+        "start_line": 8485,
+        "end_line": 8516
       }
     ]
   },
@@ -10444,8 +10449,8 @@
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 191,
-        "end_line": 198
+        "start_line": 242,
+        "end_line": 249
       }
     ]
   },
@@ -10564,8 +10569,8 @@
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 140,
-        "end_line": 170
+        "start_line": 191,
+        "end_line": 221
       }
     ]
   },
@@ -10749,8 +10754,8 @@
       },
       {
         "file": "src/grounder/workflowdef.rs",
-        "start_line": 406,
-        "end_line": 410
+        "start_line": 572,
+        "end_line": 576
       }
     ]
   },
