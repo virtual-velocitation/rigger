@@ -28305,3 +28305,25 @@ fn reset_scratch_orphans_reclaims_cache_roots_whose_repo_is_gone_and_keeps_the_r
         "second pass is a no-op: {out}"
     );
 }
+
+#[test]
+fn status_reports_a_run_without_creating_the_projects_scratch_root() {
+    // A read-only report never conjures the cache-home scratch root (and so never runs the
+    // orphan-root reclaim that creating one does); only a command that places work under
+    // the root creates it.
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let scratch = common::default_scratch_root(root);
+    assert!(
+        !scratch.exists(),
+        "fixture precondition: no scratch root yet"
+    );
+    let (_out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "stderr: {err}");
+    assert!(
+        !scratch.exists(),
+        "rigger status resolved the scratch root without creating it: {}",
+        scratch.display()
+    );
+}

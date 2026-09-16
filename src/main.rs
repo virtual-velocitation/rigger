@@ -6890,7 +6890,10 @@ fn cmd_dash(args: &[String]) -> Res {
         if repo.is_empty() && !has_explicit_root {
             String::new()
         } else {
-            rigger::worktree::scratch_root_from_env(&repo, &workdir)
+            // The dash only READS this root (marker probes); it never places work under it,
+            // so it resolves without creating - creation is the step's, and creation is
+            // where the cache home's orphan-root reclaim runs.
+            rigger::worktree::scratch_root_path_from_env(&repo, &workdir)
         }
     };
     // A clone taken BEFORE the `provider` closure below moves the original: the self-reap
@@ -7840,7 +7843,9 @@ fn liveness_ages_for_wave(
     if repo.is_empty() {
         return ages;
     }
-    let root = rigger::worktree::scratch_root_from_env(repo, workdir);
+    // A read-only report resolves the root without creating it: `rigger status` must never
+    // conjure a scratch root, nor run the orphan-root reclaim that creating one does.
+    let root = rigger::worktree::scratch_root_path_from_env(repo, workdir);
     for w in wave {
         let Some(path) = rigger::liveness::marker_path(&root, run_id, &w.id) else {
             continue;
