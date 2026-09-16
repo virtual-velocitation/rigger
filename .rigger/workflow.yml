@@ -217,7 +217,7 @@ gates:                      # the project's verification library, referenced by 
       test -n "$RIGGER_RUN_BASE" &&
       git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff &&
       rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
-      { TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 3 -j 2;
+      { TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 3 -j 1;
       rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
       test ! -s mutants.out/missed.txt
     kind: core
