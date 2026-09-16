@@ -34,7 +34,6 @@ use rigger::eventstore::Event;
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
-use common::rigger_bin;
 
 /// A throwaway project dir that is its own git repo, so `project_identity()` is stable across
 /// the seed and the binary's reads.
@@ -77,9 +76,16 @@ fn run_stream_identity(root: &Path) -> String {
 
 /// Run `rigger <args...>` in `cwd`, opting out of the auto-started dashboard and pointing the
 /// instance registry at a throwaway state dir, exactly as the other CLI integration tests do.
+///
+/// Spawned through [`common::rigger_courier`] (checkin-round fix), never a bare
+/// `Command::new(rigger_bin())`: that shared authority scrubs an inherited
+/// `RIGGER_STORE_FENCE_DIR` (spec 70 criterion 3's gate store fence, which
+/// `gate::ExecRunner::run` pins on the WHOLE subprocess tree of a unit-worktree gate's `test`
+/// gate - THIS test binary itself, when it runs as one) - see
+/// [`run_rigger_ignores_an_inherited_ambient_store_fence`] for the regression this closes.
 fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     let state = tempfile::tempdir().expect("temp XDG_STATE_HOME");
-    let out = Command::new(rigger_bin())
+    let out = common::rigger_courier()
         .args(args)
         .current_dir(cwd)
         .env("RIGGER_NO_DASH", "1")
@@ -364,5 +370,55 @@ fn around_never_lets_a_superseded_decision_inherit_its_superseders_recency_and_c
     assert!(
         out.contains("+2") && out.contains("more"),
         "exactly two governing items (d1 and l1) must be capped out; got:\n{out}"
+    );
+}
+
+/// Regression (checkin-round fix, mirroring `graph_around_code_first.rs`'s own pin of the same
+/// defect - peer decision `d-checkin-graph-around-test-inherits-gate-store-fence`): this file's
+/// private `run_rigger` was a literal copy of that sibling's, including the same bug - a bare
+/// `Command::new(rigger_bin())` that never scrubs an inherited `RIGGER_STORE_FENCE_DIR` (spec 70
+/// criterion 3's gate store fence, which `gate::ExecRunner::run` pins on the WHOLE subprocess
+/// tree of a unit-worktree gate's `test` gate - THIS test binary itself, when it runs as one).
+/// `tests/common::rigger_courier` is the one shared authority that scrubs it; every one of this
+/// file's `["emit", ...]` calls above was equally exposed to the same silent-data-loss failure
+/// mode under a real gate pass.
+#[test]
+#[serial_test::serial(cwd)]
+fn run_rigger_ignores_an_inherited_ambient_store_fence() {
+    std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
+        }
+    }
+    let _restore = Restore;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let ambient_fence = tempfile::tempdir().expect("temp ambient fence dir");
+    std::env::set_var(rigger::gate::STORE_FENCE_ENV, ambient_fence.path());
+
+    let payload =
+        r#"{"id":"fenced-d1","summary":"must survive an inherited fence","governs":["big.rs"]}"#;
+    let (_o, err, ok) = run_rigger(root, &["emit", "DecisionMade", payload]);
+    assert!(
+        ok,
+        "emit DecisionMade must succeed even under an inherited fence; stderr: {err}"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["graph", "--around", "big.rs", "--depth", "2"]);
+    assert!(ok, "graph --around must succeed; stderr: {err}");
+    assert!(
+        out.contains("fenced-d1"),
+        "an emit issued while this test binary carries an inherited RIGGER_STORE_FENCE_DIR \
+         must still land in THIS fixture's own store, not the ambient fence's shared scratch \
+         dir; got:\n{out}"
+    );
+    assert!(
+        !ambient_fence.path().join("events.db").exists(),
+        "a courier that correctly ignores the ambient fence must never write into it either"
     );
 }
