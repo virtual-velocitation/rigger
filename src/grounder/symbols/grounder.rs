@@ -5,9 +5,9 @@
 //! `grounder_for` / `main::select_grounder`; this module is the consumer of units 1-3's model,
 //! extraction, registry, and store.
 
-use crate::grounder::symbols::model::{Lang, SymbolIndex};
+use crate::grounder::symbols::model::{percentile_cutoff, Lang, SymbolIndex};
 use crate::grounder::symbols::{build_index, reindex_files, store};
-use crate::grounder::{BlastRadius, Grep, Grounder, Ref};
+use crate::grounder::{BlastRadius, Grep, Grounder, RankedRef, Ref};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
@@ -120,6 +120,204 @@ fn query_terms(query: &str) -> Vec<&str> {
         .collect()
 }
 
+/// Every distinct `(name, language)` pair's occurrence count across the WHOLE index, counting
+/// DEFINITIONS always and REFERENCES only when `count_refs` is set - the ONE counting pass
+/// [`commonness_map`] and [`ambiguity_map`] both share (spec 92 criterion 3 remediation,
+/// arch-u92c3-cutoff-formula-duplicated-not-shared's DRY finding applied to this pair too: two
+/// near-identical scan loops over the same data, one function body now covers both). Keyed by
+/// `(name, Lang)`, never a bare name (spec 92 criterion 3 remediation round 5,
+/// adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages): a bare-name
+/// key sums an entity's popularity/ambiguity across every language sharing that name, exactly
+/// the cross-language collision [`SymbolIndex::reference_degree`] and [`SymbolIndex::is_hub`]
+/// already guard against (5.5.2) - a `run` over-defined in Python must never inflate the same
+/// bare name's Rust count, in either direction.
+fn name_occurrence_map(idx: &SymbolIndex, count_refs: bool) -> BTreeMap<(&str, Lang), usize> {
+    let mut counts: BTreeMap<(&str, Lang), usize> = BTreeMap::new();
+    for fs in idx.files().values() {
+        for d in &fs.defs {
+            *counts.entry((d.name.as_str(), fs.lang)).or_insert(0) += 1;
+        }
+        if count_refs {
+            for r in &fs.refs {
+                *counts.entry((r.name.as_str(), fs.lang)).or_insert(0) += 1;
+            }
+        }
+    }
+    counts
+}
+
+/// Every distinct `(name, language)` pair's total DEFINITION+REFERENCE occurrence count (spec 92
+/// criterion 3, RANKED BY INTENT): the inverse-document-frequency proxy Design names - "a token
+/// in hundreds of files - `run`, `new`, `tests` - carries near-zero weight." The ONE authority
+/// [`scored_hits`] draws a matched ENTITY's own commonness from (looked up by the entity's OWN
+/// resolved `(name, Lang)` pair, never the raw query term - a CONTAINS-tier term is by
+/// definition a substring and so is almost never itself a key here), for ranking (rarer wins a
+/// tie). NOT the signal [`Symbols::has_strong_match`] gates on - a popular but UNAMBIGUOUS
+/// entity (one definition, many call sites, e.g. `criterion_stable_id`) must rank low here (it
+/// is genuinely the specific thing a caller meant when they typed its exact name) without being
+/// misread as "too common to be a confident match" - that second, distinct question is
+/// [`ambiguity_map`]'s (spec 92 criterion 3 remediation, adj-u92c3-verdict-reject: the two were
+/// wrongly conflated by an earlier round of this unit).
+fn commonness_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
+    name_occurrence_map(idx, true)
+}
+
+/// Every distinct `(name, language)` pair's DISTINCT-DEFINITION count (spec 92 criterion 3
+/// remediation, adj-u92c3-verdict-reject): the genuine tree-wide AMBIGUITY signal - "how many
+/// different things could this name mean, WITHIN this language" - independent of how often any
+/// ONE of those definitions is called. A name defined exactly once (within its own language) is
+/// entirely unambiguous no matter how many places reference it (`criterion_stable_id`: 1
+/// definition, 37 references in this very repo, must read as a confident match); a name defined
+/// many times over in unrelated places (`run`, `new`, `parse`) is genuinely ambiguous regardless
+/// of reference volume. This is the ONE authority [`Symbols::has_strong_match`] gates its cutoff
+/// on - never [`commonness_map`]'s raw def+ref occurrence volume, which conflates one entity's
+/// own popularity with tree-wide name ambiguity (the defect this map exists to fix). Shares its
+/// percentile-cutoff formula with [`SymbolIndex::is_hub`] via
+/// [`crate::grounder::symbols::model::percentile_cutoff`] rather than re-deriving it, per
+/// arch-u92c3-cutoff-formula-duplicated-not-shared.
+fn ambiguity_map(idx: &SymbolIndex) -> BTreeMap<(&str, Lang), usize> {
+    name_occurrence_map(idx, false)
+}
+
+/// Whether a location's match is a DEFINITION or a REFERENCE of the query - the existing
+/// lexical tier ([`ScoredHit::lexical`]: 3 for a definition, 2 for a reference) is derived from
+/// this, and [`Symbols::ground_ranked`] uses it to decide how a hit's entity should be keyed
+/// (a definition is its own entity by construction; a reference is absorbed into its sole
+/// definer, when unambiguous).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HitKind {
+    Def,
+    Ref,
+}
+
+/// One (file, line) location scored against the query's terms (spec 92 criterion 3, the
+/// scorer): `tier` - EXACT (2, a term equals the entity's name) beats CONTAINS (1, a term
+/// merely occurs within a longer name), the Design decision "a query token that equals an
+/// entity's name beats a token that merely occurs in it"; `commonness` - the MATCHED ENTITY's
+/// OWN tree-wide occurrence count from [`commonness_map`], looked up by the entity's OWN
+/// resolved name rather than whichever query term matched it (ascending: rarer ranks first, the
+/// inverse-document-frequency ordering, without needing floating point - spec 92 criterion 3
+/// remediation round 2, adv-u92c3r2-contains-tier-commonness-collapses-to-spurious-zero: a
+/// CONTAINS-tier term is by definition a substring, so keying this off the term itself missed
+/// `commonness_map` for nearly every CONTAINS hit and silently handed it the artificial rarest
+/// score); `lexical` - the EXISTING definition-over-reference tier, the Design's final
+/// tiebreaker ("then by the existing lexical score").
+struct ScoredHit<'a> {
+    tier: u8,
+    commonness: usize,
+    lexical: u8,
+    file: &'a str,
+    line: u32,
+    name: &'a str,
+    lang: Lang,
+    kind: HitKind,
+}
+
+impl ScoredHit<'_> {
+    /// The `(name, Lang)` key that identifies this hit's matched entity within
+    /// [`commonness_map`]/[`ambiguity_map`]/`def_sites` - the ONE pairing every cross-language
+    /// scoping lookup in this module uses, so a same-named entity in an unrelated language can
+    /// never be looked up, absorbed into, or pooled with this one (spec 92 criterion 3
+    /// remediation round 5, adj-u92c3-r4-verdict-reject).
+    fn entity(&self) -> (&str, Lang) {
+        (self.name, self.lang)
+    }
+}
+
+/// Score every (file, line) definition/reference location in `idx` against `terms`, ranked
+/// tier-first, then rarest-commonness-first, then definition-over-reference, then by file/line
+/// (a total, deterministic order) - the ONE scored, sorted pass both [`Symbols::ground`] and
+/// [`Symbols::ground_ranked`] consume, so the two views can never disagree on ranking. A
+/// location that matches more than one term (or both an EXACT and a CONTAINS candidate) keeps
+/// its BEST tier - commonness is a property of the matched entity's own name, so it never varies
+/// by which term matched - mirroring the def-and-ref-at-one-line collapse the prior single-pass
+/// scorer already made.
+fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
+    let commonness = commonness_map(idx);
+    let mut best: BTreeMap<(&'a str, u32), ScoredHit<'a>> = BTreeMap::new();
+    for (path, fs) in idx.files() {
+        let mut score_one = |name: &'a str, line: u32, kind: HitKind, lexical: u8| {
+            // The best TIER any query term gives this name: an EXACT match (some term equals the
+            // name) always wins over a CONTAINS match (some term merely occurs within it).
+            // `commonness` is the MATCHED ENTITY's own tree-wide occurrence count - `(name,
+            // fs.lang)`, never the raw query term `t` - so it is the same value regardless of
+            // which term matched. A CONTAINS-tier term is by definition a substring, so it is
+            // almost never itself an indexed name; keying the lookup on `t` instead of `name`
+            // (round-2 defect, adv-u92c3r2-contains-tier-commonness-collapses-to-spurious-zero)
+            // silently missed `commonness_map` for nearly every CONTAINS hit and handed it the
+            // artificial rarest score (`unwrap_or(0)`), drowning a genuinely rare entity under
+            // unrelated ones that merely share a common substring. Keying on `name` ALONE,
+            // ignoring `fs.lang` (round-4 defect, adv-u92c3r4-ambiguity-map-bleeds-across-
+            // languages), pooled a same-named entity's commonness across every language sharing
+            // it; `(name, fs.lang)` scopes the lookup to this hit's OWN language, exactly as
+            // `SymbolIndex::reference_degree`/`is_hub` already scope the fan-out signal (5.5.2).
+            let mut hit_tier = 0u8;
+            for t in terms {
+                let tier = if name == *t {
+                    2u8
+                } else if name.contains(t) {
+                    1u8
+                } else {
+                    0u8
+                };
+                if tier > hit_tier {
+                    hit_tier = tier;
+                }
+            }
+            if hit_tier == 0 {
+                return;
+            }
+            let hit_commonness = commonness.get(&(name, fs.lang)).copied().unwrap_or(0);
+            best.entry((path.as_str(), line))
+                .and_modify(|slot| {
+                    let better = hit_tier > slot.tier
+                        || (hit_tier == slot.tier && hit_commonness < slot.commonness)
+                        || (hit_tier == slot.tier
+                            && hit_commonness == slot.commonness
+                            && lexical > slot.lexical);
+                    if better {
+                        *slot = ScoredHit {
+                            tier: hit_tier,
+                            commonness: hit_commonness,
+                            lexical,
+                            file: path.as_str(),
+                            line,
+                            name,
+                            lang: fs.lang,
+                            kind,
+                        };
+                    }
+                })
+                .or_insert(ScoredHit {
+                    tier: hit_tier,
+                    commonness: hit_commonness,
+                    lexical,
+                    file: path.as_str(),
+                    line,
+                    name,
+                    lang: fs.lang,
+                    kind,
+                });
+        };
+        for d in &fs.defs {
+            score_one(d.name.as_str(), d.line, HitKind::Def, 3);
+        }
+        for r in &fs.refs {
+            score_one(r.name.as_str(), r.line, HitKind::Ref, 2);
+        }
+    }
+    let mut hits: Vec<ScoredHit<'a>> = best.into_values().collect();
+    hits.sort_by(|a, b| {
+        b.tier
+            .cmp(&a.tier)
+            .then(a.commonness.cmp(&b.commonness))
+            .then(b.lexical.cmp(&a.lexical))
+            .then(a.file.cmp(b.file))
+            .then(a.line.cmp(&b.line))
+    });
+    hits
+}
+
 impl Grounder for Symbols {
     fn ground(&self, query: &str, k: usize) -> Vec<Ref> {
         if query.is_empty() || k == 0 {
@@ -133,52 +331,17 @@ impl Grounder for Symbols {
             return Vec::new();
         }
         let idx = self.idx.lock().unwrap();
-        // Score each (file, line) in ONE pass over the files, keyed so a location that is BOTH a
-        // definition and a reference of the query (e.g. a recursive `fn parse() { parse(); }`, whose
-        // def name and self-call share a line) collapses to its HIGHEST score - not two rows. A
-        // DEFINITION whose name is a term ranks 3, a REFERENCE 2; incidental prose is not indexed as
-        // a symbol, so it never appears (it ranks 0 by absence). We iterate `files()` directly -
-        // keeping each hit's file and line - rather than `definitions_named`/`references_named`,
-        // which drop the file and would force a rescan to recover it (the
-        // arch-u15-1-defsnamed-drops-file cohesion note); grounding needs file+line on every hit, so
-        // the file-keeping pass is both correct and cheaper. The `BTreeMap` also makes the fold
-        // order deterministic regardless of insertion order.
-        let mut best: BTreeMap<(&str, u32), (u8, &str)> = BTreeMap::new();
-        for (path, fs) in idx.files() {
-            for d in &fs.defs {
-                if terms.contains(&d.name.as_str()) {
-                    let slot = best
-                        .entry((path.as_str(), d.line))
-                        .or_insert((0, d.name.as_str()));
-                    if 3 > slot.0 {
-                        *slot = (3, d.name.as_str());
-                    }
-                }
-            }
-            for r in &fs.refs {
-                if terms.contains(&r.name.as_str()) {
-                    let slot = best
-                        .entry((path.as_str(), r.line))
-                        .or_insert((0, r.name.as_str()));
-                    if 2 > slot.0 {
-                        *slot = (2, r.name.as_str());
-                    }
-                }
-            }
-        }
-        // Rank: higher score first, then file, then line (a total, deterministic order).
-        let mut scored: Vec<(u8, &str, u32, &str)> = best
-            .into_iter()
-            .map(|((file, line), (score, name))| (score, file, line, name))
-            .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)).then(a.2.cmp(&b.2)));
-        scored
+        // Ranked by intent (spec 92 criterion 3): exact-name match first, then the rarest
+        // matching token, then definition-over-reference - NOT deduplicated by entity (that is
+        // `ground_ranked`'s page-shape concern), so this stays the SAME row-per-location
+        // contract `grounded_seed` (conductor.rs) relies on for prompt-seed file diversity.
+        scored_hits(&idx, &terms)
             .into_iter()
             .take(k)
-            .map(|(_, file, line, name)| Ref {
-                file: file.to_string(),
-                line,
-                text: name.to_string(),
+            .map(|h| Ref {
+                file: h.file.to_string(),
+                line: h.line,
+                text: h.name.to_string(),
             })
             .collect()
     }
@@ -353,6 +516,184 @@ impl Grounder for Symbols {
             store::content_hash(&serialized),
             crate::grounder::symbols::registry::GRAMMAR_TAGS_VERSION
         )
+    }
+
+    /// The RANKED-BY-INTENT page (spec 92 criterion 3): [`scored_hits`]'s already-ranked list,
+    /// deduplicated to one row per ENTITY - "six call sites of one function occupy one row with
+    /// its degree." A DEFINITION is its own entity, keyed by `(name, file, line)` - always
+    /// unique by construction, so two DIFFERENT definitions sharing a name (the constraints
+    /// walk: "a name defined in two files - `ground` returns both entities as separate rows")
+    /// never collapse into one, even when they share a file (six same-named methods on six
+    /// structs in one file stay six rows). A REFERENCE is absorbed into its SOLE definer's row
+    /// when the name has EXACTLY one definition anywhere in the tree; a name with ZERO or
+    /// AMBIGUOUS (multiple) definitions is never guessed at - its references stand alone as
+    /// their own (unattributed) entity rather than being pinned to one of several candidates.
+    /// `degree` is the real [`SymbolIndex::reference_degree`] for the entity's name and
+    /// language - the same primitive [`SymbolIndex::is_hub`] already uses, not an approximate
+    /// count of what happened to be visible in this page - EXCEPT on an ambiguous name's own
+    /// Def row, which reports 0 rather than the tree-wide count (spec 92 criterion 3
+    /// remediation round 6, adj-u92c3-r5-verdict-reject /
+    /// adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): that count is exactly
+    /// the unattributed reference pool the Standalone row exists to carry, so a Def row that
+    /// cannot be pinned to any given reference must never claim it too - see the degree
+    /// computation below for the full reasoning.
+    fn ground_ranked(&self, query: &str, k: usize) -> Vec<RankedRef> {
+        if query.is_empty() || k == 0 {
+            return Vec::new();
+        }
+        let terms = query_terms(query);
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let idx = self.idx.lock().unwrap();
+        let hits = scored_hits(&idx, &terms);
+
+        // Every matched (name, language) pair's definition sites, so a REFERENCE hit can look up
+        // whether it has a SOLE, SAME-LANGUAGE definer to absorb into. Built over the WHOLE
+        // index (not just the hits), since a name's definition is only a "hit" itself when it
+        // also matches a term - the absorption question ("how many definitions does this name
+        // have, within this language") is independent of that. Keyed by `(name, Lang)`, never a
+        // bare name (spec 92 criterion 3 remediation round 5, adj-u92c3-r4-verdict-reject /
+        // adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption): a bare-name key let a
+        // Rust reference with NO Rust definition (e.g. a `.unwrap()` call site, matching only
+        // `SymRef::name`) resolve through a same-named definition in an unrelated language (a JS
+        // `unwrap` helper) as if it were that entity's own sole definer - silently absorbing and
+        // deduplicating the entire cross-language reference population into ONE foreign row,
+        // erasing rather than down-weighting the Design's own poster-child tree-wide-common case.
+        let mut def_sites: BTreeMap<(&str, Lang), Vec<(&str, u32)>> = BTreeMap::new();
+        for (path, fs) in idx.files() {
+            for d in &fs.defs {
+                def_sites
+                    .entry((d.name.as_str(), fs.lang))
+                    .or_default()
+                    .push((path.as_str(), d.line));
+            }
+        }
+
+        #[derive(PartialEq, Eq, Hash, Clone)]
+        enum EntityKey<'a> {
+            /// A specific definition site - always a distinct entity.
+            Def(&'a str, &'a str, u32),
+            /// A `(name, Lang)` with zero or ambiguous (multiple SAME-LANGUAGE) definitions -
+            /// its references stand alone, keyed by name AND language (never a bare name: a
+            /// standalone Rust `unwrap` and a standalone Python `unwrap` are different entities,
+            /// there is only ever one such row per `(name, Lang)` pair).
+            Standalone(&'a str, Lang),
+        }
+
+        let mut seen: HashSet<EntityKey> = HashSet::new();
+        let mut out: Vec<RankedRef> = Vec::new();
+        for h in hits {
+            // How many SAME-LANGUAGE definitions this hit's own name has - independent of
+            // which hit kind matched, since a Def hit's own definition is always counted in
+            // `def_sites` and a Ref hit's sole-definer lookup below uses the identical key.
+            let def_count = def_sites.get(&h.entity()).map_or(0, Vec::len);
+            let key = match h.kind {
+                HitKind::Def => EntityKey::Def(h.name, h.file, h.line),
+                HitKind::Ref => match def_sites.get(&h.entity()).map(Vec::as_slice) {
+                    Some([(file, line)]) => EntityKey::Def(h.name, file, *line),
+                    _ => EntityKey::Standalone(h.name, h.lang),
+                },
+            };
+            if !seen.insert(key.clone()) {
+                continue;
+            }
+            // An AMBIGUOUS (more than one same-language definition) entity's own Def row
+            // reports an attributable degree of 0, never the tree-wide reference count (spec
+            // 92 criterion 3 remediation round 6, adj-u92c3-r5-verdict-reject /
+            // adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): the
+            // Standalone row for this same `(name, Lang)` exists SPECIFICALLY because a
+            // reference cannot be pinned to any one of its several candidates, so a Def row
+            // must never turn around and claim that identical unattributable pool as its own
+            // - the opposite of what creating the Standalone row already decided. An
+            // UNAMBIGUOUS (exactly one definer) Def row keeps the real
+            // `reference_degree` - every reference to that name genuinely IS this entity's
+            // own, nothing is pooled. A Standalone row always keeps the real
+            // `reference_degree` too - it IS the pooled, unattributed reference count, by
+            // construction of why it exists at all.
+            let degree = match key {
+                EntityKey::Def(..) if def_count > 1 => 0,
+                _ => idx.reference_degree(h.name, h.lang),
+            };
+            out.push(RankedRef {
+                loc: Ref {
+                    file: h.file.to_string(),
+                    line: h.line,
+                    text: h.name.to_string(),
+                },
+                degree,
+            });
+            if out.len() >= k {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Whether `query` has at least one match whose MATCHED ENTITY sits AT OR BELOW the repo's
+    /// own name-ambiguity distribution's [`HUB_DEGREE_PERCENTILE`] cutoff (spec 92 criterion 3:
+    /// "a query with no strong token returns the honest 'no entity matches strongly' line
+    /// instead of noise"). Two fixes over the first round of this unit (spec 92 criterion 3
+    /// remediation, adj-u92c3-verdict-reject):
+    ///
+    /// 1. Judges the SAME hits [`scored_hits`] (the actual ranker `ground`/`ground_ranked` use)
+    ///    produces, rather than re-deriving a second raw `counts.get(term)` lookup keyed on the
+    ///    QUERY TERM. A CONTAINS-tier term (`"damage"` matching `apply_damage`) is never itself
+    ///    an indexed name, so that second lookup always missed and silently read as "not
+    ///    strong" - an absent-key sentinel inversion against `scored_hits`' own
+    ///    `unwrap_or(0)` = rarest convention. Judging `scored_hits`' resolved
+    ///    [`ScoredHit::name`] (the entity actually matched) instead closes that gap.
+    /// 2. Draws its cutoff from [`ambiguity_map`] (distinct-DEFINITION count per `(name, Lang)`)
+    ///    rather than [`commonness_map`] (raw def+ref occurrence count): a single-definition,
+    ///    heavily-referenced entity (`criterion_stable_id`, `sweep_terminal` - this repo's own
+    ///    Done-when audit fixtures) is completely unambiguous and must never be misclassified
+    ///    as tree-wide-common merely because it is called often.
+    /// 3. Scopes BOTH the per-hit ambiguity lookup AND the cutoff distribution itself by the
+    ///    hit's OWN language (spec 92 criterion 3 remediation round 5,
+    ///    adj-u92c3-r4-verdict-reject / adv-u92c3r4-ambiguity-map-bleeds-across-languages),
+    ///    mirroring [`SymbolIndex::is_hub`]'s own per-language cutoff exactly: a name defined
+    ///    once in Rust and, separately, once in an unrelated language is genuinely unambiguous
+    ///    in EACH language alone; pooling the two definition counts into one bare-name bucket
+    ///    manufactures a tree-wide-ambiguous verdict neither language's own distribution
+    ///    supports.
+    ///
+    /// A query with no matches at all is not strong either - it has no candidate to be
+    /// confident about.
+    fn has_strong_match(&self, query: &str, _k: usize) -> bool {
+        let terms = query_terms(query);
+        if terms.is_empty() {
+            return false;
+        }
+        let idx = self.idx.lock().unwrap();
+        let hits = scored_hits(&idx, &terms);
+        if hits.is_empty() {
+            return false;
+        }
+        let ambiguity = ambiguity_map(&idx);
+        // The ambiguity cutoff, drawn SEPARATELY per language from that language's OWN
+        // distinct-definition distribution - never one pooled cutoff across every language
+        // present, exactly as `SymbolIndex::is_hub` draws its degree cutoff from only the
+        // queried language's own reference-degree distribution (5.5.2). A language absent from
+        // `ambiguity` (no definition anywhere in it) falls back to 0: nothing has EVER been
+        // observed as ambiguous there, so every hit in that language trivially clears the
+        // cutoff, matching `ambiguity.get(..).unwrap_or(0)` below for every such hit regardless.
+        let mut cutoffs: BTreeMap<Lang, usize> = BTreeMap::new();
+        for lang in hits.iter().map(|h| h.lang).collect::<BTreeSet<Lang>>() {
+            let mut degrees: Vec<usize> = ambiguity
+                .iter()
+                .filter_map(|(&(_, l), &count)| (l == lang).then_some(count))
+                .collect();
+            let cutoff = if degrees.is_empty() {
+                0
+            } else {
+                percentile_cutoff(&mut degrees, HUB_DEGREE_PERCENTILE)
+            };
+            cutoffs.insert(lang, cutoff);
+        }
+        hits.iter().any(|h| {
+            let cutoff = cutoffs.get(&h.lang).copied().unwrap_or(0);
+            ambiguity.get(&h.entity()).copied().unwrap_or(0) <= cutoff
+        })
     }
 }
 
@@ -751,6 +1092,89 @@ mod tests {
         );
     }
 
+    /// Spec 92 criterion 3 remediation round 5 (adj-u92c3-r4-verdict-reject,
+    /// adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption): `ground_ranked`'s
+    /// entity-resolution (`def_sites`) must scope by `(name, Lang)`, never a bare name. JS
+    /// defines the ONLY tree-wide definition of `unwrap`; five UNRELATED Rust files each
+    /// reference that same bare name (mirroring Rust's own `.unwrap()` call sites, which are
+    /// pure references with no local Rust definition). Before this fix, every Rust reference
+    /// absorbed into the JS definition's entity (the sole bare-name def site) and collapsed to
+    /// ONE row - erasing the entire Rust reference population rather than surfacing it as its
+    /// own (unattributed) in-language entity, exactly the live `rigger ground unwrap 50` repro
+    /// against this repo's own tree.
+    #[test]
+    fn ground_ranked_keeps_a_cross_language_reference_as_its_own_in_language_entity_not_absorbed_into_a_foreign_definition(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shim.mjs"), "function unwrap() {}\n").unwrap();
+        for i in 0..5 {
+            std::fs::write(
+                dir.path().join(format!("r{i}.rs")),
+                "fn go() { unwrap(); }\n",
+            )
+            .unwrap();
+        }
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let ranked = g.ground_ranked("unwrap", 50);
+        assert!(
+            ranked.iter().any(|r| r.loc.file == "shim.mjs"),
+            "the JS definition must still surface its own row; got {ranked:?}"
+        );
+        let rust_row = ranked
+            .iter()
+            .find(|r| r.loc.file.ends_with(".rs"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "the Rust reference population must surface its OWN row, never be absorbed \
+                 into a same-named foreign-language definition; got {ranked:?}"
+                )
+            });
+        assert_eq!(
+            rust_row.degree, 5,
+            "the Rust entity's degree must be its own in-language reference count (5), never \
+             the JS definition's; got {ranked:?}"
+        );
+        assert_eq!(
+            ranked.len(),
+            2,
+            "a same-named foreign-language definition must never collapse the Rust reference \
+             population into the JS row - exactly 2 rows (the JS def, the Rust standalone \
+             entity); got {ranked:?}"
+        );
+    }
+
+    /// Spec 92 criterion 3 remediation round 5 (adj-u92c3-r4-verdict-reject,
+    /// adv-u92c3r4-ambiguity-map-bleeds-across-languages): `ambiguity_map` (and therefore
+    /// `has_strong_match`'s cutoff) must scope by `(name, Lang)`, never a bare name.
+    /// `collide` is defined EXACTLY ONCE in Rust (genuinely unambiguous within Rust alone) and,
+    /// separately, EXACTLY ONCE in Python (also genuinely unambiguous within Python alone).
+    /// Pooling the two languages' definition counts into one bare-name bucket manufactures a
+    /// tree-wide ambiguity of 2 - an outlier against the nine Rust filler names' baseline of 1
+    /// each - so the old bare-name-keyed cutoff wrongly read Rust's own unambiguous `collide` as
+    /// tree-wide-common and answered "no entity matches strongly". Scoped per-language, Rust's
+    /// own ambiguity distribution is nine names at 1 plus `collide` at 1: no outlier, so
+    /// `collide` correctly reads as a confident, unambiguous match.
+    #[test]
+    fn has_strong_match_scopes_definition_ambiguity_by_language_a_cross_language_pool_never_taints_an_unambiguous_in_language_definition(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let filler: String = (0..9).map(|i| format!("fn filler{i}() {{}}\n")).collect();
+        std::fs::write(dir.path().join("filler.rs"), filler).unwrap();
+        std::fs::write(dir.path().join("combat.rs"), "fn collide() {}\n").unwrap();
+        std::fs::write(dir.path().join("other.py"), "def collide():\n    pass\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        assert!(
+            g.has_strong_match("collide", 8),
+            "collide has exactly ONE definition within Rust and, separately, exactly one \
+             within Python - each language's OWN ambiguity is 1, genuinely unambiguous. \
+             Pooling both languages' definition counts into one bare-name bucket must never \
+             manufacture a false tree-wide-ambiguous verdict for either language's own \
+             genuinely unambiguous entity."
+        );
+    }
+
     #[test]
     fn empty_query_or_zero_k_grounds_nothing() {
         let dir = tempfile::tempdir().unwrap();
@@ -815,33 +1239,39 @@ mod tests {
         // so BOTH changes survive.
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
-        std::fs::write(dir.path().join("a.rs"), "fn one() {}\n").unwrap();
-        std::fs::write(dir.path().join("b.rs"), "fn two() {}\n").unwrap();
-        // Both open over the SAME initial on-disk index {a: one, b: two}, each into its own memory.
+        // Named so the OLD and NEW symbol at each site share no substring relationship (spec 92
+        // criterion 3 added CONTAINS-tier matching, so e.g. "one" would still weakly ground to a
+        // renamed "oneprime" - a real, intended recall improvement, but it would wrongly pass a
+        // "the superseded symbol must be gone" assertion here for the wrong reason).
+        std::fs::write(dir.path().join("a.rs"), "fn alpha_orig() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn gamma_orig() {}\n").unwrap();
+        // Both open over the SAME initial on-disk index {a: alpha_orig, b: gamma_orig}, each
+        // into its own memory.
         let conductor = Symbols::open(root, None);
         let other_process = Symbols::open(root, None);
 
-        // The "other process" reindexes b.rs -> twoprime and PERSISTS it. Disk is now {a, b'}.
-        std::fs::write(dir.path().join("b.rs"), "fn twoprime() {}\n").unwrap();
+        // The "other process" reindexes b.rs -> delta_fresh and PERSISTS it. Disk is now {a, b'}.
+        std::fs::write(dir.path().join("b.rs"), "fn delta_fresh() {}\n").unwrap();
         other_process.reindex(root, &["b.rs".to_string()]);
 
-        // The conductor still holds the STALE in-memory index {a: one, b: two}. It reindexes a.rs.
-        // Its persist MUST fold in the peer's twoprime rather than clobber it back to two.
-        std::fs::write(dir.path().join("a.rs"), "fn oneprime() {}\n").unwrap();
+        // The conductor still holds the STALE in-memory index {a: alpha_orig, b: gamma_orig}. It
+        // reindexes a.rs. Its persist MUST fold in the peer's delta_fresh rather than clobber it
+        // back to gamma_orig.
+        std::fs::write(dir.path().join("a.rs"), "fn beta_fresh() {}\n").unwrap();
         conductor.reindex(root, &["a.rs".to_string()]);
 
         // A fresh reader (a third process) sees BOTH changes on disk.
         let reader = Symbols::open(root, None);
         assert!(
-            !reader.ground("oneprime", 5).is_empty(),
+            !reader.ground("beta_fresh", 5).is_empty(),
             "the conductor's own reindex must be persisted"
         );
         assert!(
-            !reader.ground("twoprime", 5).is_empty(),
+            !reader.ground("delta_fresh", 5).is_empty(),
             "the peer's concurrent reindex must NOT be clobbered by the conductor's stale snapshot"
         );
         assert!(
-            reader.ground("two", 5).is_empty(),
+            reader.ground("gamma_orig", 5).is_empty(),
             "the superseded symbol must be gone"
         );
     }
@@ -850,25 +1280,326 @@ mod tests {
     fn reindex_replaces_only_a_changed_files_symbols() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_str().unwrap();
-        std::fs::write(dir.path().join("a.rs"), "fn one() {}\n").unwrap();
-        std::fs::write(dir.path().join("b.rs"), "fn two() {}\n").unwrap();
+        // Named so the OLD and NEW symbol share no substring relationship (spec 92 criterion 3's
+        // CONTAINS-tier matching would otherwise still weakly ground "one" to a renamed
+        // "oneprime" - correct recall, but the wrong reason for THIS assertion to pass).
+        std::fs::write(dir.path().join("a.rs"), "fn alpha_orig() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn gamma_orig() {}\n").unwrap();
         let g = Symbols::open(root, None);
-        assert!(!g.ground("one", 5).is_empty());
+        assert!(!g.ground("alpha_orig", 5).is_empty());
 
         // Change a.rs, reindex just it: the new symbol grounds, the old one is gone, b.rs stands.
-        std::fs::write(dir.path().join("a.rs"), "fn oneprime() {}\n").unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn beta_fresh() {}\n").unwrap();
         g.reindex(root, &["a.rs".to_string()]);
         assert!(
-            !g.ground("oneprime", 5).is_empty(),
+            !g.ground("beta_fresh", 5).is_empty(),
             "the freshened symbol must ground"
         );
         assert!(
-            g.ground("one", 5).is_empty(),
+            g.ground("alpha_orig", 5).is_empty(),
             "the replaced symbol must be gone"
         );
         assert!(
-            !g.ground("two", 5).is_empty(),
+            !g.ground("gamma_orig", 5).is_empty(),
             "the untouched file must stand"
+        );
+    }
+
+    /// Spec 92 criterion 3 (RANKED BY INTENT), the tier decision: "a query token that equals
+    /// an entity's name beats a token that merely occurs in it." `run` EXACTLY names one
+    /// definition; `run_all` only CONTAINS the token. Both are equally rare (each defined
+    /// exactly once, nowhere else), so tier is the only thing that can decide the order - not
+    /// commonness, not the def/ref lexical tier (both hits are definitions).
+    #[test]
+    fn ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        // Named so a plain file-order tiebreak (with tier ignored) would put the CONTAINS
+        // match first - only real tier precedence can make the exact match win here.
+        std::fs::write(dir.path().join("zzz_exact.rs"), "fn run() {}\n").unwrap();
+        std::fs::write(dir.path().join("aaa_contains.rs"), "fn run_all() {}\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let refs = g.ground("run", 5);
+        assert_eq!(
+            refs[0].file, "zzz_exact.rs",
+            "an exact-name match must outrank a name that merely contains the token; got {refs:?}"
+        );
+        assert_eq!(refs[0].text, "run");
+    }
+
+    /// Spec 92 criterion 3, the audit's own failure shape (docs/audit/2026-09-graph-vs-grep.md
+    /// question 3: "dash run-awareness API routes" - `ground` returned "six `run` definitions
+    /// in conductor.rs", ranking failed). SIX tree-wide `run` definitions must not drown out a
+    /// rare, specific `dash` match, even though both share the SAME exact-match tier and the
+    /// SAME definition lexical tier - only the inverse-document-frequency-style commonness
+    /// weighting can tell them apart.
+    #[test]
+    fn ground_gives_a_rare_exact_match_priority_over_six_tree_wide_definitions_of_another_term() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..6 {
+            std::fs::write(dir.path().join(format!("r{i}.rs")), "fn run() {}\n").unwrap();
+        }
+        // Named so a plain file-order tiebreak (with commonness ignored) would put a `run`
+        // hit first - only real inverse-document-frequency weighting can make `dash` win.
+        std::fs::write(dir.path().join("zzz_dash.rs"), "fn dash() {}\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let refs = g.ground("dash run", 10);
+        assert_eq!(
+            refs[0].text, "dash",
+            "the rare token must rank above the six tree-wide `run` hits; got {refs:?}"
+        );
+        assert_eq!(refs[0].file, "zzz_dash.rs");
+    }
+
+    /// Spec 92 criterion 3 remediation round 2 (adv-u92c3r2-contains-tier-commonness-collapses
+    /// -to-spurious-zero, UPHELD by review): `scored_hits`' CONTAINS-tier commonness must be the
+    /// MATCHED ENTITY's OWN tree-wide occurrence count, never the raw query term's. A
+    /// CONTAINS-tier term is by definition a substring, so it is almost never itself an indexed
+    /// name; keying `commonness_map` on the term (instead of the entity it resolved to) silently
+    /// collapsed every CONTAINS hit to the artificial rarest score (0), drowning a genuinely rare
+    /// entity under unrelated ones that merely happen to share a common substring.
+    ///
+    /// `cfg_one`..`cfg_four` are four unrelated entities (each defined once, referenced twice -
+    /// own commonness 3) sharing the substring "cfg", which is never itself a standalone name.
+    /// `zorble_alone` (defined once, referenced nowhere - own commonness 1) is genuinely rarer.
+    /// `zorble_alone`'s definition is placed LAST (the highest line number) in the fixture file
+    /// deliberately: under the old bug every CONTAINS hit ties at commonness 0, so the sort falls
+    /// through to line order and puts `zorble_alone` LAST, not first - only scoring commonness
+    /// off the matched entity's own name can put the genuinely rare one first.
+    #[test]
+    fn ground_ranked_puts_a_genuinely_rare_contains_tier_entity_above_common_ones_sharing_its_substring(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("entities.rs"),
+            "fn cfg_one() {}\nfn cfg_two() {}\nfn cfg_three() {}\nfn cfg_four() {}\nfn zorble_alone() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("callers.rs"),
+            "fn go() {\n    cfg_one();\n    cfg_one();\n    cfg_two();\n    cfg_two();\n    cfg_three();\n    cfg_three();\n    cfg_four();\n    cfg_four();\n}\n",
+        )
+        .unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        // Neither "cfg" nor "zorble" is ever itself a standalone name in this fixture - every
+        // match below is CONTAINS-tier, never EXACT, squarely exercising the scorer's
+        // CONTAINS-tier commonness lookup.
+        let ranked = g.ground_ranked("cfg zorble", 10);
+        assert_eq!(
+            ranked.len(),
+            5,
+            "five distinct entities must each collapse to one row; got {ranked:?}"
+        );
+        assert_eq!(
+            ranked[0].loc.text, "zorble_alone",
+            "the genuinely rare entity (own commonness 1) must outrank four entities that share \
+             its query substring but are each themselves more common (own commonness 3) - CONTAINS \
+             -tier commonness keyed on the raw query term ties all five at an artificial zero and \
+             falls through to line order (which would rank zorble_alone LAST, by construction of \
+             this fixture); got {ranked:?}"
+        );
+    }
+
+    /// Spec 92 criterion 3, "the top page is deduplicated by entity, so six call sites of one
+    /// function occupy one row with its degree." A definition plus every one of its call
+    /// sites (scattered across DIFFERENT files) must collapse to a SINGLE [`RankedRef`],
+    /// carrying the real reference degree.
+    #[test]
+    fn ground_ranked_dedupes_a_functions_many_call_sites_into_one_row_with_its_degree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("def.rs"), "fn apply_damage() {}\n").unwrap();
+        for i in 0..3 {
+            std::fs::write(
+                dir.path().join(format!("caller{i}.rs")),
+                "fn go() { apply_damage(); }\n",
+            )
+            .unwrap();
+        }
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let ranked = g.ground_ranked("apply_damage", 5);
+        assert_eq!(
+            ranked.len(),
+            1,
+            "the definition and its three call sites must collapse into ONE entity row; got {ranked:?}"
+        );
+        assert_eq!(ranked[0].loc.file, "def.rs");
+        assert_eq!(
+            ranked[0].degree, 3,
+            "the row's degree must be the reference count across every call site; got {ranked:?}"
+        );
+    }
+
+    /// Spec 92 constraints walk: "a name defined in two files - `ground` returns both entities
+    /// as separate rows." The entity dedup is per DEFINITION, never per bare name - two
+    /// distinct `run` definitions must not collapse into one just because they share a name.
+    #[test]
+    fn ground_ranked_keeps_two_definitions_of_the_same_name_as_separate_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn run() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn run() {}\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let ranked = g.ground_ranked("run", 5);
+        let files: Vec<&str> = ranked.iter().map(|r| r.loc.file.as_str()).collect();
+        assert!(
+            files.contains(&"a.rs") && files.contains(&"b.rs"),
+            "two distinct definitions of the same name must both appear as separate rows; got {ranked:?}"
+        );
+        assert_eq!(
+            ranked.len(),
+            2,
+            "no more than the two real definitions - never collapsed, never duplicated; got {ranked:?}"
+        );
+    }
+
+    /// Spec 92 criterion 3 remediation round 6 (adj-u92c3-r5-verdict-reject /
+    /// adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated): an AMBIGUOUS name's
+    /// own Def rows must never claim the whole unattributed reference pool as their own
+    /// degree. Two same-language definitions of one name, PLUS real call sites, reproduces the
+    /// reject's own empirical repro (two Rust defs of `run` + five Rust refs -> three rows,
+    /// every row printing the same pooled degree) - here with a fixture name so the assertion
+    /// is exact and stable rather than depending on this crate's own real `run` population.
+    /// Every prior test either used zero-reference ambiguous defs
+    /// (`ground_ranked_keeps_two_definitions_of_the_same_name_as_separate_rows`) or an
+    /// unambiguous single def WITH references
+    /// (`ground_ranked_dedupes_a_functions_many_call_sites_into_one_row_with_its_degree`) -
+    /// never an ambiguous def combined with real references, the exact combination the reject
+    /// named as untested.
+    #[test]
+    fn ground_ranked_gives_ambiguous_definitions_zero_degree_and_pools_the_real_count_on_the_standalone_row(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn dup_name() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn dup_name() {}\n").unwrap();
+        for i in 0..5 {
+            std::fs::write(
+                dir.path().join(format!("caller{i}.rs")),
+                "fn go() { dup_name(); }\n",
+            )
+            .unwrap();
+        }
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        let ranked = g.ground_ranked("dup_name", 10);
+        assert_eq!(
+            ranked.len(),
+            3,
+            "two ambiguous Def rows plus one pooled Standalone reference row; got {ranked:?}"
+        );
+        let def_rows: Vec<_> = ranked
+            .iter()
+            .filter(|r| r.loc.file == "a.rs" || r.loc.file == "b.rs")
+            .collect();
+        assert_eq!(
+            def_rows.len(),
+            2,
+            "both ambiguous definitions must still appear as separate rows; got {ranked:?}"
+        );
+        for row in &def_rows {
+            assert_eq!(
+                row.degree, 0,
+                "an ambiguous definition's own attributable degree is unknown - the code has \
+                 already decided (by creating a Standalone row at all) that its references \
+                 cannot be pinned to one candidate, so a Def row must never claim the whole \
+                 unattributed pool as its own; got {ranked:?}"
+            );
+        }
+        let standalone = ranked
+            .iter()
+            .find(|r| r.loc.file != "a.rs" && r.loc.file != "b.rs")
+            .unwrap_or_else(|| {
+                panic!("expected a pooled Standalone reference row; got {ranked:?}")
+            });
+        assert_eq!(
+            standalone.degree, 5,
+            "the Standalone row alone carries the real aggregate unattributed reference count - \
+             genuinely different from the ambiguous Def rows' degree, never a shared pooled \
+             number; got {ranked:?}"
+        );
+    }
+
+    /// Spec 92 criterion 3, "a query with no strong token returns the honest 'no entity
+    /// matches strongly' line instead of noise." A query that only matches a tree-wide-common
+    /// (AMBIGUOUS - many distinct definitions) token is not strong; a rare, specific match is;
+    /// a query matching nothing at all is not strong either (it has no data to be noisy about,
+    /// but it is not a confident hit). `run` is genuinely ambiguous - twelve UNRELATED
+    /// definitions, so a match could mean any of them; `apply_damage` is defined exactly once.
+    /// Reference VOLUME plays no part here (spec 92 criterion 3 remediation, the
+    /// adj-u92c3-verdict-reject fix): a name referenced constantly but defined exactly once is
+    /// NOT ambiguous, only a name with multiple candidate definitions is - see
+    /// `has_strong_match_is_true_for_a_single_definition_referenced_many_times` below for that
+    /// half of the contract.
+    #[test]
+    fn has_strong_match_is_false_when_every_matching_token_is_tree_wide_common() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..12 {
+            std::fs::write(dir.path().join(format!("f{i}.rs")), "fn run() {}\n").unwrap();
+        }
+        std::fs::write(dir.path().join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        assert!(
+            !g.has_strong_match("run", 8),
+            "a query that only matches a name with many distinct (ambiguous) definitions must \
+             not be a strong match"
+        );
+        assert!(
+            g.has_strong_match("apply_damage", 8),
+            "a rare, specific match is strong"
+        );
+        assert!(
+            !g.has_strong_match("nonexistent_symbol_zzz", 8),
+            "a query with no matches at all is not a strong match either"
+        );
+    }
+
+    /// Spec 92 criterion 3 remediation (adj-u92c3-verdict-reject): the reject's own live repro
+    /// against the real project tree - `criterion_stable_id` (1 definition, 37 references) and
+    /// `sweep_terminal` (1 definition, 93 references) both wrongly printed "no entity matches
+    /// strongly". A single-definition entity is UNAMBIGUOUS no matter how many places call it;
+    /// the old cutoff conflated one entity's own reference VOLUME with tree-wide name
+    /// AMBIGUITY (how many DISTINCT definitions share the name). This fixture mirrors that
+    /// shape at a scale that clears `HUB_DEGREE_PERCENTILE` under the OLD (broken) raw
+    /// occurrence-count cutoff, proving the fix measures ambiguity, not popularity.
+    #[test]
+    fn has_strong_match_is_true_for_a_single_definition_referenced_many_times() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("def.rs"), "fn widely_called() {}\n").unwrap();
+        for i in 0..40 {
+            std::fs::write(
+                dir.path().join(format!("caller{i}.rs")),
+                "fn go() { widely_called(); }\n",
+            )
+            .unwrap();
+        }
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        assert!(
+            g.has_strong_match("widely_called", 8),
+            "a single-definition entity must read as strong regardless of how many places \
+             reference it - reference volume is not ambiguity"
+        );
+    }
+
+    /// Spec 92 criterion 3 remediation (adj-u92c3-verdict-reject, the CONTAINS-tier
+    /// sentinel-inversion gap): a query term that is never ITSELF an indexed name (only a
+    /// substring of one) must still read as strong when it resolves to a real, unambiguous
+    /// entity - `has_strong_match` must judge the MATCHED ENTITY's ambiguity
+    /// (`scored_hits`' resolved `name`), not do a second raw exact-key lookup on the query
+    /// term itself, which finds nothing and used to silently read as "not strong".
+    #[test]
+    fn has_strong_match_is_true_for_a_contains_tier_match_of_an_unambiguous_entity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        assert!(
+            g.has_strong_match("damage", 8),
+            "\"damage\" only CONTAINS-matches the single-definition apply_damage; it must read \
+             as strong, not silently fail through the honest no-match line"
         );
     }
 
@@ -899,6 +1630,39 @@ mod tests {
         assert!(
             reader.ground("gone_symbol", 5).is_empty(),
             "the deleted file's symbols must be purged from the persisted index"
+        );
+    }
+
+    /// Spec 92 criterion 2: `docs/audit/2026-09-graph-vs-grep.md` questions 5 (the driver
+    /// `fresh` flag's semantics) and 8 (`OUTER_WALL_CLOCK_SEC`) both failed with "JS not
+    /// indexed" - `ground` surfaced only generic `new`/`driver` module noise. Proven here
+    /// against this project's OWN, REAL `workflows/rigger.js` (its exact bytes, copied into an
+    /// isolated fixture root at the same relative path - not a synthetic snippet), through the
+    /// production `Symbols` grounder: both constants must now ground to it.
+    #[test]
+    fn ground_answers_audit_questions_5_and_8_against_the_real_rigger_js() {
+        let real = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("workflows")
+                .join("rigger.js"),
+        )
+        .expect("this project's own workflows/rigger.js must be readable");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("workflows")).unwrap();
+        std::fs::write(dir.path().join("workflows").join("rigger.js"), &real).unwrap();
+        let g = Symbols::open(dir.path().to_str().unwrap(), None);
+
+        // Q8: `OUTER_WALL_CLOCK_SEC` (a ternary-valued constant).
+        let outer = g.ground("OUTER_WALL_CLOCK_SEC", 6);
+        assert!(
+            outer.iter().any(|r| r.file == "workflows/rigger.js"),
+            "OUTER_WALL_CLOCK_SEC must ground to workflows/rigger.js; got {outer:?}"
+        );
+        // Q5: the driver `fresh` flag - its constant is named `FRESH` (`!!A.fresh`).
+        let fresh = g.ground("FRESH", 6);
+        assert!(
+            fresh.iter().any(|r| r.file == "workflows/rigger.js"),
+            "FRESH must ground to workflows/rigger.js; got {fresh:?}"
         );
     }
 }

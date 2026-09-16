@@ -48,11 +48,28 @@ strong token returns the honest "no entity matches strongly" line instead of noi
 IN EVERY SESSION'S HAND, decided: `rigger setup` registers the shim's MCP server with the
 operator's Claude Code session (the same `rigger_peers` the loop agents get, plus
 `rigger_ground` and `rigger_graph` tools mapped to `ground` and `graph --show/--around`), and
-installs a PreToolUse hook beside the kill hook that intercepts a Grep or a `grep` over
-`src/`, `tests/`, `workflows/` in a rigger project with the message "use rigger_ground /
+installs a PreToolUse hook beside the kill hook that intercepts a Grep or a `grep` in a
+rigger project (whose `src/`, `tests/`, `workflows/` are what the rule protects) with the message "use rigger_ground /
 rigger_graph for code lookups; grep is for literal text - add `--literal` to proceed", so the
 graph is the path of least resistance and a grep is a deliberate act. The shipped skill's
 lookup section states the same rule for a human reader.
+
+HOOK SCOPE, decided here so no round has to relitigate it: the hook is a nudge, not a
+sandbox, and a shell command's search target is undecidable from its text (`..`, `*`, `~`,
+`$(pwd)`, a redirection, a symlink), so the hook has NO target axis: inside a rigger project
+it bounces EVERY Grep tool call and EVERY Bash command that invokes grep, unless the Bash
+command carries the marker `--literal`. The former guarded-tree path test is retired, not
+kept beside the rule. A Bash command invokes grep when ONE pass over the raw text (shell
+quotes and backslash escapes resolved, a backslash-newline continuation removed with no
+separator, words split on unquoted blanks and the metacharacters `; | & ( ) < >` and
+newline) yields a word whose path basename is `grep` - so `/usr/bin/grep`, `xargs grep` and
+`sudo grep` all count. The marker anywhere in the command passes the hook, and the hook
+REMOVES it from the command it allows (the hook's `updatedInput`), because grep itself has
+no such flag. Other tools (`rg`, `egrep`, `fgrep`, `git grep`, `ack`, `ag`) and indirection
+(`eval`, `sh -c` strings, variables, substitutions, aliases, functions) are OUT OF SCOPE by
+the Design's own words - typing them is the deliberate act. A review finding against the
+hook must show a command this rule covers that the hook lets through, or a marked command
+it bounces or fails to strip; nothing else is a finding.
 
 CONSTRAINTS WALK: a name defined in two files - `--show` prints the ambiguity list (as
 today) and `ground` returns both entities as separate rows. A file deleted by the integration

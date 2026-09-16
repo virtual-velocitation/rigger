@@ -29,7 +29,7 @@ use rigger::driver::replay::{
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
     sqlite::{PrunedDerived, Store},
-    Direction, Event, EventStore, ExpectedRevision, Filter,
+    Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
     resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateResult, Runner,
@@ -1612,6 +1612,14 @@ own accumulation); reports the exact bytes reclaimed,\n                         
 or 0 when there was nothing to reclaim. Refuses loudly\n                              \
 - never waiting - while a rigger-launched build still\n                              \
 holds the cache's guard lock; retry once it is idle\n  \
+rigger reset --scratch-orphans\n                              \
+reclaim every cache-home scratch root (under\n                              \
+$XDG_CACHE_HOME/rigger, else ~/.cache/rigger) whose repo\n                              \
+no longer exists: a root keyed on a deleted checkout or a\n                              \
+test fixture's tempdir has no owner left to reclaim it.\n                              \
+Rigger does this itself whenever it creates a default-\n                              \
+placed root; this is the explicit on-demand form. Reports\n                              \
+the number of roots reclaimed; composes with the others\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -4157,16 +4165,107 @@ fn cmd_graph(args: &[String]) -> Res {
     let gp = Projector::open(&db_path("graph.db"), &project_identity())?;
     let g = gp.subgraph(&[around.clone()], depth)?;
     println!("subgraph around {around:?} (depth {depth}):");
-    for n in &g.nodes {
+    print_around_subgraph(&g, &around);
+    Ok(())
+}
+
+/// The number of newest governing decision/finding nodes `rigger graph --around` prints in full
+/// before collapsing the rest into a trailing count (spec 92, u92c6 - "a file's neighborhood is
+/// code first"). Ten is a page, not a cliff: enough to read at a glance, small enough that
+/// decision spam never crowds the code entities off the screen the way it did before this fix -
+/// the u88c1 evidence recorded a loop agent grepping `conductor.rs` because `--around` returned
+/// "only generic decision-node spam, not code structure".
+const AROUND_GOVERNANCE_CAP: usize = 10;
+
+/// Print a `rigger graph --around` subgraph CODE FIRST (spec 92, u92c6). Before this fix
+/// [`cmd_graph`] printed every node and edge [`Projector::subgraph`] returned in one
+/// undifferentiated, unbounded list - a decision or finding node is indistinguishable in shape
+/// from a code entity, and a file governed by dozens of rounds' worth of decisions buried its
+/// own structure under them (the u88c1 evidence this criterion fixes).
+///
+/// Two sections, never interleaved:
+/// - CODE FIRST: every node that is NOT a [`contextgraph::KIND_DECISION`] /
+///   [`contextgraph::KIND_FINDING`] - a file, a code entity, a design doc, a community, anything
+///   structural - sorted by id for a deterministic read, followed by every edge whose BOTH
+///   endpoints are in that same set (a decision's `GOVERNS` / a finding's `ABOUT` edge, which
+///   always terminates on a narrative node, is never one of these - the narrative section speaks
+///   for itself as a node list).
+/// - GOVERNING DECISIONS/FINDINGS, separately and capped: every [`contextgraph::KIND_DECISION`] /
+///   [`contextgraph::KIND_FINDING`] node, ranked NEWEST first and capped to
+///   [`AROUND_GOVERNANCE_CAP`], with a trailing count of however many more this subgraph held.
+///   "Newest" is the event log POSITION of the node's OWN `GOVERNS` (decision) / `ABOUT`
+///   (finding) edge - via [`conductor::recency_by_own_edge`], the SAME from-side-only core
+///   `conductor::write_capped_section` dates the prompt's decisions/lessons/findings sections
+///   with - never an edge that merely touches the node as `to` (a superseded decision's
+///   inbound `SUPERSEDES` edge carries its superseder's fresh position, which would let the
+///   stale decision crowd a live one out of the cap if it counted).
+fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let is_narrative =
+        |kind: &str| kind == contextgraph::KIND_DECISION || kind == contextgraph::KIND_FINDING;
+
+    let mut code_nodes: Vec<&contextgraph::Node> =
+        g.nodes.iter().filter(|n| !is_narrative(&n.kind)).collect();
+    code_nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    let code_ids: BTreeSet<&str> = code_nodes.iter().map(|n| n.id.as_str()).collect();
+
+    for n in &code_nodes {
         println!("  node {:<24} {}", n.id, n.kind);
     }
     for e in &g.edges {
-        println!("  edge {} -{}-> {}", e.from, e.rel, e.to);
+        if code_ids.contains(e.from.as_str()) && code_ids.contains(e.to.as_str()) {
+            println!("  edge {} -{}-> {}", e.from, e.rel, e.to);
+        }
     }
+
+    // Recency per node: the SAME from-side-only core `write_capped_section` uses for the
+    // prompt's decisions/lessons/findings sections (`conductor::recency_by_own_edge`), never a
+    // scan of every edge touching a node as either endpoint. A decision is dated off its own
+    // `GOVERNS` edge, a finding off its own `ABOUT` edge - both point node -> file, so `from`
+    // is always the narrative node itself. Keying on either endpoint (as an earlier version of
+    // this function did) let a superseded decision inherit its superseder's fresh position
+    // through the inbound `SUPERSEDES` edge (`from` = the new decision, `to` = the superseded
+    // one) and crowd a genuinely live decision out of the newest-`AROUND_GOVERNANCE_CAP` slice
+    // while printing the stale one as if current - the exact bug class `write_capped_section`'s
+    // own doc comment already fixed once; this reuses that fix rather than re-deriving it.
+    let mut recency: BTreeMap<&str, Position> =
+        conductor::recency_by_own_edge(g, contextgraph::REL_GOVERNS);
+    for (id, pos) in conductor::recency_by_own_edge(g, contextgraph::REL_ABOUT) {
+        let slot = recency.entry(id).or_insert(0);
+        *slot = (*slot).max(pos);
+    }
+
+    let mut narrative_nodes: Vec<&contextgraph::Node> =
+        g.nodes.iter().filter(|n| is_narrative(&n.kind)).collect();
+    narrative_nodes.sort_by(|a, b| {
+        let ra = recency.get(a.id.as_str()).copied().unwrap_or(0);
+        let rb = recency.get(b.id.as_str()).copied().unwrap_or(0);
+        // Newest (highest position) first; the id breaks a tie so the page is deterministic.
+        rb.cmp(&ra).then_with(|| a.id.cmp(&b.id))
+    });
+
+    if !narrative_nodes.is_empty() {
+        println!();
+        let shown = narrative_nodes.len().min(AROUND_GOVERNANCE_CAP);
+        println!(
+            "  {} governing decision(s)/finding(s) (newest {shown} shown):",
+            narrative_nodes.len()
+        );
+        for n in narrative_nodes.iter().take(AROUND_GOVERNANCE_CAP) {
+            println!("  node {:<24} {}", n.id, n.kind);
+        }
+        let rest = narrative_nodes.len().saturating_sub(AROUND_GOVERNANCE_CAP);
+        if rest > 0 {
+            println!(
+                "  (+{rest} more decision(s)/finding(s) not shown - see `rigger peers {around}` for the full history)"
+            );
+        }
+    }
+
     if g.nodes.is_empty() {
         println!("  (nothing found; has `rigger run` been run yet?)");
     }
-    Ok(())
 }
 
 /// The upper bound on how many body lines `rigger graph --show` prints (spec 58): the definition's
@@ -4213,11 +4312,15 @@ fn cmd_graph_show(entity: &str) -> Res {
     Ok(())
 }
 
-/// Print one located entity for `rigger graph --show` (spec 58): the site/kind/degree header, then
-/// the line-numbered body bounded through the shared multi-grammar symbols authority - or an
-/// explicit note (a drifted location, or a build without the extraction grammar) in place of the
-/// body, so the surface is never silently wrong (a graceful degrade, never an error).
-fn print_entity_site(site: &contextgraph::EntitySite) {
+/// Print one located entity for `rigger graph --show` (spec 58; spec 92 criterion 1, FRESH ON EVERY
+/// INTEGRATION, for the header): the site/kind/degree header, then the line-numbered body bounded
+/// through the shared multi-grammar symbols authority - or an explicit note (a drifted location this
+/// tree cannot resolve even by name, or a build without the extraction grammar) in place of the body,
+/// so the surface is never silently wrong (a graceful degrade, never an error). When
+/// [`definition_body`] HEALS a drifted recorded line to the entity's live one, the header prints the
+/// LIVE site with the recorded one noted alongside it (`"recorded line N, now M"`) rather than
+/// silently swapping one location for the other with no trace of the drift.
+fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
     let kind = if site.kind.is_empty() {
         "?"
     } else {
@@ -4231,16 +4334,14 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
         .map(|(_, n)| n)
         .unwrap_or(site.id.as_str());
     println!("show {}", site.id);
-    println!(
-        "  site: {}:{}   kind {}   degree {}",
-        site.file, site.line, kind, site.degree
-    );
     match definition_body(&site.file, site.line, name) {
         ShowBody::Lines {
+            start,
             lines,
             omitted,
             extent_end,
         } => {
+            print_site_header(site, kind, start);
             for (n, text) in lines {
                 println!("  {n:>6} | {text}");
             }
@@ -4252,47 +4353,91 @@ fn print_entity_site(site: &contextgraph::EntitySite) {
                 );
             }
         }
-        ShowBody::Note(reason) => println!("  ({reason})"),
+        ShowBody::Note(reason) => {
+            print_site_header(site, kind, site.line);
+            println!("  ({reason})");
+        }
     }
 }
 
-/// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58).
+/// The site/kind/degree header line (spec 92 criterion 1): `live_line` is where the body actually
+/// came from (or, for a [`ShowBody::Note`], simply the recorded line - nothing was located). When it
+/// agrees with the entity's RECORDED line (`site.line`) - the overwhelmingly common case, and every
+/// case before spec 92 - the header is exactly the spec-58 shape. When a name-only fallback healed a
+/// drifted recorded line to a different live one, the header shows the LIVE line as the site (it is
+/// what the body below is FROM) and notes the recorded line beside it, so the drift is visible rather
+/// than silently resolved.
+fn print_site_header(site: &contextgraph::sqlite::EntitySite, kind: &str, live_line: u32) {
+    if live_line != site.line {
+        println!(
+            "  site: {}:{}   kind {}   degree {}   (recorded line {}, now {})",
+            site.file, live_line, kind, site.degree, site.line, live_line
+        );
+    } else {
+        println!(
+            "  site: {}:{}   kind {}   degree {}",
+            site.file, site.line, kind, site.degree
+        );
+    }
+}
+
+/// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58; spec 92
+/// criterion 1).
 enum ShowBody {
-    /// The line-numbered body window `[start, end]`: `omitted` is how many lines were dropped past
-    /// the [`SHOW_MAX_BODY_LINES`] clamp (`0` when the whole extent fit), and `extent_end` is the
-    /// extent's true last line, so the caller can print an honest clamp note when `omitted > 0`.
+    /// The line-numbered body window `[start, end]`: `start` is where the body actually begins - the
+    /// entity's RECORDED line when it still holds the definition, or the LIVE line a name-only
+    /// fallback healed a drift to (spec 92) - so the caller always knows which line the printed body
+    /// is from. `omitted` is how many lines were dropped past the [`SHOW_MAX_BODY_LINES`] clamp (`0`
+    /// when the whole extent fit), and `extent_end` is the extent's true last line, so the caller can
+    /// print an honest clamp note when `omitted > 0`.
     Lines {
+        start: u32,
         lines: Vec<(u32, String)>,
         omitted: u32,
         extent_end: u32,
     },
-    /// No body could be shown; the string is the human reason (a drifted working-tree location, or
-    /// a build compiled without the extraction grammar). Printed in place of the body so the show
-    /// surface degrades honestly, never guessing or silently truncating.
+    /// No body could be shown; the string is the human reason (a drifted working-tree location this
+    /// tree cannot resolve even by name, or a build compiled without the extraction grammar).
+    /// Printed in place of the body so the show surface degrades honestly, never guessing or
+    /// silently truncating.
     Note(String),
 }
 
 /// Bound and read a located definition's body from the WORKING TREE for `rigger graph --show`
-/// (spec 58). The file is read relative to the git top-level (so a `--show` launched from a
-/// subdirectory still finds it), falling back to the cwd outside a git context.
+/// (spec 58; spec 92 criterion 1, FRESH ON EVERY INTEGRATION). The file is read relative to the git
+/// top-level (so a `--show` launched from a subdirectory still finds it), falling back to the cwd
+/// outside a git context.
 ///
 /// The extent is derived through the SHARED multi-grammar symbols authority, not a hand-rolled
-/// per-language lexer: [`derive_extent_end`] resolves the file's grammar via the symbols registry
-/// and reads the definition's END line from the grammar's OWN tree-sitter node boundary. So a
-/// braced language's closing brace, a Python block's dedent, a Go backtick raw string, and a JS
+/// per-language lexer: [`locate_definition_extent`] resolves the file's grammar via the symbols
+/// registry and reads the definition's line range from the grammar's OWN tree-sitter node boundary.
+/// So a braced language's closing brace, a Python block's dedent, a Go backtick raw string, and a JS
 /// single-quote string carrying a lone `{` are all bounded correctly by the parser - including a
 /// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
 /// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
-/// it). The window is `[start, extent]`, clamped by [`SHOW_MAX_BODY_LINES`]; a clamp reports its
-/// omitted-line count so a bounded body is never read as whole.
+/// it). The window is `[start, extent]` (the RESOLVED `start` - see below), clamped by
+/// [`SHOW_MAX_BODY_LINES`]; a clamp reports its omitted-line count so a bounded body is never read
+/// as whole.
+///
+/// The recorded `start` no longer holding the definition (the graph has not been reindexed since the
+/// code moved) is not, by itself, a reason to refuse: [`locate_definition_extent`] falls back to
+/// locating `name` by a name-only search of the SAME file, healing to the live line when that name is
+/// UNAMBIGUOUS there. [`ShowBody::Lines::start`] then carries that LIVE line rather than the recorded
+/// one, so the caller's header can show the drift instead of hiding it.
 ///
 /// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
-/// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file, the file
-/// cannot be read (a drifted or unknown location), the current tree no longer holds a definition of
-/// that name at that line (a stale location), or this build has no extraction grammar (the light,
-/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound.
+/// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file (a location
+/// that never named a real source line, or one that has drifted past what a within-file name search
+/// can safely resolve - see [`locate_definition_extent`]'s own doc for why these stay hard refusals),
+/// the file cannot be read (a drifted or unknown location), the current tree holds no definition of
+/// that name ANYWHERE in the file (deleted, not merely moved), the name is ambiguous in the file (more
+/// than one live candidate - never guessed), or this build has no extraction grammar (the light,
+/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound or
+/// from an ambiguous candidate.
 fn definition_body(file: &str, start: u32, name: &str) -> ShowBody {
-    // A recorded line of 0 never named a real source line: degrade before any read.
+    // A recorded line of 0 never named a real source line: degrade before any read. (Also covers a
+    // reference-only graph entity with no definition site of its own to search from - see
+    // `locate_definition_extent`'s doc for why this stays a hard, un-healed refusal.)
     if start == 0 {
         return ShowBody::Note(format!(
             "source unavailable at {file}:{start}; the recorded location may be stale"
@@ -4312,45 +4457,69 @@ fn definition_body(file: &str, start: u32, name: &str) -> ShowBody {
     let all: Vec<&str> = text.lines().collect();
     let total = all.len() as u32;
     if start > total {
-        // The recorded line is past end-of-file: the location drifted.
+        // The recorded line is past end-of-file: the location drifted further than a within-file
+        // name search is asked to reach (see locate_definition_extent's doc) - a hard refusal.
         return ShowBody::Note(format!(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    // Derive the extent's end line through the ONE multi-grammar authority. A miss (a drifted
-    // location, or a light-lane build with no grammar) is an explicit note, never a guessed body.
-    let extent_end = match derive_extent_end(file, &text, start, name) {
-        Ok(end) => end.min(total),
+    // Resolve WHERE the body starts (the recorded line, or - spec 92 - a healed live line) and its
+    // extent's end, through the ONE multi-grammar authority. A miss (deleted, ambiguous, or a
+    // light-lane build with no grammar) is an explicit note, never a guessed body.
+    let (live_start, extent_end) = match locate_definition_extent(file, &text, start, name) {
+        Ok((s, e)) => (s, e.min(total)),
         Err(why) => return ShowBody::Note(why),
     };
     // The max window: never dump an unbounded body. A clamp keeps the extent's true end so the
-    // caller can announce the omitted lines.
-    let window_cap = start.saturating_add(SHOW_MAX_BODY_LINES).saturating_sub(1);
-    let printed_end = extent_end.max(start).min(window_cap);
+    // caller can announce the omitted lines. The window is anchored at the RESOLVED start, so a
+    // healed drift is bounded exactly like an unmoved definition would be.
+    let window_cap = live_start
+        .saturating_add(SHOW_MAX_BODY_LINES)
+        .saturating_sub(1);
+    let printed_end = extent_end.max(live_start).min(window_cap);
     let omitted = extent_end.saturating_sub(printed_end);
-    let lines = (start..=printed_end)
+    let lines = (live_start..=printed_end)
         .map(|n| (n, all[(n - 1) as usize].to_string()))
         .collect();
     ShowBody::Lines {
+        start: live_start,
         lines,
         omitted,
         extent_end,
     }
 }
 
-/// The 1-based, inclusive END line of the definition named `name` at site line `start` in `source`,
-/// derived through the shared multi-grammar symbols authority (spec 58). It resolves the file's
-/// grammar via the symbols registry and reads the extent from [`definition_extents`], the SAME
-/// tree-sitter tag mechanism the code graph is extracted with - so ONE extent authority generalizes
-/// across every ingested grammar rather than a Rust-only brace lexer in this composition root.
+/// The 1-based, inclusive `(start, end)` line range of the definition named `name`, derived through
+/// the shared multi-grammar symbols authority (spec 58; spec 92 criterion 1, FRESH ON EVERY
+/// INTEGRATION). It resolves the file's grammar via the symbols registry and reads every candidate
+/// extent from [`definition_extents`], the SAME tree-sitter tag mechanism the code graph is extracted
+/// with - so ONE extent authority generalizes across every ingested grammar rather than a Rust-only
+/// brace lexer in this composition root.
 ///
-/// Matches on BOTH name and site line (a definition that has moved off `start` no longer matches, so
-/// a drifted location degrades to a note rather than a wrong body); when several definitions share
-/// the name and line, the widest extent (the outermost construct) wins. Returns `Err` with a human
-/// reason - the caller degrades to a note - when no grammar is registered for the file's extension,
-/// the grammar cannot tag it, or the current tree holds no such definition at that line.
+/// Two tiers, in order:
+///
+/// 1. **Exact match** at the RECORDED `start` line: the graph's location is still current, so the
+///    resolved start is `start` itself (no drift) - when several definitions share the name and
+///    line, the widest extent (the outermost construct) wins, exactly as before spec 92.
+/// 2. **Name-only fallback** (spec 92: the recorded line no longer holds the definition - the code
+///    moved since the graph was last indexed): every candidate named `name`, AT ANY LINE in this
+///    file, is collected. Healing is safe ONLY when that leaves exactly ONE live line - with more
+///    than one candidate the surface cannot tell which the caller meant, so it degrades exactly as
+///    every drift did before spec 92 (never guess a body under the wrong name or line - the spec-58
+///    invariant this filter exists to hold). The fallback NEVER crosses files and NEVER matches a
+///    different name: only the identity `graph --show` was asked to resolve is ever searched for.
+///
+/// Returns `Err` with a human reason - the caller degrades to a note - when no grammar is registered
+/// for the file's extension, the grammar cannot tag the source, no definition named `name` exists
+/// anywhere in the file (deleted, not moved), or the name is ambiguous (tier 2 found more than one
+/// live candidate).
 #[cfg(feature = "symbols")]
-fn derive_extent_end(file: &str, source: &str, start: u32, name: &str) -> Result<u32, String> {
+fn locate_definition_extent(
+    file: &str,
+    source: &str,
+    start: u32,
+    name: &str,
+) -> Result<(u32, u32), String> {
     use rigger::grounder::symbols::{extract, registry};
     let Some(entry) = registry::for_path(file, None) else {
         return Err(format!(
@@ -4358,24 +4527,51 @@ fn derive_extent_end(file: &str, source: &str, start: u32, name: &str) -> Result
         ));
     };
     let extents = extract::definition_extents(source, &entry.language, entry.tags_query)?;
-    extents
-        .into_iter()
+    // Tier 1: exact (name, recorded line) match - the graph's location is current. Widest extent
+    // wins when several definitions share the name and line (unchanged spec-58 rule).
+    if let Some(end) = extents
+        .iter()
         .filter(|d| d.name == name && d.start_line == start)
         .map(|d| d.end_line)
         .max()
-        .ok_or_else(|| {
-            format!(
-                "no definition named {name:?} at line {start} in the current working tree; the recorded location may be stale"
-            )
-        })
+    {
+        return Ok((start, end));
+    }
+    // Tier 2 (spec 92): the recorded line drifted - re-locate `name` by a name-only search of this
+    // SAME file. `by_line` groups candidate lines (never two rows for one line: the widest extent
+    // per line wins, matching tier 1's own rule), so its length is the count of DISTINCT live lines
+    // this name occupies - the ambiguity measure healing must stay safe against.
+    let mut by_line: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    for d in extents.iter().filter(|d| d.name == name) {
+        by_line
+            .entry(d.start_line)
+            .and_modify(|end| *end = (*end).max(d.end_line))
+            .or_insert(d.end_line);
+    }
+    match by_line.len() {
+        0 => Err(format!(
+            "no definition named {name:?} at line {start} in the current working tree; the recorded location may be stale"
+        )),
+        1 => Ok(by_line.into_iter().next().expect("len == 1")),
+        n => Err(format!(
+            "{n} definitions named {name:?} exist in {file} and none starts at the recorded line \
+             {start}; the recorded location may be stale (cannot resolve which one moved)"
+        )),
+    }
 }
 
-/// Light-lane [`derive_extent_end`]: a build WITHOUT the `symbols` feature links no grammar, so the
-/// extent cannot be derived. It returns an explicit reason the caller prints as a note - the show
-/// surface stays honest ("the body needs the extraction grammar this build omits") rather than
-/// falling back to a hand-rolled lexer that would mis-read the very grammars the graph ingests.
+/// Light-lane [`locate_definition_extent`]: a build WITHOUT the `symbols` feature links no grammar,
+/// so no extent - recorded or healed - can be derived. It returns an explicit reason the caller
+/// prints as a note - the show surface stays honest ("the body needs the extraction grammar this
+/// build omits") rather than falling back to a hand-rolled lexer that would mis-read the very
+/// grammars the graph ingests.
 #[cfg(not(feature = "symbols"))]
-fn derive_extent_end(_file: &str, _source: &str, _start: u32, _name: &str) -> Result<u32, String> {
+fn locate_definition_extent(
+    _file: &str,
+    _source: &str,
+    _start: u32,
+    _name: &str,
+) -> Result<(u32, u32), String> {
     Err(
         "the body extent needs the code-extraction grammar; this build was compiled without the `symbols` feature"
             .to_string(),
@@ -5198,6 +5394,28 @@ fn read_model_drift(
     let store = Namespaced::new(backend.as_ref(), project);
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     Ok(metrics::model_drift(&events))
+}
+
+/// The `rigger validate` GRAPH INDEX LAG sample (spec 92 criterion 1, FRESH ON EVERY
+/// INTEGRATION): reads the project's own event stream - the SAME `events.db` stream every other
+/// validate advisory above reads (mirrors [`read_model_drift`]'s own store-open shape, reused, not
+/// a second courier) - and hands it to [`rigger::ingest::graph_index_lag_sample`], the one authority
+/// that both derives the bounded candidate list and compares each against a fresh re-extraction.
+/// An absent sqlite store degrades to an empty sample (nothing recorded, so nothing can lag) rather
+/// than an error, exactly like [`read_model_drift`].
+fn read_graph_index_lag(
+    path: &str,
+    project: &str,
+    root: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let sel = store_selection(None, None)?;
+    if sel.is_sqlite() && !Path::new(path).exists() {
+        return Ok(Vec::new());
+    }
+    let backend = resolve_store(&sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    Ok(rigger::ingest::graph_index_lag_sample(root, &events))
 }
 
 /// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
@@ -6676,7 +6894,10 @@ fn cmd_dash(args: &[String]) -> Res {
         if repo.is_empty() && !has_explicit_root {
             String::new()
         } else {
-            rigger::worktree::scratch_root_from_env(&repo, &workdir)
+            // The dash only READS this root (marker probes); it never places work under it,
+            // so it resolves without creating - creation is the step's, and creation is
+            // where the cache home's orphan-root reclaim runs.
+            rigger::worktree::scratch_root_path_from_env(&repo, &workdir)
         }
     };
     // A clone taken BEFORE the `provider` closure below moves the original: the self-reap
@@ -7356,9 +7577,18 @@ fn dash_attach_graph(inst: &rigger::registry::Instance) -> contextgraph::Graph {
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
 /// same one the `run`/`serve` paths build from `defaults.grounder` via
 /// [`select_grounder`]) over the repo and print up to `k` (default 8) relevant
-/// references, one per line as `file:line: <text>`. Empty output when nothing is
-/// relevant. This is the CLI surface a native-workflow agent (which has Bash, not
-/// the MCP grounding tool) uses to ground.
+/// entities, one per line as `file:line: <text> (degree N)`. This is the CLI surface a
+/// native-workflow agent (which has Bash, not the MCP grounding tool) uses to ground.
+///
+/// The page (spec 92 criterion 3, RANKED BY INTENT) is `Grounder::ground_ranked` - ranked
+/// exact-name-match first, then by the matched token's tree-wide commonness, then the
+/// existing definition-over-reference tier, DEDUPLICATED so every call site of one function
+/// occupies a single line carrying its degree. Before printing it, `Grounder::has_strong_match`
+/// gates a WEAK query (`k > 0` and every match is tree-wide-common, or there is no match at
+/// all) to the honest "no entity matches strongly" line instead of noise; `k == 0` is the
+/// caller explicitly asking for nothing, so it stays silent rather than printing that line. A
+/// non-structural grounder (grep / nop) has no commonness concept, so it is always "strong" and
+/// prints its usual (undeduplicated, degree-0) rows - byte-for-byte the prior behavior.
 fn cmd_ground(args: &[String]) -> Res {
     let query = args
         .first()
@@ -7384,8 +7614,15 @@ fn cmd_ground(args: &[String]) -> Res {
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     let grounder = select_grounder(&name)?;
-    for r in grounder.ground(query, k) {
-        println!("{}:{}: {}", r.file, r.line, r.text);
+    if k > 0 && !grounder.has_strong_match(query, k) {
+        println!("no entity matches strongly for {query:?}");
+        return Ok(());
+    }
+    for r in grounder.ground_ranked(query, k) {
+        println!(
+            "{}:{}: {} (degree {})",
+            r.loc.file, r.loc.line, r.loc.text, r.degree
+        );
     }
     Ok(())
 }
@@ -7626,7 +7863,9 @@ fn liveness_ages_for_wave(
     if repo.is_empty() {
         return ages;
     }
-    let root = rigger::worktree::scratch_root_from_env(repo, workdir);
+    // A read-only report resolves the root without creating it: `rigger status` must never
+    // conjure a scratch root, nor run the orphan-root reclaim that creating one does.
+    let root = rigger::worktree::scratch_root_path_from_env(repo, workdir);
     for w in wave {
         let Some(path) = rigger::liveness::marker_path(&root, run_id, &w.id) else {
             continue;
@@ -8238,6 +8477,9 @@ fn cmd_reset(args: &[String]) -> Res {
         // for, reproduced independently before this fix landed).
         reset_build_cache(&loc)?;
     }
+    if modes.scratch_orphans {
+        reset_scratch_orphans()?;
+    }
     if modes.derived {
         // Decided up front, before compacting: deleting rows and reclaiming the file are
         // mechanics of the embedded log, not port operations, so `--derived` names the
@@ -8369,6 +8611,10 @@ struct ResetModes {
     /// a pure cache (always safe to cold-rebuild), so this mode carries no store-mutation
     /// implication at all and composes freely with `runs`/`derived`.
     build_cache: bool,
+    /// Reclaim every cache-home scratch root whose repo no longer exists - the on-demand
+    /// form of the sweep [`rigger::worktree::scratch_root_with`] runs whenever it creates a
+    /// default-placed root. Touches no store and composes with every other mode.
+    scratch_orphans: bool,
     /// The override for `--derived`'s live-writer guard (spec 71, criterion 2): skips
     /// [`refuse_derived_reset_if_live`] entirely rather than acting on what it would have found -
     /// the operator asked to compact WHATEVER the run machinery looks like, and this flag owns
@@ -8390,6 +8636,7 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
         runs: false,
         derived: false,
         build_cache: false,
+        scratch_orphans: false,
         force_live: false,
     };
     for arg in args {
@@ -8397,12 +8644,14 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
             "--runs" => &mut modes.runs,
             "--derived" => &mut modes.derived,
             "--build-cache" => &mut modes.build_cache,
+            "--scratch-orphans" => &mut modes.scratch_orphans,
             "--force-live" => &mut modes.force_live,
             other => {
                 return Err(format!(
-                    "reset: expected --runs and/or --derived and/or --build-cache (with an \
-                     optional --force-live), got {other}: rigger reset --runs | rigger reset \
-                     --derived [--force-live] | rigger reset --build-cache"
+                    "reset: expected --runs and/or --derived and/or --build-cache and/or \
+                     --scratch-orphans (with an optional --force-live), got {other}: rigger \
+                     reset --runs | rigger reset --derived [--force-live] | rigger reset \
+                     --build-cache | rigger reset --scratch-orphans"
                 )
                 .into())
             }
@@ -8412,11 +8661,12 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
         }
         *slot = true;
     }
-    if !modes.runs && !modes.derived && !modes.build_cache {
+    if !modes.runs && !modes.derived && !modes.build_cache && !modes.scratch_orphans {
         return Err(
             "reset: expected at least one mode: rigger reset --runs (prune the context \
-                    graph), rigger reset --derived (compact the event log), and/or rigger \
-                    reset --build-cache (reclaim the shared gate build cache)"
+                    graph), rigger reset --derived (compact the event log), rigger reset \
+                    --build-cache (reclaim the shared gate build cache), and/or rigger reset \
+                    --scratch-orphans (reclaim cache-home scratch roots whose repo is gone)"
                 .into(),
         );
     }
@@ -8443,6 +8693,32 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
 /// authority over this resource, and reports what happened via
 /// [`build_cache_reclaim_report`]: bytes reclaimed on success, or a loud, non-zero-exit
 /// refusal when a rigger-launched shared-cache build holds the guard.
+/// `rigger reset --scratch-orphans`: reclaim every root under `<cache-home>/rigger` whose
+/// repo no longer exists ([`rigger::worktree::sweep_orphan_scratch_roots`]) and report how
+/// many went. The directory is resolved from the ambient `XDG_CACHE_HOME`/`HOME` exactly as
+/// the default scratch-root rung resolves it, so the sweep and the placement can never name
+/// different directories.
+fn reset_scratch_orphans() -> Res {
+    let Some(cache_home) = rigger::driver::replay::cache_home_from(
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    ) else {
+        return Err(
+            "reset --scratch-orphans: neither XDG_CACHE_HOME nor HOME is set, so \
+                    there is no cache-home scratch directory to sweep"
+                .into(),
+        );
+    };
+    let dir = cache_home.join("rigger");
+    let reclaimed = rigger::worktree::sweep_orphan_scratch_roots(&dir);
+    println!(
+        "--scratch-orphans: reclaimed {reclaimed} scratch root(s) whose repo no longer exists \
+         under {}",
+        dir.display()
+    );
+    Ok(())
+}
+
 fn reset_build_cache(loc: &StoreLocation) -> Res {
     let repo = loc
         .dir
@@ -9544,6 +9820,22 @@ fn cmd_validate(args: &[String]) -> Res {
     if let Some(drift) = rigger::grounder::symbols::staleness(root.to_str().unwrap_or(".")) {
         eprintln!("{}", index_staleness_message(&drift));
     }
+    // GRAPH INDEX LAG advisory (spec 92 criterion 1, FRESH ON EVERY INTEGRATION): warn when a
+    // bounded sample of files `graph.db` has previously recorded disagrees with their live
+    // re-extraction - staleness the integration-time reindex above is supposed to prevent,
+    // surfaced before it is felt rather than discovered by a stale `graph --show` line (Design:
+    // "validate reports index lag ... as an advisory, so staleness is visible before it is
+    // felt"). A store-read failure just skips the advisory (never fails validate), exactly like
+    // the model-drift advisory above.
+    if let Ok(lagging) = read_graph_index_lag(
+        &db_path("events.db"),
+        &project_identity(),
+        root.to_str().unwrap_or("."),
+    ) {
+        if let Some(advisory) = graph_index_lag_advisory(&lagging) {
+            eprintln!("{advisory}");
+        }
+    }
     // LOG BLOAT advisory (spec 68, VALIDATE ADVISORIES): warn when the event log's derived
     // index is duplicated above threshold and name `rigger reset --derived`. Reuses the
     // store's OWN aggregate ([`rigger::eventstore::sqlite::Store::measure_derived_duplication`],
@@ -9734,6 +10026,25 @@ fn index_staleness_message(drift: &rigger::grounder::symbols::IndexDrift) -> Str
         rigger::grounder::symbols::store::index_path(".").display(),
         parts.join(", "),
     )
+}
+
+/// The GRAPH INDEX LAG advisory line (spec 92 criterion 1, FRESH ON EVERY INTEGRATION), rendered
+/// from an already-sampled list of files [`rigger::ingest::graph_index_lag_sample`] found
+/// disagreeing with `graph.db`'s own last recorded generation for them. `None` when the sample is
+/// empty - nothing to warn about, not merely nothing measured (the pure formatting stays separate
+/// from the gathering, exactly like [`index_staleness_message`] above). Names every lagging file
+/// (never just a bare count) and the fix, `rigger reindex`, so the same fix that keeps the
+/// `symbols` index fresh also closes the gap this advisory reports.
+fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
+    if lagging.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
+         ({}). Run `rigger reindex <file>...` to refresh it.",
+        lagging.len(),
+        lagging.join(", "),
+    ))
 }
 
 /// The derived-index duplication FACTOR (rows per distinct key) above which `rigger validate`
@@ -11953,13 +12264,37 @@ unit=
 case "$worktree_base" in
     rigger-wt-*) unit="${worktree_base#rigger-wt-}" ;;
 esac
+# The relocated per-unit target (spec 89): a unit's build cache is the sibling
+# `cargo-target-<unit>` of its worktree under `<cache home>/rigger/<encoded repo root>`,
+# where the repo root is encoded byte by byte - alphanumerics and `-` kept, every other
+# byte as `_xx` hex - exactly as the binary encodes it, so this shell derivation and the
+# Rust one name the same directory.
+encode_repo_path() {
+    p="$1"; out=""
+    while [ -n "$p" ]; do
+        c=${p%"${p#?}"}; p=${p#?}
+        case "$c" in
+            [A-Za-z0-9-]) out="$out$c" ;;
+            *) out="$out$(printf '_%02x' "'$c")" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
 unit_release=
 unit_debug=
+relocated_release=
+relocated_debug=
 shared_debug=
 if [ -n "$git_common_dir" ]; then
     if [ -n "$unit" ]; then
         unit_release="$git_common_dir/../.rigger/tmp/cargo-target-$unit/release/rigger"
         unit_debug="$git_common_dir/../.rigger/tmp/cargo-target-$unit/debug/rigger"
+        repo_root=$(cd "$git_common_dir/.." 2>/dev/null && pwd -P)
+        if [ -n "$repo_root" ]; then
+            cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/rigger/$(encode_repo_path "$repo_root")"
+            relocated_release="$cache_root/cargo-target-$unit/release/rigger"
+            relocated_debug="$cache_root/cargo-target-$unit/debug/rigger"
+        fi
     fi
     shared_debug="$git_common_dir/../.rigger/tmp/cargo-target/debug/rigger"
 fi
@@ -11969,6 +12304,8 @@ for candidate in \
     "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/rigger}" \
     "./target/release/rigger" \
     "./target/debug/rigger" \
+    "$relocated_release" \
+    "$relocated_debug" \
     "$unit_release" \
     "$unit_debug" \
     "$shared_debug" \
@@ -14586,6 +14923,97 @@ mod tests {
     /// provenance line invoke the RESOLVED binary, not a bare unqualified `rigger`. This
     /// criterion OWNS the candidate order and its rendering in the template (c2 owns the
     /// end-to-end fixture-driven behavior, not this test).
+    #[test]
+    fn precommit_block_finds_the_relocated_unit_target_with_the_binary_s_own_path_encoding() {
+        // Spec 89 moved a unit's build cache to `<cache home>/rigger/<encoded repo>/
+        // cargo-target-<unit>`; the hook must look there FIRST among the unit-derived
+        // candidates (before the pre-relocation `.rigger/tmp` paths), and its shell encoding
+        // of the repo root must equal `liveness::marker_filename`'s byte for byte, or the two
+        // sides name different directories and the chain silently falls back to PATH.
+        let hook = compose_precommit(None);
+        let loop_start = hook.find("for candidate in").unwrap();
+        let body_start = loop_start + "for candidate in".len();
+        let loop_end = body_start + hook[body_start..].find("; do").unwrap();
+        let candidates = &hook[body_start..loop_end];
+        let local_debug = candidates.find("./target/debug/rigger").unwrap();
+        let relocated_release = candidates
+            .find("$relocated_release")
+            .expect("the relocated per-unit release candidate is tried");
+        let relocated_debug = candidates
+            .find("$relocated_debug")
+            .expect("the relocated per-unit debug candidate is tried");
+        let unit_release = candidates.find("$unit_release").unwrap();
+        assert!(
+            local_debug < relocated_release
+                && relocated_release < relocated_debug
+                && relocated_debug < unit_release,
+            "relocated candidates sit after the local target and before the pre-relocation \
+             unit paths; got:\n{candidates}"
+        );
+        assert!(
+            hook.contains("XDG_CACHE_HOME:-$HOME/.cache") && hook.contains("/rigger/"),
+            "the relocated root honors XDG_CACHE_HOME and nests under rigger/; got:\n{hook}"
+        );
+
+        let fn_start = hook.find("encode_repo_path() {").unwrap();
+        let fn_end = fn_start + hook[fn_start..].find("\n}\n").unwrap() + "\n}\n".len();
+        let shell_fn = &hook[fn_start..fn_end];
+        for path in [
+            "/home/byran/Documents/Development/rigger",
+            "/srv/build farm/proj.x_y-1",
+            "/tmp/a~b@c",
+        ] {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{shell_fn}\nencode_repo_path \"$1\"",))
+                .arg("sh")
+                .arg(path)
+                .output()
+                .expect("sh runs the hook's encoder");
+            let encoded = String::from_utf8(out.stdout).unwrap();
+            assert_eq!(
+                encoded,
+                rigger::liveness::marker_filename(path).unwrap(),
+                "shell and Rust encodings must agree for {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_workflow_driver_tells_a_worker_its_units_build_location() {
+        // Spec 77 criterion 1 through the editor's workflow driver: the shipped driver reads
+        // the wave's `cargo_target_dir` and makes exporting it a hard rule for every cargo
+        // command inside the worktree, so a worker never builds a `target/` in its tree.
+        assert!(
+            RIGGER_WORKFLOW.contains("req.cargo_target_dir"),
+            "the driver reads the build location off the wave item"
+        );
+        assert!(
+            RIGGER_WORKFLOW.contains("BUILD LOCATION (hard rule)")
+                && RIGGER_WORKFLOW.contains("export CARGO_TARGET_DIR='${req.cargo_target_dir}'"),
+            "the worker prompt names the export as a hard rule"
+        );
+        let rule = RIGGER_WORKFLOW.find("BUILD LOCATION (hard rule)").unwrap();
+        let heartbeat = RIGGER_WORKFLOW
+            .find("buildLocation +\n    heartbeat +")
+            .unwrap();
+        assert!(
+            rule < heartbeat,
+            "the rule is composed into the prompt ahead of the heartbeat and progress notes"
+        );
+        // The courier's structured return is the only way a wave reaches the driver, and a
+        // key the schema does not REQUIRE is a key the courier can drop while retyping: the
+        // schema requires every field the worker's instructions are built from.
+        let required = RIGGER_WORKFLOW
+            .find("required: ['id', 'unit', 'stage', 'dir', 'max_wall_clock', 'marker_path', 'cargo_target_dir']")
+            .expect("the wave-item schema requires the driver-critical fields");
+        let items = RIGGER_WORKFLOW.find("wave: {").unwrap();
+        assert!(
+            items < required,
+            "the requirement sits on the wave items, not the top level"
+        );
+    }
+
     #[test]
     fn precommit_block_resolves_a_tree_built_binary_before_path() {
         let hook = compose_precommit(None);
@@ -23801,6 +24229,30 @@ mod tests {
         );
     }
 
+    // --- Spec 92 criterion 1, FRESH ON EVERY INTEGRATION: the GRAPH INDEX LAG advisory's pure
+    // formatter (the sample itself is `rigger::ingest::graph_index_lag_sample`, tested beside its
+    // own implementation) ---
+
+    #[test]
+    fn graph_index_lag_advisory_names_every_lagging_file_and_the_fix() {
+        let lagging = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let msg = graph_index_lag_advisory(&lagging).expect("a non-empty sample draws an advisory");
+        assert!(msg.starts_with("warning:"), "advisory: {msg}");
+        assert!(
+            msg.contains("src/a.rs") && msg.contains("src/b.rs"),
+            "the message must name every lagging file: {msg}"
+        );
+        assert!(
+            msg.contains("rigger reindex"),
+            "the message must name the fix: {msg}"
+        );
+    }
+
+    #[test]
+    fn graph_index_lag_advisory_is_none_when_the_sample_is_empty() {
+        assert_eq!(graph_index_lag_advisory(&[]), None);
+    }
+
     #[test]
     fn bloat_advisory_is_none_at_or_below_the_threshold_and_named_above_it() {
         // Exactly at the threshold: not yet a warning-worthy signal.
@@ -24939,6 +25391,31 @@ mod tests {
     /// `--runs`/`--derived` - parses alone, composes with either sibling, is rejected on
     /// a duplicate, and (matching every other mode) never implied on its own from a bare
     /// `reset` with no flags at all.
+    #[test]
+    fn reset_modes_parses_scratch_orphans_alone_and_composed_and_rejects_duplicates() {
+        let modes = reset_modes(&["--scratch-orphans".to_string()]).expect("alone");
+        assert!(modes.scratch_orphans && !modes.runs && !modes.derived && !modes.build_cache);
+        let modes = reset_modes(&["--build-cache".to_string(), "--scratch-orphans".to_string()])
+            .expect("composed with another mode");
+        assert!(modes.scratch_orphans && modes.build_cache);
+        let err = reset_modes(&[
+            "--scratch-orphans".to_string(),
+            "--scratch-orphans".to_string(),
+        ])
+        .err()
+        .expect("a duplicate is refused")
+        .to_string();
+        assert!(err.contains("more than once"), "{err}");
+        let err = reset_modes(&["--bogus".to_string()])
+            .err()
+            .expect("unknown")
+            .to_string();
+        assert!(
+            err.contains("--scratch-orphans"),
+            "the usage names the new mode: {err}"
+        );
+    }
+
     #[test]
     fn reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates() {
         let modes = reset_modes(&["--build-cache".to_string()]).expect("--build-cache alone");
