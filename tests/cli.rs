@@ -3447,6 +3447,85 @@ fn ground_ranked_via_cli_never_pools_cross_language_definition_counts_into_a_fal
     );
 }
 
+/// Spec 92 criterion 3 remediation round 6 (adj-u92c3-r5-verdict-reject,
+/// adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated, fixed by
+/// fix-u92c3r6-ambiguous-def-degree-zeroed): end to end through the REAL `rigger ground` CLI -
+/// a unit test of `ground_ranked` in isolation cannot see whether `cmd_ground`'s printed page
+/// actually reflects the fix, only the compiled binary's stdout can. This is the round-5
+/// reject's own live repro shape (two same-language definitions of one name PLUS real call
+/// sites - the exact combination every test shipped before round 6 left untested): before the
+/// fix, every row sharing an ambiguous name printed the SAME pooled tree-wide reference count,
+/// so an agent grounding a genuinely ambiguous, heavily-referenced real-world name (the spec's
+/// own motivating example, `run`) saw N+1 rows all claiming the identical maximal degree - the
+/// opposite of ranking by intent.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranked_via_cli_gives_ambiguous_definitions_zero_degree_and_pools_the_real_count_on_the_standalone_row(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    // Two same-language (Rust) definitions of one name - genuinely ambiguous - plus five real
+    // call sites, so the ambiguous name's own reference pool is non-empty and non-trivial.
+    std::fs::write(root.join("a.rs"), "fn dup_name() {}\n").unwrap();
+    std::fs::write(root.join("b.rs"), "fn dup_name() {}\n").unwrap();
+    for i in 0..5 {
+        std::fs::write(
+            root.join(format!("caller{i}.rs")),
+            "fn go() { dup_name(); }\n",
+        )
+        .unwrap();
+    }
+
+    let (out, err, ok) = run_rigger(root, &["ground", "dup_name", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "an exact-name query against its own ambiguous entity must never itself read as too \
+         weak to answer; got {out:?}"
+    );
+
+    let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "two ambiguous definitions plus one pooled Standalone reference row - never a shared \
+         row per call site, never a single collapsed row; got {out:?}"
+    );
+
+    let def_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| l.starts_with("a.rs:") || l.starts_with("b.rs:"))
+        .copied()
+        .collect();
+    assert_eq!(
+        def_lines.len(),
+        2,
+        "both ambiguous definitions must still appear as separate rows; got {out:?}"
+    );
+    for l in &def_lines {
+        assert!(
+            l.contains("(degree 0)"),
+            "an ambiguous definition's own attributable degree is unknown - the page has \
+             already decided (by printing a separate row for the name at all) that a \
+             reference cannot be pinned to one candidate, so a definition row must never \
+             claim the whole unattributed pool as its own; got {out:?}"
+        );
+    }
+
+    let standalone = *lines
+        .iter()
+        .find(|l| !l.starts_with("a.rs:") && !l.starts_with("b.rs:"))
+        .unwrap_or_else(|| panic!("expected a pooled Standalone reference row; got {out:?}"));
+    assert!(
+        standalone.contains("(degree 5)"),
+        "the Standalone row alone must carry the real aggregate unattributed reference count - \
+         genuinely different from the ambiguous definitions' degree, never a shared pooled \
+         number printed on every row; got {out:?}"
+    );
+}
+
 /// End-to-end reindex wiring (spec 15, unit 4): with `defaults.grounder: symbols`, the shipped
 /// `rigger reindex <file>` CLI must resolve the SAME real `Symbols` grounder through
 /// `select_reindex_grounder` that `rigger ground` resolves through `select_grounder` - NOT die
