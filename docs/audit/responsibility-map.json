@@ -8053,7 +8053,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"docs_\" (docs overlay); grouped under `main::provenance`.",
-    "content_hash": "bb97d0d1f7a0cf28"
+    "content_hash": "b9f5ea38d00288e3"
   },
   {
     "file": "src/main.rs",
@@ -8165,7 +8165,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "ebce9ec13d3b3df9"
+    "content_hash": "6ed7e20c13fc93c4"
   },
   {
     "file": "src/main.rs",
@@ -8193,46 +8193,6 @@
   },
   {
     "file": "src/main.rs",
-    "name": "resolve_path_segments",
-    "is_test": false,
-    "proposed_module": "main::support",
-    "reason": "name contains \"resolve\" (path/id resolution helper); grouped under `main::support`.",
-    "content_hash": "710ea01fb5acd5a3"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "path_is_root_or_ancestor",
-    "is_test": false,
-    "proposed_module": "main::support",
-    "reason": "name contains \"is_\" (predicate helper); grouped under `main::support`.",
-    "content_hash": "79bcb555c71fba8f"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "path_has_guarded_segment",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "3468a432dffad5ad"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "guarded_path",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "2fe306b1fdbd6031"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "guarded_command",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "90874bc2eba47eef"
-  },
-  {
-    "file": "src/main.rs",
     "name": "word_basename",
     "is_test": false,
     "proposed_module": null,
@@ -8253,7 +8213,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "12b3d30d0e20bb92"
+    "content_hash": "a758f7502cf90b24"
   },
   {
     "file": "src/main.rs",
@@ -8605,7 +8565,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3a3307b39f22a8bc"
+    "content_hash": "25fd7198b66c85b6"
   },
   {
     "file": "src/main.rs",
@@ -11025,19 +10985,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_bash_grep_over_guarded_trees_and_passes_literal",
+    "name": "grep_guard_decision_denies_every_bash_grep_target_and_passes_literal",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a69168f8914bc4b7"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_covers_whole_project_grep_and_ignores_unrelated_targets",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "94db49a3106a547d"
+    "content_hash": "12b9f15c3e1d9fc9"
   },
   {
     "file": "src/main.rs",
@@ -11045,15 +10997,15 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "685a66f190d85e24"
+    "content_hash": "7293d3b5b42bd2ea"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_the_grep_tool_over_guarded_trees",
+    "name": "grep_guard_decision_denies_every_grep_tool_path",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "da73e6ac1d86ccb5"
+    "content_hash": "95e85503c3537d9c"
   },
   {
     "file": "src/main.rs",
@@ -11061,111 +11013,87 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2385845dfae68489"
+    "content_hash": "c57e1eca2f351ded"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_a_bare_tree_name_with_no_trailing_slash",
+    "name": "grep_guard_decision_denies_a_shell_metacharacter_fused_grep",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a992e1713bbc24af"
+    "content_hash": "a232994dd537ab79"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_an_absolute_path_under_a_guarded_tree",
+    "name": "grep_guard_decision_literal_survives_a_shell_metacharacter_fused_grep",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0ce641543ea58e60"
+    "content_hash": "39cf91537e44a7f2"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_ignores_a_merely_prefixed_or_unrelated_segment",
+    "name": "grep_guard_decision_denies_a_redirect_metacharacter_fused_grep",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "bf8015a999f77e4e"
+    "content_hash": "a80abaffcde562fe"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_a_shell_metacharacter_fused_grep",
+    "name": "grep_guard_decision_literal_survives_a_redirect_metacharacter_fused_grep",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "69b1131160e6c510"
+    "content_hash": "c6a5f6c4b9382763"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_still_allows_literal_on_a_shell_metacharacter_fused_grep",
+    "name": "grep_guard_decision_denies_a_quoted_or_escaped_grep",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "fe8551f3d455d322"
+    "content_hash": "61a55c47e43bb8b5"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_a_redirect_metacharacter_fused_grep",
+    "name": "grep_guard_decision_literal_survives_a_quoted_literal_on_a_quoted_grep",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1aa889a5cc397283"
+    "content_hash": "95ae1c96f68773e2"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_still_allows_literal_on_a_redirect_metacharacter_fused_grep",
+    "name": "grep_guard_decision_denies_a_grep_split_by_a_line_continuation",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c68d496d083ed2c7"
+    "content_hash": "c54313bd7fc7adeb"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_a_quoted_or_escaped_grep",
+    "name": "grep_guard_decision_literal_survives_a_line_continuation_split_grep",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "475058a8a9828a2a"
+    "content_hash": "aa9228937f015384"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_still_allows_a_quoted_literal_on_a_quoted_grep",
+    "name": "grep_guard_decision_denies_a_path_qualified_grep",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f4724ab366f4202a"
+    "content_hash": "8dc7089fc97f6b99"
   },
   {
     "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_a_grep_split_by_a_line_continuation",
+    "name": "grep_guard_decision_literal_survives_a_path_qualified_grep",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d41526ec7c2e4c3e"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_still_allows_literal_on_a_line_continuation_split_grep",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "18b718c82de28000"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_a_path_qualified_grep",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "7c49ca9bee0de65e"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_still_allows_literal_on_a_path_qualified_grep",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b757bfa647f20623"
+    "content_hash": "a7981d54db7d8843"
   },
   {
     "file": "src/main.rs",
@@ -11173,55 +11101,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d29bdb3b85986b17"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_a_relative_ancestor_of_the_project_root",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a85f62f13ff32eef"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_allows_a_relative_sibling_reached_via_dot_dot",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "64943959a2f5a38d"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_the_absolute_project_root_itself",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1d417b43f3d53af6"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_bounces_an_absolute_ancestor_of_the_project_root",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e14857907a869d84"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_allows_an_absolute_path_unrelated_to_the_project_root",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e7fb278df540cda2"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "grep_guard_decision_with_unknown_project_root_falls_back_to_segment_matching",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "bc3237c8fe253449"
+    "content_hash": "b8074b2e493c5cf9"
   },
   {
     "file": "src/dash.rs",
