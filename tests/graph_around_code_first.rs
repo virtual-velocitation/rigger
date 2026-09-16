@@ -27,7 +27,6 @@ use rigger::eventstore::Event;
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
-use common::rigger_bin;
 
 /// A throwaway project dir that is its own git repo, so `project_identity()` is stable across
 /// the seed and the binary's reads.
@@ -70,9 +69,16 @@ fn run_stream_identity(root: &Path) -> String {
 
 /// Run `rigger <args...>` in `cwd`, opting out of the auto-started dashboard and pointing the
 /// instance registry at a throwaway state dir, exactly as the other CLI integration tests do.
+///
+/// Spawned through [`common::rigger_courier`] (checkin-round fix), never a bare
+/// `Command::new(rigger_bin())`: that shared authority scrubs an inherited
+/// `RIGGER_STORE_FENCE_DIR` (spec 70 criterion 3's gate store fence, which
+/// `gate::ExecRunner::run` pins on the WHOLE subprocess tree of a unit-worktree gate's `test`
+/// gate - THIS test binary itself, when it runs as one) - see
+/// [`run_rigger_ignores_an_inherited_ambient_store_fence`] for the regression this closes.
 fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     let state = tempfile::tempdir().expect("temp XDG_STATE_HOME");
-    let out = Command::new(rigger_bin())
+    let out = common::rigger_courier()
         .args(args)
         .current_dir(cwd)
         .env("RIGGER_NO_DASH", "1")
@@ -201,5 +207,63 @@ fn around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten() 
     assert!(
         out.contains("+3") && out.contains("more"),
         "the transcript must report a count of the entries the cap dropped (3); got:\n{out}"
+    );
+}
+
+/// Regression for the checkin-round `test`/`mutation` gate failure this file's own
+/// `around_lists_code_first_then_caps_decisions_and_findings_to_the_newest_ten` intermittently
+/// hit under a real gate pass (peer decision `d-checkin-graph-around-test-inherits-gate-store-
+/// fence`): `gate::ExecRunner::run` pins `RIGGER_STORE_FENCE_DIR` on the WHOLE subprocess tree
+/// of a unit-worktree gate's `test` gate (literally `cargo test`, per `.rigger/workflow.yml`),
+/// so THIS test binary itself inherits it whenever it runs as a fenced gate.
+/// `tests/common::rigger_courier` exists exactly to scrub that ambient inheritance before
+/// spawning a courier (see its own doc comment) - but this file's private `run_rigger` built
+/// its own bare `Command::new(rigger_bin())` and never scrubbed it, so under a fenced gate its
+/// `rigger emit` calls silently folded into the gate's shared fenced graph.db instead of THIS
+/// fixture's own tempdir store: `graph --around` (never fence-aware itself - it resolves via
+/// plain cwd, not `require_store_dir`) then read back an EMPTY narrative section from the
+/// correct, unfenced location - exactly the "0 passed; 1 failed" symptom the gate recorded at
+/// line 173 above, on a fixture that is otherwise byte-identical between runs.
+#[test]
+#[serial_test::serial(cwd)]
+fn run_rigger_ignores_an_inherited_ambient_store_fence() {
+    std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            std::env::remove_var(rigger::gate::STORE_FENCE_ENV);
+        }
+    }
+    let _restore = Restore;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    // Simulate exactly what a fenced `cargo test` gate does to THIS test binary's own
+    // process: an ambient fence pointing at a scratch dir this fixture never built and never
+    // asked for - inherited by every `Command` this test spawns unless explicitly scrubbed.
+    let ambient_fence = tempfile::tempdir().expect("temp ambient fence dir");
+    std::env::set_var(rigger::gate::STORE_FENCE_ENV, ambient_fence.path());
+
+    let payload =
+        r#"{"id":"fenced-d1","summary":"must survive an inherited fence","governs":["big.rs"]}"#;
+    let (_o, err, ok) = run_rigger(root, &["emit", "DecisionMade", payload]);
+    assert!(
+        ok,
+        "emit DecisionMade must succeed even under an inherited fence; stderr: {err}"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["graph", "--around", "big.rs", "--depth", "2"]);
+    assert!(ok, "graph --around must succeed; stderr: {err}");
+    assert!(
+        out.contains("fenced-d1"),
+        "an emit issued while this test binary carries an inherited RIGGER_STORE_FENCE_DIR \
+         must still land in THIS fixture's own store, not the ambient fence's shared scratch \
+         dir; got:\n{out}"
+    );
+    assert!(
+        !ambient_fence.path().join("events.db").exists(),
+        "a courier that correctly ignores the ambient fence must never write into it either"
     );
 }
