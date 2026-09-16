@@ -66,6 +66,12 @@ defaults:
   # workers; a fast reviewer role can pin a tighter bound in its own frontmatter.
   max_wall_clock: 3600
 
+  # How many implement units build at once (spec 89, per-unit pipelining). Each live unit
+  # owns a debug build cache of about 50 GB on this crate, and a driver death makes every
+  # live unit rebuild at once; five in parallel filled /home twice on 2026-09-15 (Steam
+  # holds most of the disk). Two bounds the worst case to about 100 GB of caches.
+  max_parallel_units: 2
+
   # The three-tier review panel applied to EVERY implementer unit (§3.2). TIER 1:
   # the expert lenses (architecture + sdet) review the unit's diff in parallel.
   # TIER 2: the adversary reviews THE LENSES' findings and tries to prove them

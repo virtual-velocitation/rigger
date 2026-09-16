@@ -763,17 +763,21 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
     );
 }
 
-/// The exact 22/3/0 `delete`/`keep-pending`/`keep-public-surface` split this criterion's research
+/// The exact 23/3/0 `delete`/`keep-pending`/`keep-public-surface` split this criterion's research
 /// established, pinned against the persisted file (mirrors
 /// `the_real_tree_disposition_split_matches_this_criterions_research` in
 /// `tests/simplification_audit.rs`, checked there against the in-memory producer value - this is
-/// the same fact, independently re-derived from the committed bytes). Was 23/3/0 (26 total) until
-/// spec 88 criterion 1 round 4 moved `expect_merged` (src/worktree.rs, `delete`) out of production
-/// entirely (into `src/worktree.rs`'s own `#[cfg(test)] mod tests`, alongside `IntegrateOutcome`
-/// and a test-only `integrate` recomposition of the newly-split `merge_into_worktree`/`land`),
-/// dropping the total to 25 and `delete` to 22.
+/// the same fact, independently re-derived from the committed bytes). Was 22/3/0 (25 total) until
+/// spec 92 criterion 1's FRESH ON EVERY INTEGRATION unit added `record_current_generation`
+/// (src/ingest.rs, a private test-only fixture helper, `delete`) to `src/ingest.rs`'s own
+/// `scoped_reindex_tests` module, raising the total to 26 and `delete` to 23. Was 23/3/0 (26
+/// total) until spec 88 criterion 1 round 4 moved `expect_merged` (src/worktree.rs, `delete`) out
+/// of production entirely (into `src/worktree.rs`'s own `#[cfg(test)] mod tests`, alongside
+/// `IntegrateOutcome` and a test-only `integrate` recomposition of the newly-split
+/// `merge_into_worktree`/`land`), dropping the total to 25 and `delete` to 22 - and now back up
+/// to 26/23 by the unrelated addition above.
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_22_delete_3_keep_pending_0_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_23_delete_3_keep_pending_0_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -790,7 +794,7 @@ fn the_committed_dead_code_json_disposition_split_is_22_delete_3_keep_pending_0_
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (25, 22, 0, 3),
+        (26, 23, 0, 3),
         "the committed disposition split has changed since this criterion's research"
     );
 }

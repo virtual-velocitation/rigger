@@ -224,6 +224,153 @@ fn walk_batches(
     }
 }
 
+/// [`ingest_project_batched`] SCOPED to exactly the NAMED `files` (spec 92, FRESH ON EVERY
+/// INTEGRATION), rather than walking the whole project: the property an integration's OWN reindex
+/// needs, bounded by the merge's OWN file list (Design/Constraints Walk: "the reindex is bounded by
+/// the merge's file list"), never the project's total file count. Reuses the SAME per-file lowering
+/// and keying as the whole-project walk (`crate::grounder::symbols::events::file_batches` and
+/// [`key_batch`], the identical authority [`walk_batches`]'s code half calls) - never a second
+/// lowering path - so a named file's scoped batch is byte-identical to what a full walk would
+/// produce for it, and the content key an event is deduped under can never drift between the two
+/// entries.
+///
+/// CODE ONLY (the `gc/` prefix): the design-intent half (`gd/`, spec 29b) stays with the
+/// whole-project walk - this scoped entry exists for the code-graph freshness an integration's
+/// reindex is answerable for, mirroring the EXISTING `Grounder::reindex` it runs alongside (which is
+/// also code-only), not a second, independently-scoped design-intent freshness this spec does not
+/// own.
+#[cfg(feature = "symbols")]
+pub fn ingest_files_batched(
+    root: &str,
+    files: &[String],
+    mut on_batch: impl FnMut(&[(String, &Event)]),
+) -> IngestStats {
+    let batches = crate::grounder::symbols::events::file_batches(root, files);
+    let mut batches_emitted = 0usize;
+    for (file, batch) in &batches {
+        key_batch("gc", file, batch, &mut on_batch);
+        batches_emitted += 1;
+    }
+    IngestStats {
+        batches_emitted,
+        workers_engaged: 1,
+    }
+}
+
+/// Light lane: no extraction pass is compiled, so there is nothing to walk - a no-op that hands the
+/// sink no batches, mirroring [`ingest_project_batched`]'s own light-lane stub.
+#[cfg(not(feature = "symbols"))]
+pub fn ingest_files_batched(
+    _root: &str,
+    _files: &[String],
+    _on_batch: impl FnMut(&[(String, &crate::eventstore::Event)]),
+) {
+}
+
+/// Sampled files whose CURRENT code extraction disagrees with what `graph.db` has recorded as their
+/// latest `gc/` generation (spec 92, FRESH ON EVERY INTEGRATION) - `rigger validate`'s graph INDEX
+/// LAG advisory. The graph-specific analogue of `grounder::symbols::staleness` (spec 68): the same
+/// cost-bounded SAMPLE shape (the caller bounds `files` - never a full-tree scan lives here), but
+/// measured against the GRAPH's own recorded generations (via [`project_scoped_latest_generations`]
+/// over `prior`, the project's own event stream) rather than the symbols index's separately-
+/// persisted hash column. The two stores can drift independently of one another - a `graph.db` built
+/// before this spec's integration-time reindex existed, or a project whose symbols index was rebuilt
+/// out-of-band - so the symbols index agreeing with the tree is never taken as proof the graph does
+/// too; this reads the graph's own recording directly.
+///
+/// A file is FRESH when re-extracting it (through the SAME [`ingest_files_batched`] authority the
+/// live conductor reindexes through) yields EXACTLY the key set `graph.db`'s latest `gc/<file>`
+/// generation already recorded - same content, same event count, same order (the walk is
+/// deterministic by construction, so an honest match is exact, never approximate). A file the graph
+/// has NEVER recorded a generation for at all counts as lagging only when its current extraction is
+/// non-empty (a genuinely new file the graph has not yet ingested - the coverage question criterion
+/// 2 owns, not double-counted as this criterion's lag). Returns the subset of `files` that disagree;
+/// `[]` means every sampled file agrees with the graph's own recording, as far as the sample can
+/// tell - zero lag.
+#[cfg(feature = "symbols")]
+pub fn graph_index_lag(root: &str, prior: &[Event], files: &[String]) -> Vec<String> {
+    let latest = project_scoped_latest_generations(prior);
+    files
+        .iter()
+        .filter(|file| {
+            let identity = format!("gc/{file}");
+            let mut current_keys: Vec<String> = Vec::new();
+            let scoped = std::slice::from_ref(*file);
+            let _ = ingest_files_batched(root, scoped, |keyed| {
+                current_keys.extend(keyed.iter().map(|(k, _)| k.clone()));
+            });
+            match latest.get(&identity) {
+                None => !current_keys.is_empty(),
+                Some((_hash, recorded_keys)) => {
+                    let recorded: std::collections::BTreeSet<&String> =
+                        recorded_keys.iter().collect();
+                    let current: std::collections::BTreeSet<&String> =
+                        current_keys.iter().collect();
+                    recorded != current
+                }
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+/// Light lane: no extraction pass is compiled, so no file can ever be extracted - nothing to compare
+/// against, and nothing is ever reported as lagging (mirrors [`ingest_files_batched`]'s own no-op).
+#[cfg(not(feature = "symbols"))]
+pub fn graph_index_lag(_root: &str, _prior: &[Event], _files: &[String]) -> Vec<String> {
+    Vec::new()
+}
+
+/// Cost-bounded SAMPLE size for [`graph_index_lag_sample`] - mirrors
+/// `grounder::symbols::STALENESS_SAMPLE_SIZE`'s own bound: a fixed, small, deterministic sample
+/// keeps `rigger validate`'s graph index-lag advisory O(sample), never O(every file the graph has
+/// ever recorded a generation for).
+#[cfg(feature = "symbols")]
+const GRAPH_INDEX_LAG_SAMPLE_SIZE: usize = 8;
+
+/// `rigger validate`'s GRAPH INDEX LAG sample (spec 92, FRESH ON EVERY INTEGRATION): the bounded,
+/// deterministic candidate list [`graph_index_lag`] is checked against, derived FROM `prior`
+/// itself rather than a caller-supplied file list - so validate needs nothing but the project's own
+/// event stream and its working tree, exactly like every other validate advisory.
+///
+/// Candidates are every file identity `prior`'s derived stream has recorded a `gc/` generation for
+/// (via [`project_scoped_latest_generations`]) that STILL EXISTS on disk right now, sorted for
+/// determinism, then truncated to [`GRAPH_INDEX_LAG_SAMPLE_SIZE`] - mirroring
+/// `grounder::symbols::staleness`'s own sorted-intersection-then-take sampling shape. Two kinds of
+/// file are deliberately left OUT of the candidate set, not merely filtered from the result:
+///
+/// - a file the graph has NEVER recorded (present on disk, absent from `prior`) - that is the
+///   COVERAGE question (criterion 2's), never double-counted as this advisory's lag;
+/// - a file the graph recorded that no longer exists on disk - an integration's own reindex
+///   retires it directly through the boundary-sentinel supersession (Design/Constraints Walk: "a
+///   file deleted by the integration - its entities are retired through the existing supersession,
+///   not left dangling"), so this bounded sample has nothing useful to re-check for it.
+///
+/// Returns `[]` when there is nothing to sample (an empty `prior`, or every candidate already
+/// pruned by the two rules above) or when every sampled file agrees with the graph's own recording -
+/// zero lag, as far as the sample can tell.
+#[cfg(feature = "symbols")]
+pub fn graph_index_lag_sample(root: &str, prior: &[Event]) -> Vec<String> {
+    let root_path = std::path::Path::new(root);
+    let latest = project_scoped_latest_generations(prior);
+    let mut candidates: Vec<String> = latest
+        .keys()
+        .filter_map(|identity| identity.strip_prefix("gc/"))
+        .filter(|file| root_path.join(file).is_file())
+        .map(str::to_string)
+        .collect();
+    candidates.sort();
+    candidates.truncate(GRAPH_INDEX_LAG_SAMPLE_SIZE);
+    graph_index_lag(root, prior, &candidates)
+}
+
+/// Light lane: no extraction pass is compiled, so nothing can ever disagree (mirrors
+/// [`graph_index_lag`]'s own light-lane stub).
+#[cfg(not(feature = "symbols"))]
+pub fn graph_index_lag_sample(_root: &str, _prior: &[Event]) -> Vec<String> {
+    Vec::new()
+}
+
 /// Key one file's batch under `<prefix>/<file>@<hash>#<i>` and hand the WHOLE keyed batch to
 /// `on_batch` at once. `hash` fingerprints the WHOLE batch's bytes with the SAME line-ending-
 /// normalized content primitive the symbols reindex freshening keys on (reused, not a fresh copy, so
@@ -827,6 +974,204 @@ mod tests {
             files,
             BTreeSet::from(["keep.rs".to_string()]),
             "the walk ingests only the project's own in-root source; got {files:?}"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "symbols"))]
+mod scoped_reindex_tests {
+    //! Tests for [`ingest_files_batched`] and [`graph_index_lag`] (spec 92, FRESH ON EVERY
+    //! INTEGRATION): the scoped-reindex entry an integration's own graph freshening calls, and the
+    //! sampled staleness check `rigger validate`'s graph index-lag advisory calls.
+
+    use super::{graph_index_lag, graph_index_lag_sample, ingest_files_batched, META_REPLAY_KEY};
+    use crate::eventstore::Event;
+
+    /// Record `files`' CURRENT generation into a fresh `prior` stream, exactly as
+    /// `graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one` seeds its own fixture -
+    /// extracted here so the sample-wrapper tests below can build a "the graph just recorded
+    /// this" baseline without repeating the stamping boilerplate.
+    fn record_current_generation(root: &str, files: &[String]) -> Vec<Event> {
+        let mut prior: Vec<Event> = Vec::new();
+        let mut pos = 1u64;
+        ingest_files_batched(root, files, |keyed| {
+            for (key, ev) in keyed {
+                let mut e = (*ev).clone().with_meta(META_REPLAY_KEY, key.as_str());
+                e.position = pos;
+                pos += 1;
+                prior.push(e);
+            }
+        });
+        prior
+    }
+
+    /// [`ingest_files_batched`] is bounded to exactly the NAMED files - an untouched sibling never
+    /// reaches the sink, even though it is present and indexable. Mirrors
+    /// `grounder::symbols::events::tests::file_batches_is_scoped_to_the_named_files_only` one layer
+    /// up, through the KEYED sink the conductor actually calls.
+    #[test]
+    fn ingest_files_batched_is_bounded_to_the_named_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn foo() {}\n").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "fn bar() {}\n").unwrap();
+        let root = dir.path().to_str().unwrap();
+
+        let mut seen_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let stats = ingest_files_batched(root, &["a.rs".to_string()], |keyed| {
+            for (key, _) in keyed {
+                seen_files.insert(key.clone());
+            }
+        });
+        assert_eq!(
+            stats.batches_emitted, 1,
+            "exactly the one named file's batch"
+        );
+        assert!(
+            seen_files.iter().all(|k| k.starts_with("gc/a.rs@")),
+            "only a.rs's keys reach the sink, never b.rs's; got {seen_files:?}"
+        );
+        assert!(
+            !seen_files.is_empty(),
+            "the named file's real definition must key at least one event"
+        );
+    }
+
+    /// [`graph_index_lag`] finds a file the graph's own recorded generation no longer matches, and
+    /// leaves an unchanged sibling alone - the core "the graph agrees with the tree, or it does not"
+    /// comparison the validate advisory reports from.
+    #[test]
+    fn graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("stable.rs"), "fn stable() {}\n").unwrap();
+        std::fs::write(dir.path().join("churn.rs"), "fn original() {}\n").unwrap();
+        let root = dir.path().to_str().unwrap();
+        let files = vec!["stable.rs".to_string(), "churn.rs".to_string()];
+
+        // Simulate what the graph has already recorded: both files' CURRENT (pre-edit) generation,
+        // stamped with real replay keys exactly as `RunCtx::emit_keyed_batch` would.
+        let mut prior: Vec<Event> = Vec::new();
+        let mut pos = 1u64;
+        ingest_files_batched(root, &files, |keyed| {
+            for (key, ev) in keyed {
+                let mut e = (*ev).clone().with_meta(META_REPLAY_KEY, key.as_str());
+                e.position = pos;
+                pos += 1;
+                prior.push(e);
+            }
+        });
+        assert!(
+            !prior.is_empty(),
+            "fixture precondition: both files must key at least one recorded event"
+        );
+
+        // The graph is fresh for both files right now - zero lag before anything changes.
+        assert_eq!(
+            graph_index_lag(root, &prior, &files),
+            Vec::<String>::new(),
+            "a graph that just recorded both files' current generation has zero lag"
+        );
+
+        // Edit ONLY churn.rs on disk; stable.rs is byte-identical to what the graph recorded.
+        std::fs::write(dir.path().join("churn.rs"), "fn renamed() {}\n").unwrap();
+
+        let lagging = graph_index_lag(root, &prior, &files);
+        assert_eq!(
+            lagging,
+            vec!["churn.rs".to_string()],
+            "only the file that actually changed since the graph's recording is reported as \
+             lagging; stable.rs must not be, and churn.rs must be; got {lagging:?}"
+        );
+    }
+
+    /// A file the graph has NEVER recorded (an empty `prior`) counts as lagging when it genuinely
+    /// extracts to something - the "added since the graph was last built" shape.
+    #[test]
+    fn graph_index_lag_reports_a_file_the_graph_never_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("new.rs"), "fn brand_new() {}\n").unwrap();
+        let root = dir.path().to_str().unwrap();
+
+        let lagging = graph_index_lag(root, &[], &["new.rs".to_string()]);
+        assert_eq!(
+            lagging,
+            vec!["new.rs".to_string()],
+            "a file the graph has never recorded, and which genuinely extracts to something, is \
+             lagging"
+        );
+    }
+
+    /// [`graph_index_lag_sample`] derives ITS OWN candidate list from `prior` (spec 92, `rigger
+    /// validate`'s graph index-lag advisory) rather than taking a caller-supplied file list: a
+    /// file the graph has recorded (`a.rs`, unchanged) is checked, a file the graph has NEVER
+    /// recorded (`brand_new.rs`, present on disk but outside `prior`) is left OUT of the
+    /// candidate set entirely - that is coverage's question (criterion 2), never double-counted
+    /// as THIS advisory's lag - and a file the graph recorded that no longer exists on disk
+    /// (`deleted.rs`) is likewise left out, since re-checking it needs no bounded sample (an
+    /// integration's own reindex retires it directly, Design/Constraints Walk).
+    #[test]
+    fn graph_index_lag_sample_derives_its_candidates_from_what_the_graph_has_recorded_and_still_exists(
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn one() {}\n").unwrap();
+        std::fs::write(dir.path().join("deleted.rs"), "fn gone() {}\n").unwrap();
+        let recorded = vec!["a.rs".to_string(), "deleted.rs".to_string()];
+        let prior = record_current_generation(root, &recorded);
+
+        // deleted.rs no longer exists on disk; brand_new.rs exists but the graph never recorded
+        // it (it is not in `prior` at all).
+        std::fs::remove_file(dir.path().join("deleted.rs")).unwrap();
+        std::fs::write(dir.path().join("brand_new.rs"), "fn brand_new() {}\n").unwrap();
+
+        assert_eq!(
+            graph_index_lag_sample(root, &prior),
+            Vec::<String>::new(),
+            "a.rs is unchanged since it was recorded, deleted.rs no longer exists (out of \
+             scope), and brand_new.rs was never recorded (coverage's question, not this \
+             advisory's) - zero lag"
+        );
+    }
+
+    /// [`graph_index_lag_sample`] surfaces a genuine disagreement end to end: a file the graph
+    /// recorded, still present on disk, whose content has since changed, is reported - the exact
+    /// shape `rigger validate`'s advisory warns an operator about.
+    #[test]
+    fn graph_index_lag_sample_reports_a_file_that_changed_since_the_graph_recorded_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("churn.rs"), "fn original() {}\n").unwrap();
+        let prior = record_current_generation(root, &["churn.rs".to_string()]);
+
+        std::fs::write(dir.path().join("churn.rs"), "fn renamed() {}\n").unwrap();
+
+        assert_eq!(
+            graph_index_lag_sample(root, &prior),
+            vec!["churn.rs".to_string()],
+            "churn.rs disagrees with the graph's last recorded generation"
+        );
+    }
+
+    /// The sample is BOUNDED (spec 92, cost-bounded like `grounder::symbols::staleness`'s own
+    /// sample): recording more files than the sample size all still agreeing must still read as
+    /// zero lag - the bound never manufactures a false positive by skipping a file.
+    #[test]
+    fn graph_index_lag_sample_is_bounded_and_stays_silent_when_every_sampled_file_agrees() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let files: Vec<String> = (0..20)
+            .map(|i| {
+                let name = format!("f{i}.rs");
+                std::fs::write(dir.path().join(&name), format!("fn f{i}() {{}}\n")).unwrap();
+                name
+            })
+            .collect();
+        let prior = record_current_generation(root, &files);
+
+        assert_eq!(
+            graph_index_lag_sample(root, &prior),
+            Vec::<String>::new(),
+            "twenty unchanged recorded files, all agreeing, must read as zero lag regardless of \
+             the sample bound"
         );
     }
 }

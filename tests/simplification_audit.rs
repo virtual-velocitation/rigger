@@ -3722,36 +3722,35 @@ fn render_section_3() -> String {
 /// rendering annotation, never a JSON field (spec 87 OUTPUT names no degree field for
 /// `dead-code.json`), so it lives beside the rendering, not the instrument. `src/ingest.rs`'s two
 /// `#[cfg(feature)]`-gated `ingest_project` sites share one lookup: the graph's own entity
-/// resolution for this shared name only ever returns the light-lane (`:481`, shifted from `:468`
-/// by spec 92 criterion 2 - see the disposition on ingest.rs:126 for the line-shift accounting)
-/// definition regardless of which line is asked for - a disclosed instrument-boundary quirk
-/// (section 4.2 discloses it), not this function's own imprecision.
-fn kg_degree_for(file: &str, line: usize) -> u32 {
-    match (file, line) {
-        ("src/canary.rs", 180) => 12,
-        ("src/config.rs", 452) => 3,
-        ("src/dash.rs", 425) => 5,
-        ("src/dash.rs", 2815) => 7,
-        ("src/dash.rs", 4665) => 3,
-        ("src/distiller.rs", 231) => 15,
-        ("src/eventstore/sqlite.rs", 192) => 32,
-        ("src/gate.rs", 463) => 3,
-        ("src/grounder/symbols/events.rs", 29) => 17,
-        ("src/grounder/symbols/model.rs", 214) => 7,
-        ("src/grounder/symbols/model.rs", 224) => 10,
-        ("src/ingest.rs", 126) => 3,
-        ("src/ingest.rs", 481) => 3,
-        ("src/ledger.rs", 574) => 6,
-        ("src/ledger.rs", 651) => 3,
-        ("src/spawn.rs", 320) => 5,
-        ("src/spawn.rs", 338) => 6,
-        ("src/spawn.rs", 344) => 7,
-        ("src/spawn.rs", 350) => 5,
-        ("src/spawn.rs", 356) => 6,
-        ("src/spawn.rs", 362) => 6,
-        ("src/spawn.rs", 368) => 7,
-        ("src/spawn.rs", 374) => 5,
-        ("src/spawn.rs", 399) => 14,
+/// resolution for this shared name only ever returns the light-lane (`:615`) definition
+/// regardless of which line is asked for - a disclosed instrument-boundary quirk (section 4.2
+/// discloses it), not this function's own imprecision.
+fn kg_degree_for(file: &str, name: &str) -> u32 {
+    match (file, name) {
+        ("src/canary.rs", "cataloged_classes") => 12,
+        ("src/config.rs", "sdet_author_enabled") => 3,
+        ("src/dash.rs", "pid_is_alive") => 5,
+        ("src/dash.rs", "neighborhood") => 7,
+        ("src/dash.rs", "serve") => 3,
+        ("src/distiller.rs", "rebuild") => 15,
+        ("src/eventstore/sqlite.rs", "with_content_identity") => 32,
+        ("src/gate.rs", "resolve_wrapper_name") => 3,
+        ("src/grounder/symbols/events.rs", "index_events") => 17,
+        ("src/grounder/symbols/model.rs", "definitions_named") => 7,
+        ("src/grounder/symbols/model.rs", "references_named") => 10,
+        ("src/ingest.rs", "ingest_project") => 3,
+        ("src/ingest.rs", "record_current_generation") => 3,
+        ("src/ledger.rs", "fully_done") => 6,
+        ("src/ledger.rs", "is_integrated") => 3,
+        ("src/spawn.rs", "new") => 5,
+        ("src/spawn.rs", "with_system_prompt") => 6,
+        ("src/spawn.rs", "with_model") => 7,
+        ("src/spawn.rs", "with_tools") => 5,
+        ("src/spawn.rs", "with_dir") => 6,
+        ("src/spawn.rs", "with_blast_radius") => 6,
+        ("src/spawn.rs", "with_title") => 7,
+        ("src/spawn.rs", "with_reviews") => 5,
+        ("src/spawn.rs", "park") => 14,
         // Round 3 (spec 89 criterion 1, `arch-u89c1r2-dirty-check-duplicated-and-diverges-
         // fail-direction`) shifts `is_dirty` to line 635 AND changes its body (a one-line
         // delegation to the new `path_is_dirty` free fn, replacing the direct `git(...)` call).
@@ -3763,9 +3762,9 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         // sites, untouched by this round (see this file's `disposition_for`), and its body still
         // makes exactly ONE outgoing call - `path_is_dirty` in place of `git` - so the edge count
         // is unchanged at 5.
-        ("src/worktree.rs", 635) => 5,
-        (other_file, other_line) => panic!(
-            "dead-code candidate {other_file}:{other_line} has no recorded knowledge-graph \
+        ("src/worktree.rs", "is_dirty") => 5,
+        (other_file, other_name) => panic!(
+            "dead-code candidate {other_file}::{other_name} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
              Design's THE KNOWLEDGE GRAPH CROSS-CHECK)"
         ),
@@ -3854,7 +3853,7 @@ fn render_dead_code_full_list(lines: &[DeadCodeCandidateLines]) -> String {
             // a rendered citation, so it reads the candidate's own live field like every other
             // non-citation field above (`c.visibility`, `c.disposition`, `c.reason`), not the
             // unguarded `lines` sidecar.
-            kg_degree_for(&c.file, c.line),
+            kg_degree_for(&c.file, &c.name),
             disposition_label(c.disposition),
             c.reason
         ));
@@ -5540,8 +5539,8 @@ struct DeadCodeCandidate {
     ambiguous_with_hashed: Vec<String>,
     test_only_references: Vec<TestOnlyRef>,
     /// Criterion 3's own field (spec 87 OUTPUT: "and a DISPOSITION"). Assigned by
-    /// [`disposition_for`], keyed on `(file, line)` - never on bare `name` alone, since the two
-    /// `#[cfg(feature)]`-gated `ingest_project`s share a name but carry different reasons.
+    /// [`disposition_for`], keyed on `(file, name)` - never on a line number, since a line moves
+    /// `#[cfg(feature)]`-gated `ingest_project`s share one name and one reason.
     disposition: Disposition,
     /// The cited reason [`disposition_for`] assigns alongside [`DeadCodeCandidate::disposition`]
     /// (spec 87 DISPOSITIONS: "Every entry gets one; an entry without a cited reason is a
@@ -5967,10 +5966,10 @@ fn build_dead_code_candidates(
 /// `docs/audit/2026-09-simplification-audit.md` section 4, not repeated here; this table carries
 /// the SAME reason text the report's full list cites, so the JSON and the report can never state
 /// two different reasons for one candidate.
-fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
+fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
     use Disposition::{Delete, KeepPending};
-    match (file, line) {
-        ("src/canary.rs", 180) => (
+    match (file, name) {
+        ("src/canary.rs", "cataloged_classes") => (
             Delete,
             "cataloged_classes has no production caller anywhere in src/ (checked whole-tree, \
              recursively). Its only two references are its own inline tests \
@@ -5981,7 +5980,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              loop) never consults it: corpus diversity is a load-time authoring check, not a \
              runtime one.",
         ),
-        ("src/config.rs", 452) => (
+        ("src/config.rs", "sdet_author_enabled") => (
             KeepPending,
             "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not \
              a false positive: spawn_sdet_author (conductor.rs:3980) gates the always-on SDET \
@@ -5998,7 +5997,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              correct fix is wiring the call site, out of scope here (no production code changes \
              this criterion).",
         ),
-        ("src/dash.rs", 425) => (
+        ("src/dash.rs", "pid_is_alive") => (
             Delete,
             "pid_is_alive has no production caller. It is the RETIRED predecessor of the real \
              marker-serving check: dash_marker_serving (main.rs:5711, the production predicate \
@@ -6010,7 +6009,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              (dash.rs:9304) and an older fixture test (main.rs:12795-12841) that injects it as a \
              simplified closure for readability, not a claim about production behavior.",
         ),
-        ("src/dash.rs", 2815) => (
+        ("src/dash.rs", "neighborhood") => (
             Delete,
             "neighborhood (the single-seed convenience wrapper) has no production caller. The \
              route handler (dash.rs:3404) calls neighborhood_of (the multi-seed core \
@@ -6019,7 +6018,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              content nodes at once'. neighborhood's 13 references are all its own tests \
              exercising the single-seed case directly.",
         ),
-        ("src/dash.rs", 4665) => (
+        ("src/dash.rs", "serve") => (
             Delete,
             "serve (the blocking, self-binding accept-loop entry point) has no production caller. \
              The real dash-serving CLI path (main.rs::cmd_dash) calls dash::serve_on (main.rs:6493) \
@@ -6030,7 +6029,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              serve_on, disclosed here rather than silently left.) serve's 2 references are its \
              own smoke tests.",
         ),
-        ("src/distiller.rs", 231) => (
+        ("src/distiller.rs", "rebuild") => (
             KeepPending,
             "rebuild (the digest-pool projection rebuild, spec 27) has no production caller \
              anywhere - src/lib.rs's mod distiller; declaration is the only mention of the module \
@@ -6044,7 +6043,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              site (a rigger distill command, or a hook into rigger reset), never spec'd as a \
              Done-when criterion of spec 27 itself, which is why it shipped unwired.",
         ),
-        ("src/eventstore/sqlite.rs", 192) => (
+        ("src/eventstore/sqlite.rs", "with_content_identity") => (
             KeepPending,
             "with_content_identity (the storage-level idempotency append-guard builder, spec 60) \
              has no production caller: open_sqlite_store (main.rs:444), the crate's ONE sqlite \
@@ -6064,7 +6063,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              a follow-up spec should either wire it into open_sqlite_store or explicitly retire \
              it, rather than let it sit silently unwired indefinitely.",
         ),
-        ("src/gate.rs", 463) => (
+        ("src/gate.rs", "resolve_wrapper_name") => (
             Delete,
             "resolve_wrapper_name has no production caller - independently confirmed (u87c2's own \
              decision u87c2-three-precision-fixes-from-real-tree-spot-check already found this by \
@@ -6077,7 +6076,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              on a follow-up pass), not a sign the function is unneeded. resolve_wrapper_name's 4 \
              references are its own tests.",
         ),
-        ("src/grounder/symbols/events.rs", 29) => (
+        ("src/grounder/symbols/events.rs", "index_events") => (
             Delete,
             "index_events is spec 87's own Goal-worked example of the false negative this whole \
              spec exists to fix ('a function whose only caller is its own test reads as alive: \
@@ -6086,44 +6085,39 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              again on the current tree (now 64 test references at line 29, having grown with the \
              test suite): no production caller anywhere.",
         ),
-        ("src/grounder/symbols/model.rs", 214) => (
+        ("src/grounder/symbols/model.rs", "definitions_named") => (
             Delete,
             "definitions_named has no production caller - only its own module's assertion-style \
              tests (symbols/mod.rs) use it to check index state after a build/update, never a \
              production edge-resolution path.",
         ),
-        ("src/grounder/symbols/model.rs", 224) => (
+        ("src/grounder/symbols/model.rs", "references_named") => (
             Delete,
             "references_named has no production caller - the same test-only accessor shape as \
              its sibling definitions_named immediately above it.",
         ),
-        ("src/ingest.rs", 126) => (
+        ("src/ingest.rs", "ingest_project") => (
             Delete,
-            "ingest_project (the #[cfg(feature = \"symbols\")] single-event lane) has no \
-             production caller. Production calls ingest_project_batched (conductor.rs:8050/15473, \
-             main.rs:4067) exclusively - the batched entry point this fn's own doc comment \
-             already names as the thing 'existing callers discard [IngestStats] and are \
-             unaffected' by, i.e. it documents its own supersession. Ambiguous with its \
-             #[cfg(not(feature = \"symbols\"))] sibling at ingest.rs:481 (the textual scanner \
-             sees two same-named definitions where rustc, feature-gated, sees one); both carry \
-             the identical finding and disposition. \
-             (Line shifted 124 -> 126: spec 92 criterion 2 grew two doc-comment lines directly \
-             above this fn - one added clause each in the ingest_project_batched_paced doc block \
-             and the shared-walk doc block immediately above it - naming the new workflow- \
-             definition ('gw') batch this file's walk now also emits.)",
+            "ingest_project - both the #[cfg(feature = \"symbols\")] single-event lane and the \
+             #[cfg(not(feature = \"symbols\"))] light-lane no-op, one name at two cfg-gated \
+             sites - has no production caller on either lane. Production calls \
+             ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point \
+             this fn's own doc comment already names as the thing 'existing callers discard \
+             [IngestStats] and are unaffected' by, i.e. it documents its own supersession.",
         ),
-        ("src/ingest.rs", 481) => (
+        ("src/ingest.rs", "record_current_generation") => (
             Delete,
-            "ingest_project (the #[cfg(not(feature = \"symbols\"))] light-lane no-op) has no \
-             production caller, for the identical reason as its #[cfg(feature = \"symbols\")] \
-             sibling at ingest.rs:126: production calls ingest_project_batched exclusively on \
-             both lanes. \
-             (Line shifted 468 -> 481: the same two-line doc-comment growth above, plus the \
-             workflow-definition batch loop spec 92 criterion 2 inserted into walk_batches (11 \
-             lines, folding `workflowdef::project_batches` into the shared walk under its own \
-             `gw` key) sitting between this fn and its symbols-feature sibling.)",
+            "record_current_generation (spec 92 criterion 1, FRESH ON EVERY INTEGRATION) has no \
+             production caller - a private fixture helper inside scoped_reindex_tests that \
+             appends `graph_index_lag`/`graph_index_lag_sample`'s test-double `prior: Vec<Event>` \
+             stream, factored out once graph_index_lag_sample_derives_its_candidates_from_..., \
+             graph_index_lag_sample_reports_a_file_that_changed_..., and \
+             graph_index_lag_sample_is_bounded_and_stays_silent_... all needed the identical \
+             stamping boilerplate (the same shape already inlined once in \
+             graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one, its own sibling \
+             test above it in this file). Never called outside this test module.",
         ),
-        ("src/ledger.rs", 574) => (
+        ("src/ledger.rs", "fully_done") => (
             Delete,
             "fully_done has no production caller. Its own doc comment's three-conjunct \
              completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it \
@@ -6134,7 +6128,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              (ESCALATION RESUMES) added resume_bound/ResumeGrant/UnitResumed earlier in this same \
              file.)",
         ),
-        ("src/ledger.rs", 651) => (
+        ("src/ledger.rs", "is_integrated") => (
             Delete,
             "is_integrated has no production caller, though its doc comment claims one ('used by \
              resume to skip completed work'): the real resume-skip logic uses is_terminal \
@@ -6145,7 +6139,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              (Line shifted 577 -> 583 -> 651: same round-3 doc-comment addition, then the same \
              rigger-run merge shift above.)",
         ),
-        ("src/spawn.rs", 320) => (
+        ("src/spawn.rs", "new") => (
             Delete,
             "SpawnRequest::new and its 7 builder methods (with_system_prompt/with_model/ \
              with_tools/with_dir/with_blast_radius/with_title/with_reviews) plus the park \
@@ -6158,45 +6152,45 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              Goal text names four of the seven builders (with_title/with_reviews/with_model/ \
              with_blast_radius) as its worked example of confirmed dead code.",
         ),
-        ("src/spawn.rs", 338) => (
+        ("src/spawn.rs", "with_system_prompt") => (
             Delete,
             "with_system_prompt - part of the SpawnRequest builder family; see the disposition on \
              SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
         ),
-        ("src/spawn.rs", 344) => (
+        ("src/spawn.rs", "with_model") => (
             Delete,
             "with_model - part of the SpawnRequest builder family; see the disposition on \
              SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
         ),
-        ("src/spawn.rs", 350) => (
+        ("src/spawn.rs", "with_tools") => (
             Delete,
             "with_tools - part of the SpawnRequest builder family; see the disposition on \
              SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
         ),
-        ("src/spawn.rs", 356) => (
+        ("src/spawn.rs", "with_dir") => (
             Delete,
             "with_dir - part of the SpawnRequest builder family; see the disposition on \
              SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
         ),
-        ("src/spawn.rs", 362) => (
+        ("src/spawn.rs", "with_blast_radius") => (
             Delete,
             "with_blast_radius - part of the SpawnRequest builder family (one of the four spec 87 \
              Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the \
              shared root cause and citation.",
         ),
-        ("src/spawn.rs", 368) => (
+        ("src/spawn.rs", "with_title") => (
             Delete,
             "with_title - part of the SpawnRequest builder family (one of the four spec 87 Goal \
              names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the \
              shared root cause and citation.",
         ),
-        ("src/spawn.rs", 374) => (
+        ("src/spawn.rs", "with_reviews") => (
             Delete,
             "with_reviews - part of the SpawnRequest builder family (one of the four spec 87 Goal \
              names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the \
              shared root cause and citation.",
         ),
-        ("src/spawn.rs", 399) => (
+        ("src/spawn.rs", "park") => (
             Delete,
             "park (the zero-run-id convenience wrapper around park_in_run) - part of the \
              SpawnRequest-construction dead set; see the disposition on SpawnRequest::new \
@@ -6206,7 +6200,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              references, not reachability, so park_in_run reads alive even though its only OTHER \
              caller (park) is itself dead.",
         ),
-        ("src/worktree.rs", 635) => (
+        ("src/worktree.rs", "is_dirty") => (
             Delete,
             "is_dirty has no production caller - one of spec 87's own two Goal-cited worked \
              examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current \
@@ -6229,8 +6223,8 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              production dead-code candidate by this scanner's own definition, closing the \
              finding at its root rather than re-dispositioning it in place.",
         ),
-        (other_file, other_line) => panic!(
-            "dead-code candidate {other_file}:{other_line} has no assigned disposition - this is \
+        (other_file, other_name) => panic!(
+            "dead-code candidate {other_file}::{other_name} has no assigned disposition - this is \
              a NEW candidate the tree has grown since spec 87 criterion 3 researched and \
              dispositioned every candidate that existed then (26 entries); assign one in \
              disposition_for (spec 87 criterion 3's own OWNS: 'the dispositions'), citing a real \
@@ -6372,7 +6366,7 @@ fn real_whole_file_test_set() -> &'static BTreeSet<String> {
 /// calls this.
 fn apply_real_tree_dispositions(mut candidates: Vec<DeadCodeCandidate>) -> Vec<DeadCodeCandidate> {
     for c in &mut candidates {
-        let (disposition, reason) = disposition_for(&c.file, c.line);
+        let (disposition, reason) = disposition_for(&c.file, &c.name);
         c.disposition = disposition;
         c.reason = reason.to_string();
     }
@@ -10690,7 +10684,7 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (25, 22, 0, 3),
+            (26, 23, 0, 3),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}"
         );
