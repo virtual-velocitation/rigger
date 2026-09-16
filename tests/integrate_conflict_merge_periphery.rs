@@ -240,6 +240,29 @@
 //! entry-level fast path at all (its failures land before `files.is_empty()` can ever be true
 //! on a resumed call). This is the accounting this file's own header promises: a re-read of the
 //! diff against `git merge-base HEAD rigger-run`, not inspection, found this boundary.
+//!
+//! GAP 11 (spec 92, checkin-stage re-enumeration over the full spec diff, base 8548817):
+//! `Worktree::land` changed its return type from `Result<(), Error>` to
+//! `Result<LandOutcome, Error>` (`Landed` / `TipMoved`), and `src/conductor.rs` gained a whole
+//! new retry loop around it - `STATUS_INTEGRATE_TIP_MOVED` ("integrate-tip-moved"), a durable
+//! row per retried pass, and a bounded `TIP_MOVED_PASS_BOUND` - so a run branch that moves out
+//! from under a unit BETWEEN its worktree merge and its land call (the doc comment names "an
+//! operator commit, a sibling's landing") is recorded and retried instead of hard-failing the
+//! whole integration, the exact failure mode a 2026-09-15 incident this same spec fixed named
+//! directly in `land`'s own doc comment. `src/worktree.rs`'s own test module proves `land`
+//! itself detects a moved tip (a same-file, same-process branch move via `run_git`, white-box);
+//! it never drives the CONDUCTOR'S retry loop this fix actually added, and nothing anywhere
+//! else does either - zero hits for `TIP_MOVED_PASS_BOUND`, `STATUS_INTEGRATE_TIP_MOVED`, or
+//! `integrate-tip-moved` outside their own declarations. This drives it for real: an
+//! `EventStore` decorator commits an unrelated file directly onto the repo's checkout - the
+//! SAME directory `Worktree::land`'s `git merge --ff-only` runs against - at the exact seam
+//! between the merge and the land (the durable landing-intent record `record_landing_intent`
+//! writes right before `Worktree::land` runs), so the very first landing pass hits a REAL
+//! `--ff-only` refusal, never a simulated one. Proves: the retried pass is durably recorded
+//! (`integrate-tip-moved`), the run still reaches `Integrated` with no attempt charged, BOTH
+//! the unit's own work and the out-of-band mover's content land on the run branch (the
+//! documented recovery folds the mover in, never discards it), and the repo ends up clean -
+//! `land`'s own "the repo is untouched" half of its contract, checked at the whole-run level.
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
@@ -3439,5 +3462,174 @@ fn a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_o
          never report `Integrated` while the placeholder content still ships instead of the \
          real regenerated output"
     );
+    drop(repo);
+}
+
+// ============================================================================================
+// GAP 11 (spec 92, `src/worktree.rs`'s `LandOutcome`/`Worktree::land` + `src/conductor.rs`'s
+// new `STATUS_INTEGRATE_TIP_MOVED`/`TIP_MOVED_PASS_BOUND` retry loop). See the file header for
+// the full boundary-to-fixture mapping.
+// ============================================================================================
+
+/// An `EventStore` decorator: forwards every call to `inner` unchanged except `append`, which -
+/// on the FIRST append it sees carrying `STATUS_INTEGRATE_LANDING_INTENT`
+/// ("integrate-landing-intent", row 4's before-record, written immediately before
+/// `Worktree::land` runs) - commits a brand-new, unrelated file directly onto `repo`'s current
+/// checkout BEFORE delegating, simulating exactly the race `Worktree::land`'s own doc comment
+/// names as its reason to exist: "the run branch MOVED between that merge and this call (an
+/// operator commit, a sibling's landing)". `repo` is the SAME directory `Worktree::land` itself
+/// runs `git merge --ff-only` against, so the very next `land` call hits a REAL `--ff-only`
+/// refusal, never a simulated one. `fired` gates this to ONCE: every later pass's own
+/// landing-intent record (the retry this fix exists to drive) must NOT re-trigger it, or the
+/// run would never converge inside `TIP_MOVED_PASS_BOUND`.
+struct MoveRunTipOnFirstLandingIntent<'a> {
+    inner: &'a dyn EventStore,
+    repo: String,
+    fired: Mutex<bool>,
+}
+
+impl EventStore for MoveRunTipOnFirstLandingIntent<'_> {
+    fn append(
+        &self,
+        stream: &str,
+        expected: ExpectedRevision,
+        events: &[rigger::eventstore::Event],
+    ) -> Result<Appended, EsError> {
+        let is_landing_intent = events.iter().any(|e| {
+            e.type_ == ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data)
+                    .contains("\"status\":\"integrate-landing-intent\"")
+        });
+        if is_landing_intent {
+            let mut fired = self.fired.lock().unwrap();
+            if !*fired {
+                *fired = true;
+                std::fs::write(
+                    Path::new(&self.repo).join("operator_side_note.txt"),
+                    "OPERATOR\n",
+                )
+                .unwrap();
+                git_commit_all(
+                    &self.repo,
+                    "operator: an out-of-band commit races the landing window",
+                );
+            }
+        }
+        self.inner.append(stream, expected, events)
+    }
+    fn read_stream(
+        &self,
+        stream: &str,
+        from: Revision,
+        dir: Direction,
+    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
+        self.inner.read_stream(stream, from, dir)
+    }
+    fn read_all(
+        &self,
+        from: Position,
+        dir: Direction,
+        filter: &Filter,
+    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
+        self.inner.read_all(from, dir, filter)
+    }
+    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, EsError> {
+        self.inner.subscribe_all(from, filter)
+    }
+    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, EsError> {
+        self.inner.subscribe_stream(stream, from)
+    }
+}
+
+/// Drives `land`'s newly-typed race-detection contract, and the whole conductor retry loop
+/// built around it, through a REAL `--ff-only` refusal - not the implementer's own same-file
+/// `land_is_fast_forward_only_and_reports_a_moved_tip_without_dirtying_the_repo` unit test
+/// (white-box, structurally unreachable from outside the crate), and not any fixture already in
+/// this file (none of GAP 1-10's fixtures ever move the run branch out from under a unit
+/// mid-landing). See the file header's GAP 11 entry for the full picture.
+#[test]
+fn a_run_tip_moved_under_the_landing_window_is_recorded_and_retried_to_a_clean_landing() {
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
+    cfg.agents.insert("worker".into(), agent("worker"));
+    cfg.agents.insert("lens".into(), agent("lens"));
+    cfg.agents.insert("judge".into(), agent("judge"));
+    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+
+    let store = Store::open(":memory:").unwrap();
+    let moving_store = MoveRunTipOnFirstLandingIntent {
+        inner: &store,
+        repo: repo_path.clone(),
+        fired: Mutex::new(false),
+    };
+    let driver = SimpleWorkDriver;
+    let deps = Deps {
+        store: &moving_store,
+        driver: &driver,
+        gates: &rigger::gate::ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+    };
+
+    let rs = run(&cfg, &deps).expect(
+        "a run-tip-moved race must be recorded and retried to a clean landing, never a hard \
+         error - a fast-forward refusal IS the documented, recoverable outcome, not a fault",
+    );
+    assert_eq!(rs.units["unit-a"].status, ledger::Status::Integrated);
+    assert_eq!(
+        rs.units["unit-a"].attempts, 0,
+        "a moved run tip is infrastructure-level recovery within ONE integration attempt, \
+         never a charged remediation attempt"
+    );
+
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert!(
+        has_status_marker(&events, "integrate-tip-moved"),
+        "the tip-moved pass must leave its own durable row - the accounting this fix exists to \
+         keep - even though the run as a whole still succeeds; events: {events:?}"
+    );
+    assert_eq!(
+        count_status_marker(&events, "integrate-landing-intent"),
+        2,
+        "row 4's before-record fires once per PASS: pass 1 (refused by the moved tip) and pass \
+         2 (the retry that actually lands) - never collapsed into one; events: {events:?}"
+    );
+    assert_eq!(
+        count_status_marker(&events, "integrate-landed"),
+        1,
+        "row 4's after-record fires exactly once - only the pass that actually landed; \
+         events: {events:?}"
+    );
+
+    // The repo must carry BOTH the unit's own work and the out-of-band commit that raced it -
+    // the documented recovery ("merge the new tip into the worktree and land again") folds the
+    // mover's content in, it never discards it to force a fast-forward through.
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&repo_path).join("a.rs")).unwrap(),
+        "A_WORK\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(Path::new(&repo_path).join("operator_side_note.txt")).unwrap(),
+        "OPERATOR\n"
+    );
+    // `land`'s own contract: a refused fast-forward leaves the repo untouched, never a dangling
+    // merge in progress - `--ff-only` refuses before it touches the index, so no `MERGE_HEAD`
+    // (git's own marker for "a merge is in progress") is ever created by the refused pass.
+    // (A blanket `git status --porcelain` would also flag this fixture's OWN untracked
+    // `.rigger-test-scratch` residue, which is test-harness noise, not the leftover-merge
+    // defect this assertion exists to catch.)
+    assert!(
+        !Path::new(&repo_path).join(".git/MERGE_HEAD").exists(),
+        "a refused --ff-only must never leave the repo mid-merge"
+    );
+
     drop(repo);
 }
