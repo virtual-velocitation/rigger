@@ -4320,7 +4320,7 @@ fn cmd_graph_show(entity: &str) -> Res {
 /// [`definition_body`] HEALS a drifted recorded line to the entity's live one, the header prints the
 /// LIVE site with the recorded one noted alongside it (`"recorded line N, now M"`) rather than
 /// silently swapping one location for the other with no trace of the drift.
-fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
+fn print_entity_site(site: &contextgraph::EntitySite) {
     let kind = if site.kind.is_empty() {
         "?"
     } else {
@@ -4367,7 +4367,7 @@ fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
 /// drifted recorded line to a different live one, the header shows the LIVE line as the site (it is
 /// what the body below is FROM) and notes the recorded line beside it, so the drift is visible rather
 /// than silently resolved.
-fn print_site_header(site: &contextgraph::sqlite::EntitySite, kind: &str, live_line: u32) {
+fn print_site_header(site: &contextgraph::EntitySite, kind: &str, live_line: u32) {
     if live_line != site.line {
         println!(
             "  site: {}:{}   kind {}   degree {}   (recorded line {}, now {})",
