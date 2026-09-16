@@ -28875,6 +28875,67 @@ fn grep_guard_still_allows_literal_on_a_shell_metacharacter_fused_grep_end_to_en
     );
 }
 
+/// SDET periphery gap closed (round-4 accounting): the round-4 fix
+/// (adv-u92c4r3-quoted-or-escaped-grep-still-bypasses-the-guard) adds `shell_word_value`, a
+/// per-token shell quote/escape resolution pass, so a `grep` word wrapped in double quotes,
+/// wrapped in single quotes, split by a backslash escape, or split by an empty quoted run in
+/// the middle of the word all still tokenize as the plain word `grep`. The fix's own regression
+/// test (`grep_guard_decision_bounces_a_quoted_or_escaped_grep` in `src/main.rs`) proves this
+/// only at the pure-function level, in-process; this test drives the SAME four shapes through
+/// the compiled `rigger grep-guard` binary reading real PreToolUse JSON on stdin, proving the
+/// quote/escape normalization actually reaches an operator's shell, not only the function under
+/// test.
+#[test]
+fn grep_guard_bounces_a_quoted_or_escaped_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in [
+        r#""grep" pattern src/main.rs"#,
+        "'grep' pattern src/main.rs",
+        r"gr\ep pattern src/main.rs",
+        "g''rep pattern src/main.rs",
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a quoted or escaped grep must be denied through the compiled binary, matching the \
+             round-4 fix's pure-function coverage: {command:?}; got:\n{out}"
+        );
+    }
+}
+
+/// SDET periphery gap closed (round-4 accounting): the round-4 fix's own end-to-end coverage
+/// never proves `--literal` survives quote/escape normalization when the escape hatch flag
+/// itself is quoted too - only the pure-function unit test
+/// (`grep_guard_decision_still_allows_a_quoted_literal_on_a_quoted_grep` in `src/main.rs`) does.
+/// Without this, a regression that made `shell_word_value` normalize `grep` but stop
+/// recognizing a quoted `--literal` - closing the escape hatch specifically for the shapes this
+/// round just started denying - would pass every currently-committed periphery test.
+#[test]
+fn grep_guard_still_allows_a_quoted_literal_on_a_quoted_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"\"grep\" \"--literal\" pattern src/main.rs"}}"#,
+    );
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "--literal must still pass a quoted grep through end to end even when --literal itself \
+         is quoted; got:\n{out}"
+    );
+}
+
 /// `rigger mcp`'s API edges: an unknown tool name, and the required-argument checks
 /// `rigger_ground`/`rigger_graph` state in their own error strings - none of which the
 /// happy-path test above (which only ever sends well-formed calls) sends. Each must answer a

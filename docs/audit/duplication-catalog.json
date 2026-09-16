@@ -5708,6 +5708,16 @@
       {
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
+        "content_hash": "090bbeba5641ea09"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "090bbeba5641ea09"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
       },
       {
@@ -6987,7 +6997,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 705 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 707 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0061",
@@ -18250,9 +18260,14 @@
         "file": "tests/cli.rs",
         "name": "grep_guard_still_allows_literal_on_a_shell_metacharacter_fused_grep_end_to_end",
         "content_hash": "409767f744e64494"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "grep_guard_still_allows_a_quoted_literal_on_a_quoted_grep_end_to_end",
+        "content_hash": "409767f744e64494"
       }
     ],
-    "proposed_home": "cli::support (consolidate these 3 sites into one function in this file)",
+    "proposed_home": "cli::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -18268,9 +18283,14 @@
         "file": "tests/cli.rs",
         "name": "grep_guard_bounces_the_remaining_shell_metacharacter_fusions_end_to_end",
         "content_hash": "1d8308ff2486ee42"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "grep_guard_bounces_a_quoted_or_escaped_grep_end_to_end",
+        "content_hash": "041b4e633c29e9ef"
       }
     ],
-    "proposed_home": "cli::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "cli::support (consolidate these 3 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
