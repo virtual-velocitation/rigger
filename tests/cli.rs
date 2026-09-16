@@ -28270,3 +28270,38 @@ fn step_leaves_a_non_addrinuse_bind_error_unenriched() {
         "a bind failure of any kind must still announce the headless degrade; stderr:\n{err}"
     );
 }
+
+#[test]
+fn reset_scratch_orphans_reclaims_cache_roots_whose_repo_is_gone_and_keeps_the_rest() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let cache = tempfile::tempdir().unwrap();
+    let rigger_dir = cache.path().join("rigger");
+    let enc = |p: &str| rigger::liveness::marker_filename(p).unwrap();
+    let live = rigger_dir.join(enc(root.to_str().unwrap()));
+    let gone = rigger_dir.join(enc(&format!("{}/deleted-checkout", root.to_str().unwrap())));
+    let plain = rigger_dir.join("test-tmp");
+    for d in [&live, &gone, &plain] {
+        std::fs::create_dir_all(d.join("rigger-wt-unit")).unwrap();
+    }
+    let envs = [("XDG_CACHE_HOME", cache.path().to_str().unwrap())];
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--scratch-orphans"], &envs);
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains("reclaimed 1 scratch root(s)"), "{out}");
+    assert!(
+        !gone.exists(),
+        "the root keyed on a deleted checkout is reclaimed"
+    );
+    assert!(live.exists(), "the root keyed on this live project is kept");
+    assert!(
+        plain.exists(),
+        "an entry that is not an encoded repo path is kept"
+    );
+    let (out, _err, ok) = run_rigger_envs(root, &["reset", "--scratch-orphans"], &envs);
+    assert!(ok);
+    assert!(
+        out.contains("reclaimed 0 scratch root(s)"),
+        "second pass is a no-op: {out}"
+    );
+}
