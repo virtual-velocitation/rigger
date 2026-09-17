@@ -6112,8 +6112,8 @@ Proposed home: `grounder::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/grounder/symbols/grounder.rs:1063-1074` `a_reference_ranks_below_a_definition_of_the_same_name`
-- `src/grounder/symbols/grounder.rs:1315-1329` `ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token`
+- `src/grounder/symbols/grounder.rs:1071-1082` `a_reference_ranks_below_a_definition_of_the_same_name`
+- `src/grounder/symbols/grounder.rs:1323-1337` `ground_ranks_an_exact_name_match_above_a_name_that_merely_contains_the_token`
 
 #### `dup-0235` (near, 2 sites)
 
@@ -6121,8 +6121,8 @@ Proposed home: `grounder::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/grounder/symbols/grounder.rs:1180-1186` `empty_query_or_zero_k_grounds_nothing`
-- `src/grounder/symbols/grounder.rs:1595-1605` `has_strong_match_is_true_for_a_contains_tier_match_of_an_unambiguous_entity`
+- `src/grounder/symbols/grounder.rs:1188-1194` `empty_query_or_zero_k_grounds_nothing`
+- `src/grounder/symbols/grounder.rs:1603-1613` `has_strong_match_is_true_for_a_contains_tier_match_of_an_unambiguous_entity`
 
 #### `dup-0236` (near, 3 sites)
 
@@ -6130,9 +6130,9 @@ Proposed home: `grounder::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/grounder/symbols/grounder.rs:1232-1278` `a_concurrent_reindex_from_a_second_grounder_is_not_clobbered`
-- `src/grounder/symbols/grounder.rs:1281-1307` `reindex_replaces_only_a_changed_files_symbols`
-- `src/grounder/symbols/grounder.rs:1608-1635` `reindex_over_a_deleted_file_stops_grounding_it`
+- `src/grounder/symbols/grounder.rs:1240-1286` `a_concurrent_reindex_from_a_second_grounder_is_not_clobbered`
+- `src/grounder/symbols/grounder.rs:1289-1315` `reindex_replaces_only_a_changed_files_symbols`
+- `src/grounder/symbols/grounder.rs:1616-1643` `reindex_over_a_deleted_file_stops_grounding_it`
 
 #### `dup-0237` (near, 3 sites)
 
@@ -6140,9 +6140,9 @@ Proposed home: `grounder::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/grounder/symbols/grounder.rs:1706-1773` `scored_hits_a_strictly_higher_tier_always_wins_over_a_worse_commonness_and_lexical`
-- `src/grounder/symbols/grounder.rs:1780-1834` `scored_hits_breaks_a_tier_tie_by_strict_rarity_never_by_an_equal_commonness`
-- `src/grounder/symbols/grounder.rs:1846-1876` `scored_hits_lexical_never_promotes_a_tied_reference_or_a_tied_second_definition`
+- `src/grounder/symbols/grounder.rs:1714-1781` `scored_hits_a_strictly_higher_tier_always_wins_over_a_worse_commonness_and_lexical`
+- `src/grounder/symbols/grounder.rs:1789-1843` `scored_hits_breaks_a_tier_tie_by_strict_rarity_never_by_an_equal_commonness`
+- `src/grounder/symbols/grounder.rs:1854-1885` `scored_hits_lexical_never_promotes_a_tied_reference_or_a_tied_second_definition`
 
 #### `dup-0238` (near, 2 sites)
 
