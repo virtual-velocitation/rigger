@@ -207,6 +207,14 @@ fn run_once(store: &Store, kind: &str, agent_bin: &Path) -> (String, Vec<String>
 
 #[test]
 fn rigger_run_base_reaches_a_real_inline_gate_subprocess_but_not_a_real_agent_subprocess() {
+    // Guards against ambient pollution in THIS test process (a gate exporting
+    // RIGGER_RUN_BASE to a suite that runs rigger in-process): the agent subprocess inherits
+    // the ambient bag, and this test proves spawn_env ADDS nothing to it - never that the
+    // bag was clean. Under a process-per-test runner no sibling's guard runs first, so the
+    // test carries its own, exactly like no_persisted_base_tip_* below.
+    let _guard = env_test_lock();
+    std::env::remove_var("RIGGER_RUN_BASE");
+
     let store = Store::open(":memory:").unwrap();
     let tip = "deadbeefcafef00d91";
     let criteria: Vec<String> = Vec::new();
