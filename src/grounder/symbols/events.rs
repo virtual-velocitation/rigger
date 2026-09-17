@@ -1757,4 +1757,54 @@ fn an_integration_test() {
              edges - the retirement mechanism itself"
         );
     }
+
+    /// [`file_batches`] EXTENDS an ordinary (non-excluded) file's batch with its
+    /// [`proof_events`] - the polarity of `if !is_excluded { events.extend(proof_events(..)) }`
+    /// pinned directly: `product.rs` here is not an out-of-line test-module target
+    /// (`out_of_line_test_module_files` returns it empty), so `is_excluded` is false and the
+    /// extension MUST happen. `extract_events` filters every `is_test` def/ref OUT (see its own
+    /// doc); `proof_events` is the ONLY emitter of `is_test: true` events, so their presence in
+    /// the batch is observable only through this extension - a flipped polarity (`if
+    /// is_excluded` instead) would extend the WRONG files and this batch would carry none.
+    #[test]
+    fn file_batches_extends_a_non_excluded_files_batch_with_its_proof_events() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("product.rs"),
+            "\
+fn product_fn() {
+    helper();
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn it_works() {
+        product_fn();
+    }
+}
+",
+        )
+        .unwrap();
+        let root = dir.path().to_str().unwrap();
+
+        let batches = super::file_batches(root, &["product.rs".to_string()]);
+        assert_eq!(batches.len(), 1, "one batch for the one named file");
+        let proof_names: Vec<String> = batches[0]
+            .1
+            .iter()
+            .filter(|e| e.type_ == TYPE_EDGE_INFERRED)
+            .filter_map(|e| serde_json::from_slice::<serde_json::Value>(&e.data).ok())
+            .filter(|v| v.get("is_test").and_then(|b| b.as_bool()) == Some(true))
+            .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
+            .collect();
+        assert_eq!(
+            proof_names,
+            vec!["product_fn".to_string()],
+            "an ordinary file's batch must carry its proof_events test-evidence edge \
+             (`is_test: true`, naming the referenced product entity); a `!is_excluded` polarity \
+             flip drops it entirely. got batch: {:?}",
+            batches[0].1
+        );
+    }
 }
