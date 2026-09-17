@@ -7,6 +7,7 @@
     "src/community.rs",
     "src/concepts.rs",
     "src/config.rs",
+    "src/console.rs",
     "src/contextgraph/mod.rs",
     "src/eventstore/mod.rs",
     "src/eventstore/namespace.rs",
