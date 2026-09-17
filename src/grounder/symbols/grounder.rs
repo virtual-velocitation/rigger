@@ -270,11 +270,21 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
             let hit_commonness = commonness.get(&(name, fs.lang)).copied().unwrap_or(0);
             best.entry((path.as_str(), line))
                 .and_modify(|slot| {
+                    // A third clause tie-breaking on `lexical` WITHIN this same (file, line)
+                    // slot would never fire: `scored_hits` scores every definition in a file
+                    // before any reference in it (`for d in &fs.defs { .. } for r in &fs.refs
+                    // { .. }`), so whichever candidate is already slotted here was always
+                    // inserted no later than any same-tier, same-commonness challenger could
+                    // reach it - an already-slotted reference (lexical 2) can only be
+                    // challenged by another reference (lexical 2, never greater), and an
+                    // already-slotted definition (lexical 3) can only be challenged by a
+                    // reference (lexical 2) or a later same-line definition (lexical 3, never
+                    // greater either). The definition wins by SCORING ORDER alone - the first
+                    // candidate to reach a tied (tier, commonness) slot stays. `lexical` still
+                    // decides definition-over-reference, but only ACROSS different slots, in
+                    // the final sort below.
                     let better = hit_tier > slot.tier
-                        || (hit_tier == slot.tier && hit_commonness < slot.commonness)
-                        || (hit_tier == slot.tier
-                            && hit_commonness == slot.commonness
-                            && lexical > slot.lexical);
+                        || (hit_tier == slot.tier && hit_commonness < slot.commonness);
                     if better {
                         *slot = ScoredHit {
                             tier: hit_tier,
@@ -1774,8 +1784,9 @@ mod tests {
 
     /// Clause 2, `hit_tier == slot.tier && hit_commonness < slot.commonness`: at a TIED tier,
     /// the STRICTLY rarer candidate wins outright - even against a worse (reference) lexical
-    /// kind - and a merely EQUAL commonness must never itself promote (that would require
-    /// [`ScoredHit::lexical`] to decide, clause 3's job, proven separately).
+    /// kind - and a merely EQUAL commonness must never itself promote: there is no third clause
+    /// falling back to [`ScoredHit::lexical`] within a slot (proven separately - the definition
+    /// wins a same-tier, same-commonness tie by scoring order alone).
     #[test]
     fn scored_hits_breaks_a_tier_tie_by_strict_rarity_never_by_an_equal_commonness() {
         let mut idx = SymbolIndex::default();
@@ -1833,15 +1844,14 @@ mod tests {
         );
     }
 
-    /// Clause 3, `hit_tier == slot.tier && hit_commonness == slot.commonness && lexical >
-    /// slot.lexical`: the FINAL tie-break, reached only when tier AND commonness both already
-    /// tie. [`ScoredHit::lexical`] is fixed per candidate KIND (3 for a definition, 2 for a
-    /// reference) - and since every definition in a file is always scored before any reference
-    /// in it, a definition can never challenge an already-slotted reference; only a
-    /// same-tier, same-commonness REFERENCE can ever challenge an already-slotted DEFINITION
-    /// (`lexical > slot.lexical` is `2 > 3`, always false - it must never promote the
-    /// reference), or a second definition can challenge a first one at the SAME line (`3 > 3`,
-    /// also always false - the FIRST-inserted definition must stay).
+    /// A tied tier AND tied commonness never promotes the challenger, however their
+    /// [`ScoredHit::lexical`] kinds compare - `better`'s two clauses stop at commonness, with no
+    /// third clause falling back to `lexical` within a slot. Since every definition in a file is
+    /// always scored before any reference in it, a definition can never challenge an
+    /// already-slotted reference; only a same-tier, same-commonness REFERENCE can ever challenge
+    /// an already-slotted DEFINITION (and does not promote it), or a second definition can
+    /// challenge a first one at the SAME line (and does not promote it either) - the
+    /// FIRST-inserted candidate always stays, by scoring order alone.
     #[test]
     fn scored_hits_lexical_never_promotes_a_tied_reference_or_a_tied_second_definition() {
         let mut idx = SymbolIndex::default();
@@ -1852,7 +1862,8 @@ mod tests {
                 defs: vec![
                     // Cluster E (line 50): TWO definitions at the same tier and commonness (1x
                     // each) - "bandicoot" is scored first (Vec order) and must stay the slot;
-                    // clause 3's `3 > 3` must stay false, never `>=`.
+                    // `better`'s commonness clause must stay `<`, never `<=`, so an equal
+                    // second definition never promotes over the first.
                     hand_def("bandicoot_alpha_def", 50),
                     hand_def("dingo_beta_def", 50),
                 ],
