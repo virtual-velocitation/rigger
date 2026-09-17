@@ -247,6 +247,24 @@ gates:                      # the project's verification library, referenced by 
   # `.cargo/mutants.toml` and no `mutants::skip` attribute; a diff that does fails the gate
   # before any sweep, naming the lines. A mutant no test can distinguish is dead code to
   # delete, never a name to exclude: the graded party does not narrow the instrument.
+  #
+  # THE STATE SURVIVES A FAILING SWEEP (2026-09-17: the post-merge re-sweep of a solo merge -
+  # empty delta, no misses, no changed tests - failed on the gate's own shell, and wiping
+  # `last/` up front had already thrown the anchor away, so the next sweep would have been the
+  # whole spec again). The new tree, misses and map are written to `last.new` and swapped in
+  # only once both passes have completed; a sweep that dies earlier leaves the previous state
+  # in place. A by-name rerun whose names match no mutant (the code they mutated was rewritten)
+  # is nothing to rerun, not a failure. The map carries forward every earlier entry for a
+  # mutant this sweep did not examine, so a catch recorded three sweeps ago still re-runs when
+  # its test changes. `A || B && C` in sh is `(A || B) && C`: the rerun block is braced whole.
+  #
+  # THE RERUN IS A DIFF, NOT A NAME FILTER. cargo-mutants 27.1 lets every "delete field"
+  # mutant through `-F`/`-E` (all 22 of this crate's, measured: `--list -F <matches nothing>`
+  # lists exactly them), so a by-name rerun silently cost 22 extra mutants each time. The gate
+  # therefore resolves the names first (`--list -F ...`, kept only where they really match the
+  # regexes), writes a one-line synthetic hunk per (file, line) it found - the line's own text,
+  # which cargo-mutants checks against the source - and runs the rerun with `--in-diff` on
+  # that, still intersected with the names; `--in-diff` is honoured by every mutant kind.
   mutation:
     run: >-
       test -n "$RIGGER_RUN_BASE" &&
@@ -260,21 +278,30 @@ gates:                      # the project's verification library, referenced by 
       fi | sort -u )" &&
       { if test -n "$anchor"; then git diff "$anchor" -- '*.rs' > unit.diff; else git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff; fi; } &&
       { ! { git diff "$RIGGER_RUN_BASE" -- .cargo/mutants.toml; git diff "$RIGGER_RUN_BASE" -- '*.rs'; } | grep -E '^\+.*(exclude_re|examine_re|exclude_globs|examine_globs|mutants::skip)' || { echo "mutation gate: the unit narrows the sweep itself (an exclusion in .cargo/mutants.toml or a mutants::skip in the code); the gate owns its instrument - remove it and pin the mutant with a test or delete the code it mutates"; false; }; } &&
-      rm -rf "$MUTANTS" mutants.out mutants.out.old && mkdir -p "$MUTANTS/last" mutants.out &&
+      rm -rf "${MUTANTS:?}"/rerun "$MUTANTS"/rerun.args "$MUTANTS"/rerun.re "$MUTANTS"/rerun.all "$MUTANTS"/rerun.list "$MUTANTS"/rerun.diff "$MUTANTS"/last.new "$MUTANTS"/examined.txt "$MUTANTS"/cargo-mutants-* mutants.out mutants.out.old && mkdir -p "$MUTANTS/last.new" mutants.out &&
       { test -z "$rerun" || printf '%s\n' "$rerun" | sed -E 's/[][\\.*^$+?(){}|]/\\&/g; s/^([^:]+):[0-9]+:[0-9]+:/\1(:[0-9]+:[0-9]+)?:/; s/^/-F\n/' > "$MUTANTS/rerun.args"; } &&
       { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
       cargo mutants --in-diff unit.diff --test-tool nextest --cargo-arg=--target-dir=target --timeout-multiplier 3 -j 3;
       rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
       { test ! -s "$MUTANTS/rerun.args" ||
+      { grep -v '^-F$' "$MUTANTS/rerun.args" > "$MUTANTS/rerun.re" &&
+      env -u CARGO_TARGET_DIR xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --list > "$MUTANTS/rerun.all" &&
+      { grep -E -f "$MUTANTS/rerun.re" "$MUTANTS/rerun.all" | sort -u > "$MUTANTS/rerun.list"; true; } &&
+      { { test ! -s "$MUTANTS/rerun.list" && echo "rerun: none of the listed mutants exists in this tree"; } ||
+      { sed -E 's/^([^:]+):([0-9]+):.*/\1 \2/' "$MUTANTS/rerun.list" | sort -u | while read -r f l; do printf -- '--- a/%s\n+++ b/%s\n@@ -%s,1 +%s,1 @@\n' "$f" "$f" "$l" "$l"; sed -n "${l}p" "$f" | sed 's/^/-/'; sed -n "${l}p" "$f" | sed 's/^/+/'; done > "$MUTANTS/rerun.diff" &&
       { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
-      xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --output "$MUTANTS/rerun" --baseline skip --timeout 300 --test-tool nextest --cargo-arg=--target-dir=target -j 3;
+      xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --in-diff "$MUTANTS/rerun.diff" --output "$MUTANTS/rerun" --baseline skip --timeout 300 --test-tool nextest --cargo-arg=--target-dir=target -j 3;
       rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
-      test "$(grep -c '"summary"' "$MUTANTS/rerun/mutants.out/outcomes.json")" -ge 1 &&
-      { cat "$MUTANTS/rerun/mutants.out/missed.txt" >> mutants.out/missed.txt 2>/dev/null; true; }; } &&
-      git rev-parse HEAD > "$MUTANTS/last/tip" &&
-      { cp mutants.out/missed.txt "$MUTANTS/last/missed.txt" 2>/dev/null || : > "$MUTANTS/last/missed.txt"; } &&
+      test -s "$MUTANTS/rerun/mutants.out/outcomes.json" &&
+      { cat "$MUTANTS/rerun/mutants.out/missed.txt" >> mutants.out/missed.txt 2>/dev/null; true; }; }; }; }; } &&
+      git rev-parse HEAD > "$MUTANTS/last.new/tip" &&
+      { cp mutants.out/missed.txt "$MUTANTS/last.new/missed.txt" 2>/dev/null || : > "$MUTANTS/last.new/missed.txt"; } &&
       { for f in mutants.out/log/*.log "$MUTANTS"/rerun/mutants.out/log/*.log; do test -f "$f" || continue;
-      awk 'name == "" && /^\*\*\* / { sub(/^\*\*\* /, ""); name = $0; next } /FAIL \[/ { gsub(/\033\[[0-9;]*m/, ""); if (match($0, /\/[0-9]+\) [^ ]+/)) { b = substr($0, RSTART, RLENGTH); sub(/^\/[0-9]+\) /, "", b); sub(/^rigger::/, "", b); print name "\t" b; exit } }' "$f"; done > "$MUTANTS/last/caught.map"; } &&
+      awk 'name == "" && /^\*\*\* / { sub(/^\*\*\* /, ""); name = $0; next } /FAIL \[/ { gsub(/\033\[[0-9;]*m/, ""); if (match($0, /\/[0-9]+\) [^ ]+/)) { b = substr($0, RSTART, RLENGTH); sub(/^\/[0-9]+\) /, "", b); sub(/^rigger::/, "", b); print name "\t" b; exit } }' "$f"; done > "$MUTANTS/last.new/caught.map"; } &&
+      { cat mutants.out/*.txt "$MUTANTS"/rerun/mutants.out/*.txt 2>/dev/null | sort -u > "$MUTANTS/examined.txt";
+      awk -F '\t' 'FILENAME == ARGV[1] { seen[$0] = 1; next } !($1 in seen)' "$MUTANTS/examined.txt" "$last/caught.map" 2>/dev/null >> "$MUTANTS/last.new/caught.map";
+      sort -u -o "$MUTANTS/last.new/caught.map" "$MUTANTS/last.new/caught.map"; } &&
+      rm -rf "$last" && mv "$MUTANTS/last.new" "$last" &&
       test ! -s mutants.out/missed.txt
     kind: core
 
