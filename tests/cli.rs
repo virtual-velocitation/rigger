@@ -2668,6 +2668,81 @@ fn ground_returns_references_from_the_repo() {
     );
 }
 
+/// Spec 92 criterion 3 (RANKED BY INTENT), end to end through the REAL `rigger ground` CLI for
+/// the LITERAL grep grounder: `Grounder::ground_ranked` and `Grounder::has_strong_match` are
+/// trait DEFAULT methods, and grep never overrides either, but a unit test that calls them
+/// in-process cannot see whether `cmd_ground` actually WIRES them into the printed page - only
+/// the compiled binary's stdout can. Grep has no commonness concept, so its default
+/// `has_strong_match` is unconditionally true (never the honest no-match line, even for a token
+/// that would read as tree-wide-common under the `symbols` grounder), and its default
+/// `ground_ranked` is `ground`'s own rows wrapped with degree 0, undeduplicated.
+#[test]
+fn ground_via_grep_backend_prints_the_degree_suffix_and_never_suppresses_a_match() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "5"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert_eq!(
+        out.trim(),
+        "combat.rs:1: fn apply_damage() {} (degree 0)",
+        "the grep backend's default ground_ranked must print the trait default's degree-0 \
+         suffix on the exact matched line, undeduplicated; got {out:?}"
+    );
+
+    // Six occurrences of one token - the shape that reads as tree-wide-common under the
+    // symbols grounder's commonness concept. Grep has no such concept: it must still print
+    // every match, never the "no entity matches strongly" honest line.
+    for i in 0..6 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn run() {}\n").unwrap();
+    }
+    let (out, err, ok) = run_rigger(root, &["ground", "run", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "grep has no commonness concept, so has_strong_match's default must never suppress a \
+         real match, even one that would read as tree-wide-common under symbols; got {out:?}"
+    );
+    assert_eq!(
+        out.lines().filter(|l| l.contains("(degree 0)")).count(),
+        6,
+        "grep's default ground_ranked never dedupes - one row per matching line; got {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 (RANKED BY INTENT), end to end through the REAL `rigger ground` CLI for
+/// the `nop` backend - a second real, CLI-selectable `Grounder` (alongside grep) that never
+/// overrides `ground_ranked` or `has_strong_match`, riding the exact same trait-default code
+/// path `cmd_ground` now gates EVERY backend through before printing. `Nop::ground` is always
+/// empty and `Nop::has_strong_match` is the unconditionally-true default, so `rigger ground`
+/// with `nop` configured must stay silent - neither a `(degree N)` row nor the new "no entity
+/// matches strongly" line - exactly as before this unit's change. A wiring defect in
+/// `cmd_ground`'s new `k > 0 && !has_strong_match` gate (e.g. treating an empty match set as
+/// weak for every backend, not only ones with a real commonness concept) would surface ONLY as
+/// `nop` suddenly printing that line where it used to print nothing at all.
+#[test]
+fn ground_via_nop_backend_stays_silent_and_never_prints_the_weak_match_line() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "nop");
+    std::fs::write(root.join("combat.rs"), "fn apply_damage() {}\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "5"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        out.trim().is_empty(),
+        "nop grounds nothing; it must print neither a row nor the honest no-match line; \
+         got {out:?}"
+    );
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "nop's has_strong_match default is unconditionally true, so the honest line must \
+         never appear for it, even though it also never grounds anything; got {out:?}"
+    );
+}
+
 /// `rigger reindex <file>` requires at least one file and is a clear error otherwise:
 /// a workflow agent calling it with no files must get a non-zero exit, not a silent
 /// no-op. (This holds for every grounder, so it needs no model and runs in both lanes.)
@@ -3115,6 +3190,339 @@ fn ground_via_symbols_grounder_ranks_a_definition_first() {
     assert!(
         !out.contains("notes.rs"),
         "an incidental prose mention must not be grounded as a symbol; stdout: {out}"
+    );
+}
+
+/// Spec 92 criterion 3 (RANKED BY INTENT), end to end through the REAL `rigger ground` CLI:
+/// the audit's own failure shape (docs/audit/2026-09-graph-vs-grep.md question 3 - six `run`
+/// definitions drowning a rare, specific match) is fixed; every call site of one function
+/// collapses to a single line carrying its degree; and a query whose only match is
+/// tree-wide-common prints the honest line instead of noise.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranks_by_intent_dedupes_by_entity_and_admits_a_weak_query() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    for i in 0..6 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn run() {}\n").unwrap();
+    }
+    std::fs::write(root.join("zzz_dash.rs"), "fn dash() {}\n").unwrap();
+    std::fs::write(root.join("def.rs"), "fn apply_damage() {}\n").unwrap();
+    for i in 0..3 {
+        std::fs::write(
+            root.join(format!("caller{i}.rs")),
+            "fn go() { apply_damage(); }\n",
+        )
+        .unwrap();
+    }
+
+    // The rare token outranks the six tree-wide `run` definitions - the audit's own shape.
+    let (out, err, ok) = run_rigger(root, &["ground", "dash run", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    let first = out.lines().next().unwrap_or_default();
+    assert!(
+        first.starts_with("zzz_dash.rs:") && first.contains("dash"),
+        "the rare token must rank first, not the six tree-wide `run` hits; stdout: {out}"
+    );
+
+    // apply_damage's definition and its three call sites collapse into one displayed row,
+    // annotated with its real degree.
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    let apply_damage_lines: Vec<&str> =
+        out.lines().filter(|l| l.contains("apply_damage")).collect();
+    assert_eq!(
+        apply_damage_lines.len(),
+        1,
+        "the definition and its three call sites must dedupe to one row; stdout: {out}"
+    );
+    assert!(
+        apply_damage_lines[0].contains("degree 3"),
+        "the row must carry its real degree; stdout: {out}"
+    );
+
+    // A query whose only match is a tree-wide-common token prints the honest line, never noise.
+    let (out, err, ok) = run_rigger(root, &["ground", "run", "10"]);
+    assert!(
+        ok,
+        "ground must succeed even on a weak query; stderr: {err}"
+    );
+    assert!(
+        out.to_lowercase().contains("no entity matches strongly"),
+        "a weak query (only a tree-wide-common token) must print the honest line, not noise; \
+         stdout: {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 remediation round 2/3 (adv-u92c3r2-contains-tier-commonness-collapses
+/// -to-spurious-zero, adj-u92c3-r2-verdict-reject, fixed by u92c3-r3-contains-tier-commonness
+/// -keyed-on-entity-name): end to end through the REAL `rigger ground` CLI - a unit test of
+/// `scored_hits` in isolation cannot see whether `cmd_ground`'s printed page actually reflects
+/// the fix, only the compiled binary's stdout can. Neither "cfg" nor "zorble" is ever itself a
+/// standalone name in this fixture, so every match is CONTAINS-tier, never EXACT - the exact
+/// tier the round-2 defect lived in (commonness keyed on the raw query token instead of the
+/// matched entity's own name, which silently collapsed every CONTAINS hit to an artificial
+/// rarest score of zero). `cfg_one`..`cfg_four` are four unrelated entities (each defined once,
+/// referenced twice - own commonness 3) sharing the substring "cfg"; `zorble_alone` (defined
+/// once, referenced nowhere - own commonness 1) is genuinely rarer and is placed LAST (highest
+/// line number) so a fall-through-to-line-order regression would rank it last, not first.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_via_symbols_grounder_ranks_a_genuinely_rare_contains_tier_entity_above_common_ones_sharing_its_substring(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    std::fs::write(
+        root.join("entities.rs"),
+        "fn cfg_one() {}\nfn cfg_two() {}\nfn cfg_three() {}\nfn cfg_four() {}\nfn zorble_alone() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("callers.rs"),
+        "fn go() {\n    cfg_one();\n    cfg_one();\n    cfg_two();\n    cfg_two();\n    \
+         cfg_three();\n    cfg_three();\n    cfg_four();\n    cfg_four();\n}\n",
+    )
+    .unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "cfg zorble", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    let first = out.lines().next().unwrap_or_default();
+    assert!(
+        first.contains("zorble_alone"),
+        "the genuinely rare entity (own commonness 1) must outrank four entities that share its \
+         query substring but are each themselves more common (own commonness 3); a regression \
+         that keys CONTAINS-tier commonness on the raw query term instead of the matched \
+         entity's own name ties all five at an artificial zero and falls through to line order, \
+         which would rank zorble_alone LAST; stdout: {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3's `cmd_ground` orchestration - NOT the `Grounder` trait itself: an
+/// explicit `k = 0` is the caller asking for NOTHING, so `cmd_ground` must stay silent even for
+/// a query that would otherwise trip the weak-match honest line (the very query that prints
+/// "no entity matches strongly" at k=10 in the test above). The `k > 0` gate lives ONLY in
+/// `cmd_ground`'s own `if` (main.rs), not in `has_strong_match` or `ground_ranked` - a unit
+/// test of either trait method in isolation cannot see this seam; only driving the real CLI
+/// with an explicit k=0 can.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_with_explicit_k_zero_stays_silent_even_for_a_weak_query() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+    // The whole fixture is written BEFORE the first `ground` call, so the cold index build
+    // (the persisted index is not auto-refreshed by a later call - it needs an explicit
+    // `reindex`) sees it all at once: six tree-wide `run` definitions (weak) plus a rare
+    // `apply_damage` definition with three call sites (strong) - the same shape the test
+    // above proves is weak-for-`run`, strong-for-`apply_damage` at k=10.
+    for i in 0..6 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn run() {}\n").unwrap();
+    }
+    std::fs::write(root.join("def.rs"), "fn apply_damage() {}\n").unwrap();
+    for i in 0..3 {
+        std::fs::write(
+            root.join(format!("caller{i}.rs")),
+            "fn go() { apply_damage(); }\n",
+        )
+        .unwrap();
+    }
+
+    // k=0 on a query that is weak at k>0 (proven above) must print nothing at all - neither
+    // rows nor the honest no-match line.
+    let (out, err, ok) = run_rigger(root, &["ground", "run", "0"]);
+    assert!(ok, "ground with k=0 must still succeed; stderr: {err}");
+    assert!(
+        out.trim().is_empty(),
+        "k=0 asks for nothing; it must print neither rows nor the honest no-match line; \
+         got {out:?}"
+    );
+
+    // k=0 on a query that is STRONG at k>0 is silent for the same reason - k=0 bypasses the
+    // strength check entirely, it does not merely happen to pass it.
+    let (out, err, ok) = run_rigger(root, &["ground", "apply_damage", "0"]);
+    assert!(ok, "ground with k=0 must still succeed; stderr: {err}");
+    assert!(
+        out.trim().is_empty(),
+        "k=0 asks for nothing regardless of query strength; got {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 remediation round 5 (adj-u92c3-r4-verdict-reject,
+/// adv-u92c3r4-ground-ranked-def-sites-cross-language-absorption, fixed by
+/// u92c3-r5-cross-language-name-scoping): end to end through the REAL `rigger ground` CLI -
+/// a unit test of `ground_ranked`'s entity resolution in isolation cannot see whether
+/// `cmd_ground`'s printed page actually reflects the fix, only the compiled binary's stdout
+/// can. This is the literal live repro that failed round 4 (`rigger ground unwrap 50` against
+/// the real tree returning only the JS shim's row): a JS file defines the ONLY tree-wide
+/// definition of `unwrap`, five unrelated Rust files each reference that same bare name with
+/// no local Rust definition (mirroring Rust's own `.unwrap()` call sites). Before the fix,
+/// every Rust reference resolved through a bare-name-keyed `def_sites` lookup to the JS
+/// definition's sole entry and absorbed into it, collapsing the whole Rust reference
+/// population into ONE foreign-language row - erasing it from the page at any k instead of
+/// merely down-weighting it.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranked_via_cli_keeps_a_cross_language_reference_as_its_own_entity_not_absorbed_into_a_foreign_definition(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    std::fs::write(root.join("shim.mjs"), "function unwrap() {}\n").unwrap();
+    for i in 0..5 {
+        std::fs::write(root.join(format!("r{i}.rs")), "fn go() { unwrap(); }\n").unwrap();
+    }
+
+    let (out, err, ok) = run_rigger(root, &["ground", "unwrap", "50"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+
+    let unwrap_lines: Vec<&str> = out.lines().filter(|l| l.contains("unwrap")).collect();
+    assert_eq!(
+        unwrap_lines.len(),
+        2,
+        "a same-named foreign-language definition must never collapse the Rust reference \
+         population into its own row - exactly two rows expected (the JS definition, the \
+         Rust standalone entity); got {out:?}"
+    );
+    assert!(
+        unwrap_lines.iter().any(|l| l.starts_with("shim.mjs:")),
+        "the JS definition must still surface its own row; got {out:?}"
+    );
+    let rust_row = *unwrap_lines
+        .iter()
+        .find(|l| l.contains(".rs:"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the Rust reference population must surface its OWN row, never be absorbed \
+                 into a same-named foreign-language definition; got {out:?}"
+            )
+        });
+    assert!(
+        rust_row.contains("(degree 5)"),
+        "the Rust entity's degree must be its own in-language reference count (5), never the \
+         JS definition's; got {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 remediation round 5 (adj-u92c3-r4-verdict-reject,
+/// adv-u92c3r4-ambiguity-map-bleeds-across-languages, fixed by
+/// u92c3-r5-cross-language-name-scoping): end to end through the REAL `rigger ground` CLI.
+/// `collide` is defined exactly once in Rust (alongside nine unrelated Rust filler
+/// definitions, so Rust's own definition-count distribution has no outlier) and, separately,
+/// exactly once in Python. Before the fix, `has_strong_match`'s ambiguity cutoff pooled both
+/// languages' definition counts into one bare-name bucket, manufacturing a tree-wide
+/// ambiguity of 2 against the nine Rust filler names' baseline of 1 each - an outlier that
+/// wrongly printed the honest "no entity matches strongly" line for a name genuinely
+/// unambiguous within either language alone.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranked_via_cli_never_pools_cross_language_definition_counts_into_a_false_ambiguity() {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    let filler: String = (0..9).map(|i| format!("fn filler{i}() {{}}\n")).collect();
+    std::fs::write(root.join("filler.rs"), filler).unwrap();
+    std::fs::write(root.join("combat.rs"), "fn collide() {}\n").unwrap();
+    std::fs::write(root.join("other.py"), "def collide():\n    pass\n").unwrap();
+
+    let (out, err, ok) = run_rigger(root, &["ground", "collide", "8"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "collide has exactly one definition within Rust and, separately, one within Python - \
+         each language's own ambiguity is 1, genuinely unambiguous. Pooling both languages' \
+         definition counts into one bare-name bucket must never manufacture a false \
+         tree-wide-ambiguous verdict for either language's own genuinely unambiguous entity; \
+         got {out:?}"
+    );
+    assert!(
+        out.lines()
+            .any(|l| l.starts_with("combat.rs:") && l.contains("collide")),
+        "the Rust collide entity must appear in the ranked page; got {out:?}"
+    );
+}
+
+/// Spec 92 criterion 3 remediation round 6 (adj-u92c3-r5-verdict-reject,
+/// adv-u92c3r5-ambiguous-definition-degree-inflated-and-triplicated, fixed by
+/// fix-u92c3r6-ambiguous-def-degree-zeroed): end to end through the REAL `rigger ground` CLI -
+/// a unit test of `ground_ranked` in isolation cannot see whether `cmd_ground`'s printed page
+/// actually reflects the fix, only the compiled binary's stdout can. This is the round-5
+/// reject's own live repro shape (two same-language definitions of one name PLUS real call
+/// sites - the exact combination every test shipped before round 6 left untested): before the
+/// fix, every row sharing an ambiguous name printed the SAME pooled tree-wide reference count,
+/// so an agent grounding a genuinely ambiguous, heavily-referenced real-world name (the spec's
+/// own motivating example, `run`) saw N+1 rows all claiming the identical maximal degree - the
+/// opposite of ranking by intent.
+#[cfg(feature = "symbols")]
+#[test]
+fn ground_ranked_via_cli_gives_ambiguous_definitions_zero_degree_and_pools_the_real_count_on_the_standalone_row(
+) {
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "symbols");
+
+    // Two same-language (Rust) definitions of one name - genuinely ambiguous - plus five real
+    // call sites, so the ambiguous name's own reference pool is non-empty and non-trivial.
+    std::fs::write(root.join("a.rs"), "fn dup_name() {}\n").unwrap();
+    std::fs::write(root.join("b.rs"), "fn dup_name() {}\n").unwrap();
+    for i in 0..5 {
+        std::fs::write(
+            root.join(format!("caller{i}.rs")),
+            "fn go() { dup_name(); }\n",
+        )
+        .unwrap();
+    }
+
+    let (out, err, ok) = run_rigger(root, &["ground", "dup_name", "10"]);
+    assert!(ok, "ground must succeed; stderr: {err}");
+    assert!(
+        !out.to_lowercase().contains("no entity matches strongly"),
+        "an exact-name query against its own ambiguous entity must never itself read as too \
+         weak to answer; got {out:?}"
+    );
+
+    let lines: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "two ambiguous definitions plus one pooled Standalone reference row - never a shared \
+         row per call site, never a single collapsed row; got {out:?}"
+    );
+
+    let def_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| l.starts_with("a.rs:") || l.starts_with("b.rs:"))
+        .copied()
+        .collect();
+    assert_eq!(
+        def_lines.len(),
+        2,
+        "both ambiguous definitions must still appear as separate rows; got {out:?}"
+    );
+    for l in &def_lines {
+        assert!(
+            l.contains("(degree 0)"),
+            "an ambiguous definition's own attributable degree is unknown - the page has \
+             already decided (by printing a separate row for the name at all) that a \
+             reference cannot be pinned to one candidate, so a definition row must never \
+             claim the whole unattributed pool as its own; got {out:?}"
+        );
+    }
+
+    let standalone = *lines
+        .iter()
+        .find(|l| !l.starts_with("a.rs:") && !l.starts_with("b.rs:"))
+        .unwrap_or_else(|| panic!("expected a pooled Standalone reference row; got {out:?}"));
+    assert!(
+        standalone.contains("(degree 5)"),
+        "the Standalone row alone must carry the real aggregate unattributed reference count - \
+         genuinely different from the ambiguous definitions' degree, never a shared pooled \
+         number printed on every row; got {out:?}"
     );
 }
 
@@ -28268,5 +28676,1359 @@ fn step_leaves_a_non_addrinuse_bind_error_unenriched() {
     assert!(
         err.contains("could not auto-start the dashboard"),
         "a bind failure of any kind must still announce the headless degrade; stderr:\n{err}"
+    );
+}
+
+// ===========================================================================================
+// Spec 92, criterion 4 (IN EVERY SESSION'S HAND): `rigger setup` registers the operator's own
+// MCP lookup surface (`rigger_peers`/`rigger_ground`/`rigger_graph`) and the graph-first
+// PreToolUse hook; `rigger mcp` serves those tools over stdio; `rigger grep-guard` bounces a
+// bare source grep.
+// ===========================================================================================
+
+/// `rigger setup` writes `.mcp.json` (the `rigger` server, `rigger mcp`) and merges the
+/// PreToolUse lookup hook into `.claude/settings.json`, reporting both - end to end through
+/// the compiled binary, not just the unit-level install helpers.
+#[test]
+fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    assert!(
+        out.contains("registered the rigger MCP server"),
+        "setup must report registering the MCP server; got:\n{out}"
+    );
+    // `.claude/settings.json` already exists by this point in the SAME setup run (the
+    // SessionStart hook install, earlier in `cmd_setup`, creates it first). Either way -
+    // Installed (a fresh file) or Refreshed (an existing one gaining our block) - the report
+    // names installing the hook; the true fresh-vs-existing distinction is covered at the
+    // unit level in main.rs's own `install_lookup_hook` tests.
+    assert!(
+        out.contains("installed the graph-first lookup hook"),
+        "setup must report the lookup hook install; got:\n{out}"
+    );
+
+    let mcp_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join(".mcp.json"))
+            .expect(".mcp.json must be written by setup"),
+    )
+    .unwrap();
+    assert_eq!(mcp_json["mcpServers"]["rigger"]["command"], "rigger");
+    assert_eq!(mcp_json["mcpServers"]["rigger"]["args"][0], "mcp");
+
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join(".claude").join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    let pretool = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert!(
+        pretool
+            .iter()
+            .any(|b| b["hooks"][0]["command"] == "rigger grep-guard"
+                && b["matcher"] == "Grep|Bash"),
+        "the lookup hook must be installed under PreToolUse; got:\n{settings}"
+    );
+    // The pre-existing SessionStart hook (installed by the same setup run) must survive
+    // untouched - the two merges share one settings.json and must not clobber each other.
+    assert_eq!(
+        settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "rigger prime"
+    );
+
+    // A rerun on an up-to-date repo is a silent no-op for both new artifacts.
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "the rerun must succeed; stderr:\n{err2}");
+    assert!(
+        !out2.contains("registered the rigger MCP server")
+            && !out2.contains("installed the graph-first lookup hook")
+            && !out2.contains("refreshed"),
+        "a rerun on an up-to-date repo must not re-report either artifact; got:\n{out2}"
+    );
+}
+
+/// `rigger mcp` (the command `.mcp.json` registers) answers `tools/list` with exactly
+/// `rigger_peers`/`rigger_ground`/`rigger_graph`, and each tool round-trips over real stdio
+/// against a real project: `rigger_peers` returns a decision seeded into the store,
+/// `rigger_ground` and `rigger_graph` reach the same underlying calls `rigger ground` /
+/// `rigger graph --around` make (an empty result on a fresh, unindexed project is the
+/// correct honest answer - the plumbing, not the ranking or the index, is this test's
+/// subject).
+#[test]
+fn mcp_serves_peers_ground_and_graph_over_stdio() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let dir = temp_project();
+    let root = dir.path();
+    // Pin the literal grep grounder (same helper `ground_returns_references_from_the_repo`
+    // uses): the default `symbols` grounder is unavailable in a `--no-default-features`
+    // build, and this test's subject is the MCP plumbing, not which grounder answers - so
+    // pinning `grep` keeps the assertion below true in EITHER feature lane.
+    write_grounder_workflow(root, "grep");
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[(
+            "DecisionMade",
+            r#"{"id":"d1","summary":"x","governs":["a.rs"]}"#,
+        )],
+    );
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    // One request in, one JSON-RPC response line out - a live round trip through the real
+    // subprocess, not a batch of requests read back after the process exits.
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    let list = call("tools/list", serde_json::json!({}));
+    let tool_names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tool_names,
+        vec!["rigger_peers", "rigger_ground", "rigger_graph"]
+    );
+
+    // `Sidecar::start` (spec 92, criterion 4's `cmd_mcp`) collects the store's backlog on a
+    // background thread polling every 50ms (src/sidecar.rs); a `rigger_peers` call issued
+    // before that thread's first poll fires sees an empty backlog. Poll (bounded, never a
+    // fixed sleep - the same discipline the recently-landed store-resolution deflake used)
+    // instead of asserting on the very first call.
+    let peers_args = serde_json::json!({"name": "rigger_peers", "arguments": {}});
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut peers = call("tools/call", peers_args.clone());
+    while peers["result"]["structuredContent"]["decisions"]
+        .as_array()
+        .is_none_or(Vec::is_empty)
+        && Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(20));
+        peers = call("tools/call", peers_args.clone());
+    }
+    assert_eq!(
+        peers["result"]["structuredContent"]["decisions"][0]["id"], "d1",
+        "rigger_peers must reflect the real store; got:\n{peers}"
+    );
+
+    let ground = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_ground", "arguments": {"query": "nothing indexed yet"}}),
+    );
+    assert!(
+        ground["result"]["structuredContent"]["results"].is_array(),
+        "rigger_ground must answer with a results array; got:\n{ground}"
+    );
+
+    let graph = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": {"around": "does-not-exist.rs"}}),
+    );
+    assert_eq!(
+        graph["result"]["structuredContent"]["nodes"],
+        serde_json::json!([]),
+        "rigger_graph around an unknown entity must answer honestly empty, never error; \
+         got:\n{graph}"
+    );
+
+    // Closing stdin (dropping the handle) is the EOF that lets `mcpserver::Server::run`'s
+    // read loop finish and the process exit, exactly like the shim closing its side of the pipe.
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Spawn `rigger grep-guard` in `root`, write one PreToolUse `payload` to its stdin, and
+/// parse its one printed JSON object. Shared by every end-to-end `grep-guard` test below (the
+/// happy-path test and the SDET periphery additions that follow it): each drives a DIFFERENT
+/// decision surface, but the subprocess plumbing to get there is identical, so it lives once
+/// here rather than as a near-identical closure repeated at every call site.
+fn run_grep_guard(root: &Path, payload: &str) -> serde_json::Value {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["grep-guard"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger grep-guard");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.as_bytes())
+        .unwrap();
+    let out = child
+        .wait_with_output()
+        .expect("rigger grep-guard must exit");
+    assert!(
+        out.status.success(),
+        "rigger grep-guard must always exit 0 (the decision rides in the JSON body); \
+         stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("grep-guard must print one JSON object")
+}
+
+/// Asserts `out` (a [`run_grep_guard`] result) is an "allow" verdict carrying an
+/// `updatedInput` whose `command` has the `--literal` marker genuinely REMOVED - not the
+/// bare `{}` earlier rounds wrongly settled for, which passed the marker through unchanged
+/// to a real shell (reject-fix arch-u92c4r5-literal-escape-hatch-never-strips-marker: GNU
+/// grep really does reject it, `unrecognized option '--literal'`, exit 2). Returns the
+/// stripped command so a caller can pin further properties of it.
+fn assert_grep_guard_allows_with_literal_stripped(out: &serde_json::Value) -> String {
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "allow",
+        "--literal must still pass the hook through, now via an explicit allow verdict \
+         carrying the rewritten command, never the old untouched `{{}}`; got:\n{out}"
+    );
+    let stripped = out["hookSpecificOutput"]["updatedInput"]["command"]
+        .as_str()
+        .unwrap_or_else(|| panic!("updatedInput must carry a string command; got:\n{out}"))
+        .to_string();
+    assert!(
+        !stripped.contains("--literal"),
+        "the marker must be genuinely removed from the command a real shell will run; \
+         got:\n{stripped:?}"
+    );
+    stripped
+}
+
+/// `rigger grep-guard` (the command the installed PreToolUse hook runs) bounces a `Bash`
+/// `grep` invocation NO MATTER WHAT it targets (d-spec92-hook-no-target-axis, spec 92's
+/// Design amended after round 5 to retire the guarded-tree apparatus): a tree the old rule
+/// guarded (`src/`), one it never covered (`docs/`), a single unrelated file (`README.md`),
+/// and the whole-project convention (`.`) are all denied with the stated message - and the
+/// SAME command with `--literal` passes for every one of them too, marker stripped - end to
+/// end through the compiled binary reading real PreToolUse JSON from stdin.
+#[test]
+fn grep_guard_bounces_every_bash_grep_target_and_passes_literal() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for target in ["src/", "docs/", "README.md", "."] {
+        let command = format!("grep -rn TODO {target}");
+        let blocked = run_grep_guard(
+            root,
+            &serde_json::json!({"tool_name": "Bash", "tool_input": {"command": command}})
+                .to_string(),
+        );
+        assert_eq!(
+            blocked["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a grep targeting {target:?} must be denied; got:\n{blocked}"
+        );
+        let reason = blocked["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(
+            reason.contains("rigger_ground")
+                && reason.contains("rigger_graph")
+                && reason.contains("--literal"),
+            "the denial must carry the stated message; got: {reason:?}"
+        );
+
+        let literal_command = format!("grep --literal -rn TODO {target}");
+        let allowed = run_grep_guard(
+            root,
+            &serde_json::json!({"tool_name": "Bash", "tool_input": {"command": literal_command}})
+                .to_string(),
+        );
+        let stripped = assert_grep_guard_allows_with_literal_stripped(&allowed);
+        assert_eq!(
+            stripped, command,
+            "the marker and its one adjacent space must be removed, nothing else rewritten, \
+             for target {target:?}"
+        );
+    }
+
+    let unrelated = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"ls src/"}}"#,
+    );
+    assert_eq!(
+        unrelated,
+        serde_json::json!({}),
+        "a non-grep command must never be touched; got:\n{unrelated}"
+    );
+}
+
+// ===========================================================================================
+// SDET periphery layer, spec 92 criterion 4 (IN EVERY SESSION'S HAND). The three tests above
+// (authored at the build seam this criterion's implementer round emitted) drive the happy
+// paths of `rigger setup`, `rigger mcp`, and `rigger grep-guard` end to end. The tests below
+// close the boundary this diff's mechanical enumeration otherwise leaves unaccounted: the
+// `install_operator_mcp` DRIFT branch through the full `cmd_setup` composition (only the pure
+// helper had it), the `grep-guard` CONSTRAINTS WALK clauses ("inert on a project without
+// rigger", "malformed input degrades to allow") that no test anywhere exercised, the built-in
+// `Grep` tool call driven through the compiled binary (previously proven only against the pure
+// decision function), `rigger mcp`'s API edges (an unknown tool, missing required arguments, a
+// malformed JSON-RPC line) which the happy-path test never sends, the brand-new
+// `operator_tool_graph`/`entity_site_json` JSON wiring on a SUCCESSFUL `show` resolution (never
+// exercised anywhere - the happy-path test only tries `around` on an unknown entity), and the
+// installed skill/handbook text proven only against the in-process render function, never
+// against the file `rigger docs` actually writes.
+// ===========================================================================================
+
+/// `cmd_setup`'s full composition (workflow, skill, hooks, agents, THEN the operator MCP
+/// registration and lookup hook, gated by one combined "anything changed" check) correctly
+/// reports and repairs a DRIFTED `.mcp.json` entry on a rerun - not just the pure
+/// `install_operator_mcp` helper (already unit-tested for this transition in main.rs's own
+/// tests), but the real CLI path: the Refreshed branch's message, distinct from the Installed
+/// one, and the combined silent-no-op gate correctly staying non-silent when ONLY this one
+/// artifact drifted and every other install step is already current.
+#[test]
+fn setup_reports_a_drifted_operator_mcp_server_as_refreshed_through_the_full_composition() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok, "the first setup must succeed; stderr:\n{err}");
+
+    // Hand-corrupt ONLY the operator MCP entry (an older build's path, or a hand edit) -
+    // every other artifact `setup` installed a moment ago stays exactly as it is.
+    let mcp_path = root.join(".mcp.json");
+    std::fs::write(
+        &mcp_path,
+        r#"{"mcpServers":{"rigger":{"command":"/old/stale/rigger","args":["mcp"]}}}"#,
+    )
+    .unwrap();
+
+    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
+    assert!(ok2, "the repair rerun must succeed; stderr:\n{err2}");
+    assert!(
+        out2.contains("refreshed the drifted rigger MCP server entry"),
+        "a drifted entry must be reported as refreshed, not silently repaired; got:\n{out2}"
+    );
+    assert!(
+        !out2.contains("registered the rigger MCP server"),
+        "a refresh must never be misreported as a fresh install; got:\n{out2}"
+    );
+    // Nothing ELSE drifted - the lookup hook (already installed and unchanged) must not
+    // re-report, proving the combined gate isolates the one artifact that actually changed.
+    assert!(
+        !out2.contains("installed the graph-first lookup hook"),
+        "an untouched artifact must not re-report merely because a sibling drifted; got:\n{out2}"
+    );
+
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+    assert_eq!(
+        v["mcpServers"]["rigger"]["command"], "rigger",
+        "the drifted command must self-heal to the current build's own invocation"
+    );
+}
+
+/// `rigger grep-guard`'s CONSTRAINTS WALK clauses that no test (unit or periphery) exercised
+/// anywhere else: it is INERT on a project that carries no `.rigger/` at all (a bare source
+/// grep must pass through untouched, never bounced, on a tree that never opted into rigger),
+/// and malformed/unreadable stdin DEGRADES TO ALLOW rather than erroring or blocking (a
+/// transport hiccup must never turn into a false block on an agent's tool call). Both are
+/// stated guarantees in `cmd_grep_guard`'s own doc comment; this is their only proof.
+#[test]
+fn grep_guard_is_inert_outside_a_rigger_project_and_degrades_to_allow_on_malformed_input() {
+    // A project with NO `.rigger/` at all: a bare source grep that would be denied inside a
+    // rigger project must pass through untouched here.
+    let not_rigger = temp_project();
+    let out = run_grep_guard(
+        not_rigger.path(),
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO src/"}}"#,
+    );
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "the hook must be inert on a project without .rigger/; got:\n{out}"
+    );
+
+    // A real rigger project, but the hook payload on stdin is not JSON at all - a transport
+    // hiccup, not a deliberate tool call the hook could reason about.
+    let is_rigger = temp_project();
+    std::fs::create_dir_all(is_rigger.path().join(".rigger")).unwrap();
+    let out = run_grep_guard(is_rigger.path(), "not json at all { this is garbage");
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "malformed stdin must degrade to allow, never block; got:\n{out}"
+    );
+}
+
+/// `rigger grep-guard` denies the built-in `Grep` TOOL call for EVERY `path`
+/// (d-spec92-hook-no-target-axis: no target axis survives) end to end through the compiled
+/// binary - a tree the old rule guarded (`src/`), one it never covered (`docs/`), an omitted
+/// path (defaults to the cwd), and a wholly unrelated REAL absolute path (a genuine directory
+/// on disk, not a hand-written string) are all denied alike, and carry no `--literal` escape
+/// of their own (the built-in tool has no flag slot for it).
+#[test]
+fn grep_guard_denies_every_grep_tool_path_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    let unrelated = tempfile::tempdir().unwrap();
+
+    for payload in [
+        serde_json::json!({"tool_name": "Grep", "tool_input": {"path": "src/"}}),
+        serde_json::json!({"tool_name": "Grep", "tool_input": {"path": "docs/"}}),
+        serde_json::json!({"tool_name": "Grep", "tool_input": {}}),
+        serde_json::json!({
+            "tool_name": "Grep",
+            "tool_input": {"path": unrelated.path().to_string_lossy()}
+        }),
+    ] {
+        let out = run_grep_guard(root, &payload.to_string());
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a Grep tool call must be denied regardless of its path; payload {payload}; \
+             got:\n{out}"
+        );
+    }
+}
+
+/// The false-positive EXEMPTION `command_invokes_grep` states in its own doc comment,
+/// proven only at the pure-function unit level (main.rs's own tests) before this - never at
+/// the boundary `rigger grep-guard` actually reads and writes JSON over: `zgrep` (the literal
+/// word "grep" only as a substring of a longer tool name) must never be bounced, whatever it
+/// targets.
+#[test]
+fn grep_guard_never_bounces_a_substring_grep_command_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let zgrep = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"zgrep TODO src/a.gz"}}"#,
+    );
+    assert_eq!(
+        zgrep,
+        serde_json::json!({}),
+        "zgrep is a different tool than the literal `grep` this hook names; got:\n{zgrep}"
+    );
+}
+
+/// SDET periphery gap (round-9 accounting, d-spec92-hook-no-target-axis): three shapes a
+/// PRIOR round's committed test suite proved must stay ALLOWED - a `..` that descends into an
+/// unrelated sibling directory rather than climbing back to the project root
+/// (`grep_guard_bounces_an_ancestor_of_the_project_root_end_to_end`'s own control, deleted by
+/// this round's diff with no replacement), a Bash grep target spelled `src-old/` (a
+/// differently-named tree that merely shares a prefix with `src`), and a `Grep` tool `path` of
+/// `mysrc/foo.rs` (merely shares a prefix with the bare segment `src`) - are exactly the
+/// three false-positive exemptions the RETIRED target-axis apparatus (`guarded_command`'s own
+/// doc comment) named as its own precision proof. Retiring that apparatus outright means
+/// EVERY ONE of these three now flips from ALLOW to DENY (no path is ever inspected again,
+/// per the round's own doc comment on `grep_guard_decision`), yet nothing - not this round's
+/// pure-function tests, not its periphery tests - re-proves the flip; a regression that
+/// silently reintroduced any one of these three as a path-based exemption would pass every
+/// currently-committed test at either layer.
+#[test]
+fn grep_guard_denies_the_formerly_exempt_target_shapes_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    // Bash grep targets: a sibling reached via `..` (never touches the project root), and a
+    // differently-named tree that merely shares `src`'s first three characters.
+    for command in [
+        "grep -rn TODO ../a-sibling-directory",
+        "grep -rn TODO src-old/",
+    ] {
+        let out = run_grep_guard(
+            root,
+            &serde_json::json!({"tool_name": "Bash", "tool_input": {"command": command}})
+                .to_string(),
+        );
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "the hook has no target axis - a formerly-exempt target must now be denied too: \
+             {command:?}; got:\n{out}"
+        );
+    }
+
+    // The built-in `Grep` tool: the same sibling-via-`..` shape, and a differently-named tree
+    // that merely shares a prefix with `src`.
+    for path in ["../a-sibling-directory", "mysrc/foo.rs"] {
+        let out = run_grep_guard(
+            root,
+            &serde_json::json!({"tool_name": "Grep", "tool_input": {"path": path}}).to_string(),
+        );
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "the hook has no target axis - a formerly-exempt Grep path must now be denied \
+             too: {path:?}; got:\n{out}"
+        );
+    }
+}
+
+/// SDET periphery gap (round-9 accounting): the round's own pure-function test
+/// (`grep_guard_decision_denies_every_bash_grep_target_and_passes_literal` /
+/// `grep_guard_decision_denies_every_grep_tool_path`, `main.rs`) proves an ancestor target
+/// (`..`) is denied, and that `--literal` still escapes a Bash grep targeting it - but only
+/// in-process, against the pure decision function. Neither shape reaches the compiled binary
+/// anywhere else in this suite: the end-to-end "every target" test above pins `src/`, `docs/`,
+/// `README.md`, and `.`, never `..`; the end-to-end `Grep`-tool test pins `src/`, `docs/`, an
+/// omitted path, and an unrelated absolute path, never `..` either. This drives the exact
+/// ancestor shape through `rigger grep-guard` itself for both call forms, plus the
+/// `--literal` escape on the Bash form.
+#[test]
+fn grep_guard_denies_an_ancestor_target_end_to_end_and_passes_literal() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let grep_tool = run_grep_guard(root, r#"{"tool_name":"Grep","tool_input":{"path":".."}}"#);
+    assert_eq!(
+        grep_tool["hookSpecificOutput"]["permissionDecision"], "deny",
+        "Grep path=\"..\" must be denied; got:\n{grep_tool}"
+    );
+
+    let bash = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep -rn TODO .."}}"#,
+    );
+    assert_eq!(
+        bash["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a Bash grep targeting .. must be denied; got:\n{bash}"
+    );
+
+    let literal = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal -rn TODO .."}}"#,
+    );
+    let stripped = assert_grep_guard_allows_with_literal_stripped(&literal);
+    assert_eq!(
+        stripped, "grep -rn TODO ..",
+        "the marker and its one adjacent space must be removed, nothing else rewritten"
+    );
+}
+
+/// Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-bypass), end to end through the
+/// compiled binary: a `grep` invocation fused to an adjacent command with NO surrounding
+/// whitespace - a pipe, a semicolon, a `$( )` command substitution, a backgrounded `&`, a
+/// chained `&&`, or a backtick command substitution - is bounced exactly like the spaced
+/// form. Detecting the INVOCATION (not its target) is still exactly what the tokenizer must
+/// get right after d-spec92-hook-no-target-axis, so this proof survives unchanged.
+#[test]
+fn grep_guard_bounces_a_shell_metacharacter_fused_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in [
+        "cat src/main.rs|grep pattern",
+        "true;grep pattern src/main.rs",
+        "if $(grep -q pattern src/main.rs); then echo yes; fi",
+        "grep pattern src/main.rs&",
+        "echo hi&&grep pattern src/main.rs",
+        "echo `grep pattern src/main.rs`",
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a grep fused to an adjacent command via a shell metacharacter must be denied: \
+             {command:?}; got:\n{out}"
+        );
+    }
+}
+
+/// SDET periphery gap closed: the round-3 fix's own end-to-end test proves a FUSED grep is
+/// denied, but never that `--literal` still escapes a fused command through the compiled
+/// binary - only `grep_guard_decision_literal_survives_a_shell_metacharacter_fused_grep`
+/// (a pure-function unit test in `src/main.rs`) does. Without this, a regression that broke
+/// `--literal` specifically for a fused command - while leaving the fused denial intact -
+/// would pass every currently-committed periphery test.
+#[test]
+fn grep_guard_still_allows_literal_on_a_shell_metacharacter_fused_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"true;grep --literal pattern src/main.rs"}}"#,
+    );
+    let stripped = assert_grep_guard_allows_with_literal_stripped(&out);
+    assert_eq!(
+        stripped, "true;grep pattern src/main.rs",
+        "the marker and its one adjacent space must be removed, the fusion left untouched"
+    );
+}
+
+/// SDET periphery gap closed (round-4 accounting): the round-4 fix
+/// (adv-u92c4r3-quoted-or-escaped-grep-still-bypasses-the-guard) adds `shell_word_value`, a
+/// per-token shell quote/escape resolution pass, so a `grep` word wrapped in double quotes,
+/// wrapped in single quotes, split by a backslash escape, or split by an empty quoted run in
+/// the middle of the word all still tokenize as the plain word `grep`. This test drives the
+/// SAME four shapes through the compiled `rigger grep-guard` binary reading real PreToolUse
+/// JSON on stdin, proving the quote/escape normalization actually reaches an operator's
+/// shell, not only the function under test.
+#[test]
+fn grep_guard_bounces_a_quoted_or_escaped_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in [
+        r#""grep" pattern src/main.rs"#,
+        "'grep' pattern src/main.rs",
+        r"gr\ep pattern src/main.rs",
+        "g''rep pattern src/main.rs",
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a quoted or escaped grep must be denied through the compiled binary, matching the \
+             round-4 fix's pure-function coverage: {command:?}; got:\n{out}"
+        );
+    }
+}
+
+/// SDET periphery gap closed (round-4 accounting): the round-4 fix's own end-to-end coverage
+/// never proves `--literal` survives quote/escape normalization when the escape hatch flag
+/// itself is quoted too - only the pure-function unit test
+/// (`grep_guard_decision_literal_survives_a_quoted_literal_on_a_quoted_grep` in `src/main.rs`)
+/// does.
+#[test]
+fn grep_guard_still_allows_a_quoted_literal_on_a_quoted_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"\"grep\" \"--literal\" pattern src/main.rs"}}"#,
+    );
+    let stripped = assert_grep_guard_allows_with_literal_stripped(&out);
+    assert_eq!(
+        stripped, r#""grep" pattern src/main.rs"#,
+        "the whole quoted marker token must be excised, not merely its interior"
+    );
+}
+
+/// SDET periphery gap closed (round-5 accounting, sdet-u92c4r4-backslash-newline-continuation-
+/// still-bypasses-the-guard): an ordinary bash line continuation - a backslash immediately
+/// followed by a newline, which a real shell removes with no separator - must not let `grep`
+/// hide from the guard by splitting into two dead fragments.
+#[test]
+fn grep_guard_bounces_a_grep_split_by_a_line_continuation_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let payload = serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": {"command": "gr\\\nep pattern src/main.rs"}
+    })
+    .to_string();
+    let out = run_grep_guard(root, &payload);
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a grep split by a line continuation must be denied through the compiled binary, \
+         matching the round-5 fix's pure-function coverage; got:\n{out}"
+    );
+}
+
+/// The same line-continuation-split shape with `--literal` added must still pass through end
+/// to end, mirroring `grep_guard_decision_literal_survives_a_line_continuation_split_grep`
+/// (`src/main.rs`) at the compiled-binary boundary.
+#[test]
+fn grep_guard_still_allows_literal_on_a_line_continuation_split_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let payload = serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": {"command": "gr\\\nep --literal pattern src/main.rs"}
+    })
+    .to_string();
+    let out = run_grep_guard(root, &payload);
+    assert_grep_guard_allows_with_literal_stripped(&out);
+}
+
+/// SDET periphery gap closed (round-5 accounting, adv-u92c4-r4-path-qualified-grep-bypasses-
+/// command-check): a path-qualified spelling of the same binary (`/usr/bin/grep`, `./grep`, a
+/// relative `bin/grep`) must be denied exactly like the bare form already is.
+#[test]
+fn grep_guard_bounces_a_path_qualified_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in [
+        "/usr/bin/grep pattern src/main.rs",
+        "./grep pattern src/main.rs",
+        "bin/grep pattern src/main.rs",
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a path-qualified grep must be denied through the compiled binary: {command:?}; \
+             got:\n{out}"
+        );
+    }
+}
+
+/// The same path-qualified shapes with `--literal` added must still pass through end to end,
+/// mirroring `grep_guard_decision_literal_survives_a_path_qualified_grep` (`src/main.rs`)
+/// at the compiled-binary boundary.
+#[test]
+fn grep_guard_still_allows_literal_on_a_path_qualified_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in [
+        "/usr/bin/grep --literal pattern src/main.rs",
+        "./grep --literal pattern src/main.rs",
+        "bin/grep --literal pattern src/main.rs",
+    ] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_grep_guard_allows_with_literal_stripped(&out);
+    }
+}
+
+/// The basename comparison must not become a substring match: a path-qualified spelling of a
+/// DIFFERENT command (`/usr/bin/zgrep`, not `grep`) must still be allowed end to end.
+#[test]
+fn grep_guard_never_bounces_a_path_qualified_non_grep_command_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"/usr/bin/zgrep pattern src/main.rs"}}"#,
+    );
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "a path-qualified different command must not be treated as grep end to end; got:\n{out}"
+    );
+}
+
+/// Reject-fix (sdet-u92c4r5-redirect-metachar-fuses-guarded-path-first-segment): `<` and
+/// `>` must end a shell word exactly like `;`/`|`/`&`/`(`/`)` already do - spec 92's HOOK
+/// SCOPE amendment names `; | & ( ) < >` verbatim. This still matters after
+/// d-spec92-hook-no-target-axis: a redirection fused directly to the command name with no
+/// whitespace (`grep<file.txt`, a real shell equivalent of `grep <file.txt`) would otherwise
+/// merge into one word that never equals the bare basename `grep`, hiding the invocation
+/// from `command_invokes_grep` entirely - independent of what the command targets.
+#[test]
+fn grep_guard_bounces_a_redirect_metacharacter_fused_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    for command in ["grep<file.txt pattern", "grep>out.txt pattern file.txt"] {
+        let payload = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": command}
+        })
+        .to_string();
+        let out = run_grep_guard(root, &payload);
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecision"], "deny",
+            "a grep fused to < or > with no surrounding whitespace must be denied: \
+             {command:?}; got:\n{out}"
+        );
+    }
+
+    // --literal must still pass a redirect-fused command through, the redirection itself
+    // surviving the marker's removal untouched.
+    let literal_out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal pattern <src/main.rs"}}"#,
+    );
+    let stripped = assert_grep_guard_allows_with_literal_stripped(&literal_out);
+    assert_eq!(
+        stripped, "grep pattern <src/main.rs",
+        "only the marker and its one adjacent space must be removed"
+    );
+}
+
+/// The strongest possible proof of the `--literal` escape hatch (spec 92's HOOK SCOPE
+/// amendment): not merely that the hook's JSON says "allow" with the marker gone from
+/// `updatedInput`, but that the REWRITTEN command, handed to a real shell exactly as an
+/// agent's tool call would be, actually SUCCEEDS - where the round-5 binary's `--literal`
+/// left in place genuinely failed (`grep --literal`: `unrecognized option '--literal'`,
+/// exit 2, empirically confirmed by the adjudicator on this same machine).
+#[test]
+fn grep_guard_stripped_literal_command_actually_runs_via_a_real_shell() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/main.rs"), "needle in the haystack\n").unwrap();
+
+    let out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal needle src/main.rs"}}"#,
+    );
+    let stripped = assert_grep_guard_allows_with_literal_stripped(&out);
+
+    let real_run = Command::new("sh")
+        .arg("-c")
+        .arg(&stripped)
+        .current_dir(root)
+        .output()
+        .expect("spawn a real shell to run the stripped command");
+    assert!(
+        real_run.status.success(),
+        "the stripped command must actually succeed under a real shell (the original, \
+         unstripped {stripped:?} plus --literal, does not - grep has no such flag); \
+         stderr:\n{}",
+        String::from_utf8_lossy(&real_run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&real_run.stdout).contains("needle in the haystack"),
+        "the real grep must actually find the pattern; got stdout:\n{}",
+        String::from_utf8_lossy(&real_run.stdout)
+    );
+}
+
+/// SDET periphery gap (round-6 accounting, generalized past d-spec92-hook-no-target-axis):
+/// an OUTPUT redirect fused directly to the command name with no whitespace
+/// (`grep>out.txt pattern`) must be denied on its own - the same command name detection
+/// `<` requires - regardless of what the redirect writes to, since the hook no longer
+/// inspects any target at all.
+#[test]
+fn grep_guard_bounces_an_output_redirect_metacharacter_fused_grep_end_to_end() {
+    let dir = temp_project();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".rigger")).unwrap();
+
+    let out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep pattern file.txt >output.log"}}"#,
+    );
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a grep invocation must be denied no matter where its output redirects to, since the \
+         hook has no target axis; got:\n{out}"
+    );
+
+    // --literal must still pass an output-redirect-carrying command through, the redirection
+    // itself surviving the marker's removal untouched.
+    let literal_out = run_grep_guard(
+        root,
+        r#"{"tool_name":"Bash","tool_input":{"command":"grep --literal pattern file.txt >output.log"}}"#,
+    );
+    let stripped = assert_grep_guard_allows_with_literal_stripped(&literal_out);
+    assert_eq!(
+        stripped, "grep pattern file.txt >output.log",
+        "only the marker and its one adjacent space must be removed, the redirect untouched"
+    );
+}
+
+/// `rigger mcp`'s API edges: an unknown tool name, and the required-argument checks
+/// `rigger_ground`/`rigger_graph` state in their own error strings - none of which the
+/// happy-path test above (which only ever sends well-formed calls) sends. Each must answer a
+/// JSON-RPC error object (never a crash, never a silently dropped response), and the SAME
+/// session must keep answering normally afterward - one bad call must never poison the rest
+/// of an agent's session.
+#[test]
+fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_arguments() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    let unknown = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_nope", "arguments": {}}),
+    );
+    assert_eq!(
+        unknown["error"]["code"], -32602,
+        "an unknown tool name must be a JSON-RPC error, not a crash or a silent drop; got:\n{unknown}"
+    );
+    assert!(
+        unknown["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("rigger_nope"),
+        "the error must name the unknown tool; got:\n{unknown}"
+    );
+
+    let missing_query = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_ground", "arguments": {}}),
+    );
+    assert_eq!(missing_query["error"]["code"], -32603);
+    assert!(
+        missing_query["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("query"),
+        "the error must name the missing argument; got:\n{missing_query}"
+    );
+
+    let missing_selector = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": {}}),
+    );
+    assert_eq!(missing_selector["error"]["code"], -32603);
+    let msg = missing_selector["error"]["message"].as_str().unwrap();
+    assert!(
+        msg.contains("show") && msg.contains("around"),
+        "the error must name both selectors a caller may pass; got:\n{missing_selector}"
+    );
+
+    // The session survives every error above and keeps answering normally.
+    let list = call("tools/list", serde_json::json!({}));
+    assert!(
+        list["result"]["tools"].is_array(),
+        "the session must keep answering after error responses; got:\n{list}"
+    );
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp must exit 0 after an error-only session; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Reject-fix regression: a grounder that fails to RESOLVE (here, an unset/misconfigured
+/// name - `turbovec`, retired regardless of feature flags, is a feature-independent way to
+/// force the same failure `--no-default-features` with no `defaults.grounder` pinned hits)
+/// must never take the WHOLE `rigger mcp` server down. `rigger_peers` and `rigger_graph` have
+/// nothing to do with grounding and must keep answering; only `rigger_ground` itself reports
+/// the resolution failure, lazily, as its own tool-call error - exactly as the pre-fix
+/// operator surface did, and the process still exits 0. Before this fix, `cmd_mcp` resolved
+/// the grounder EAGERLY with `?`, so this exact misconfiguration aborted the process before
+/// it ever answered a single request.
+#[test]
+fn mcp_survives_a_grounder_resolution_failure_and_still_serves_peers_and_graph() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "turbovec");
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[(
+            "DecisionMade",
+            r#"{"id":"d1","summary":"x","governs":["a.rs"]}"#,
+        )],
+    );
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    // The lookup surface is still exactly the three tools - unchanged by the grounder failure.
+    let list = call("tools/list", serde_json::json!({}));
+    let tool_names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tool_names,
+        vec!["rigger_peers", "rigger_ground", "rigger_graph"],
+        "a grounder resolution failure must not change which tools are advertised"
+    );
+
+    // rigger_peers, unrelated to grounding, still answers from the real store.
+    let peers_args = serde_json::json!({"name": "rigger_peers", "arguments": {}});
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut peers = call("tools/call", peers_args.clone());
+    while peers["result"]["structuredContent"]["decisions"]
+        .as_array()
+        .is_none_or(Vec::is_empty)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        peers = call("tools/call", peers_args.clone());
+    }
+    assert_eq!(
+        peers["result"]["structuredContent"]["decisions"][0]["id"], "d1",
+        "rigger_peers must keep answering even though the grounder failed to resolve; got:\n{peers}"
+    );
+
+    // rigger_graph, also unrelated to grounding, still answers honestly.
+    let graph = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": {"around": "does-not-exist.rs"}}),
+    );
+    assert_eq!(
+        graph["result"]["structuredContent"]["nodes"],
+        serde_json::json!([]),
+        "rigger_graph must keep answering even though the grounder failed to resolve; got:\n{graph}"
+    );
+
+    // rigger_ground alone reports the resolution failure - lazily, as its own tool-call error,
+    // never a silently-empty results array (spec 57's never-silently-degrade contract).
+    let ground = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_ground", "arguments": {"query": "anything"}}),
+    );
+    assert!(
+        ground.get("error").is_some(),
+        "rigger_ground must report the grounder resolution failure as an error, not silently \
+         empty results; got:\n{ground}"
+    );
+    assert!(
+        ground["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("retired"),
+        "the error must carry the real resolution failure reason; got:\n{ground}"
+    );
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp must still exit 0 despite the grounder resolution failure; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A malformed (non-JSON) line on `rigger mcp`'s stdin answers a JSON-RPC PARSE ERROR
+/// (`-32700`), and the session keeps answering normally afterward - a transport hiccup (a
+/// truncated write, a client bug) must degrade to one error response, never end the session or
+/// desync the reader from the writer.
+#[test]
+fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    writeln!(stdin, "not valid json at all {{").unwrap();
+    stdin.flush().unwrap();
+    let mut line1 = String::new();
+    stdout
+        .read_line(&mut line1)
+        .expect("a malformed line must still get one response line");
+    let resp1: serde_json::Value = serde_json::from_str(&line1)
+        .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line1:?}"));
+    assert_eq!(
+        resp1["error"]["code"], -32700,
+        "malformed input must answer a JSON-RPC parse error; got:\n{line1}"
+    );
+
+    let req = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    writeln!(stdin, "{req}").unwrap();
+    stdin.flush().unwrap();
+    let mut line2 = String::new();
+    stdout
+        .read_line(&mut line2)
+        .expect("the session must keep answering after the malformed line");
+    let resp2: serde_json::Value = serde_json::from_str(&line2).unwrap();
+    assert!(
+        resp2["result"]["tools"].is_array(),
+        "a well-formed request right after a malformed one must still succeed; got:\n{line2}"
+    );
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(out.status.success());
+}
+
+/// `rigger_graph`'s `show` selector - brand new JSON wiring (`operator_tool_graph`'s `show`
+/// arm and `entity_site_json`) that no test anywhere else exercises: the happy-path test above
+/// only ever tries `around` on an unknown entity. Seeds one real code-entity definition into
+/// `graph.db` (the same `CodeEntityExtracted` fold a real extraction pass would produce, the
+/// ALWAYS-compiled arm so this holds in both feature lanes) and proves a SUCCESSFUL resolution
+/// serializes its site fields correctly over the wire, and an unresolved `show` still answers
+/// honestly `"none"` rather than erroring.
+#[test]
+fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknown_one() {
+    use rigger::contextgraph::sqlite::Projector;
+    use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
+    use rigger::eventstore::Event;
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    let id = run_stream_identity(root);
+    let rigger_dir = root.join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).unwrap();
+    {
+        let p = Projector::open(rigger_dir.join("graph.db").to_str().unwrap(), &id).unwrap();
+        let payload =
+            r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
+        let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
+        e.position = 1;
+        p.apply(&e).unwrap();
+    }
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    let found = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": {"show": "frobnicate"}}),
+    );
+    let structured = &found["result"]["structuredContent"];
+    assert_eq!(
+        structured["status"], "one",
+        "a seeded, unambiguous entity must resolve to exactly one site; got:\n{found}"
+    );
+    assert_eq!(structured["site"]["id"], "src/widget.rs::frobnicate");
+    assert_eq!(structured["site"]["file"], "src/widget.rs");
+    assert_eq!(structured["site"]["line"], 7);
+    assert_eq!(structured["site"]["kind"], "fn");
+
+    let missing = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_graph", "arguments": {"show": "does-not-exist"}}),
+    );
+    assert_eq!(
+        missing["result"]["structuredContent"]["status"], "none",
+        "an unresolved show query must answer honestly none, never error; got:\n{missing}"
+    );
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(out.status.success());
+}
+
+/// The shipped skill's lookup section states the graph-first rule for a human reader
+/// (criterion 4's own Done-when text) - proven only against the in-process render function by
+/// the implementer's own docs.rs unit tests. This drives the REAL `rigger docs` binary and
+/// reads the ACTUAL committed files it writes, so a wiring bug between `docs_context()` and the
+/// file `rigger setup`/`rigger docs` installs (as opposed to the render function alone) cannot
+/// hide.
+#[test]
+fn docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbook() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["docs"]);
+    assert!(ok, "rigger docs must succeed; stderr:\n{err}");
+
+    let skill = std::fs::read_to_string(root.join("skills/using-rigger/SKILL.md"))
+        .expect("the skill must be rendered");
+    let handbook = std::fs::read_to_string(root.join("docs/handbook/using-rigger.md"))
+        .expect("the handbook must be rendered");
+
+    for (label, out) in [("skill", &skill), ("handbook", &handbook)] {
+        assert!(
+            out.contains(".mcp.json"),
+            "{label} must name .mcp.json, where the operator's own MCP server is registered; \
+             got:\n{out}"
+        );
+        assert!(
+            out.contains("rigger_peers")
+                && out.contains("rigger_ground")
+                && out.contains("rigger_graph"),
+            "{label} must name all three operator MCP tools; got:\n{out}"
+        );
+        assert!(
+            out.contains("PreToolUse"),
+            "{label} must name the PreToolUse hook event the lookup hook installs under; \
+             got:\n{out}"
+        );
+        // Interpolated verbatim from the SAME message `rigger grep-guard` denies with, not a
+        // hand-paraphrase that could describe a different rule than the hook actually enforces.
+        assert!(
+            out.contains("rigger_ground / rigger_graph for code lookups"),
+            "{label} must carry the hook's real bounce message verbatim; got:\n{out}"
+        );
+        assert!(
+            out.contains("--literal"),
+            "{label} must name the --literal escape hatch; got:\n{out}"
+        );
+        // SDET periphery gap (round-9 accounting, d-spec92-hook-no-target-axis): the
+        // implementer's own docs.rs unit tests prove the render FUNCTION states a
+        // bounce-everywhere rule and never a guarded-tree list; nothing before this proved
+        // the REAL installed file agrees - a stale cached render, or a wiring bug between
+        // `docs_context()` and the file `rigger docs` writes, could leave the old
+        // `src/, tests/, workflows/` tree list on disk even after the render function itself
+        // was fixed.
+        assert!(
+            out.contains("every"),
+            "{label} must state the hook bounces EVERY Grep call and Bash grep invocation, \
+             not a guarded-tree subset; got:\n{out}"
+        );
+        assert!(
+            !out.contains("src/, tests/, workflows/") && !out.contains("tests/, workflows/"),
+            "{label} must not name the retired guarded-tree list; got:\n{out}"
+        );
+    }
+}
+
+#[test]
+fn reset_scratch_orphans_reclaims_cache_roots_whose_repo_is_gone_and_keeps_the_rest() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let cache = tempfile::tempdir().unwrap();
+    let rigger_dir = cache.path().join("rigger");
+    let enc = |p: &str| rigger::liveness::marker_filename(p).unwrap();
+    let live = rigger_dir.join(enc(root.to_str().unwrap()));
+    let gone = rigger_dir.join(enc(&format!("{}/deleted-checkout", root.to_str().unwrap())));
+    let plain = rigger_dir.join("test-tmp");
+    for d in [&live, &gone, &plain] {
+        std::fs::create_dir_all(d.join("rigger-wt-unit")).unwrap();
+    }
+    let envs = [("XDG_CACHE_HOME", cache.path().to_str().unwrap())];
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--scratch-orphans"], &envs);
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains("reclaimed 1 scratch root(s)"), "{out}");
+    assert!(
+        !gone.exists(),
+        "the root keyed on a deleted checkout is reclaimed"
+    );
+    assert!(live.exists(), "the root keyed on this live project is kept");
+    assert!(
+        plain.exists(),
+        "an entry that is not an encoded repo path is kept"
+    );
+    let (out, _err, ok) = run_rigger_envs(root, &["reset", "--scratch-orphans"], &envs);
+    assert!(ok);
+    assert!(
+        out.contains("reclaimed 0 scratch root(s)"),
+        "second pass is a no-op: {out}"
+    );
+}
+
+#[test]
+fn status_reports_a_run_without_creating_the_projects_scratch_root() {
+    // A read-only report never conjures the cache-home scratch root (and so never runs the
+    // orphan-root reclaim that creating one does); only a command that places work under
+    // the root creates it.
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+    let scratch = common::default_scratch_root(root);
+    assert!(
+        !scratch.exists(),
+        "fixture precondition: no scratch root yet"
+    );
+    let (_out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "stderr: {err}");
+    assert!(
+        !scratch.exists(),
+        "rigger status resolved the scratch root without creating it: {}",
+        scratch.display()
     );
 }

@@ -67,6 +67,16 @@ the viewport plus the selection's neighbours; label placement bounds the visible
 with hundreds of callers shows its top neighbours at the current zoom and an honest degree on
 the card, never a hairball.
 
+THE ENGINE IS THE CORE, decided (2026-09-15 amendment, docs/architecture-addendum-mission-
+control.md section 3): districts, the degree rank, the zoom budget, label placement, the
+explore rail's candidate lists and hit testing are functions of the console core that spec 93
+compiles to WebAssembly (`map_build`, `map_frame`, `map_hit`, exported through the core's
+calling surface); `map_frame` returns a draw list of screen-space hulls, pills, edges, dots and
+placed labels for the current camera and selection, and the page's script only draws that
+list on the canvas and forwards input. No layout, ranking or label logic lives in page script.
+This spec therefore runs after spec 93 has landed, and the component it builds moves into the
+Knowledge tab (spec 98) without rewrite.
+
 THE CARD, decided: spec 63's card, extended: title row (kind dot, name), provenance
 (file:line, degree, district), CALLED BY and CALLS rows listing neighbours by name with the
 relation type (each a chip that flies to and selects that entity), the PROOF row from spec 86,

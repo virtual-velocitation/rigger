@@ -3601,10 +3601,12 @@ fn render_section_3() -> String {
         line 203 - same function, same missing-port defect, not a separate third \
         violation - calls `crate::grounder::design::events::project_batches` \
         directly by concrete module path for the design-doc half of the same walk. \
-        These two calls are the two named sites of section 2's own catalogued twin \
-        duplicate pair (`dup-0201`: `src/grounder/symbols/events.rs:36-38` and \
-        `src/grounder/design/events.rs:90-114`, both named `project_batches`), so \
-        this boundary violation and that duplication finding are two symptoms of \
+        These two calls are two of the three named sites of section 2's own \
+        catalogued duplicate cluster (`dup-0218`: \
+        `src/grounder/design/events.rs:90-114`, \
+        `src/grounder/symbols/events.rs:89-91`, and this diff's own new third site, \
+        `src/grounder/workflowdef.rs:242-249` - all three named `project_batches`), \
+        so this boundary violation and that duplication finding are two symptoms of \
         one root cause - `ingest.rs` naming each concrete grounder submodule \
         because no port exposes either. The `Grounder` port's own methods \
         (`ground`, `reindex`, `blast_radius`, `index_stamp` - its provenance stamp \
@@ -3720,35 +3722,35 @@ fn render_section_3() -> String {
 /// rendering annotation, never a JSON field (spec 87 OUTPUT names no degree field for
 /// `dead-code.json`), so it lives beside the rendering, not the instrument. `src/ingest.rs`'s two
 /// `#[cfg(feature)]`-gated `ingest_project` sites share one lookup: the graph's own entity
-/// resolution for this shared name only ever returns the light-lane (`:468`) definition
+/// resolution for this shared name only ever returns the light-lane (`:615`) definition
 /// regardless of which line is asked for - a disclosed instrument-boundary quirk (section 4.2
 /// discloses it), not this function's own imprecision.
-fn kg_degree_for(file: &str, line: usize) -> u32 {
-    match (file, line) {
-        ("src/canary.rs", 180) => 12,
-        ("src/config.rs", 452) => 3,
-        ("src/dash.rs", 425) => 5,
-        ("src/dash.rs", 2815) => 7,
-        ("src/dash.rs", 4665) => 3,
-        ("src/distiller.rs", 231) => 15,
-        ("src/eventstore/sqlite.rs", 192) => 32,
-        ("src/gate.rs", 463) => 3,
-        ("src/grounder/symbols/events.rs", 29) => 17,
-        ("src/grounder/symbols/model.rs", 201) => 7,
-        ("src/grounder/symbols/model.rs", 211) => 10,
-        ("src/ingest.rs", 124) => 3,
-        ("src/ingest.rs", 468) => 3,
-        ("src/ledger.rs", 574) => 6,
-        ("src/ledger.rs", 651) => 3,
-        ("src/spawn.rs", 320) => 5,
-        ("src/spawn.rs", 338) => 6,
-        ("src/spawn.rs", 344) => 7,
-        ("src/spawn.rs", 350) => 5,
-        ("src/spawn.rs", 356) => 6,
-        ("src/spawn.rs", 362) => 6,
-        ("src/spawn.rs", 368) => 7,
-        ("src/spawn.rs", 374) => 5,
-        ("src/spawn.rs", 399) => 14,
+fn kg_degree_for(file: &str, name: &str) -> u32 {
+    match (file, name) {
+        ("src/canary.rs", "cataloged_classes") => 12,
+        ("src/config.rs", "sdet_author_enabled") => 3,
+        ("src/dash.rs", "pid_is_alive") => 5,
+        ("src/dash.rs", "neighborhood") => 7,
+        ("src/dash.rs", "serve") => 3,
+        ("src/distiller.rs", "rebuild") => 15,
+        ("src/eventstore/sqlite.rs", "with_content_identity") => 32,
+        ("src/gate.rs", "resolve_wrapper_name") => 3,
+        ("src/grounder/symbols/events.rs", "index_events") => 17,
+        ("src/grounder/symbols/model.rs", "definitions_named") => 7,
+        ("src/grounder/symbols/model.rs", "references_named") => 10,
+        ("src/ingest.rs", "ingest_project") => 3,
+        ("src/ingest.rs", "record_current_generation") => 3,
+        ("src/ledger.rs", "fully_done") => 6,
+        ("src/ledger.rs", "is_integrated") => 3,
+        ("src/spawn.rs", "new") => 5,
+        ("src/spawn.rs", "with_system_prompt") => 6,
+        ("src/spawn.rs", "with_model") => 7,
+        ("src/spawn.rs", "with_tools") => 5,
+        ("src/spawn.rs", "with_dir") => 6,
+        ("src/spawn.rs", "with_blast_radius") => 6,
+        ("src/spawn.rs", "with_title") => 7,
+        ("src/spawn.rs", "with_reviews") => 5,
+        ("src/spawn.rs", "park") => 14,
         // Round 3 (spec 89 criterion 1, `arch-u89c1r2-dirty-check-duplicated-and-diverges-
         // fail-direction`) shifts `is_dirty` to line 635 AND changes its body (a one-line
         // delegation to the new `path_is_dirty` free fn, replacing the direct `git(...)` call).
@@ -3760,9 +3762,9 @@ fn kg_degree_for(file: &str, line: usize) -> u32 {
         // sites, untouched by this round (see this file's `disposition_for`), and its body still
         // makes exactly ONE outgoing call - `path_is_dirty` in place of `git` - so the edge count
         // is unchanged at 5.
-        ("src/worktree.rs", 635) => 5,
-        (other_file, other_line) => panic!(
-            "dead-code candidate {other_file}:{other_line} has no recorded knowledge-graph \
+        ("src/worktree.rs", "is_dirty") => 5,
+        (other_file, other_name) => panic!(
+            "dead-code candidate {other_file}::{other_name} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
              Design's THE KNOWLEDGE GRAPH CROSS-CHECK)"
         ),
@@ -3851,7 +3853,7 @@ fn render_dead_code_full_list(lines: &[DeadCodeCandidateLines]) -> String {
             // a rendered citation, so it reads the candidate's own live field like every other
             // non-citation field above (`c.visibility`, `c.disposition`, `c.reason`), not the
             // unguarded `lines` sidecar.
-            kg_degree_for(&c.file, c.line),
+            kg_degree_for(&c.file, &c.name),
             disposition_label(c.disposition),
             c.reason
         ));
@@ -4220,7 +4222,7 @@ pub(crate) fn render_section_5() -> String {
     );
     out.push_str(
         "- `page_script` - a small JS snippet fixture - independently redefined in 19 \
-        different files (`dup-0345`, exact; e.g. \
+        different files (`dup-0350`, exact; e.g. \
         `tests/adaptive_labels_periphery.rs:52-61`, \
         `tests/code_lens_overview_collapse_viz.rs:26-35`, \
         `tests/concepts_lens_view_periphery.rs:689-698`, + 16 more), all inside the \
@@ -4230,19 +4232,19 @@ pub(crate) fn render_section_5() -> String {
         "- `node_available` - a viz-fixture predicate - independently redefined in 19 \
         files; the mechanical pass also clusters it together with the `gitsemver_available`/ \
         `npm_available` availability-check helpers (5 more sites across `src/main.rs` and \
-        three test files) into one 24-site cluster (`dup-0243`, exact).\n",
+        three test files) into one 24-site cluster (`dup-0248`, exact).\n",
     );
     out.push_str(
         "- `temp_project` - a scratch-project-directory fixture - independently \
-        redefined in 19 files (`dup-0371`, semantic; e.g. \
+        redefined in 19 files (`dup-0376`, semantic; e.g. \
         `tests/canary_model_drift_periphery.rs:39-46`, \
         `tests/cause_wire_periphery.rs:54-61`, `tests/cli.rs:19-29`), plus a \
-        near-identical 12-site variant (`dup-0370`) and a 13-site `run_rigger` \
-        companion helper that drives it (`dup-0372`).\n",
+        near-identical 12-site variant (`dup-0375`) and a 13-site `run_rigger` \
+        companion helper that drives it (`dup-0377`).\n",
     );
     out.push_str(
         "- `run_stream_identity` - a store-identity fixture - independently redefined \
-        in 18 files (`dup-0377`, semantic).\n\n",
+        in 18 files (`dup-0382`, semantic).\n\n",
     );
     out.push_str(
         "Proposed home for all four: `tests/common` (the catalog's own \
@@ -4304,19 +4306,19 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "181 test-only clusters in the committed catalog have every site as an \
         ordinary (non-`#[test]`) helper function - the shared-fixture-extraction \
-        candidate class. Beyond the four in 5.2, the widest are: `dup-0349` \
+        candidate class. Beyond the four in 5.2, the widest are: `dup-0354` \
         (`architecture_text` / `eventstore_source` / `main_rs_source` - \
         source-text-loading helpers for doc/architecture-integrity checks, 12 files, \
-        15 sites); `dup-0376` (a companion, 16-file/16-site variant of 5.2's \
-        `run_stream_identity` fixture, alongside `dup-0377`'s 18-file version); \
-        `dup-0405` (`write_two_stage_workflow` / \
+        15 sites); `dup-0381` (a companion, 16-file/16-site variant of 5.2's \
+        `run_stream_identity` fixture, alongside `dup-0382`'s 18-file version); \
+        `dup-0410` (`write_two_stage_workflow` / \
         `write_budget_one_two_stage_workflow` / `write_standalone_review_workflow` - \
         workflow-YAML-literal builders duplicated across `tests/cli.rs` and \
         `tests/step_attention_periphery.rs`, 4 files, 15 sites); \
-        `dup-0376`/`dup-0377` (`seed_run_events`, an event-seeding helper, 6-8 \
-        files); `dup-0469` (`apply_def_json` / `apply_ref_fresh`-shaped \
-        fold-application helpers, 5 files); `dup-0474` (`community` / `concept` / \
-        `def`-named single-field constructor helpers, 6 files); `dup-0477` \
+        `dup-0381`/`dup-0382` (`seed_run_events`, an event-seeding helper, 6-8 \
+        files); `dup-0474` (`apply_def_json` / `apply_ref_fresh`-shaped \
+        fold-application helpers, 5 files); `dup-0479` (`community` / `concept` / \
+        `def`-named single-field constructor helpers, 6 files); `dup-0482` \
         (`code_lens` / `concepts_lens` two-line accessor helpers, 3 files). Every \
         one of these 181 clusters, with its full site list and the catalog's own \
         `proposed_home`, is already machine-readable in the committed \
@@ -4328,7 +4330,7 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "159 test-only clusters have every site as a `#[test]` function - a \
         literal-differs-only-in-input family, spec 85's own named table-driven-test \
-        candidate class. The single largest anywhere in the suite: `dup-0662` (near, \
+        candidate class. The single largest anywhere in the suite: `dup-0667` (near, \
         42 sites, all in `tests/spec_lint.rs`, e.g. \
         `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class:54-102`, \
         `validate_spec_attributes_a_prose_level_defect_to_no_criterion:120-163`, \
@@ -4338,14 +4340,14 @@ pub(crate) fn render_section_5() -> String {
         validate_spec_field_guide_defects() { for (fixture, expected) in CASES { ... \
         } }` retiring all 42 named tests into one parametrized loop over a `(&str, \
         &str)` (or richer struct) case table. Other large families: \
-        `dup-0603`/`dup-0605` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
+        `dup-0608`/`dup-0610` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
         \"one fixture function body, one exemption-coverage shape, assert \
         covered/not-covered\" - retires into one table keyed by exemption shape); \
-        `dup-0636` (11 sites, `tests/simplification_audit.rs` - this \
+        `dup-0641` (11 sites, `tests/simplification_audit.rs` - this \
         very unit's own scanner tests, a `(source, expected_tokens_or_clusters)` \
-        table candidate); `dup-0592`/`dup-0593` (11+4 sites, \
+        table candidate); `dup-0597`/`dup-0598` (11+4 sites, \
         `tests/no_os_kill_audit.rs`, one process-termination-pattern-string per test \
-        - a `(pattern, is_caught)` table); `dup-0595` (4 sites, \
+        - a `(pattern, is_caught)` table); `dup-0600` (4 sites, \
         `tests/no_os_kill_test_helper_periphery.rs`, \
         `terminate_pid_refuses_pid_zero` / `_pid_one` x `stop_pid_refuses_pid_zero` \
         / `_pid_one` - a 2x2 `(helper, pid)` table). As with 5.4, the full \
@@ -4569,16 +4571,16 @@ fn render_section_6() -> String {
     );
     out.push_str(
         "#### 2. Close the `Grounder` port gap for whole-project batch ingest (retires \
-        dup-0204 in the same motion)\n\n",
+        dup-0206 in the same motion)\n\n",
     );
     out.push_str(
         "- Scope: section 3 violation 2 (`src/ingest.rs:187-211` `walk_batches`, reaching \
         `grounder::symbols::events::project_batches_paced` and \
         `grounder::design::events::project_batches` by concrete module path) and \
-        duplication cluster `dup-0204` (the same two modules' own twin `project_batches` \
+        duplication cluster `dup-0206` (the same two modules' own twin `project_batches` \
         functions, `src/grounder/symbols/events.rs:36-38` / \
         `src/grounder/design/events.rs:90-114`) are one root cause, not two - fix once. TWO \
-        CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): `dup-0204`'s own mechanical \
+        CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): `dup-0206`'s own mechanical \
         `proposed_home` suggests relocating into `tests/common`, but both sites are \
         production code under `src/grounder/`, not test helpers - the mechanical heuristic \
         has no \"add a port method\" category to route a production duplicate to, so it \
@@ -4588,15 +4590,15 @@ fn render_section_6() -> String {
         - Files: `src/ingest.rs`, `src/grounder/mod.rs`, `src/grounder/symbols/events.rs`, \
         `src/grounder/design/events.rs`.\n\
         - Expected line delta: roughly neutral - one new trait method plus two thin impls, \
-        minus the two duplicate bodies `dup-0204` catalogs.\n\
+        minus the two duplicate bodies `dup-0206` catalogs.\n\
         - Risk: medium. `ingest.rs`'s own module doc calls it \"the ONE walk-and-content-key \
         authority\" - a load-bearing path; needs the existing whole-project-ingest and \
         reindex-freshening coverage to stay green, not just the two duplicate-site tests.\n\
-        - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0204` \
+        - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0206` \
         together, rather than as two separately-tracked fixes.\n\n",
     );
     out.push_str(
-        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0143` + `dup-0144`)\n\n",
+        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0148` + `dup-0149`)\n\n",
     );
     out.push_str(
         "- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
@@ -4604,19 +4606,19 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0144`, 15 sites: `src/dash.rs`, `src/main.rs`, \
+        capstone previously caught (`dup-0149`, 15 sites: `src/dash.rs`, `src/main.rs`, \
         `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \
         91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \
         reason `dash.rs::process_state` does, growing this already-known cluster by one site \
         rather than opening a new one), plus 60 raw `/proc`-path string literals scattered \
         across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no \
-        shared composer (`dup-0143`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
+        shared composer (`dup-0148`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
         re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
         production server, so it is the actual active-correctness risk this tier-1 placement \
         is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) \
         and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
-        rides in this same item only because it shares `dup-0143`/`dup-0144`'s one root cause \
+        rides in this same item only because it shares `dup-0148`/`dup-0149`'s one root cause \
         and one proposed fix with `process_state`, not because retiring it retires any live \
         risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
@@ -4771,7 +4773,7 @@ fn render_section_6() -> String {
         mechanically regardless of the Jaccard pass, per spec 85's own Design.\n\n",
     );
     out.push_str(
-        "#### 10. Consolidate the 655 `.rigger`-path string-literal sites (`dup-0055`) - the \
+        "#### 10. Consolidate the 655 `.rigger`-path string-literal sites (`dup-0056`) - the \
         single largest cluster in the entire catalog by site count\n\n",
     );
     out.push_str(
@@ -4782,7 +4784,7 @@ fn render_section_6() -> String {
         `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
         `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `src/reap.rs`, \
         `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
-        is in the committed `docs/audit/duplication-catalog.json` under `dup-0055` for the \
+        is in the committed `docs/audit/duplication-catalog.json` under `dup-0056` for the \
         follow-up spec to consume directly, not re-enumerated here.\n\
         - Expected line delta: negative - 662 literal compositions collapse toward one \
         helper's call sites; the helper itself is small.\n\
@@ -4803,7 +4805,7 @@ fn render_section_6() -> String {
         `src/driver/cli.rs`, `src/gate.rs`, `src/main.rs`, `src/worktree.rs` plus many \
         `tests/` files - full site list in `docs/audit/duplication-catalog.json` under \
         `dup-0006`.\n\
-        - Expected line delta: negative, though smaller per-site than `dup-0055` since each \
+        - Expected line delta: negative, though smaller per-site than `dup-0056` since each \
         `Command::new` call already carries real configuration (args, env, cwd) that must \
         move with it, not just a literal.\n\
         - Risk: medium-high - several of these 333 sites sit inside `src/budget.rs`'s and \
@@ -4816,13 +4818,13 @@ fn render_section_6() -> String {
         site 334.\n\n",
     );
     out.push_str(
-        "#### 12. Consolidate the 46 sqlite `Connection::open` call sites (`dup-0109`)\n\n",
+        "#### 12. Consolidate the 46 sqlite `Connection::open` call sites (`dup-0110`)\n\n",
     );
     out.push_str(
         "- Scope: one sqlite-connection-opening adapter function (the cluster's own \
         `proposed_home`) spanning `src/contextgraph/sqlite.rs`, `src/eventstore/sqlite.rs` \
         and `src/main.rs`, plus several `tests/` files.\n\
-        - Files: full site list in `docs/audit/duplication-catalog.json` under `dup-0109`.\n\
+        - Files: full site list in `docs/audit/duplication-catalog.json` under `dup-0110`.\n\
         - Expected line delta: negative - 46 open calls collapse toward one function.\n\
         - Risk: medium - touches the event store and context graph's own \
         connection-lifecycle code; needs the store-identity and store-resolution contract \
@@ -4831,7 +4833,7 @@ fn render_section_6() -> String {
         46.\n\n",
     );
     out.push_str(
-        "#### 13. Consolidate the 5 error-shaping helper sites (`dup-0213`) - caution, \
+        "#### 13. Consolidate the 5 error-shaping helper sites (`dup-0215`) - caution, \
         confirm before merging\n\n",
     );
     out.push_str(
@@ -4846,7 +4848,7 @@ fn render_section_6() -> String {
         spec's first job is confirming by reading whether these six sites share actual \
         logic before proposing one helper, not assuming the cluster label proves it.\n\
         - Files: `src/grounder/mod.rs`, `src/worktree.rs`, plus the three test files named \
-        in `docs/audit/duplication-catalog.json` under `dup-0213`.\n\
+        in `docs/audit/duplication-catalog.json` under `dup-0215`.\n\
         - Expected line delta: unknown pending the confirmation read above - potentially \
         zero if the cluster does not survive a human read.\n\
         - Risk: low (the smallest-site-count sweep), but with the stated precondition.\n\
@@ -4860,9 +4862,9 @@ fn render_section_6() -> String {
     );
     out.push_str("#### 14. Extract the four headline shared test fixtures into `tests/common` (section 5.2)\n\n");
     out.push_str(
-        "- Scope: `page_script` (`dup-0345`, 19 files), `node_available` (`dup-0243`, 23 \
+        "- Scope: `page_script` (`dup-0350`, 19 files), `node_available` (`dup-0248`, 23 \
         files - merged with two related availability-check helpers), `temp_project` \
-        (`dup-0371`, 19 files) and `run_stream_identity` (`dup-0377`, 18 files) - roughly 72 \
+        (`dup-0376`, 19 files) and `run_stream_identity` (`dup-0382`, 18 files) - roughly 72 \
         duplicate definitions collapsing into four shared ones, the \
         single largest mechanical simplification section 5 identifies anywhere in the test \
         suite.\n\
@@ -4897,10 +4899,10 @@ fn render_section_6() -> String {
         tables (section 5.5)\n\n",
     );
     out.push_str(
-        "- Scope, largest first: `dup-0662` (42 sites, `tests/spec_lint.rs`), \
-        `dup-0603`/`dup-0605` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
-        `dup-0592`/`dup-0593` (11+4 sites, `tests/no_os_kill_audit.rs`), \
-        `dup-0636` (11 sites, `tests/simplification_audit.rs` - this very \
+        "- Scope, largest first: `dup-0667` (42 sites, `tests/spec_lint.rs`), \
+        `dup-0608`/`dup-0610` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
+        `dup-0597`/`dup-0598` (11+4 sites, `tests/no_os_kill_audit.rs`), \
+        `dup-0641` (11 sites, `tests/simplification_audit.rs` - this very \
         generator's own scanner tests) - 90 sites across 6 clusters.\n\
         - Files: the four files named above.\n\
         - Expected line delta: negative - each family's near-identical test bodies collapse \
@@ -4918,7 +4920,7 @@ fn render_section_6() -> String {
         "- Scope: the 181 test-only, all-helper-function clusters section 5.4 names, minus \
         the 4 item 14 already covers - consumed directly from \
         `docs/audit/duplication-catalog.json`, not re-enumerated here (section 5.4's own \
-        stated approach). Includes the `dup-0370`/`dup-0372` `temp_project` companion and \
+        stated approach). Includes the `dup-0375`/`dup-0377` `temp_project` companion and \
         variant clusters section 5.4 itself places in this \"beyond the four\" bucket.\n\
         - Files: per-cluster, from the committed catalog.\n\
         - Expected line delta: negative, cumulative across 177 clusters.\n\
@@ -4933,7 +4935,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: the 159 test-only, all-`#[test]` clusters section 5.5 names, minus the 6 \
         cluster ids item 16 already covers - consumed directly from \
-        `docs/audit/duplication-catalog.json`. Includes `dup-0595` (4 sites, \
+        `docs/audit/duplication-catalog.json`. Includes `dup-0600` (4 sites, \
         `tests/no_os_kill_test_helper_periphery.rs`), the smallest of section 5.5's own \
         named large families, left here rather than in item 16.\n\
         - Files: per-cluster, from the committed catalog.\n\
@@ -4954,8 +4956,8 @@ fn render_section_6() -> String {
     );
     out.push_str(
         "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
-        above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0055`, `dup-0109`, \
-        `dup-0143`, `dup-0144`, `dup-0204`, `dup-0213`); the remaining 327 clusters touching \
+        above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0056`, `dup-0110`, \
+        `dup-0148`, `dup-0149`, `dup-0206`, `dup-0215`); the remaining 327 clusters touching \
         `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
         section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
         exact-duplicate clusters first, consumed directly from \
@@ -5537,8 +5539,8 @@ struct DeadCodeCandidate {
     ambiguous_with_hashed: Vec<String>,
     test_only_references: Vec<TestOnlyRef>,
     /// Criterion 3's own field (spec 87 OUTPUT: "and a DISPOSITION"). Assigned by
-    /// [`disposition_for`], keyed on `(file, line)` - never on bare `name` alone, since the two
-    /// `#[cfg(feature)]`-gated `ingest_project`s share a name but carry different reasons.
+    /// [`disposition_for`], keyed on `(file, name)` - never on a line number, since a line moves
+    /// `#[cfg(feature)]`-gated `ingest_project`s share one name and one reason.
     disposition: Disposition,
     /// The cited reason [`disposition_for`] assigns alongside [`DeadCodeCandidate::disposition`]
     /// (spec 87 DISPOSITIONS: "Every entry gets one; an entry without a cited reason is a
@@ -5964,10 +5966,10 @@ fn build_dead_code_candidates(
 /// `docs/audit/2026-09-simplification-audit.md` section 4, not repeated here; this table carries
 /// the SAME reason text the report's full list cites, so the JSON and the report can never state
 /// two different reasons for one candidate.
-fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
+fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
     use Disposition::{Delete, KeepPending};
-    match (file, line) {
-        ("src/canary.rs", 180) => (
+    match (file, name) {
+        ("src/canary.rs", "cataloged_classes") => (
             Delete,
             "cataloged_classes has no production caller anywhere in src/ (checked whole-tree, \
              recursively). Its only two references are its own inline tests \
@@ -5978,7 +5980,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              loop) never consults it: corpus diversity is a load-time authoring check, not a \
              runtime one.",
         ),
-        ("src/config.rs", 452) => (
+        ("src/config.rs", "sdet_author_enabled") => (
             KeepPending,
             "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not \
              a false positive: spawn_sdet_author (conductor.rs:3980) gates the always-on SDET \
@@ -5995,7 +5997,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              correct fix is wiring the call site, out of scope here (no production code changes \
              this criterion).",
         ),
-        ("src/dash.rs", 425) => (
+        ("src/dash.rs", "pid_is_alive") => (
             Delete,
             "pid_is_alive has no production caller. It is the RETIRED predecessor of the real \
              marker-serving check: dash_marker_serving (main.rs:5711, the production predicate \
@@ -6007,7 +6009,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              (dash.rs:9304) and an older fixture test (main.rs:12795-12841) that injects it as a \
              simplified closure for readability, not a claim about production behavior.",
         ),
-        ("src/dash.rs", 2815) => (
+        ("src/dash.rs", "neighborhood") => (
             Delete,
             "neighborhood (the single-seed convenience wrapper) has no production caller. The \
              route handler (dash.rs:3404) calls neighborhood_of (the multi-seed core \
@@ -6016,7 +6018,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              content nodes at once'. neighborhood's 13 references are all its own tests \
              exercising the single-seed case directly.",
         ),
-        ("src/dash.rs", 4665) => (
+        ("src/dash.rs", "serve") => (
             Delete,
             "serve (the blocking, self-binding accept-loop entry point) has no production caller. \
              The real dash-serving CLI path (main.rs::cmd_dash) calls dash::serve_on (main.rs:6493) \
@@ -6027,7 +6029,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              serve_on, disclosed here rather than silently left.) serve's 2 references are its \
              own smoke tests.",
         ),
-        ("src/distiller.rs", 231) => (
+        ("src/distiller.rs", "rebuild") => (
             KeepPending,
             "rebuild (the digest-pool projection rebuild, spec 27) has no production caller \
              anywhere - src/lib.rs's mod distiller; declaration is the only mention of the module \
@@ -6041,7 +6043,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              site (a rigger distill command, or a hook into rigger reset), never spec'd as a \
              Done-when criterion of spec 27 itself, which is why it shipped unwired.",
         ),
-        ("src/eventstore/sqlite.rs", 192) => (
+        ("src/eventstore/sqlite.rs", "with_content_identity") => (
             KeepPending,
             "with_content_identity (the storage-level idempotency append-guard builder, spec 60) \
              has no production caller: open_sqlite_store (main.rs:444), the crate's ONE sqlite \
@@ -6061,7 +6063,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              a follow-up spec should either wire it into open_sqlite_store or explicitly retire \
              it, rather than let it sit silently unwired indefinitely.",
         ),
-        ("src/gate.rs", 463) => (
+        ("src/gate.rs", "resolve_wrapper_name") => (
             Delete,
             "resolve_wrapper_name has no production caller - independently confirmed (u87c2's own \
              decision u87c2-three-precision-fixes-from-real-tree-spot-check already found this by \
@@ -6074,7 +6076,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              on a follow-up pass), not a sign the function is unneeded. resolve_wrapper_name's 4 \
              references are its own tests.",
         ),
-        ("src/grounder/symbols/events.rs", 29) => (
+        ("src/grounder/symbols/events.rs", "index_events") => (
             Delete,
             "index_events is spec 87's own Goal-worked example of the false negative this whole \
              spec exists to fix ('a function whose only caller is its own test reads as alive: \
@@ -6083,36 +6085,39 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              again on the current tree (now 64 test references at line 29, having grown with the \
              test suite): no production caller anywhere.",
         ),
-        ("src/grounder/symbols/model.rs", 201) => (
+        ("src/grounder/symbols/model.rs", "definitions_named") => (
             Delete,
             "definitions_named has no production caller - only its own module's assertion-style \
              tests (symbols/mod.rs) use it to check index state after a build/update, never a \
              production edge-resolution path.",
         ),
-        ("src/grounder/symbols/model.rs", 211) => (
+        ("src/grounder/symbols/model.rs", "references_named") => (
             Delete,
             "references_named has no production caller - the same test-only accessor shape as \
              its sibling definitions_named immediately above it.",
         ),
-        ("src/ingest.rs", 124) => (
+        ("src/ingest.rs", "ingest_project") => (
             Delete,
-            "ingest_project (the #[cfg(feature = \"symbols\")] single-event lane) has no \
-             production caller. Production calls ingest_project_batched (conductor.rs:8050/15473, \
-             main.rs:4067) exclusively - the batched entry point this fn's own doc comment \
-             already names as the thing 'existing callers discard [IngestStats] and are \
-             unaffected' by, i.e. it documents its own supersession. Ambiguous with its \
-             #[cfg(not(feature = \"symbols\"))] sibling at ingest.rs:468 (the textual scanner \
-             sees two same-named definitions where rustc, feature-gated, sees one); both carry \
-             the identical finding and disposition.",
+            "ingest_project - both the #[cfg(feature = \"symbols\")] single-event lane and the \
+             #[cfg(not(feature = \"symbols\"))] light-lane no-op, one name at two cfg-gated \
+             sites - has no production caller on either lane. Production calls \
+             ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point \
+             this fn's own doc comment already names as the thing 'existing callers discard \
+             [IngestStats] and are unaffected' by, i.e. it documents its own supersession.",
         ),
-        ("src/ingest.rs", 468) => (
+        ("src/ingest.rs", "record_current_generation") => (
             Delete,
-            "ingest_project (the #[cfg(not(feature = \"symbols\"))] light-lane no-op) has no \
-             production caller, for the identical reason as its #[cfg(feature = \"symbols\")] \
-             sibling at ingest.rs:124: production calls ingest_project_batched exclusively on \
-             both lanes.",
+            "record_current_generation (spec 92 criterion 1, FRESH ON EVERY INTEGRATION) has no \
+             production caller - a private fixture helper inside scoped_reindex_tests that \
+             appends `graph_index_lag`/`graph_index_lag_sample`'s test-double `prior: Vec<Event>` \
+             stream, factored out once graph_index_lag_sample_derives_its_candidates_from_..., \
+             graph_index_lag_sample_reports_a_file_that_changed_..., and \
+             graph_index_lag_sample_is_bounded_and_stays_silent_... all needed the identical \
+             stamping boilerplate (the same shape already inlined once in \
+             graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one, its own sibling \
+             test above it in this file). Never called outside this test module.",
         ),
-        ("src/ledger.rs", 574) => (
+        ("src/ledger.rs", "fully_done") => (
             Delete,
             "fully_done has no production caller. Its own doc comment's three-conjunct \
              completion check is subsumed elsewhere: nothing in conductor.rs or main.rs calls it \
@@ -6123,7 +6128,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              (ESCALATION RESUMES) added resume_bound/ResumeGrant/UnitResumed earlier in this same \
              file.)",
         ),
-        ("src/ledger.rs", 651) => (
+        ("src/ledger.rs", "is_integrated") => (
             Delete,
             "is_integrated has no production caller, though its doc comment claims one ('used by \
              resume to skip completed work'): the real resume-skip logic uses is_terminal \
@@ -6134,7 +6139,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              (Line shifted 577 -> 583 -> 651: same round-3 doc-comment addition, then the same \
              rigger-run merge shift above.)",
         ),
-        ("src/spawn.rs", 320) => (
+        ("src/spawn.rs", "new") => (
             Delete,
             "SpawnRequest::new and its 7 builder methods (with_system_prompt/with_model/ \
              with_tools/with_dir/with_blast_radius/with_title/with_reviews) plus the park \
@@ -6147,45 +6152,45 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              Goal text names four of the seven builders (with_title/with_reviews/with_model/ \
              with_blast_radius) as its worked example of confirmed dead code.",
         ),
-        ("src/spawn.rs", 338) => (
+        ("src/spawn.rs", "with_system_prompt") => (
             Delete,
             "with_system_prompt - part of the SpawnRequest builder family; see the disposition on \
              SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
         ),
-        ("src/spawn.rs", 344) => (
+        ("src/spawn.rs", "with_model") => (
             Delete,
             "with_model - part of the SpawnRequest builder family; see the disposition on \
              SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
         ),
-        ("src/spawn.rs", 350) => (
+        ("src/spawn.rs", "with_tools") => (
             Delete,
             "with_tools - part of the SpawnRequest builder family; see the disposition on \
              SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
         ),
-        ("src/spawn.rs", 356) => (
+        ("src/spawn.rs", "with_dir") => (
             Delete,
             "with_dir - part of the SpawnRequest builder family; see the disposition on \
              SpawnRequest::new (spawn.rs:320) for the shared root cause and citation.",
         ),
-        ("src/spawn.rs", 362) => (
+        ("src/spawn.rs", "with_blast_radius") => (
             Delete,
             "with_blast_radius - part of the SpawnRequest builder family (one of the four spec 87 \
              Goal names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the \
              shared root cause and citation.",
         ),
-        ("src/spawn.rs", 368) => (
+        ("src/spawn.rs", "with_title") => (
             Delete,
             "with_title - part of the SpawnRequest builder family (one of the four spec 87 Goal \
              names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the \
              shared root cause and citation.",
         ),
-        ("src/spawn.rs", 374) => (
+        ("src/spawn.rs", "with_reviews") => (
             Delete,
             "with_reviews - part of the SpawnRequest builder family (one of the four spec 87 Goal \
              names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the \
              shared root cause and citation.",
         ),
-        ("src/spawn.rs", 399) => (
+        ("src/spawn.rs", "park") => (
             Delete,
             "park (the zero-run-id convenience wrapper around park_in_run) - part of the \
              SpawnRequest-construction dead set; see the disposition on SpawnRequest::new \
@@ -6195,7 +6200,7 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              references, not reachability, so park_in_run reads alive even though its only OTHER \
              caller (park) is itself dead.",
         ),
-        ("src/worktree.rs", 635) => (
+        ("src/worktree.rs", "is_dirty") => (
             Delete,
             "is_dirty has no production caller - one of spec 87's own two Goal-cited worked \
              examples ('src/worktree.rs expect_merged and is_dirty'), reconfirmed on the current \
@@ -6218,8 +6223,8 @@ fn disposition_for(file: &str, line: usize) -> (Disposition, &'static str) {
              production dead-code candidate by this scanner's own definition, closing the \
              finding at its root rather than re-dispositioning it in place.",
         ),
-        (other_file, other_line) => panic!(
-            "dead-code candidate {other_file}:{other_line} has no assigned disposition - this is \
+        (other_file, other_name) => panic!(
+            "dead-code candidate {other_file}::{other_name} has no assigned disposition - this is \
              a NEW candidate the tree has grown since spec 87 criterion 3 researched and \
              dispositioned every candidate that existed then (26 entries); assign one in \
              disposition_for (spec 87 criterion 3's own OWNS: 'the dispositions'), citing a real \
@@ -6361,7 +6366,7 @@ fn real_whole_file_test_set() -> &'static BTreeSet<String> {
 /// calls this.
 fn apply_real_tree_dispositions(mut candidates: Vec<DeadCodeCandidate>) -> Vec<DeadCodeCandidate> {
     for c in &mut candidates {
-        let (disposition, reason) = disposition_for(&c.file, c.line);
+        let (disposition, reason) = disposition_for(&c.file, &c.name);
         c.disposition = disposition;
         c.reason = reason.to_string();
     }
@@ -9261,16 +9266,16 @@ mod tests {
         // Cites section 3's two boundary violations by name.
         assert!(rendered.contains("AgentDriver"));
         assert!(rendered.contains("Grounder"));
-        // The two-candidates-one-home resolution for dup-0204 (spec 85 CONSTRAINTS WALK).
-        assert!(rendered.contains("dup-0204"));
+        // The two-candidates-one-home resolution for dup-0206 (spec 85 CONSTRAINTS WALK).
+        assert!(rendered.contains("dup-0206"));
         assert!(rendered.contains("TWO CANDIDATES, ONE HOME"));
         // Cites the mandatory-sweep duplication clusters by id.
         assert!(rendered.contains("dup-0006"));
-        assert!(rendered.contains("dup-0055"));
-        assert!(rendered.contains("dup-0109"));
-        assert!(rendered.contains("dup-0143"));
-        assert!(rendered.contains("dup-0144"));
-        assert!(rendered.contains("dup-0213"));
+        assert!(rendered.contains("dup-0056"));
+        assert!(rendered.contains("dup-0110"));
+        assert!(rendered.contains("dup-0148"));
+        assert!(rendered.contains("dup-0149"));
+        assert!(rendered.contains("dup-0215"));
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("src/conductor.rs"));
         assert!(rendered.contains("src/main.rs"));
@@ -9278,7 +9283,7 @@ mod tests {
         // Cites section 5's own headline test-suite consolidation items.
         assert!(rendered.contains("tests/common"));
         assert!(rendered.contains("tests/cli.rs"));
-        assert!(rendered.contains("dup-0662"));
+        assert!(rendered.contains("dup-0667"));
         // Item 0 (spec 87 c3): section 4's redo turned dead-and-vestigial-code from an empty
         // category into a real Tier 1 deletion item; the 3 residual `keep-pending` entries
         // explicitly get no NEW follow-up stub (each cites an already-landed governing spec
@@ -10679,7 +10684,7 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (25, 22, 0, 3),
+            (26, 23, 0, 3),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}"
         );

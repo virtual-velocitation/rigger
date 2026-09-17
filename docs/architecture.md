@@ -41,6 +41,11 @@
 > - [Grounding as a Tool](architecture-addendum-grounding-as-tool.md) - pushes only the small
 >   deterministic intent layer into an agent's prompt and serves the large reference bulk on
 >   demand through a real graph query tool, removing a measured push-truncation defect.
+> - [Mission Control](architecture-addendum-mission-control.md) - the console a person keeps
+>   open while rigger runs: seven views folded from the event log at any position in time, the
+>   fold and the graph engine running in the page as WebAssembly built from the library's own
+>   projection code, a fleet board for every project on the machine, and two guarded actions;
+>   it replaces the dashboard and absorbs the graph inspector as its Knowledge tab.
 > - [The World Authority](architecture-addendum-world-authority.md) - one resident
 >   conductor per project parents every subprocess (ending work by handle, never
 >   inference) and runs a world reconciler that converges the filesystem toward a

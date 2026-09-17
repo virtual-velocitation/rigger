@@ -1,0 +1,9 @@
+# nextest runs each test as its own process, every test binary at once, and stops the run
+# at the first failure. The check-in mutation gate (.rigger/workflow.yml) tests each mutant
+# through it so a caught mutant costs one failing test, not every binary scheduled before
+# the failing one (cargo test walks the binaries serially and only stops between them).
+[profile.default]
+# A test past this bound is hung, not slow: the suite's slowest legitimate test finishes
+# well inside it. Terminating it turns a hang-class mutant into a caught mutant within
+# minutes rather than at the sweep's whole-suite timeout.
+slow-timeout = { period = "60s", terminate-after = 4 }

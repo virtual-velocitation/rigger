@@ -10,9 +10,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::contextgraph::Projection;
+use crate::contextgraph::{Located, Projection};
 use crate::driver::workflow::Driver;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
+use crate::grounder::Grounder;
 use crate::sidecar::Sidecar;
 
 /// A tool's failure, carrying the JSON-RPC error code to report it with. Most
@@ -69,6 +70,27 @@ pub struct Server<'a> {
     /// workflow-driver path would write findings only to the log and the side-car, and
     /// the graph - the system's cross-agent memory - would never see them.
     graph: Option<&'a dyn Projection>,
+    /// The operator's own read-only grounder port (spec 92, criterion 4's fix round). Wiring
+    /// one via [`with_grounder`] (or recording a resolution failure via
+    /// [`with_grounder_unavailable`]) is what MARKS this `Server` as the operator's lookup
+    /// surface (`rigger mcp`, registered into `.mcp.json`): [`tool_list`]/[`call_tool`] then
+    /// advertise and serve exactly `rigger_peers`/`rigger_ground`/`rigger_graph` instead of the
+    /// workflow-driver bridge's `rigger_next`/`rigger_result`/`rigger_emit`/`rigger_peers`/
+    /// `rigger_activity` - ONE dispatch and read loop answering two tool surfaces over the SAME
+    /// ports (`graph` doubles as the `around`/`show` source too), rather than a second parallel
+    /// MCP loop reaching for the concrete grounder/`Projector` across the crate boundary (the
+    /// DI-extension fix for the reject this closes). Both `None` on a workflow-bridge server.
+    grounder: Option<&'a dyn Grounder>,
+    /// Set instead of [`grounder`](Server::grounder) when the caller's own grounder resolution
+    /// FAILED (e.g. `--no-default-features` with no `defaults.grounder` pinned, spec 57's
+    /// never-silently-degrade grounder-selection contract) - via
+    /// [`with_grounder_unavailable`]. Still marks the LOOKUP surface (peers/graph must keep
+    /// answering; a grounder misconfiguration is not a reason to refuse the whole server), but
+    /// `rigger_ground` reports this reason as an honest tool-call error instead of silently
+    /// returning empty results, exactly as the pre-fix lazy resolution did (a
+    /// process-wide startup failure here would be a regression: it would take `rigger_peers`
+    /// and `rigger_graph` down over a `rigger_ground`-only misconfiguration).
+    grounder_unavailable: Option<String>,
     /// The SEPARATE progress store (spec 14, unit 2). When set, `rigger_activity` reads this
     /// run's `AgentProgress` from it to present the live per-agent view. `None` on a server
     /// started without one - `rigger_activity` then reports the frontier with no activity
@@ -103,6 +125,8 @@ impl<'a> Server<'a> {
             stream: stream.to_string(),
             peers,
             graph: None,
+            grounder: None,
+            grounder_unavailable: None,
             progress: None,
             scratch_root: String::new(),
             current_spawn: Mutex::new(None),
@@ -124,6 +148,29 @@ impl<'a> Server<'a> {
     /// graph, mirroring the conductor's own `emit_with_actor`).
     pub fn with_graph(mut self, graph: &'a dyn Projection) -> Self {
         self.graph = Some(graph);
+        self
+    }
+
+    /// Wire the operator's own read-only grounder port (spec 92, criterion 4's fix round):
+    /// `rigger_ground` answers through it, over the SAME `Grounder` trait `rigger ground`
+    /// resolves via `select_grounder` - so ground's ranking (spec 92 criterion 3's territory) is
+    /// inherited automatically, never re-implemented here. Wiring a grounder is also what turns
+    /// this `Server` into the operator's LOOKUP surface: see [`grounder`](Server::grounder)'s
+    /// doc comment for what that switches in [`tool_list`](Server::tool_list) and
+    /// [`call_tool`](Server::call_tool).
+    pub fn with_grounder(mut self, grounder: &'a dyn Grounder) -> Self {
+        self.grounder = Some(grounder);
+        self
+    }
+
+    /// Mark this `Server` as the operator's lookup surface even though grounder resolution
+    /// FAILED (see [`grounder_unavailable`](Server::grounder_unavailable)'s doc comment): a
+    /// caller unable to produce a working `&dyn Grounder` (e.g. `select_grounder` erred) calls
+    /// this INSTEAD of [`with_grounder`], passing the resolution failure's message, so
+    /// `rigger_peers`/`rigger_graph` still answer normally and only `rigger_ground` reports the
+    /// reason as its own tool-call error.
+    pub fn with_grounder_unavailable(mut self, reason: impl Into<String>) -> Self {
+        self.grounder_unavailable = Some(reason.into());
         self
     }
 
@@ -177,7 +224,7 @@ impl<'a> Server<'a> {
                     }),
                 )
             }),
-            "tools/list" => id.map(|id| ok(id, json!({"tools": tool_list()}))),
+            "tools/list" => id.map(|id| ok(id, json!({"tools": self.tool_list()}))),
             "tools/call" => {
                 // tools/call is a request, so it must carry an id; without one it
                 // is treated as a malformed notification and dropped.
@@ -212,13 +259,29 @@ impl<'a> Server<'a> {
         }
     }
 
+    /// The two tool surfaces one `Server` answers (spec 92, criterion 4's fix round): the
+    /// workflow-driver bridge the loop's shim polls, or the operator's read-only lookup surface
+    /// `rigger mcp` serves - see [`grounder`](Server::grounder)'s doc comment for what marks a
+    /// `Server` instance as the latter. Either [`with_grounder`](Server::with_grounder) OR
+    /// [`with_grounder_unavailable`](Server::with_grounder_unavailable) marks it - a grounder
+    /// resolution failure still gets the lookup surface (peers/graph keep answering), it just
+    /// makes `rigger_ground` itself report that failure. Kept as one small helper so
+    /// [`tool_list`](Server::tool_list) and [`call_tool`](Server::call_tool) can never disagree
+    /// on which surface an instance is.
+    fn is_lookup_surface(&self) -> bool {
+        self.grounder.is_some() || self.grounder_unavailable.is_some()
+    }
+
     fn call_tool(&self, id: Value, name: &str, args: &Value) -> String {
-        let result = match name {
-            "rigger_next" => self.tool_next(),
-            "rigger_result" => self.tool_result(args),
-            "rigger_emit" => self.tool_emit(args),
-            "rigger_peers" => Ok(self.tool_peers(args)),
-            "rigger_activity" => self.tool_activity(),
+        let lookup = self.is_lookup_surface();
+        let result = match (lookup, name) {
+            (_, "rigger_peers") => Ok(self.tool_peers(args)),
+            (true, "rigger_ground") => self.tool_ground(args),
+            (true, "rigger_graph") => self.tool_graph(args),
+            (false, "rigger_next") => self.tool_next(),
+            (false, "rigger_result") => self.tool_result(args),
+            (false, "rigger_emit") => self.tool_emit(args),
+            (false, "rigger_activity") => self.tool_activity(),
             _ => return err(id, -32602, &format!("unknown tool {name}")),
         };
         match result {
@@ -358,6 +421,85 @@ impl<'a> Server<'a> {
         peers_json(self.peers, &files)
     }
 
+    /// `rigger_ground` (spec 92, criterion 4's fix round): the operator's own MEMORY-adjacent
+    /// intent lookup, over the SAME [`Grounder`] port [`with_grounder`](Server::with_grounder)
+    /// wires - the exact trait `rigger ground` resolves through `select_grounder`, so ground's
+    /// ranking (spec 92 criterion 3's territory) is inherited automatically, never
+    /// re-implemented here. Only reachable on the lookup surface (a grounder wired OR its
+    /// resolution failure recorded); [`call_tool`] never dispatches here otherwise. Argument
+    /// validation runs BEFORE the grounder-unavailable check, so a genuinely missing `query`
+    /// is always reported as that - never masked by an unrelated resolution failure.
+    fn tool_ground(&self, args: &Value) -> Result<Value, ToolError> {
+        let query = args
+            .get("query")
+            .and_then(Value::as_str)
+            .ok_or("rigger_ground: missing query")?;
+        let k = args.get("k").and_then(Value::as_u64).unwrap_or(8) as usize;
+        if let Some(reason) = &self.grounder_unavailable {
+            // Honest, lazy failure (spec 57's never-silently-degrade contract) - exactly what
+            // the pre-fix operator surface reported when `select_grounder` erred, just now
+            // reached through the shared `Server` instead of a second read loop. Never a
+            // silent empty results array: `Grounder::ground` cannot itself signal failure, so
+            // this is the ONLY channel that reports it.
+            return Err(format!("rigger_ground: {reason}").into());
+        }
+        let grounder = self.grounder.expect(
+            "tool_ground is dispatched only on the lookup surface, which always carries \
+             either a grounder or a recorded resolution failure",
+        );
+        let results: Vec<Value> = grounder
+            .ground(query, k)
+            .into_iter()
+            .map(|r| json!({"file": r.file, "line": r.line, "text": r.text}))
+            .collect();
+        Ok(json!({"results": results}))
+    }
+
+    /// `rigger_graph` (spec 92, criterion 4's fix round): the STRUCTURE (`around`) and
+    /// resolution (`show`) lookups, both over the SAME `graph` port `with_graph` already wires
+    /// for the workflow bridge's event fold - `around` calls the trait's existing
+    /// [`Projection::subgraph`], `show` the trait's [`Projection::locate`] added alongside this
+    /// fix, so no second graph-reading implementation is needed for either selector. Only
+    /// reachable on the lookup surface; [`call_tool`] never dispatches here otherwise.
+    fn tool_graph(&self, args: &Value) -> Result<Value, ToolError> {
+        let show = args.get("show").and_then(Value::as_str).unwrap_or("");
+        let around = args.get("around").and_then(Value::as_str).unwrap_or("");
+        let depth = args.get("depth").and_then(Value::as_i64).unwrap_or(2);
+        if show.is_empty() && around.is_empty() {
+            return Err("rigger_graph: pass `show` <entity> or `around` <file|entity>".into());
+        }
+        let graph = self
+            .graph
+            .ok_or("rigger_graph: no context graph is wired on this server")?;
+        if !show.is_empty() {
+            let located = graph.locate(show).map_err(|e| e.to_string())?;
+            return Ok(match located {
+                Located::None => json!({"status": "none"}),
+                Located::Many(cands) => json!({
+                    "status": "many",
+                    "candidates": cands.iter().map(|c| json!({"id": c.id, "file": c.file})).collect::<Vec<_>>(),
+                }),
+                Located::One(site) => json!({
+                    "status": "one",
+                    "site": {
+                        "id": site.id,
+                        "file": site.file,
+                        "line": site.line,
+                        "kind": if site.kind.is_empty() { "?" } else { site.kind.as_str() },
+                        "degree": site.degree,
+                    },
+                }),
+            });
+        }
+        let g = graph
+            .subgraph(&[around.to_string()], depth)
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "nodes": g.nodes.iter().map(|n| json!({"id": n.id, "kind": n.kind})).collect::<Vec<_>>(),
+            "edges": g.edges.iter().map(|e| json!({"from": e.from, "rel": e.rel, "to": e.to})).collect::<Vec<_>>(),
+        }))
+    }
+
     /// `rigger_activity` (spec 14, unit 2): present the live per-agent view of the current
     /// run - for every in-flight agent, what it is doing, its heartbeat age, and its last
     /// store milestone - so the shim gets up-to-the-second agent state over MCP with NO
@@ -415,6 +557,29 @@ impl<'a> Server<'a> {
         let view = crate::progress::consolidate(run_events, &prog_events, &liveness_ages, now)
             .map_err(|e| ToolError::internal(e.to_string()))?;
         serde_json::to_value(view).map_err(|e| ToolError::internal(e.to_string()))
+    }
+
+    /// The tools THIS instance advertises (spec 92, criterion 4's fix round): the operator's
+    /// lookup surface (a grounder wired) gets exactly `rigger_peers`/`rigger_ground`/
+    /// `rigger_graph`; the workflow-driver bridge (the default) gets its usual five. One method
+    /// so the advertised list can never drift from what [`call_tool`](Server::call_tool)
+    /// actually dispatches.
+    fn tool_list(&self) -> Value {
+        if self.is_lookup_surface() {
+            json!([
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far this run, so you do not work blind to them. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
+                {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
+            ])
+        } else {
+            json!([
+                {"name": "rigger_next", "description": "Pick up the next queued agent spawn. The id is empty when nothing is waiting.", "inputSchema": {"type": "object", "properties": {}}},
+                {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
+                {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have raised so far this run, so you do not work blind to them (concurrent reviewers see each other's findings live; lessons recover what a capped prompt section elided). Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, intersect these files are returned. Omit for all."}}}},
+                {"name": "rigger_activity", "description": "The live per-agent view of the current run: one entry per in-flight agent with its stage, latest activity, how long since that activity and its last heartbeat, and its last event-store milestone (and how long ago - the blackout this fills). Rigger consolidates the run stream, the progress store, and the liveness markers and presents them here, so you get up-to-the-second agent state with no filesystem access of your own.", "inputSchema": {"type": "object", "properties": {}}},
+            ])
+        }
     }
 }
 
@@ -642,20 +807,16 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-fn tool_list() -> Value {
-    json!([
-        {"name": "rigger_next", "description": "Pick up the next queued agent spawn. The id is empty when nothing is waiting.", "inputSchema": {"type": "object", "properties": {}}},
-        {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
-        {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
-        {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have raised so far this run, so you do not work blind to them (concurrent reviewers see each other's findings live; lessons recover what a capped prompt section elided). Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, intersect these files are returned. Omit for all."}}}},
-        {"name": "rigger_activity", "description": "The live per-agent view of the current run: one entry per in-flight agent with its stage, latest activity, how long since that activity and its last heartbeat, and its last event-store milestone (and how long ago - the blackout this fills). Rigger consolidates the run stream, the progress store, and the liveness markers and presents them here, so you get up-to-the-second agent state with no filesystem access of your own.", "inputSchema": {"type": "object", "properties": {}}},
-    ])
-}
-
+/// The JSON-RPC 2.0 success envelope. Private: both tool surfaces `Server` answers (the
+/// workflow-driver bridge and the operator's lookup surface, spec 92 criterion 4's fix round)
+/// are served through this ONE `Server`/`handle`/`call_tool` now, so no code outside this file
+/// needs the envelope any more - retiring the operator MCP surface's second parallel read loop
+/// retired its last external caller too.
 fn ok(id: Value, result: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string()
 }
 
+/// The JSON-RPC 2.0 error envelope; see [`ok`]'s doc comment for why this is private.
 fn err(id: Value, code: i64, message: &str) -> String {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}).to_string()
 }
@@ -1431,6 +1592,318 @@ mod tests {
         assert!(
             message.contains(crate::contextgraph::TYPE_DECISION_MADE),
             "and names the event that was lost: {message}"
+        );
+    }
+
+    // =======================================================================================
+    // Spec 92, criterion 4's fix round (adj-u92c4-parallel-mcp-loop-instead-of-di-extension):
+    // `with_grounder` marks a `Server` as the operator's lookup surface, ONE dispatch and read
+    // loop answering both tool surfaces - proven here at the unit level; `tests/cli.rs`'s
+    // `mcp_*` tests prove the same thing end to end through the real `rigger mcp` binary.
+    // =======================================================================================
+
+    /// Without a grounder wired, `tool_list` is UNCHANGED from before this fix round: the
+    /// workflow-driver bridge's usual five tools, in the same order - the regression backstop
+    /// proving the DI extension never altered `rigger serve`'s own surface.
+    #[test]
+    fn tool_list_without_a_grounder_is_the_unchanged_workflow_surface() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        let names: Vec<String> = server
+            .tool_list()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "rigger_next",
+                "rigger_result",
+                "rigger_emit",
+                "rigger_peers",
+                "rigger_activity"
+            ]
+        );
+    }
+
+    /// Wiring a grounder switches `tool_list` to exactly the operator's three lookups, in the
+    /// order `rigger mcp` has always advertised them - never the workflow-lifecycle tools,
+    /// which do not apply outside a run.
+    #[test]
+    fn tool_list_with_a_grounder_is_exactly_the_operator_lookup_surface() {
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let grounder = Nop;
+        let server = Server::new(&driver, &store, "run", &peers).with_grounder(&grounder);
+
+        let names: Vec<String> = server
+            .tool_list()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["rigger_peers", "rigger_ground", "rigger_graph"]);
+    }
+
+    /// The lookup surface answers `rigger_ground` through the wired [`Grounder`] port, and
+    /// REJECTS a workflow-lifecycle tool name as unknown - it is not merely unadvertised, it
+    /// is genuinely undispatchable on this surface, so an operator session can never emit onto
+    /// the run's event stream through the MCP tool that exists to emit for LOOP agents.
+    #[test]
+    fn lookup_surface_serves_ground_and_rejects_workflow_tools() {
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let grounder = Nop;
+        let server = Server::new(&driver, &store, "run", &peers).with_grounder(&grounder);
+
+        let ground_input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_ground","arguments":{"query":"anything"}}}"#;
+        let mut out = Vec::new();
+        server.run(Cursor::new(ground_input), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert!(
+            resp["result"]["structuredContent"]["results"].is_array(),
+            "rigger_ground must answer with a results array; got:\n{resp}"
+        );
+
+        let emit_input = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{}}}}"#;
+        let mut out2 = Vec::new();
+        server.run(Cursor::new(emit_input), &mut out2).unwrap();
+        let resp2: Value = serde_json::from_str(String::from_utf8(out2).unwrap().trim()).unwrap();
+        assert_eq!(
+            resp2["error"]["code"], -32602,
+            "rigger_emit must be UNDISPATCHABLE (not merely unadvertised) on the lookup \
+             surface; got:\n{resp2}"
+        );
+    }
+
+    /// The SYMMETRIC direction of `lookup_surface_serves_ground_and_rejects_workflow_tools`
+    /// (closes sdet-u92c4r2-workflow-surface-reject-of-ground-graph-untested): a `Server` built
+    /// the workflow-driver way - no grounder, no graph wired, exactly what `rigger serve`/the
+    /// loop's shim gets - must reject `rigger_ground`/`rigger_graph` as UNKNOWN TOOLS through
+    /// `call_tool`'s own `(lookup, name)` gate, never reach `tool_ground`/`tool_graph`
+    /// themselves. This matters beyond an unadvertised name: `tool_ground` `.expect()`s a
+    /// grounder that is genuinely absent on this surface, so a future match-arm refactor that
+    /// let either tool through would panic the whole server mid-run instead of answering
+    /// `-32602` - this test is the one that would go red for that regression.
+    #[test]
+    fn workflow_surface_rejects_ground_and_graph_as_unknown_tools() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+
+        for name in ["rigger_ground", "rigger_graph"] {
+            let input = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#
+            );
+            let mut out = Vec::new();
+            server.run(Cursor::new(input), &mut out).unwrap();
+            let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            assert_eq!(
+                resp["error"]["code"], -32602,
+                "{name} must be UNDISPATCHABLE (not merely unadvertised) on the workflow \
+                 surface; got:\n{resp}"
+            );
+        }
+    }
+
+    /// Reject-fix regression: `with_grounder_unavailable` (the graceful-degrade path a caller
+    /// takes when its OWN grounder resolution failed) still marks the lookup surface - the tool
+    /// list is unchanged, `rigger_peers` keeps answering - and `rigger_ground` alone reports the
+    /// recorded reason as its own tool-call error, lazily, never a silently-empty results array.
+    /// Before this fix, `cmd_mcp` propagated a resolution failure with `?`, which would have
+    /// taken this whole server down before it answered anything.
+    #[test]
+    fn with_grounder_unavailable_still_serves_peers_and_reports_ground_lazily() {
+        let store = Store::open(":memory:").unwrap();
+        let data = serde_json::to_vec(&json!({
+            "id": "d1", "summary": "x", "governs": ["a.rs"],
+        }))
+        .unwrap();
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[Event::new(crate::contextgraph::TYPE_DECISION_MADE, data)],
+            )
+            .unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while peers.decisions().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "side-car never caught up"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let server = Server::new(&driver, &store, "run", &peers)
+            .with_grounder_unavailable("grounder \"turbovec\" was retired");
+
+        // Still the lookup surface - the exact same three tools, tool-list-wise.
+        let names: Vec<String> = server
+            .tool_list()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["rigger_peers", "rigger_ground", "rigger_graph"]);
+
+        // rigger_peers, unrelated to grounding, still answers from the real store.
+        let peers_input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_peers","arguments":{}}}"#;
+        let mut out = Vec::new();
+        server.run(Cursor::new(peers_input), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert_eq!(
+            resp["result"]["structuredContent"]["decisions"][0]["id"], "d1",
+            "rigger_peers must keep answering even though the grounder failed to resolve; \
+             got:\n{resp}"
+        );
+
+        // rigger_ground alone reports the recorded reason, as an error - never silently empty.
+        let ground_input = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rigger_ground","arguments":{"query":"anything"}}}"#;
+        let mut out2 = Vec::new();
+        server.run(Cursor::new(ground_input), &mut out2).unwrap();
+        let resp2: Value = serde_json::from_str(String::from_utf8(out2).unwrap().trim()).unwrap();
+        assert!(
+            resp2.get("error").is_some(),
+            "rigger_ground must report the recorded resolution failure as an error; got:\n{resp2}"
+        );
+        assert!(
+            resp2["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("turbovec"),
+            "the error must carry the recorded reason; got:\n{resp2}"
+        );
+
+        // A genuinely missing `query` is STILL reported as that, never masked by the recorded
+        // grounder-unavailable reason (argument validation runs first).
+        let missing_query_input = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"rigger_ground","arguments":{}}}"#;
+        let mut out3 = Vec::new();
+        server
+            .run(Cursor::new(missing_query_input), &mut out3)
+            .unwrap();
+        let resp3: Value = serde_json::from_str(String::from_utf8(out3).unwrap().trim()).unwrap();
+        assert!(
+            resp3["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("query"),
+            "a missing query must be reported as that, not the unrelated grounder failure; \
+             got:\n{resp3}"
+        );
+    }
+
+    /// `rigger_graph`'s `show` selector on the lookup surface: seeds one real code-entity
+    /// definition into a `Projector` (the same `CodeEntityExtracted` fold a real extraction
+    /// pass produces) and drives it through `Server::call_tool`, proving the trait's new
+    /// [`Projection::locate`] reaches a real caller holding only `&dyn Projection` - the DI
+    /// extension this fix round adds, reusing the SAME `graph` port `with_graph` already wires
+    /// for the event fold, rather than a second implementation reaching for the concrete
+    /// `sqlite::Projector` from outside the crate.
+    #[test]
+    fn lookup_surface_rigger_graph_show_resolves_via_the_locate_trait_method() {
+        use crate::contextgraph::sqlite::Projector;
+        use crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let grounder = Nop;
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let payload =
+            r#"{"file":"src/widget.rs","name":"frobnicate","kind":"fn","line":7,"lang":"rust"}"#;
+        let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.as_bytes().to_vec());
+        e.position = 1;
+        graph.apply(&e).unwrap();
+
+        let server = Server::new(&driver, &store, "run", &peers)
+            .with_graph(&graph)
+            .with_grounder(&grounder);
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"show":"frobnicate"}}}"#;
+        let mut out = Vec::new();
+        server.run(Cursor::new(input), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        let structured = &resp["result"]["structuredContent"];
+        assert_eq!(structured["status"], "one");
+        assert_eq!(structured["site"]["id"], "src/widget.rs::frobnicate");
+        assert_eq!(structured["site"]["file"], "src/widget.rs");
+        assert_eq!(structured["site"]["line"], 7);
+        assert_eq!(structured["site"]["kind"], "fn");
+    }
+
+    /// The sibling of `lookup_surface_rigger_graph_show_resolves_via_the_locate_trait_method`
+    /// for [`Located::Many`]: this diff's own new `"status": "many"` JSON shape
+    /// (`tool_graph`, the candidate-list branch) has no coverage anywhere else - the CLI's
+    /// `graph --show` ambiguous listing (spec 58) proves `Located::Many` itself is produced
+    /// correctly, but never runs through this unit's own MCP rendering of it. Two entities
+    /// sharing the bare name `shared` in different files must come back as
+    /// `{"status":"many","candidates":[...]}`, SORTED by id exactly like the CLI surface
+    /// already asserts, never a guess among them (the call-views honesty rule this whole
+    /// resolution order exists to uphold).
+    #[test]
+    fn lookup_surface_rigger_graph_show_lists_ambiguous_candidates() {
+        use crate::contextgraph::sqlite::Projector;
+        use crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED;
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let grounder = Nop;
+        let graph = Projector::open(":memory:", "test").unwrap();
+        for (pos, file) in [(1, "src/a.rs"), (2, "src/b.rs")] {
+            let payload = format!(
+                r#"{{"file":"{file}","name":"shared","kind":"fn","line":1,"lang":"rust"}}"#
+            );
+            let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
+            e.position = pos;
+            graph.apply(&e).unwrap();
+        }
+
+        let server = Server::new(&driver, &store, "run", &peers)
+            .with_graph(&graph)
+            .with_grounder(&grounder);
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"show":"shared"}}}"#;
+        let mut out = Vec::new();
+        server.run(Cursor::new(input), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        let structured = &resp["result"]["structuredContent"];
+        assert_eq!(
+            structured["status"], "many",
+            "two same-named entities must resolve ambiguous, never a guess; got:\n{resp}"
+        );
+        let candidates = structured["candidates"].as_array().unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|c| c["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["src/a.rs::shared", "src/b.rs::shared"],
+            "candidates must be SORTED by id, never in seed/discovery order; got:\n{resp}"
+        );
+        assert_eq!(candidates[0]["file"], "src/a.rs");
+        assert_eq!(candidates[1]["file"], "src/b.rs");
+        assert!(
+            structured.get("site").is_none(),
+            "an ambiguous result must print NO single site - the honesty rule; got:\n{resp}"
         );
     }
 }

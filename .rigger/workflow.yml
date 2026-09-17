@@ -66,6 +66,12 @@ defaults:
   # workers; a fast reviewer role can pin a tighter bound in its own frontmatter.
   max_wall_clock: 3600
 
+  # How many implement units build at once (spec 89, per-unit pipelining). Each live unit
+  # owns a debug build cache of about 50 GB on this crate, and a driver death makes every
+  # live unit rebuild at once; five in parallel filled /home twice on 2026-09-15 (Steam
+  # holds most of the disk). Two bounds the worst case to about 100 GB of caches.
+  max_parallel_units: 2
+
   # The three-tier review panel applied to EVERY implementer unit (§3.2). TIER 1:
   # the expert lenses (architecture + sdet) review the unit's diff in parallel.
   # TIER 2: the adversary reviews THE LENSES' findings and tries to prove them
@@ -194,25 +200,108 @@ gates:                      # the project's verification library, referenced by 
   # escalated on that treadmill. The budget stays at 3x (two suites run at once); the
   # sweep's own missed.txt is the verdict, and the accounting names every timeout.
   #
-  # `GateSelection::PostMerge` (spec 12, unit 5) re-runs this same gate against
-  # `self.deps.repo` after the checkin unit merges - a dir with no per-unit worktree of
-  # its own. This command's `$MUTANTS` is never left empty there: `RunCtx::run_gates`
-  # (conductor.rs) derives the postmerge root from the unit's own worktree name when the
-  # sibling-of-`dir` derivation every other selection uses comes back empty, so the
-  # re-sweep always runs on a real root - never `mkdir -p ""`. That re-sweep is not mere
-  # redundant cost: it certifies the ACTUAL merged tree, which a batch-mate's own
-  # pre-merge gate can miss entirely (the second of two units merging into a tree its
-  # own gate never saw). An earlier fix instead skipped the sweep whenever `$MUTANTS`
-  # came back empty - trading that real gap away for a crash workaround, when the
-  # crash's true cause (an ungenerated root) had a real fix available in-conductor;
-  # retired here in favor of that fix.
+  # Sweep shape (2026-09-16, spec 92's 433-mutant check-in measured at 45 s per mutant
+  # and 5.4 h per pass): the tests run under nextest (`.config/nextest.toml`), which runs
+  # every binary's tests at once and stops at the first failure, so a caught mutant ends
+  # its test phase when ANY test fails and a hung test dies at the per-test bound instead
+  # of at 3x the whole suite. `env -u CARGO_TARGET_DIR` gives each mutant copy its own
+  # build dir: with the unit cache exported, every copy built into the same target,
+  # serialized on cargo's lock (so `-j` bought nothing) and left the cache holding
+  # artifacts of mutated trees. `CARGO_BUILD_JOBS=8` lifts `.cargo/config.toml`'s 4-job
+  # cap for the sweep alone; three copies at 8 jobs stay inside the sweep's memory scope.
+  # `--cargo-arg=--target-dir=target` pins each copy's build dir INSIDE the copy: the scratch
+  # root's own `.cargo/config.toml` (`worktree.rs`, the ambient catch-all that sends any
+  # cargo run without CARGO_TARGET_DIR to `cargo-target-shared`) is found by cargo's config
+  # walk from every copy, so without the flag all three copies built into that one dir,
+  # serialized on its artifact lock and replaced each other's test binaries under running
+  # tests (a copy's later tests executed another mutant's binaries).
+  # `CARGO_PROFILE_DEV_DEBUG=1` / `CARGO_PROFILE_TEST_DEBUG=1` (line tables only) shrink what
+  # every mutant relinks: with full debug info the 188 test binaries are 200-290 MB each, so
+  # three isolated build dirs (28 GB apiece) overflow the sweep's page cache and a relink that
+  # took 7 s against one hot dir took 81 s (measured 2026-09-16, 1.2 mutants a minute).
+  # Panic locations keep file:line; only symbolized backtraces lose detail, which no test reads.
+  #
+  # INCREMENTAL RE-SWEEPS (Byran, 2026-09-16: "only run mutations when the test has changed or
+  # the logic has changed"). The sweep leaves three facts under `$MUTANTS/last/` - the tree it
+  # examined (`tip`), its misses (`missed.txt`) and, per caught mutant, the test binary whose
+  # first failure caught it (`caught.map`, read off the nextest FAIL line in each mutant's
+  # log). `$MUTANTS` is the unit-keyed root rigger hands to BOTH the pre-merge and the
+  # post-merge run, so the next sweep on this unit reads them before wiping the root. When
+  # that tip is an ancestor of HEAD the sweep covers (a) every mutant in the diff since it -
+  # the changed logic - and (b) by name (`-F`, line numbers wildcarded so a shifted line
+  # still matches), every earlier miss plus every caught mutant whose catching binary's
+  # `tests/<binary>.rs` changed since the tip (a change under a shared tests/ directory
+  # re-runs them all); the rerun goes to `$MUTANTS/rerun`, must examine at least one mutant,
+  # and its misses join the sweep's own missed.txt so one file is the verdict (the previous
+  # sweep's mutants.out is removed up front: a delta with no mutable code writes nothing, and
+  # a stale missed.txt must never be the verdict). A mutant caught
+  # on unchanged code by an unchanged test stays caught. No `last/tip`, a tip that is not an
+  # ancestor (a reclaimed unit, a fresh spec) or the run's first sweep: the whole spec diff
+  # against `$RIGGER_RUN_BASE`, exactly as before. A solo-merging unit's post-merge re-sweep is
+  # therefore the empty merge delta and passes in seconds - the merged tree IS the examined one.
+  #
+  # THE GATE OWNS ITS INSTRUMENT (2026-09-17: remediation round 6 excluded two survivors by name
+  # in `.cargo/mutants.toml` with an equivalence argument that was wrong for one of them - `&&`
+  # binds tighter than `||`, so the "dead clause" mutant had collapsed the whole predicate).
+  # The unit diff since `$RIGGER_RUN_BASE` may add no exclusion or examine key to
+  # `.cargo/mutants.toml` and no `mutants::skip` attribute; a diff that does fails the gate
+  # before any sweep, naming the lines. A mutant no test can distinguish is dead code to
+  # delete, never a name to exclude: the graded party does not narrow the instrument.
+  #
+  # THE STATE SURVIVES A FAILING SWEEP (2026-09-17: the post-merge re-sweep of a solo merge -
+  # empty delta, no misses, no changed tests - failed on the gate's own shell, and wiping
+  # `last/` up front had already thrown the anchor away, so the next sweep would have been the
+  # whole spec again). The new tree, misses and map are written to `last.new` and swapped in
+  # only once both passes have completed; a sweep that dies earlier leaves the previous state
+  # in place. A by-name rerun whose names match no mutant (the code they mutated was rewritten)
+  # is nothing to rerun, not a failure. The map carries forward every earlier entry for a
+  # mutant this sweep did not examine, so a catch recorded three sweeps ago still re-runs when
+  # its test changes. `A || B && C` in sh is `(A || B) && C`: the rerun block is braced whole.
+  #
+  # THE RERUN IS A DIFF, NOT A NAME FILTER. cargo-mutants 27.1 lets every "delete field"
+  # mutant through `-F`/`-E` (all 22 of this crate's, measured: `--list -F <matches nothing>`
+  # lists exactly them), so a by-name rerun silently cost 22 extra mutants each time. The gate
+  # therefore resolves the names first (`--list -F ...`, kept only where they really match the
+  # regexes), writes a one-line synthetic hunk per (file, line) it found - the line's own text,
+  # which cargo-mutants checks against the source - and runs the rerun with `--in-diff` on
+  # that, still intersected with the names; `--in-diff` is honoured by every mutant kind.
   mutation:
     run: >-
       test -n "$RIGGER_RUN_BASE" &&
-      git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff &&
-      rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
-      { TMPDIR="$MUTANTS" cargo mutants --in-diff unit.diff --timeout-multiplier 3 -j 2;
+      last="${MUTANTS:-/nonexistent}/last" &&
+      anchor="$(cat "$last/tip" 2>/dev/null || true)" &&
+      { test -n "$anchor" && test "$(git rev-list --count HEAD.."$anchor" 2>/dev/null || echo 1)" = 0 || anchor=""; } &&
+      rerun="$( if test -n "$anchor"; then
+      cat "$last/missed.txt" 2>/dev/null;
+      changed="$(git diff --name-only "$anchor" -- tests | sed -E 's#^tests/([^/]+)\.rs$#\1#; s#^tests/.*/.*#ALL#' | sort -u)";
+      test -z "$changed" || awk -F '\t' -v ch="$changed" 'BEGIN { n = split(ch, a, "\n"); for (i = 1; i <= n; i++) set[a[i]] = 1 } ($2 in set) || ("ALL" in set) { print $1 }' "$last/caught.map" 2>/dev/null;
+      fi | sort -u )" &&
+      { if test -n "$anchor"; then git diff "$anchor" -- '*.rs' > unit.diff; else git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff; fi; } &&
+      { ! { git diff "$RIGGER_RUN_BASE" -- .cargo/mutants.toml; git diff "$RIGGER_RUN_BASE" -- '*.rs'; } | grep -E '^\+.*(exclude_re|examine_re|exclude_globs|examine_globs|mutants::skip)' || { echo "mutation gate: the unit narrows the sweep itself (an exclusion in .cargo/mutants.toml or a mutants::skip in the code); the gate owns its instrument - remove it and pin the mutant with a test or delete the code it mutates"; false; }; } &&
+      rm -rf "${MUTANTS:?}"/rerun "$MUTANTS"/rerun.args "$MUTANTS"/rerun.re "$MUTANTS"/rerun.all "$MUTANTS"/rerun.list "$MUTANTS"/rerun.diff "$MUTANTS"/last.new "$MUTANTS"/examined.txt "$MUTANTS"/cargo-mutants-* mutants.out mutants.out.old && mkdir -p "$MUTANTS/last.new" mutants.out &&
+      { test -z "$rerun" || printf '%s\n' "$rerun" | sed -E 's/[][\\.*^$+?(){}|]/\\&/g; s/^([^:]+):[0-9]+:[0-9]+:/\1(:[0-9]+:[0-9]+)?:/; s/^/-F\n/' > "$MUTANTS/rerun.args"; } &&
+      { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
+      cargo mutants --in-diff unit.diff --test-tool nextest --cargo-arg=--target-dir=target --timeout-multiplier 3 -j 3;
       rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
+      { test ! -s "$MUTANTS/rerun.args" ||
+      { grep -v '^-F$' "$MUTANTS/rerun.args" > "$MUTANTS/rerun.re" &&
+      env -u CARGO_TARGET_DIR xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --list > "$MUTANTS/rerun.all" &&
+      { grep -E -f "$MUTANTS/rerun.re" "$MUTANTS/rerun.all" | sort -u > "$MUTANTS/rerun.list"; true; } &&
+      { { test ! -s "$MUTANTS/rerun.list" && echo "rerun: none of the listed mutants exists in this tree"; } ||
+      { sed -E 's/^([^:]+):([0-9]+):.*/\1 \2/' "$MUTANTS/rerun.list" | sort -u | while read -r f l; do printf -- '--- a/%s\n+++ b/%s\n@@ -%s,1 +%s,1 @@\n' "$f" "$f" "$l" "$l"; sed -n "${l}p" "$f" | sed 's/^/-/'; sed -n "${l}p" "$f" | sed 's/^/+/'; done > "$MUTANTS/rerun.diff" &&
+      { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
+      xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --in-diff "$MUTANTS/rerun.diff" --output "$MUTANTS/rerun" --baseline skip --timeout 300 --test-tool nextest --cargo-arg=--target-dir=target -j 3;
+      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
+      test -s "$MUTANTS/rerun/mutants.out/outcomes.json" &&
+      { cat "$MUTANTS/rerun/mutants.out/missed.txt" >> mutants.out/missed.txt 2>/dev/null; true; }; }; }; }; } &&
+      git rev-parse HEAD > "$MUTANTS/last.new/tip" &&
+      { cp mutants.out/missed.txt "$MUTANTS/last.new/missed.txt" 2>/dev/null || : > "$MUTANTS/last.new/missed.txt"; } &&
+      { for f in mutants.out/log/*.log "$MUTANTS"/rerun/mutants.out/log/*.log; do test -f "$f" || continue;
+      awk 'name == "" && /^\*\*\* / { sub(/^\*\*\* /, ""); name = $0; next } /FAIL \[/ { gsub(/\033\[[0-9;]*m/, ""); if (match($0, /\/[0-9]+\) [^ ]+/)) { b = substr($0, RSTART, RLENGTH); sub(/^\/[0-9]+\) /, "", b); sub(/^rigger::/, "", b); print name "\t" b; exit } }' "$f"; done > "$MUTANTS/last.new/caught.map"; } &&
+      { cat mutants.out/*.txt "$MUTANTS"/rerun/mutants.out/*.txt 2>/dev/null | sort -u > "$MUTANTS/examined.txt";
+      awk -F '\t' 'FILENAME == ARGV[1] { seen[$0] = 1; next } !($1 in seen)' "$MUTANTS/examined.txt" "$last/caught.map" 2>/dev/null >> "$MUTANTS/last.new/caught.map";
+      sort -u -o "$MUTANTS/last.new/caught.map" "$MUTANTS/last.new/caught.map"; } &&
+      rm -rf "$last" && mv "$MUTANTS/last.new" "$last" &&
       test ! -s mutants.out/missed.txt
     kind: core
 

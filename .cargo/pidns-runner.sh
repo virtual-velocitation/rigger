@@ -36,6 +36,20 @@ set -u
 TMPDIR="${RIGGER_TEST_TMPDIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rigger/test-tmp}"
 export TMPDIR
 mkdir -p "$TMPDIR" 2>/dev/null || true
+# The runner owns TMPDIR's lifecycle (2026-09-15). A test binary stopped mid-run (a gate or
+# mutant timeout, a dead driver) never drops its tempdirs, and rigger's in-process unit tests
+# resolve the cache-home scratch root from the ambient environment, so every fixture repo
+# under TMPDIR used to leave one root behind in the OPERATOR's real ~/.cache/rigger - 105k of
+# them (about 1 GB) in three days, until a shell glob over that directory exhausted memory. So:
+# an entry idle for three hours is stale (nothing runs that long under the one-hour cap
+# below) and is removed here; and the cache home for every test binary lives under TMPDIR,
+# refreshed at each start so it is only ever swept when the whole suite has been idle that
+# long. Inside it, rigger's own orphan-root reclaim keeps the directory small as tests run.
+find "$TMPDIR" -mindepth 1 -maxdepth 1 -mmin +180 -exec rm -rf {} + 2>/dev/null || true
+XDG_CACHE_HOME="$TMPDIR/xdg-cache"
+export XDG_CACHE_HOME
+mkdir -p "$XDG_CACHE_HOME" 2>/dev/null || true
+touch "$XDG_CACHE_HOME" 2>/dev/null || true
 # Test git never signs (2026-09-11): the operator's global git has commit.gpgsign=true and the
 # ~43 `git commit` sites in the unit tests never turn it off, so every test commit runs gpg
 # against the operator's keyring - keyring-lock contention and a one-in-ten `git worktree add`

@@ -19,6 +19,15 @@ pub const KIND_AGENT: &str = "agent";
 pub const KIND_GATE: &str = "gate";
 pub const KIND_UNIT: &str = "unit";
 pub const KIND_LESSON: &str = "lesson";
+/// A workflow STAGE node (spec 92 criterion 2, THE WHOLE PRODUCT IS COVERED): one entry of the
+/// project's own `.rigger/workflow.yml` `stages:` map (`plan`, `implement`, `checkin`, ...) - the
+/// workflow DEFINITION itself, never a live run's per-unit instance (spec 43 de-noised those; a
+/// `stage` node is definitional, folded from a `DocConceptExtracted` event exactly like a
+/// `design-doc`, never from a run's `UnitStarted`/`UnitIntegrated`). Its id is `stage:<name>`,
+/// matching the Design text's own `stage:implement` example. Distinct from [`KIND_UNIT`] (a
+/// de-noised run-instance kind no fold projects any more) and reuses [`KIND_GATE`] / [`KIND_AGENT`]
+/// for the sibling `gate:<name>` / `agent:<name>` definition nodes this same pass folds.
+pub const KIND_STAGE: &str = "stage";
 /// A review finding a lens / adversary raised about a unit's files. It is the
 /// cross-agent memory the three review tiers communicate THROUGH: a reviewer emits
 /// a ReviewFinding, the projector folds it ABOUT the files it concerns, and the
@@ -145,6 +154,39 @@ pub const REL_IN_COMMUNITY: &str = "IN_COMMUNITY";
 /// live concept. Folded at [`TIER_INFERRED`] - a derived grouping, one confidence step below the
 /// explicit intent edges it is detected over, mirroring the 53 `IN_COMMUNITY` split.
 pub const REL_REALIZES: &str = "REALIZES";
+/// A workflow `stage` NEEDS another stage (spec 92 criterion 2): the dependency edge folded from a
+/// stage's `needs:` list in `.rigger/workflow.yml` (`stage:implement --NEEDS--> stage:plan-critique`),
+/// so "how is a stage's needs satisfied" has both this definition edge and the conductor's
+/// `need_satisfied` function on one page. Folded from a `DocLinkExtracted` event at
+/// [`TIER_EXTRACTED`], mirroring the design-intent relations - a definitional fact, not a derived
+/// grouping.
+pub const REL_NEEDS: &str = "NEEDS";
+/// A workflow `stage` RUNS a gate or its assigned agent (spec 92 criterion 2): the edge folded from
+/// a stage's `gates:` list (`stage:checkin --RUNS--> gate:mutation`, matching the Design text's own
+/// example pair) and from its `agent:` / `agents:` field (`stage:implement --RUNS--> agent:rust-
+/// engineer`) - both read as "this stage's execution runs X". Folded from a `DocLinkExtracted` event
+/// at [`TIER_EXTRACTED`].
+pub const REL_RUNS: &str = "RUNS";
+/// An `agent` REVIEWS a workflow stage (spec 92 criterion 2): the edge from a reviewer role to the
+/// stage its verdict gates - a standalone stage's own `adversary:` / `adjudicator:` fields (e.g.
+/// `plan-critique`), or a per-unit stage's effective review panel's OWN top-level roster
+/// (`defaults.review`, or its own `review:` override) - lenses, adversary, and adjudicator alike.
+/// Deliberately EXCLUDES a panel's opt-in `tiers.light` reduced roster (see
+/// [`REL_REVIEWS_LIGHT`]): a real run routes each unit to the light OR the full panel exclusively
+/// by observable risk (`config::Workflow::tiers` doc), never both, so this edge must name only the
+/// roster a unit at this edge's stage actually gets when it is NOT routed light. Folded from a
+/// `DocLinkExtracted` event at [`TIER_EXTRACTED`].
+pub const REL_REVIEWS: &str = "REVIEWS";
+/// An `agent` REVIEWS a workflow stage under its `tiers.light` REDUCED roster only (spec 92
+/// criterion 2, spec 03 "adaptive review depth"): the edge from a light-tier-only reviewer role to
+/// the stage a LOW-risk unit routes it to. Kept as a DISTINCT relation from [`REL_REVIEWS`] on
+/// purpose - `config::ReviewPanel::agent_ids()` unions this roster with the full panel's for
+/// REFERENTIAL VALIDATION (a different question: "does this id resolve to a real agent"), but
+/// folding both into one undistinguished edge would assert that a light-only agent reviews a
+/// HIGH-risk unit at that stage (and the reverse for a full-panel-only agent under a LOW-risk
+/// routing) - a real accuracy defect this relation exists to avoid. Folded from a
+/// `DocLinkExtracted` event at [`TIER_EXTRACTED`].
+pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
@@ -251,6 +293,53 @@ pub struct CallGraph {
     pub nodes: Vec<CallNode>,
     pub edges: Vec<CallEdge>,
     pub referenced_not_called: Vec<Node>,
+}
+
+/// The resolution of a `rigger graph --show <entity>` query (spec 58, the TEXT half of lookup).
+/// A PORT-owned type (spec 92's fix round moved it here from the sqlite adapter, so
+/// [`Projection::locate`] returns the same kind of type every sibling `Projection` method does,
+/// never a concrete adapter's own type): [`sqlite::Projector::locate`] resolves the query exactly
+/// the way the graph's other surfaces do - a full `<file>::<name>` node id, or a bare name matched
+/// by the pinned name-suffix expression - and returns one of three honest outcomes, never a guess
+/// among candidates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Located {
+    /// Exactly one entity resolved: its definition site and graph facts, from which the CLI reads
+    /// the line-numbered body out of the working tree.
+    One(EntitySite),
+    /// An ambiguous bare name (several definitions share it): the SORTED candidate sites the caller
+    /// picks from. The show surface prints these and NO body (the call-views honesty rule).
+    Many(Vec<Candidate>),
+    /// Nothing in the graph matched the query.
+    None,
+}
+
+/// A single located code entity (spec 58): where its definition lives and how it sits in the graph,
+/// so the show surface can print the site header and bound the body it reads from the working tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntitySite {
+    /// The full `<file>::<name>` node id.
+    pub id: String,
+    /// The definition kind (`function`, `type`, ...), from the node's `kind` attr; falls back to
+    /// the node's graph kind when a bare placeholder carries no definition attr.
+    pub kind: String,
+    /// The definition's file (the id prefix before `::`) - the working-tree path the body reads.
+    pub file: String,
+    /// The 1-based line of the definition site, from the node's `line` attr (`0` when unknown).
+    pub line: u32,
+    /// The entity's one-hop degree: the count of currently-live edges incident to it, so the reader
+    /// knows how connected the entity is.
+    pub degree: usize,
+}
+
+/// One disambiguation candidate for an ambiguous bare name (spec 58): the full node id and its
+/// file. [`sqlite::Projector::locate`] returns these SORTED by id, so the listing is deterministic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    /// The candidate's full `<file>::<name>` node id.
+    pub id: String,
+    /// The candidate's file (the id prefix before `::`).
+    pub file: String,
 }
 
 // Event type discriminators carried in Event.type_.
@@ -408,6 +497,18 @@ pub(crate) struct CodeEntityExtracted {
     /// recorded before the field existed folds as a non-boundary event.
     #[serde(default, skip_serializing_if = "is_false")]
     pub fresh: bool,
+    /// Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
+    /// `adv-u2c2-partial-marker-unimplemented`): mirrors
+    /// [`crate::grounder::symbols::model::FileSymbols::partial`] - whether this file's parse hit a
+    /// tree-sitter ERROR node, so its extracted structure only covers as far as the parse reached.
+    /// The fold stamps this onto the `KIND_FILE` node's own `partial` attrs key (through the SAME
+    /// `ensure_node` attrs authority it already uses for `lang`/`title`, never a second
+    /// attrs-writing path) whenever ANY event of the file's batch carries it, so a degraded parse is
+    /// visible on the node rather than silently presented as complete. Serde-defaulted and omitted
+    /// when `false`, so the overwhelmingly common well-formed file's wire form is byte-identical to
+    /// before this field existed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub partial: bool,
 }
 /// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
 /// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,
@@ -460,6 +561,11 @@ pub(crate) struct EdgeInferred {
     /// omitted when `false`, so an ordinary reference's wire form is unaffected.
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_test: bool,
+    /// The `EdgeInferred` twin of [`CodeEntityExtracted::partial`] - see that field's own doc. A
+    /// refs-only file (no definitions) carries its parse-degraded marker here instead, mirroring how
+    /// `fresh` already rides whichever event happens to be the file's batch boundary.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub partial: bool,
 }
 
 /// Serde `skip_serializing_if` predicate: an `EdgeInferred::line` of `0` is never a real 1-based
@@ -476,16 +582,22 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// The `DocConceptExtracted` payload (spec 29b): one design-intent concept the extraction pass
-/// emits. Like the 29a code payloads it is the ONE serialization contract shared by both sides of
-/// the log - the feature-gated design-intent emit pass constructs and serializes it, and the
-/// always-compiled fold deserializes it - so the field names can never drift between emitter and
-/// folder. The fold ingests it into a node whose kind is `kind` (one of the four design-intent
-/// `KIND_*` above); a payload carrying any other kind string folds nothing.
+/// The `DocConceptExtracted` payload: one entity a DEFINITION-extraction pass emits, either the
+/// design-intent pass (spec 29b: a reference-architecture doc, an ADR, a handbook rule, or an
+/// inline rationale comment) or the workflow-definition pass (spec 92 criterion 2: a
+/// `.rigger/workflow.yml` stage, gate, or agent role). Both are the SAME shape - a document parsed
+/// into typed, identified concepts - so they share this ONE serialization contract rather than a
+/// second entity-extraction event type (spec 92's no-new-event-type constraint): the feature-gated
+/// emit pass constructs and serializes it, and the always-compiled fold deserializes it, so the
+/// field names can never drift between emitter and folder. The fold ingests it into a node whose
+/// kind is `kind` (one of the seven `KIND_*` the two passes produce, below); a payload carrying any
+/// other kind string folds nothing.
 #[derive(Serialize, Deserialize)]
 pub(crate) struct DocConceptExtracted {
-    /// The node kind, one of [`KIND_DESIGN_DOC`], [`KIND_ARCH_DECISION`], [`KIND_HANDBOOK_RULE`],
-    /// [`KIND_RATIONALE`]. The emit only ever produces these four.
+    /// The node kind: [`KIND_DESIGN_DOC`], [`KIND_ARCH_DECISION`], [`KIND_HANDBOOK_RULE`], or
+    /// [`KIND_RATIONALE`] from the design-intent pass; [`KIND_STAGE`], [`KIND_GATE`], or
+    /// [`KIND_AGENT`] from the workflow-definition pass. The two passes together only ever produce
+    /// these seven.
     pub kind: String,
     /// The stable node id: a doc's relative path (a `design-doc` whole-doc node), `<doc>#<slug>`
     /// (a section node), the source path of an ingested decision / rule doc, or `<file>#L<line>`
@@ -501,27 +613,31 @@ pub(crate) struct DocConceptExtracted {
     pub doc: String,
 }
 
-/// The `DocLinkExtracted` payload (spec 29b): one design-intent link the extraction pass emits.
-/// Like the 29a code payloads and [`DocConceptExtracted`] it is the ONE serialization contract
-/// shared by both sides of the log - the feature-gated design-intent emit pass constructs and
-/// serializes it, and the always-compiled fold deserializes it - so the field names can never
-/// drift between emitter and folder. The fold folds it into a typed edge whose relation is `rel`
-/// (one of the five design-intent relations: [`REL_SPECIFIES`], [`REL_CONSTRAINS`],
-/// [`REL_GOVERNS`], [`REL_EXPLAINS`], [`REL_DOC_REFERENCES`]); a payload carrying any other
-/// relation folds nothing (defensive - the emit only ever produces these five).
+/// The `DocLinkExtracted` payload: one typed link a DEFINITION-extraction pass emits, mirroring
+/// [`DocConceptExtracted`]'s two producers - the design-intent pass (spec 29b) or the
+/// workflow-definition pass (spec 92 criterion 2: a stage's `needs:` / `gates:` / `agent:` /
+/// review roster, read straight off `.rigger/workflow.yml`). One serialization contract, never a
+/// second edge-extraction event type: the feature-gated emit pass constructs and serializes it,
+/// and the always-compiled fold deserializes it, so the field names can never drift between
+/// emitter and folder. The fold folds it into a typed edge whose relation is `rel` (one of the
+/// nine relations the two passes produce, below); a payload carrying any other relation folds
+/// nothing (defensive).
 #[derive(Serialize, Deserialize)]
 pub(crate) struct DocLinkExtracted {
-    /// The link's source node id (the design-intent node the edge emanates from): a doc's relative
-    /// path (a `design-doc` / `arch-decision` / `handbook-rule` whole-doc node) or a `<file>#L<line>`
-    /// rationale comment site.
+    /// The link's source node id (the node the edge emanates from): a doc's relative path (a
+    /// `design-doc` / `arch-decision` / `handbook-rule` whole-doc node), a `<file>#L<line>`
+    /// rationale comment site, or a `stage:<name>` / `agent:<name>` workflow-definition node.
     pub from: String,
-    /// The link's target node id (the code / doc node the edge points at): a code file / entity
-    /// path (a `SPECIFIES` / `CONSTRAINS` / `GOVERNS` / `explains` target) or a cited doc / code
-    /// path (a `references` target).
+    /// The link's target node id (the node the edge points at): a code file / entity path (a
+    /// `SPECIFIES` / `CONSTRAINS` / `GOVERNS` / `explains` target), a cited doc / code path (a
+    /// `references` target), or a `stage:<name>` / `gate:<name>` / `agent:<name>`
+    /// workflow-definition node.
     pub to: String,
-    /// The design-intent relation, one of the five [`REL_SPECIFIES`] / [`REL_CONSTRAINS`] /
-    /// [`REL_GOVERNS`] / [`REL_EXPLAINS`] / [`REL_DOC_REFERENCES`]. The emit only ever produces
-    /// these five; a payload carrying any other relation folds nothing.
+    /// The relation: from the design-intent pass, one of [`REL_SPECIFIES`] / [`REL_CONSTRAINS`] /
+    /// [`REL_GOVERNS`] / [`REL_EXPLAINS`] / [`REL_DOC_REFERENCES`]; from the workflow-definition
+    /// pass, one of [`REL_NEEDS`] / [`REL_RUNS`] / [`REL_REVIEWS`] / [`REL_REVIEWS_LIGHT`]. The
+    /// two passes together only ever produce these nine; a payload carrying any other relation
+    /// folds nothing.
     pub rel: String,
 }
 
@@ -680,6 +796,22 @@ pub trait Projection: Send + Sync {
 
     /// Map a mention to a canonical node id, falling back to a direct id match.
     fn resolve(&self, mention: &str) -> Result<Option<String>, Error>;
+
+    /// Resolve `entity` by name/id in the CURRENT tree (spec 92, criterion 4's fix round): the
+    /// `graph --show <entity>` / `rigger_graph`'s `show` selector lookup, put on the trait so a
+    /// caller holding only `&dyn Projection` (`mcpserver::Server`, wired via
+    /// [`with_graph`](crate::mcpserver::Server::with_graph) exactly like [`subgraph`] already is)
+    /// can serve it without reaching for the concrete [`sqlite::Projector`] across the crate
+    /// boundary - the DI extension that retired the operator MCP surface's second read loop
+    /// rather than adding one. Mirrors [`sqlite::Projector::locate`]: a full `<file>::<name>` id
+    /// resolves directly, a bare name matches by the pinned name-suffix expression, and the three
+    /// outcomes ([`Located`], a port-owned type - see its doc) are never a guess among candidates.
+    /// The default returns `Located::None`, so a projection with no locate support (a test double)
+    /// degrades honestly rather than erroring - the sqlite `Projector` OVERRIDES it with the real
+    /// lookup.
+    fn locate(&self, _entity: &str) -> Result<Located, Error> {
+        Ok(Located::None)
+    }
 }
 
 /// Periphery layer (spec 37 criterion 2): the round-trip + back-compat CONTRACT of the
@@ -710,6 +842,7 @@ mod caller_wire_contract {
             caller: Some("F".to_string()),
             line: 0,
             is_test: false,
+            partial: false,
         };
         let wire = serde_json::to_vec(&edge).unwrap();
         let back: EdgeInferred = serde_json::from_slice(&wire).unwrap();
@@ -735,6 +868,7 @@ mod caller_wire_contract {
             caller: None,
             line: 0,
             is_test: false,
+            partial: false,
         };
         let wire = String::from_utf8(serde_json::to_vec(&edge).unwrap()).unwrap();
         assert_eq!(
@@ -764,5 +898,38 @@ mod caller_wire_contract {
         // key either) folds as a non-evidence reference at line 0, never erroring or panicking.
         assert_eq!(edge.line, 0);
         assert!(!edge.is_test);
+    }
+}
+
+/// spec 92, criterion 4's fix round: [`Projection::locate`]'s DEFAULT (the sqlite `Projector`
+/// is the only implementor that overrides it) - proven against a minimal double that
+/// implements only the trait's REQUIRED methods, so it inherits the default rather than
+/// re-declaring it.
+#[cfg(test)]
+mod locate_default {
+    use super::{Error, Graph, Located, Projection};
+    use crate::eventstore::Event;
+
+    struct NoLocate;
+
+    impl Projection for NoLocate {
+        fn apply(&self, _e: &Event) -> Result<(), Error> {
+            Ok(())
+        }
+        fn subgraph(&self, _seed: &[String], _depth: i64) -> Result<Graph, Error> {
+            Ok(Graph::default())
+        }
+        fn resolve(&self, _mention: &str) -> Result<Option<String>, Error> {
+            Ok(None)
+        }
+    }
+
+    /// A projection with no locate support degrades HONESTLY to `Located::None` rather than
+    /// erroring or panicking - the same honesty the [`crate::contextgraph::sqlite::Projector`]
+    /// override promises for a genuinely unmatched query, just for every query on a projection
+    /// that never indexed definitions at all.
+    #[test]
+    fn a_projection_with_no_override_reports_none_never_errors() {
+        assert_eq!(NoLocate.locate("anything").unwrap(), Located::None);
     }
 }

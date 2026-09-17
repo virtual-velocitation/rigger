@@ -62,6 +62,16 @@ pub enum RunBranchSetup {
     CreatedFromHead,
 }
 
+/// What [`Worktree::land`] did with the run branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LandOutcome {
+    /// The run branch fast-forwarded to the unit's branch: the unit is on the run branch.
+    Landed,
+    /// The run branch moved after the worktree merge, so a fast-forward was impossible; the
+    /// repo is untouched. Merge the new tip into the worktree and land again.
+    TipMoved,
+}
+
 /// The outcome of [`Worktree::merge_into_worktree`] (spec 88, criterion 1 round 4, TABLE row
 /// 1: "conflict detection"). This is the FRONT HALF of what a single pre-round-4 `integrate`
 /// method used to do in one call - merging the run branch's tip into the unit's own worktree
@@ -142,6 +152,7 @@ impl Worktree {
         // one crashed lifecycle can never permanently wedge the run. A healthy metadata dir
         // is a no-op, and a healthy registered worktree is never touched.
         heal_corrupt_worktree_admin(repo);
+        ensure_scratch_root_cargo_config(dir);
         if branch_exists(repo, branch) {
             // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
             // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
@@ -336,7 +347,11 @@ impl Worktree {
             let _ = run_git(repo, &["revert", "--abort"]);
             return Err(Error(format!("revert {commit}: {out}")));
         }
-        match run_git(repo, &["commit", "--no-edit", "-m", message]) {
+        // Rigger's own compensation-revert commit (d-checkin-rigger-own-commits-bypass-
+        // hooks): the same class as the merge-into-worktree bookkeeping commits above -
+        // machine provenance of a rollback, not a commit an agent or a person means to
+        // make, so it bypasses hooks too.
+        match run_git(repo, &["commit", "--no-edit", "--no-verify", "-m", message]) {
             Ok(_) => {}
             // The commit's effect was already absent, so there is nothing to revert: leave
             // HEAD where it is (idempotent), never an error.
@@ -530,14 +545,38 @@ impl Worktree {
     /// subsequent [`Self::integrate`] merges. Without it a gate could pass on
     /// uncommitted files that never reach the base - a false green.
     ///
-    /// This is the ONE shared authority every conductor commit into a unit worktree
-    /// runs through - the per-attempt checkpoint above [`Self::merge_into_worktree`]'s
-    /// own pre-merge commit (the "integration merge"), and the halt `wip` commit a
-    /// re-parked spawn's recovery makes - so [`Self::conflict_markers_present`]'s
-    /// refusal (spec 89, criterion 1: A CHECKPOINT NEVER COMMITS A HALF-MERGE)
-    /// protects all three from ONE place, never a second parallel check reconciled
-    /// after the fact.
+    /// This runs [`Self::conflict_markers_present`]'s refusal (spec 89, criterion 1: A
+    /// CHECKPOINT NEVER COMMITS A HALF-MERGE) and the repository's own git hooks - the
+    /// hook-RESPECTING half of the pair with [`Self::commit_checkpoint`], for a commit
+    /// an agent or a person actually MEANS to make. Every commit rigger itself makes as
+    /// its own machine bookkeeping (the pre-gate attempt commit, the merge-into-worktree
+    /// steps, a halt `wip` commit, a compensation revert) goes through
+    /// [`Self::commit_checkpoint`] instead (spec 92 escalation ruling
+    /// d-checkin-rigger-own-commits-bypass-hooks) - a hook enforcing content policy has
+    /// no commit of THIS one's shape to police.
     pub fn commit(&self, message: &str) -> Result<String, Error> {
+        self.commit_with(message, false)
+    }
+
+    /// A machine-bookkeeping commit: rigger recording its OWN provenance - a checkpoint
+    /// preserving whatever a halted or superseded spawn left in its worktree (spec 89,
+    /// criterion 1), the conductor's pre-gate attempt commit, [`Self::merge_into_worktree`]'s
+    /// pre-merge and merge-conclusion commits, and [`Self::revert_on_base`]'s compensation
+    /// commit - never a commit an agent's or a person's own work produces. It runs the
+    /// half-merge guard like [`Self::commit`] but bypasses the repository's git hooks
+    /// (`--no-verify`): a hook enforces content policy on a commit an agent or a person
+    /// MEANS to make, and every one of these is machine bookkeeping of a tree mid-work - a
+    /// hook refusing one (the docs-drift hook did, when a unit's rendered docs were ahead of
+    /// the binary on PATH) turned "never lose a tree" (and, for the merge/revert sites,
+    /// "integration always lands") into a dead step (spec 92 escalation ruling
+    /// d-checkin-rigger-own-commits-bypass-hooks). The policy still holds where it belongs:
+    /// the agent's own commits run the hooks, and the gates and `rigger validate` check the
+    /// drift the hook checks.
+    pub fn commit_checkpoint(&self, message: &str) -> Result<String, Error> {
+        self.commit_with(message, true)
+    }
+
+    fn commit_with(&self, message: &str, no_verify: bool) -> Result<String, Error> {
         // The scan's scope (spec 89, criterion 1, round 2 fix
         // `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`)
         // MUST be read before `git add -A` below stages anything - staging is exactly what
@@ -557,7 +596,12 @@ impl Worktree {
             )));
         }
         git(&self.dir, &["add", "-A"])?;
-        match run_git(&self.dir, &["commit", "-m", message]) {
+        let args: &[&str] = if no_verify {
+            &["commit", "--no-verify", "-m", message]
+        } else {
+            &["commit", "-m", message]
+        };
+        match run_git(&self.dir, args) {
             Ok(_) => {}
             Err(out) if out.contains("nothing to commit") => return Ok(String::new()),
             Err(out) => return Err(Error(format!("commit: {out}"))),
@@ -810,7 +854,13 @@ impl Worktree {
         // re-entry (the block below is skipped entirely) or when no merge was even needed.
         let mut merge_attempt: Option<String> = None;
         if !self.merge_in_progress() {
-            let committed = self.commit(message)?;
+            // Rigger's own integration bookkeeping commit (spec 92 escalation ruling
+            // d-checkin-rigger-own-commits-bypass-hooks): the same class as the
+            // conductor's pre-gate attempt commit (`commit_checkpoint`, commit
+            // 066ceaaf) - a hook enforces content policy on a commit an agent or a
+            // person MEANS to make, never on the machine's own merge-into-worktree
+            // step, so this bypasses hooks exactly like that call site.
+            let committed = self.commit_checkpoint(message)?;
             // Nothing at all for this unit to contribute (no fresh commit here, and its
             // branch already sits exactly at the run branch's tip): true read-only no-op,
             // matching the historical short circuit exactly - never even attempt a merge.
@@ -843,8 +893,11 @@ impl Worktree {
         }
         if self.merge_in_progress() {
             // Every conflict (if any arose) is resolved and staged: finalize the merge
-            // commit on the unit's OWN branch before landing it on the run branch.
-            match run_git(&self.dir, &["commit", "--no-edit"]) {
+            // commit on the unit's OWN branch before landing it on the run branch. Same
+            // bypass as the pre-merge commit just above (d-checkin-rigger-own-commits-
+            // bypass-hooks) - this is rigger's own merge-conclusion bookkeeping, not a
+            // commit an agent or a person means to make.
+            match run_git(&self.dir, &["commit", "--no-edit", "--no-verify"]) {
                 Ok(_) => {}
                 Err(out) if out.contains("nothing to commit") => {}
                 Err(out) => return Err(Error(format!("commit merge: {out}"))),
@@ -869,10 +922,25 @@ impl Worktree {
     /// an earlier one already established that), so this lands as a clean fast-forward. A
     /// failure here is a genuine, unexpected error - never a conflict (conflicts are caught,
     /// and returned, by `merge_into_worktree` itself, which the caller must check first).
-    pub fn land(&self) -> Result<(), Error> {
-        match run_git(&self.repo, &["merge", "--no-edit", &self.branch]) {
-            Ok(_) => Ok(()),
-            Err(out) => Err(Error(format!("git merge --no-edit {}: {out}", self.branch))),
+    pub fn land(&self) -> Result<LandOutcome, Error> {
+        // FAST-FORWARD ONLY. `merge_into_worktree` has just merged the run branch's tip into
+        // the unit's branch, so a correct landing is always a fast-forward; anything else
+        // means the run branch MOVED between that merge and this call (an operator commit, a
+        // sibling's landing). A real merge here would resolve nothing the worktree merge did
+        // not already resolve - and on a conflict it left the main checkout mid-merge
+        // (`MERGE_HEAD`, `UU` paths), which failed every later step (2026-09-15, spec 92).
+        // `--ff-only` refuses before it touches the index, so the repo is never left dirty;
+        // the caller redoes the worktree merge against the new tip and lands again.
+        match run_git(&self.repo, &["merge", "--ff-only", &self.branch]) {
+            Ok(_) => Ok(LandOutcome::Landed),
+            Err(out)
+                if out
+                    .to_ascii_lowercase()
+                    .contains("not possible to fast-forward") =>
+            {
+                Ok(LandOutcome::TipMoved)
+            }
+            Err(out) => Err(Error(format!("git merge --ff-only {}: {out}", self.branch))),
         }
     }
 
@@ -1374,9 +1442,85 @@ fn current_branch(repo: &str) -> Option<String> {
 /// dirs, and on the common small-root/large-home partition layout the OS disk is the one
 /// that cannot absorb them (design-intent Gap 14). The resolved dir is created if absent.
 pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) -> String {
-    let expanded = scratch_root_path(repo, configured, env_override);
+    scratch_root_with(
+        repo,
+        configured,
+        env_override,
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// [`scratch_root`] with the caller's own `XDG_CACHE_HOME`/`HOME` values as plain arguments
+/// (the shape [`cache_scratch_root_from`] already has), so a unit test drives the whole
+/// create-and-sweep path against a throwaway cache home without touching the process
+/// environment.
+///
+/// Creating a root on the cache-home DEFAULT rung also reclaims every sibling root whose
+/// repo no longer exists ([`sweep_orphan_scratch_roots`]). The cache-home directory is the
+/// one place rigger names for itself, so rigger owns its lifecycle: a root keyed on a repo
+/// that is gone - a test fixture's tempdir, a checkout the operator deleted - has no owner
+/// left to reclaim it, and without this sweep such roots only ever accumulate (105k of them,
+/// about 1 GB, gathered under one operator's `~/.cache/rigger` in three days of self-hosted runs
+/// before a shell glob over that directory exhausted the machine's memory). A configured
+/// (`defaults.workdir`) or env-overridden (`RIGGER_TMPDIR`) root is the operator's own
+/// directory and is never swept.
+pub fn scratch_root_with(
+    repo: &str,
+    configured: &str,
+    env_override: Option<&str>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> String {
+    let expanded =
+        scratch_root_path_with(repo, configured, env_override, xdg.clone(), home.clone());
     let _ = std::fs::create_dir_all(&expanded);
+    let on_default_rung = cache_scratch_root_from(repo, xdg, home)
+        .is_some_and(|default| default == std::path::Path::new(&expanded));
+    if on_default_rung {
+        if let Some(cache_dir) = std::path::Path::new(&expanded).parent() {
+            sweep_orphan_scratch_roots(cache_dir);
+        }
+    }
     expanded
+}
+
+/// Reclaim every entry of `cache_dir` (the `<cache-home>/rigger` directory) that is a
+/// scratch root keyed on a repo which no longer exists: an entry whose name decodes
+/// ([`crate::liveness::decode_marker_filename`]) to an ABSOLUTE path that is absent from
+/// the filesystem. Everything else is left alone - a root whose repo is present (live or
+/// merely idle), a name that is not an encoded path at all (`test-tmp`, an operator's own
+/// file), a name that decodes to a relative path, and any non-directory. Each root is
+/// reaped before it is removed ([`crate::reap::reap_processes_rooted_under`], authorized
+/// by `cache_dir` itself - spec 79, criterion 1): a build a dead spawn left running in an
+/// orphan's cache must not outlive the directory. Returns the number of roots removed; a
+/// missing or unreadable `cache_dir` reclaims nothing. Best-effort and idempotent: a root
+/// another sweep removed concurrently is simply not counted.
+pub fn sweep_orphan_scratch_roots(cache_dir: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(cache_dir) else {
+        return 0;
+    };
+    let mut reclaimed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(repo) = crate::liveness::decode_marker_filename(name) else {
+            continue;
+        };
+        let repo = std::path::Path::new(&repo);
+        if !repo.is_absolute() || repo.exists() {
+            continue;
+        }
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let root = entry.path();
+        crate::reap::reap_processes_rooted_under(&root, cache_dir);
+        if std::fs::remove_dir_all(&root).is_ok() {
+            reclaimed += 1;
+        }
+    }
+    reclaimed
 }
 
 /// Resolve the scratch root PATH by the SAME precedence as [`scratch_root`] but WITHOUT
@@ -1397,16 +1541,30 @@ pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) ->
 /// criterion leaves alone, since a real spawn (this criterion's actual subject) always has
 /// both a real repo and a real machine `HOME`.
 pub fn scratch_root_path(repo: &str, configured: &str, env_override: Option<&str>) -> String {
+    scratch_root_path_with(
+        repo,
+        configured,
+        env_override,
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    )
+}
+
+/// [`scratch_root_path`] with the caller's own `XDG_CACHE_HOME`/`HOME` values as plain
+/// arguments - the pure resolver both [`scratch_root_path`] and [`scratch_root_with`] share.
+pub fn scratch_root_path_with(
+    repo: &str,
+    configured: &str,
+    env_override: Option<&str>,
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> String {
     let chosen = match env_override {
         Some(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ if !configured.trim().is_empty() => configured.trim().to_string(),
-        _ => cache_scratch_root_from(
-            repo,
-            std::env::var_os("XDG_CACHE_HOME"),
-            std::env::var_os("HOME"),
-        )
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| format!("{}/.rigger/tmp", if repo.is_empty() { "." } else { repo })),
+        _ => cache_scratch_root_from(repo, xdg, home)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("{}/.rigger/tmp", if repo.is_empty() { "." } else { repo })),
     };
     match (chosen.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),
@@ -1502,6 +1660,43 @@ pub const SHARED_BUILD_CACHE_NAME: &str = "cargo-target";
 /// invocation - so they can never disagree about which file guards which cache.
 pub fn shared_build_cache_guard_path(scratch_root: &str) -> String {
     format!("{scratch_root}/{SHARED_BUILD_CACHE_NAME}.lock")
+}
+
+/// The scratch root's ONE build location for anything a driver cannot pin (spec 77,
+/// criterion 1, the mechanical half): every unit worktree lives directly under the scratch
+/// root, and cargo reads `.cargo/config.toml` from every parent directory of its cwd, so a
+/// `[build] target-dir` written once at the root catches every cargo run inside a unit
+/// worktree that carries no `CARGO_TARGET_DIR` - a worker whose driver could not set the
+/// variable, an operator's hand-run test - and sends it to `<root>/cargo-target-shared`
+/// instead of `<worktree>/target` (three such 50 GB trees filled the disk on 2026-09-15).
+/// The environment variable still wins, so the gates and compliant workers keep their
+/// per-unit `cargo-target-<unit>` siblings. Written only when absent, never rewritten: the
+/// root is rigger's, but an operator may tune the file. Best-effort by design - a scratch
+/// root that cannot take the file (read-only, or a unit dir with no parent) changes nothing
+/// about worktree creation, which must go on.
+pub const SCRATCH_CARGO_CONFIG: &str = "\
+# Written by rigger at scratch-root creation (spec 77, criterion 1): every cargo run inside a
+# unit worktree under this root that carries no CARGO_TARGET_DIR builds here, never into
+# `<worktree>/target`. The per-unit caches the gates use still win through the environment.
+[build]
+target-dir = \"cargo-target-shared\"
+";
+
+pub fn ensure_scratch_root_cargo_config(worktree_dir: &str) {
+    if unit_cache_sibling(worktree_dir).is_none() {
+        return;
+    }
+    let Some(root) = std::path::Path::new(worktree_dir).parent() else {
+        return;
+    };
+    let dir = root.join(".cargo");
+    let file = dir.join("config.toml");
+    if file.exists() {
+        return;
+    }
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(&file, SCRATCH_CARGO_CONFIG);
+    }
 }
 
 /// The per-unit build cache dir that is a SIBLING of the unit worktree at `worktree_dir`
@@ -2264,8 +2459,8 @@ mod tests {
             match self.merge_into_worktree(message)? {
                 MergeOutcome::Conflict(paths) => Ok(IntegrateOutcome::Conflict(paths)),
                 MergeOutcome::Ready(commit) => {
-                    if !commit.is_empty() {
-                        self.land()?;
+                    if !commit.is_empty() && self.land()? == LandOutcome::TipMoved {
+                        return Err(Error("run tip moved under the test".into()));
                     }
                     Ok(IntegrateOutcome::Merged(commit))
                 }
@@ -2540,6 +2735,219 @@ mod tests {
     }
 
     #[test]
+    fn commit_checkpoint_commits_through_a_refusing_hook_while_commit_is_refused() {
+        // A checkpoint preserves a halted spawn's tree; a content hook (the docs-drift
+        // pre-commit hook, in the incident) must not be able to turn that into a lost tree
+        // and a dead step. The agent's own commit path keeps running hooks.
+        use std::os::unix::fs::PermissionsExt;
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let hooks = repo.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho 'hook: refusing' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(
+            &repo_path,
+            wt_path.to_str().unwrap(),
+            "rigger/checkpoint-hook",
+            "",
+        )
+        .unwrap();
+        let head_before = run_git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap();
+
+        std::fs::write(wt_path.join("work.txt"), "half-done\n").unwrap();
+        let err = wt
+            .commit("rigger: an agent's own commit")
+            .expect_err("the hook refuses an ordinary commit");
+        assert!(
+            err.to_string().contains("hook: refusing"),
+            "the refusal is the hook's, surfaced verbatim: {err}"
+        );
+        let head_mid = run_git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(head_before, head_mid, "the ordinary commit made nothing");
+
+        let sha = wt
+            .commit_checkpoint("wip(unit): tree of halted spawn unit/implementer#1")
+            .expect("a checkpoint commits through the refusing hook");
+        let head_after = run_git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(sha, head_after.trim(), "the checkpoint sha is HEAD");
+        assert_ne!(
+            head_before, head_after,
+            "the tree was preserved in a commit"
+        );
+        let shown = run_git(
+            wt_path.to_str().unwrap(),
+            &["show", "--stat", "--oneline", "HEAD"],
+        )
+        .unwrap();
+        assert!(
+            shown.contains("work.txt"),
+            "the checkpoint carries the tree: {shown}"
+        );
+    }
+
+    #[test]
+    fn land_is_fast_forward_only_and_reports_a_moved_tip_without_dirtying_the_repo() {
+        // The worktree merge has just brought the run tip into the unit branch, so a landing
+        // is a fast-forward; if the run branch moved meanwhile, `land` must say so and leave
+        // the repo untouched (no MERGE_HEAD, no conflicted index) - the conductor then merges
+        // the new tip into the worktree and lands again. A real merge here once left the main
+        // checkout mid-merge and failed every later step.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/land-ff", "").unwrap();
+        std::fs::write(wt_path.join("unit.txt"), "unit work\n").unwrap();
+        wt.commit("rigger: unit work").unwrap();
+
+        // The run branch moves under the unit (an operator commit on the run branch).
+        std::fs::write(repo.path().join("operator.txt"), "operator work\n").unwrap();
+        git(&repo_path, &["add", "operator.txt"]).unwrap();
+        git(
+            &repo_path,
+            &["commit", "-q", "-m", "operator: moved the tip"],
+        )
+        .unwrap();
+        let tip_before = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+
+        assert_eq!(
+            wt.land().unwrap(),
+            LandOutcome::TipMoved,
+            "no fast-forward is possible"
+        );
+        assert!(
+            !repo.path().join(".git").join("MERGE_HEAD").exists(),
+            "a refused landing never leaves the repo mid-merge"
+        );
+        assert_eq!(
+            git(&repo_path, &["rev-parse", "HEAD"]).unwrap(),
+            tip_before,
+            "the run branch is untouched"
+        );
+        assert_eq!(
+            git(&repo_path, &["status", "--porcelain"]).unwrap().trim(),
+            "",
+            "the main checkout stays clean"
+        );
+
+        // Merging the new tip into the worktree makes the next landing a fast-forward.
+        match wt.merge_into_worktree("rigger: integrate land-ff").unwrap() {
+            MergeOutcome::Ready(c) => assert!(!c.is_empty(), "the merge commits"),
+            MergeOutcome::Conflict(paths) => {
+                panic!("expected a clean merge, got a conflict on {paths:?}")
+            }
+        }
+        assert_eq!(wt.land().unwrap(), LandOutcome::Landed);
+        assert_eq!(
+            git(&repo_path, &["rev-parse", "HEAD"]).unwrap(),
+            git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap(),
+            "the run branch fast-forwarded to the unit branch"
+        );
+    }
+
+    #[test]
+    fn creating_a_unit_worktree_writes_the_scratch_roots_shared_build_location_once() {
+        // Spec 77 criterion 1's mechanical half: the first unit worktree under a scratch root
+        // leaves `<root>/.cargo/config.toml` pointing unpinned cargo runs at the root's shared
+        // cache; a second worktree leaves an existing file alone; a non-unit worktree writes
+        // nothing.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = std::env::temp_dir().join(format!("rigger-scratch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let wt_a = root.join("rigger-wt-unit-a");
+        Worktree::create(&repo_path, wt_a.to_str().unwrap(), "rigger/u/unit-a", "").unwrap();
+        let cfg = root.join(".cargo").join("config.toml");
+        let written = std::fs::read_to_string(&cfg).expect("the root carries a cargo config");
+        assert!(
+            written.contains("[build]") && written.contains("target-dir = \"cargo-target-shared\""),
+            "unpinned cargo inside a unit worktree builds into the root's shared cache: {written}"
+        );
+        std::fs::write(&cfg, "[build]\ntarget-dir = \"operator-tuned\"\n").unwrap();
+        let wt_b = root.join("rigger-wt-unit-b");
+        Worktree::create(&repo_path, wt_b.to_str().unwrap(), "rigger/u/unit-b", "").unwrap();
+        assert!(
+            std::fs::read_to_string(&cfg)
+                .unwrap()
+                .contains("operator-tuned"),
+            "an existing file is never rewritten"
+        );
+        let other = std::env::temp_dir().join(format!("rigger-other-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&other).unwrap();
+        let review = other.join("rigger-review-panel-0");
+        Worktree::create(&repo_path, review.to_str().unwrap(), "rigger/review-0", "").unwrap();
+        assert!(
+            !other.join(".cargo").exists(),
+            "a review worktree is no unit and writes no build location"
+        );
+    }
+
+    #[test]
+    fn sweep_orphan_scratch_roots_reclaims_only_roots_whose_decoded_repo_is_gone() {
+        let cache = tempfile::tempdir().unwrap();
+        let live_repo = tempfile::tempdir().unwrap();
+        let live_path = live_repo.path().to_str().unwrap().to_string();
+        let enc = |p: &str| crate::liveness::marker_filename(p).unwrap();
+        let live = cache.path().join(enc(&live_path));
+        let gone = cache
+            .path()
+            .join(enc(&format!("{live_path}/vanished-checkout")));
+        let plain = cache.path().join("test-tmp");
+        let relative = cache.path().join(enc("relative/repo"));
+        for dir in [&live, &gone, &plain, &relative] {
+            std::fs::create_dir_all(dir.join("cargo-target-x")).unwrap();
+            std::fs::write(dir.join("cargo-target-x").join("f"), "x").unwrap();
+        }
+        let file = cache.path().join(enc("/some/where/absent"));
+        std::fs::write(&file, "not a root").unwrap();
+        assert_eq!(sweep_orphan_scratch_roots(cache.path()), 1);
+        assert!(!gone.exists(), "a root whose repo is gone is reclaimed");
+        assert!(live.exists(), "a root whose repo exists is kept");
+        assert!(plain.exists(), "a name that is not an encoded path is kept");
+        assert!(
+            relative.exists(),
+            "a name that decodes to a relative path is kept"
+        );
+        assert!(file.exists(), "a non-directory is kept");
+        assert_eq!(sweep_orphan_scratch_roots(cache.path()), 0, "idempotent");
+        assert_eq!(sweep_orphan_scratch_roots(&cache.path().join("absent")), 0);
+    }
+
+    #[test]
+    fn creating_the_cache_default_scratch_root_reclaims_orphaned_siblings_but_a_configured_root_never_sweeps(
+    ) {
+        let xdg = tempfile::tempdir().unwrap();
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let rigger_dir = xdg.path().join("rigger");
+        let orphan = rigger_dir
+            .join(crate::liveness::marker_filename(&format!("{repo_path}-gone")).unwrap());
+        std::fs::create_dir_all(orphan.join("rigger-wt-old")).unwrap();
+        let xdg_os = Some(xdg.path().as_os_str().to_os_string());
+        let root = scratch_root_with(&repo_path, "", None, xdg_os.clone(), None);
+        assert_eq!(
+            std::path::Path::new(&root),
+            rigger_dir.join(crate::liveness::marker_filename(&repo_path).unwrap())
+        );
+        assert!(std::path::Path::new(&root).is_dir(), "the root is created");
+        assert!(
+            !orphan.exists(),
+            "the default rung reclaims a sibling whose repo is gone"
+        );
+        std::fs::create_dir_all(orphan.join("rigger-wt-old")).unwrap();
+        let configured = xdg.path().join("operator-chosen");
+        let root2 = scratch_root_with(&repo_path, configured.to_str().unwrap(), None, xdg_os, None);
+        assert_eq!(std::path::Path::new(&root2), configured);
+        assert!(
+            orphan.exists(),
+            "an operator's configured root sweeps nothing"
+        );
+    }
+
+    #[test]
     fn commit_ignores_conflict_marker_lookalike_text_in_an_untouched_tracked_file() {
         // Spec 89, criterion 1, round 2 fix
         // (adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive):
@@ -2706,11 +3114,19 @@ mod tests {
     ) {
         // worktree.rs:635 treats ONLY a "nothing to commit" failure from the finalizing
         // `git commit --no-edit` as a benign no-op (an already-empty resolution, tolerated
-        // for crash-resume idempotency). Any OTHER failure - a hook rejecting the commit,
-        // a signing failure, disk full - must propagate as a genuine `Err`, never be
-        // silently swallowed as if the merge had finished; swallowing it would let
-        // `integrate` fall through to `git merge --no-edit` on the run branch believing a
-        // merge commit exists that was never actually made.
+        // for crash-resume idempotency). Any OTHER failure - a signing failure, disk full -
+        // must propagate as a genuine `Err`, never be silently swallowed as if the merge had
+        // finished; swallowing it would let `integrate` fall through to `git merge --no-edit`
+        // on the run branch believing a merge commit exists that was never actually made.
+        // Injected via a permission-denied object write, not a refusing hook: this finalizing
+        // commit is rigger's own merge-conclusion bookkeeping, so it now runs `--no-verify`
+        // (d-checkin-rigger-own-commits-bypass-hooks) and a hook is no longer an available
+        // failure instrument here. A forced signing failure is not available either - per
+        // spec 90, the whole suite runs under the hermetic test-git runner's own commit-signing
+        // suppression (see `tests/hermetic_test_git_audit.rs`), the SOLE authority for that
+        // override, so a repo-local config can never re-enable signing here. A read-only object
+        // database is an OS-level failure that override does not touch, so it still proves a
+        // genuine, unrelated failure propagates.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wa = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
@@ -2732,31 +3148,36 @@ mod tests {
         std::fs::write(wb.join("shared.txt"), "RESOLVED\n").unwrap();
         run_git(wb.to_str().unwrap(), &["add", "--", "shared.txt"]).unwrap();
 
-        // A worktree's hooks are the MAIN repo's (git worktree add shares one hooks dir) -
-        // install a pre-commit hook there that always rejects with a message that does NOT
-        // contain "nothing to commit": a genuine, unrelated failure.
-        let hooks_dir = repo.path().join(".git").join("hooks");
-        std::fs::create_dir_all(&hooks_dir).unwrap();
-        let hook_path = hooks_dir.join("pre-commit");
-        std::fs::write(
-            &hook_path,
-            "#!/bin/sh\necho 'boom: forced hook failure' >&2\nexit 1\n",
-        )
-        .unwrap();
+        // A worktree's object database is the MAIN repo's (git worktree add shares one
+        // `.git/objects`) - strip write permission from it so the finalizing commit cannot
+        // write its new tree/commit objects: a genuine, unrelated, OS-level failure.
+        let objects_dir = repo.path().join(".git").join("objects");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&hook_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&hook_path, perms).unwrap();
+            let mut perms = std::fs::metadata(&objects_dir).unwrap().permissions();
+            perms.set_mode(0o555);
+            std::fs::set_permissions(&objects_dir, perms).unwrap();
         }
 
-        let err = match b.integrate("rigger: integrate b (finalize)") {
+        let result = b.integrate("rigger: integrate b (finalize)");
+
+        // Restore write permission before any assertion can panic and before `repo` drops -
+        // otherwise the read-only directory would make its own teardown fail.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&objects_dir).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&objects_dir, perms).unwrap();
+        }
+
+        let err = match result {
             Err(e) => e,
             Ok(_) => panic!("a genuine commit failure must surface as an Err, not a silent no-op"),
         };
         assert!(
-            err.0.contains("boom: forced hook failure"),
+            err.0.contains("insufficient permission"),
             "the real failure must propagate verbatim: {}",
             err.0
         );

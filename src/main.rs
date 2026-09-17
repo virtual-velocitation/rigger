@@ -18,8 +18,8 @@ use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::contextgraph::{
     self,
-    sqlite::{Located, Projector, PruneStats},
-    Projection,
+    sqlite::{Projector, PruneStats},
+    Located, Projection,
 };
 use rigger::dash;
 use rigger::driver::cli;
@@ -29,7 +29,7 @@ use rigger::driver::replay::{
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::{
     sqlite::{PrunedDerived, Store},
-    Direction, Event, EventStore, ExpectedRevision, Filter,
+    Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
     resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateResult, Runner,
@@ -1408,6 +1408,8 @@ const SUBCOMMANDS: &[&str] = &[
     "setup",
     "docs",
     "prime",
+    "mcp",
+    "grep-guard",
     "version",
     "help",
 ];
@@ -1448,6 +1450,8 @@ fn main() {
         "setup" => cmd_setup(&args[2..]),
         "docs" => cmd_docs(&args[2..]),
         "prime" => cmd_prime(&args[2..]),
+        "mcp" => cmd_mcp(&args[2..]),
+        "grep-guard" => cmd_grep_guard(&args[2..]),
         "version" | "--version" | "-V" => cmd_version(),
         "help" | "-h" | "--help" => {
             usage();
@@ -1608,6 +1612,14 @@ own accumulation); reports the exact bytes reclaimed,\n                         
 or 0 when there was nothing to reclaim. Refuses loudly\n                              \
 - never waiting - while a rigger-launched build still\n                              \
 holds the cache's guard lock; retry once it is idle\n  \
+rigger reset --scratch-orphans\n                              \
+reclaim every cache-home scratch root (under\n                              \
+$XDG_CACHE_HOME/rigger, else ~/.cache/rigger) whose repo\n                              \
+no longer exists: a root keyed on a deleted checkout or a\n                              \
+test fixture's tempdir has no owner left to reclaim it.\n                              \
+Rigger does this itself whenever it creates a default-\n                              \
+placed root; this is the explicit on-demand form. Reports\n                              \
+the number of roots reclaimed; composes with the others\n  \
 rigger validate             load and validate the workflow + agents\n  \
 rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
@@ -4153,16 +4165,107 @@ fn cmd_graph(args: &[String]) -> Res {
     let gp = Projector::open(&db_path("graph.db"), &project_identity())?;
     let g = gp.subgraph(&[around.clone()], depth)?;
     println!("subgraph around {around:?} (depth {depth}):");
-    for n in &g.nodes {
+    print_around_subgraph(&g, &around);
+    Ok(())
+}
+
+/// The number of newest governing decision/finding nodes `rigger graph --around` prints in full
+/// before collapsing the rest into a trailing count (spec 92, u92c6 - "a file's neighborhood is
+/// code first"). Ten is a page, not a cliff: enough to read at a glance, small enough that
+/// decision spam never crowds the code entities off the screen the way it did before this fix -
+/// the u88c1 evidence recorded a loop agent grepping `conductor.rs` because `--around` returned
+/// "only generic decision-node spam, not code structure".
+const AROUND_GOVERNANCE_CAP: usize = 10;
+
+/// Print a `rigger graph --around` subgraph CODE FIRST (spec 92, u92c6). Before this fix
+/// [`cmd_graph`] printed every node and edge [`Projector::subgraph`] returned in one
+/// undifferentiated, unbounded list - a decision or finding node is indistinguishable in shape
+/// from a code entity, and a file governed by dozens of rounds' worth of decisions buried its
+/// own structure under them (the u88c1 evidence this criterion fixes).
+///
+/// Two sections, never interleaved:
+/// - CODE FIRST: every node that is NOT a [`contextgraph::KIND_DECISION`] /
+///   [`contextgraph::KIND_FINDING`] - a file, a code entity, a design doc, a community, anything
+///   structural - sorted by id for a deterministic read, followed by every edge whose BOTH
+///   endpoints are in that same set (a decision's `GOVERNS` / a finding's `ABOUT` edge, which
+///   always terminates on a narrative node, is never one of these - the narrative section speaks
+///   for itself as a node list).
+/// - GOVERNING DECISIONS/FINDINGS, separately and capped: every [`contextgraph::KIND_DECISION`] /
+///   [`contextgraph::KIND_FINDING`] node, ranked NEWEST first and capped to
+///   [`AROUND_GOVERNANCE_CAP`], with a trailing count of however many more this subgraph held.
+///   "Newest" is the event log POSITION of the node's OWN `GOVERNS` (decision) / `ABOUT`
+///   (finding) edge - via [`conductor::recency_by_own_edge`], the SAME from-side-only core
+///   `conductor::write_capped_section` dates the prompt's decisions/lessons/findings sections
+///   with - never an edge that merely touches the node as `to` (a superseded decision's
+///   inbound `SUPERSEDES` edge carries its superseder's fresh position, which would let the
+///   stale decision crowd a live one out of the cap if it counted).
+fn print_around_subgraph(g: &contextgraph::Graph, around: &str) {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let is_narrative =
+        |kind: &str| kind == contextgraph::KIND_DECISION || kind == contextgraph::KIND_FINDING;
+
+    let mut code_nodes: Vec<&contextgraph::Node> =
+        g.nodes.iter().filter(|n| !is_narrative(&n.kind)).collect();
+    code_nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    let code_ids: BTreeSet<&str> = code_nodes.iter().map(|n| n.id.as_str()).collect();
+
+    for n in &code_nodes {
         println!("  node {:<24} {}", n.id, n.kind);
     }
     for e in &g.edges {
-        println!("  edge {} -{}-> {}", e.from, e.rel, e.to);
+        if code_ids.contains(e.from.as_str()) && code_ids.contains(e.to.as_str()) {
+            println!("  edge {} -{}-> {}", e.from, e.rel, e.to);
+        }
     }
+
+    // Recency per node: the SAME from-side-only core `write_capped_section` uses for the
+    // prompt's decisions/lessons/findings sections (`conductor::recency_by_own_edge`), never a
+    // scan of every edge touching a node as either endpoint. A decision is dated off its own
+    // `GOVERNS` edge, a finding off its own `ABOUT` edge - both point node -> file, so `from`
+    // is always the narrative node itself. Keying on either endpoint (as an earlier version of
+    // this function did) let a superseded decision inherit its superseder's fresh position
+    // through the inbound `SUPERSEDES` edge (`from` = the new decision, `to` = the superseded
+    // one) and crowd a genuinely live decision out of the newest-`AROUND_GOVERNANCE_CAP` slice
+    // while printing the stale one as if current - the exact bug class `write_capped_section`'s
+    // own doc comment already fixed once; this reuses that fix rather than re-deriving it.
+    let mut recency: BTreeMap<&str, Position> =
+        conductor::recency_by_own_edge(g, contextgraph::REL_GOVERNS);
+    for (id, pos) in conductor::recency_by_own_edge(g, contextgraph::REL_ABOUT) {
+        let slot = recency.entry(id).or_insert(0);
+        *slot = (*slot).max(pos);
+    }
+
+    let mut narrative_nodes: Vec<&contextgraph::Node> =
+        g.nodes.iter().filter(|n| is_narrative(&n.kind)).collect();
+    narrative_nodes.sort_by(|a, b| {
+        let ra = recency.get(a.id.as_str()).copied().unwrap_or(0);
+        let rb = recency.get(b.id.as_str()).copied().unwrap_or(0);
+        // Newest (highest position) first; the id breaks a tie so the page is deterministic.
+        rb.cmp(&ra).then_with(|| a.id.cmp(&b.id))
+    });
+
+    if !narrative_nodes.is_empty() {
+        println!();
+        let shown = narrative_nodes.len().min(AROUND_GOVERNANCE_CAP);
+        println!(
+            "  {} governing decision(s)/finding(s) (newest {shown} shown):",
+            narrative_nodes.len()
+        );
+        for n in narrative_nodes.iter().take(AROUND_GOVERNANCE_CAP) {
+            println!("  node {:<24} {}", n.id, n.kind);
+        }
+        let rest = narrative_nodes.len().saturating_sub(AROUND_GOVERNANCE_CAP);
+        if rest > 0 {
+            println!(
+                "  (+{rest} more decision(s)/finding(s) not shown - see `rigger peers {around}` for the full history)"
+            );
+        }
+    }
+
     if g.nodes.is_empty() {
         println!("  (nothing found; has `rigger run` been run yet?)");
     }
-    Ok(())
 }
 
 /// The upper bound on how many body lines `rigger graph --show` prints (spec 58): the definition's
@@ -4209,11 +4312,15 @@ fn cmd_graph_show(entity: &str) -> Res {
     Ok(())
 }
 
-/// Print one located entity for `rigger graph --show` (spec 58): the site/kind/degree header, then
-/// the line-numbered body bounded through the shared multi-grammar symbols authority - or an
-/// explicit note (a drifted location, or a build without the extraction grammar) in place of the
-/// body, so the surface is never silently wrong (a graceful degrade, never an error).
-fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
+/// Print one located entity for `rigger graph --show` (spec 58; spec 92 criterion 1, FRESH ON EVERY
+/// INTEGRATION, for the header): the site/kind/degree header, then the line-numbered body bounded
+/// through the shared multi-grammar symbols authority - or an explicit note (a drifted location this
+/// tree cannot resolve even by name, or a build without the extraction grammar) in place of the body,
+/// so the surface is never silently wrong (a graceful degrade, never an error). When
+/// [`definition_body`] HEALS a drifted recorded line to the entity's live one, the header prints the
+/// LIVE site with the recorded one noted alongside it (`"recorded line N, now M"`) rather than
+/// silently swapping one location for the other with no trace of the drift.
+fn print_entity_site(site: &contextgraph::EntitySite) {
     let kind = if site.kind.is_empty() {
         "?"
     } else {
@@ -4227,16 +4334,14 @@ fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
         .map(|(_, n)| n)
         .unwrap_or(site.id.as_str());
     println!("show {}", site.id);
-    println!(
-        "  site: {}:{}   kind {}   degree {}",
-        site.file, site.line, kind, site.degree
-    );
     match definition_body(&site.file, site.line, name) {
         ShowBody::Lines {
+            start,
             lines,
             omitted,
             extent_end,
         } => {
+            print_site_header(site, kind, start);
             for (n, text) in lines {
                 println!("  {n:>6} | {text}");
             }
@@ -4248,47 +4353,91 @@ fn print_entity_site(site: &contextgraph::sqlite::EntitySite) {
                 );
             }
         }
-        ShowBody::Note(reason) => println!("  ({reason})"),
+        ShowBody::Note(reason) => {
+            print_site_header(site, kind, site.line);
+            println!("  ({reason})");
+        }
     }
 }
 
-/// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58).
+/// The site/kind/degree header line (spec 92 criterion 1): `live_line` is where the body actually
+/// came from (or, for a [`ShowBody::Note`], simply the recorded line - nothing was located). When it
+/// agrees with the entity's RECORDED line (`site.line`) - the overwhelmingly common case, and every
+/// case before spec 92 - the header is exactly the spec-58 shape. When a name-only fallback healed a
+/// drifted recorded line to a different live one, the header shows the LIVE line as the site (it is
+/// what the body below is FROM) and notes the recorded line beside it, so the drift is visible rather
+/// than silently resolved.
+fn print_site_header(site: &contextgraph::EntitySite, kind: &str, live_line: u32) {
+    if live_line != site.line {
+        println!(
+            "  site: {}:{}   kind {}   degree {}   (recorded line {}, now {})",
+            site.file, live_line, kind, site.degree, site.line, live_line
+        );
+    } else {
+        println!(
+            "  site: {}:{}   kind {}   degree {}",
+            site.file, site.line, kind, site.degree
+        );
+    }
+}
+
+/// The outcome of bounding a located definition's body for `rigger graph --show` (spec 58; spec 92
+/// criterion 1).
 enum ShowBody {
-    /// The line-numbered body window `[start, end]`: `omitted` is how many lines were dropped past
-    /// the [`SHOW_MAX_BODY_LINES`] clamp (`0` when the whole extent fit), and `extent_end` is the
-    /// extent's true last line, so the caller can print an honest clamp note when `omitted > 0`.
+    /// The line-numbered body window `[start, end]`: `start` is where the body actually begins - the
+    /// entity's RECORDED line when it still holds the definition, or the LIVE line a name-only
+    /// fallback healed a drift to (spec 92) - so the caller always knows which line the printed body
+    /// is from. `omitted` is how many lines were dropped past the [`SHOW_MAX_BODY_LINES`] clamp (`0`
+    /// when the whole extent fit), and `extent_end` is the extent's true last line, so the caller can
+    /// print an honest clamp note when `omitted > 0`.
     Lines {
+        start: u32,
         lines: Vec<(u32, String)>,
         omitted: u32,
         extent_end: u32,
     },
-    /// No body could be shown; the string is the human reason (a drifted working-tree location, or
-    /// a build compiled without the extraction grammar). Printed in place of the body so the show
-    /// surface degrades honestly, never guessing or silently truncating.
+    /// No body could be shown; the string is the human reason (a drifted working-tree location this
+    /// tree cannot resolve even by name, or a build compiled without the extraction grammar).
+    /// Printed in place of the body so the show surface degrades honestly, never guessing or
+    /// silently truncating.
     Note(String),
 }
 
 /// Bound and read a located definition's body from the WORKING TREE for `rigger graph --show`
-/// (spec 58). The file is read relative to the git top-level (so a `--show` launched from a
-/// subdirectory still finds it), falling back to the cwd outside a git context.
+/// (spec 58; spec 92 criterion 1, FRESH ON EVERY INTEGRATION). The file is read relative to the git
+/// top-level (so a `--show` launched from a subdirectory still finds it), falling back to the cwd
+/// outside a git context.
 ///
 /// The extent is derived through the SHARED multi-grammar symbols authority, not a hand-rolled
-/// per-language lexer: [`derive_extent_end`] resolves the file's grammar via the symbols registry
-/// and reads the definition's END line from the grammar's OWN tree-sitter node boundary. So a
-/// braced language's closing brace, a Python block's dedent, a Go backtick raw string, and a JS
+/// per-language lexer: [`locate_definition_extent`] resolves the file's grammar via the symbols
+/// registry and reads the definition's line range from the grammar's OWN tree-sitter node boundary.
+/// So a braced language's closing brace, a Python block's dedent, a Go backtick raw string, and a JS
 /// single-quote string carrying a lone `{` are all bounded correctly by the parser - including a
 /// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
 /// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
-/// it). The window is `[start, extent]`, clamped by [`SHOW_MAX_BODY_LINES`]; a clamp reports its
-/// omitted-line count so a bounded body is never read as whole.
+/// it). The window is `[start, extent]` (the RESOLVED `start` - see below), clamped by
+/// [`SHOW_MAX_BODY_LINES`]; a clamp reports its omitted-line count so a bounded body is never read
+/// as whole.
+///
+/// The recorded `start` no longer holding the definition (the graph has not been reindexed since the
+/// code moved) is not, by itself, a reason to refuse: [`locate_definition_extent`] falls back to
+/// locating `name` by a name-only search of the SAME file, healing to the live line when that name is
+/// UNAMBIGUOUS there. [`ShowBody::Lines::start`] then carries that LIVE line rather than the recorded
+/// one, so the caller's header can show the drift instead of hiding it.
 ///
 /// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
-/// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file, the file
-/// cannot be read (a drifted or unknown location), the current tree no longer holds a definition of
-/// that name at that line (a stale location), or this build has no extraction grammar (the light,
-/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound.
+/// body cannot be shown honestly: the recorded `start` line is `0` or past end-of-file (a location
+/// that never named a real source line, or one that has drifted past what a within-file name search
+/// can safely resolve - see [`locate_definition_extent`]'s own doc for why these stay hard refusals),
+/// the file cannot be read (a drifted or unknown location), the current tree holds no definition of
+/// that name ANYWHERE in the file (deleted, not merely moved), the name is ambiguous in the file (more
+/// than one live candidate - never guessed), or this build has no extraction grammar (the light,
+/// `--no-default-features` lane). It never GUESSES a body from a structural next-definition bound or
+/// from an ambiguous candidate.
 fn definition_body(file: &str, start: u32, name: &str) -> ShowBody {
-    // A recorded line of 0 never named a real source line: degrade before any read.
+    // A recorded line of 0 never named a real source line: degrade before any read. (Also covers a
+    // reference-only graph entity with no definition site of its own to search from - see
+    // `locate_definition_extent`'s doc for why this stays a hard, un-healed refusal.)
     if start == 0 {
         return ShowBody::Note(format!(
             "source unavailable at {file}:{start}; the recorded location may be stale"
@@ -4308,45 +4457,69 @@ fn definition_body(file: &str, start: u32, name: &str) -> ShowBody {
     let all: Vec<&str> = text.lines().collect();
     let total = all.len() as u32;
     if start > total {
-        // The recorded line is past end-of-file: the location drifted.
+        // The recorded line is past end-of-file: the location drifted further than a within-file
+        // name search is asked to reach (see locate_definition_extent's doc) - a hard refusal.
         return ShowBody::Note(format!(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    // Derive the extent's end line through the ONE multi-grammar authority. A miss (a drifted
-    // location, or a light-lane build with no grammar) is an explicit note, never a guessed body.
-    let extent_end = match derive_extent_end(file, &text, start, name) {
-        Ok(end) => end.min(total),
+    // Resolve WHERE the body starts (the recorded line, or - spec 92 - a healed live line) and its
+    // extent's end, through the ONE multi-grammar authority. A miss (deleted, ambiguous, or a
+    // light-lane build with no grammar) is an explicit note, never a guessed body.
+    let (live_start, extent_end) = match locate_definition_extent(file, &text, start, name) {
+        Ok((s, e)) => (s, e.min(total)),
         Err(why) => return ShowBody::Note(why),
     };
     // The max window: never dump an unbounded body. A clamp keeps the extent's true end so the
-    // caller can announce the omitted lines.
-    let window_cap = start.saturating_add(SHOW_MAX_BODY_LINES).saturating_sub(1);
-    let printed_end = extent_end.max(start).min(window_cap);
+    // caller can announce the omitted lines. The window is anchored at the RESOLVED start, so a
+    // healed drift is bounded exactly like an unmoved definition would be.
+    let window_cap = live_start
+        .saturating_add(SHOW_MAX_BODY_LINES)
+        .saturating_sub(1);
+    let printed_end = extent_end.max(live_start).min(window_cap);
     let omitted = extent_end.saturating_sub(printed_end);
-    let lines = (start..=printed_end)
+    let lines = (live_start..=printed_end)
         .map(|n| (n, all[(n - 1) as usize].to_string()))
         .collect();
     ShowBody::Lines {
+        start: live_start,
         lines,
         omitted,
         extent_end,
     }
 }
 
-/// The 1-based, inclusive END line of the definition named `name` at site line `start` in `source`,
-/// derived through the shared multi-grammar symbols authority (spec 58). It resolves the file's
-/// grammar via the symbols registry and reads the extent from [`definition_extents`], the SAME
-/// tree-sitter tag mechanism the code graph is extracted with - so ONE extent authority generalizes
-/// across every ingested grammar rather than a Rust-only brace lexer in this composition root.
+/// The 1-based, inclusive `(start, end)` line range of the definition named `name`, derived through
+/// the shared multi-grammar symbols authority (spec 58; spec 92 criterion 1, FRESH ON EVERY
+/// INTEGRATION). It resolves the file's grammar via the symbols registry and reads every candidate
+/// extent from [`definition_extents`], the SAME tree-sitter tag mechanism the code graph is extracted
+/// with - so ONE extent authority generalizes across every ingested grammar rather than a Rust-only
+/// brace lexer in this composition root.
 ///
-/// Matches on BOTH name and site line (a definition that has moved off `start` no longer matches, so
-/// a drifted location degrades to a note rather than a wrong body); when several definitions share
-/// the name and line, the widest extent (the outermost construct) wins. Returns `Err` with a human
-/// reason - the caller degrades to a note - when no grammar is registered for the file's extension,
-/// the grammar cannot tag it, or the current tree holds no such definition at that line.
+/// Two tiers, in order:
+///
+/// 1. **Exact match** at the RECORDED `start` line: the graph's location is still current, so the
+///    resolved start is `start` itself (no drift) - when several definitions share the name and
+///    line, the widest extent (the outermost construct) wins, exactly as before spec 92.
+/// 2. **Name-only fallback** (spec 92: the recorded line no longer holds the definition - the code
+///    moved since the graph was last indexed): every candidate named `name`, AT ANY LINE in this
+///    file, is collected. Healing is safe ONLY when that leaves exactly ONE live line - with more
+///    than one candidate the surface cannot tell which the caller meant, so it degrades exactly as
+///    every drift did before spec 92 (never guess a body under the wrong name or line - the spec-58
+///    invariant this filter exists to hold). The fallback NEVER crosses files and NEVER matches a
+///    different name: only the identity `graph --show` was asked to resolve is ever searched for.
+///
+/// Returns `Err` with a human reason - the caller degrades to a note - when no grammar is registered
+/// for the file's extension, the grammar cannot tag the source, no definition named `name` exists
+/// anywhere in the file (deleted, not moved), or the name is ambiguous (tier 2 found more than one
+/// live candidate).
 #[cfg(feature = "symbols")]
-fn derive_extent_end(file: &str, source: &str, start: u32, name: &str) -> Result<u32, String> {
+fn locate_definition_extent(
+    file: &str,
+    source: &str,
+    start: u32,
+    name: &str,
+) -> Result<(u32, u32), String> {
     use rigger::grounder::symbols::{extract, registry};
     let Some(entry) = registry::for_path(file, None) else {
         return Err(format!(
@@ -4354,24 +4527,51 @@ fn derive_extent_end(file: &str, source: &str, start: u32, name: &str) -> Result
         ));
     };
     let extents = extract::definition_extents(source, &entry.language, entry.tags_query)?;
-    extents
-        .into_iter()
+    // Tier 1: exact (name, recorded line) match - the graph's location is current. Widest extent
+    // wins when several definitions share the name and line (unchanged spec-58 rule).
+    if let Some(end) = extents
+        .iter()
         .filter(|d| d.name == name && d.start_line == start)
         .map(|d| d.end_line)
         .max()
-        .ok_or_else(|| {
-            format!(
-                "no definition named {name:?} at line {start} in the current working tree; the recorded location may be stale"
-            )
-        })
+    {
+        return Ok((start, end));
+    }
+    // Tier 2 (spec 92): the recorded line drifted - re-locate `name` by a name-only search of this
+    // SAME file. `by_line` groups candidate lines (never two rows for one line: the widest extent
+    // per line wins, matching tier 1's own rule), so its length is the count of DISTINCT live lines
+    // this name occupies - the ambiguity measure healing must stay safe against.
+    let mut by_line: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    for d in extents.iter().filter(|d| d.name == name) {
+        by_line
+            .entry(d.start_line)
+            .and_modify(|end| *end = (*end).max(d.end_line))
+            .or_insert(d.end_line);
+    }
+    match by_line.len() {
+        0 => Err(format!(
+            "no definition named {name:?} at line {start} in the current working tree; the recorded location may be stale"
+        )),
+        1 => Ok(by_line.into_iter().next().expect("len == 1")),
+        n => Err(format!(
+            "{n} definitions named {name:?} exist in {file} and none starts at the recorded line \
+             {start}; the recorded location may be stale (cannot resolve which one moved)"
+        )),
+    }
 }
 
-/// Light-lane [`derive_extent_end`]: a build WITHOUT the `symbols` feature links no grammar, so the
-/// extent cannot be derived. It returns an explicit reason the caller prints as a note - the show
-/// surface stays honest ("the body needs the extraction grammar this build omits") rather than
-/// falling back to a hand-rolled lexer that would mis-read the very grammars the graph ingests.
+/// Light-lane [`locate_definition_extent`]: a build WITHOUT the `symbols` feature links no grammar,
+/// so no extent - recorded or healed - can be derived. It returns an explicit reason the caller
+/// prints as a note - the show surface stays honest ("the body needs the extraction grammar this
+/// build omits") rather than falling back to a hand-rolled lexer that would mis-read the very
+/// grammars the graph ingests.
 #[cfg(not(feature = "symbols"))]
-fn derive_extent_end(_file: &str, _source: &str, _start: u32, _name: &str) -> Result<u32, String> {
+fn locate_definition_extent(
+    _file: &str,
+    _source: &str,
+    _start: u32,
+    _name: &str,
+) -> Result<(u32, u32), String> {
     Err(
         "the body extent needs the code-extraction grammar; this build was compiled without the `symbols` feature"
             .to_string(),
@@ -5194,6 +5394,28 @@ fn read_model_drift(
     let store = Namespaced::new(backend.as_ref(), project);
     let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     Ok(metrics::model_drift(&events))
+}
+
+/// The `rigger validate` GRAPH INDEX LAG sample (spec 92 criterion 1, FRESH ON EVERY
+/// INTEGRATION): reads the project's own event stream - the SAME `events.db` stream every other
+/// validate advisory above reads (mirrors [`read_model_drift`]'s own store-open shape, reused, not
+/// a second courier) - and hands it to [`rigger::ingest::graph_index_lag_sample`], the one authority
+/// that both derives the bounded candidate list and compares each against a fresh re-extraction.
+/// An absent sqlite store degrades to an empty sample (nothing recorded, so nothing can lag) rather
+/// than an error, exactly like [`read_model_drift`].
+fn read_graph_index_lag(
+    path: &str,
+    project: &str,
+    root: &str,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let sel = store_selection(None, None)?;
+    if sel.is_sqlite() && !Path::new(path).exists() {
+        return Ok(Vec::new());
+    }
+    let backend = resolve_store(&sel, path)?;
+    let store = Namespaced::new(backend.as_ref(), project);
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    Ok(rigger::ingest::graph_index_lag_sample(root, &events))
 }
 
 /// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
@@ -6672,7 +6894,10 @@ fn cmd_dash(args: &[String]) -> Res {
         if repo.is_empty() && !has_explicit_root {
             String::new()
         } else {
-            rigger::worktree::scratch_root_from_env(&repo, &workdir)
+            // The dash only READS this root (marker probes); it never places work under it,
+            // so it resolves without creating - creation is the step's, and creation is
+            // where the cache home's orphan-root reclaim runs.
+            rigger::worktree::scratch_root_path_from_env(&repo, &workdir)
         }
     };
     // A clone taken BEFORE the `provider` closure below moves the original: the self-reap
@@ -7352,9 +7577,18 @@ fn dash_attach_graph(inst: &rigger::registry::Instance) -> contextgraph::Graph {
 /// `rigger ground "<query>" [<k>]` - run the project's configured grounder (the
 /// same one the `run`/`serve` paths build from `defaults.grounder` via
 /// [`select_grounder`]) over the repo and print up to `k` (default 8) relevant
-/// references, one per line as `file:line: <text>`. Empty output when nothing is
-/// relevant. This is the CLI surface a native-workflow agent (which has Bash, not
-/// the MCP grounding tool) uses to ground.
+/// entities, one per line as `file:line: <text> (degree N)`. This is the CLI surface a
+/// native-workflow agent (which has Bash, not the MCP grounding tool) uses to ground.
+///
+/// The page (spec 92 criterion 3, RANKED BY INTENT) is `Grounder::ground_ranked` - ranked
+/// exact-name-match first, then by the matched token's tree-wide commonness, then the
+/// existing definition-over-reference tier, DEDUPLICATED so every call site of one function
+/// occupies a single line carrying its degree. Before printing it, `Grounder::has_strong_match`
+/// gates a WEAK query (`k > 0` and every match is tree-wide-common, or there is no match at
+/// all) to the honest "no entity matches strongly" line instead of noise; `k == 0` is the
+/// caller explicitly asking for nothing, so it stays silent rather than printing that line. A
+/// non-structural grounder (grep / nop) has no commonness concept, so it is always "strong" and
+/// prints its usual (undeduplicated, degree-0) rows - byte-for-byte the prior behavior.
 fn cmd_ground(args: &[String]) -> Res {
     let query = args
         .first()
@@ -7380,8 +7614,15 @@ fn cmd_ground(args: &[String]) -> Res {
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     let grounder = select_grounder(&name)?;
-    for r in grounder.ground(query, k) {
-        println!("{}:{}: {}", r.file, r.line, r.text);
+    if k > 0 && !grounder.has_strong_match(query, k) {
+        println!("no entity matches strongly for {query:?}");
+        return Ok(());
+    }
+    for r in grounder.ground_ranked(query, k) {
+        println!(
+            "{}:{}: {} (degree {})",
+            r.loc.file, r.loc.line, r.loc.text, r.degree
+        );
     }
     Ok(())
 }
@@ -7622,7 +7863,9 @@ fn liveness_ages_for_wave(
     if repo.is_empty() {
         return ages;
     }
-    let root = rigger::worktree::scratch_root_from_env(repo, workdir);
+    // A read-only report resolves the root without creating it: `rigger status` must never
+    // conjure a scratch root, nor run the orphan-root reclaim that creating one does.
+    let root = rigger::worktree::scratch_root_path_from_env(repo, workdir);
     for w in wave {
         let Some(path) = rigger::liveness::marker_path(&root, run_id, &w.id) else {
             continue;
@@ -8234,6 +8477,9 @@ fn cmd_reset(args: &[String]) -> Res {
         // for, reproduced independently before this fix landed).
         reset_build_cache(&loc)?;
     }
+    if modes.scratch_orphans {
+        reset_scratch_orphans()?;
+    }
     if modes.derived {
         // Decided up front, before compacting: deleting rows and reclaiming the file are
         // mechanics of the embedded log, not port operations, so `--derived` names the
@@ -8365,6 +8611,10 @@ struct ResetModes {
     /// a pure cache (always safe to cold-rebuild), so this mode carries no store-mutation
     /// implication at all and composes freely with `runs`/`derived`.
     build_cache: bool,
+    /// Reclaim every cache-home scratch root whose repo no longer exists - the on-demand
+    /// form of the sweep [`rigger::worktree::scratch_root_with`] runs whenever it creates a
+    /// default-placed root. Touches no store and composes with every other mode.
+    scratch_orphans: bool,
     /// The override for `--derived`'s live-writer guard (spec 71, criterion 2): skips
     /// [`refuse_derived_reset_if_live`] entirely rather than acting on what it would have found -
     /// the operator asked to compact WHATEVER the run machinery looks like, and this flag owns
@@ -8386,6 +8636,7 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
         runs: false,
         derived: false,
         build_cache: false,
+        scratch_orphans: false,
         force_live: false,
     };
     for arg in args {
@@ -8393,12 +8644,14 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
             "--runs" => &mut modes.runs,
             "--derived" => &mut modes.derived,
             "--build-cache" => &mut modes.build_cache,
+            "--scratch-orphans" => &mut modes.scratch_orphans,
             "--force-live" => &mut modes.force_live,
             other => {
                 return Err(format!(
-                    "reset: expected --runs and/or --derived and/or --build-cache (with an \
-                     optional --force-live), got {other}: rigger reset --runs | rigger reset \
-                     --derived [--force-live] | rigger reset --build-cache"
+                    "reset: expected --runs and/or --derived and/or --build-cache and/or \
+                     --scratch-orphans (with an optional --force-live), got {other}: rigger \
+                     reset --runs | rigger reset --derived [--force-live] | rigger reset \
+                     --build-cache | rigger reset --scratch-orphans"
                 )
                 .into())
             }
@@ -8408,11 +8661,12 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
         }
         *slot = true;
     }
-    if !modes.runs && !modes.derived && !modes.build_cache {
+    if !modes.runs && !modes.derived && !modes.build_cache && !modes.scratch_orphans {
         return Err(
             "reset: expected at least one mode: rigger reset --runs (prune the context \
-                    graph), rigger reset --derived (compact the event log), and/or rigger \
-                    reset --build-cache (reclaim the shared gate build cache)"
+                    graph), rigger reset --derived (compact the event log), rigger reset \
+                    --build-cache (reclaim the shared gate build cache), and/or rigger reset \
+                    --scratch-orphans (reclaim cache-home scratch roots whose repo is gone)"
                 .into(),
         );
     }
@@ -8439,6 +8693,32 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
 /// authority over this resource, and reports what happened via
 /// [`build_cache_reclaim_report`]: bytes reclaimed on success, or a loud, non-zero-exit
 /// refusal when a rigger-launched shared-cache build holds the guard.
+/// `rigger reset --scratch-orphans`: reclaim every root under `<cache-home>/rigger` whose
+/// repo no longer exists ([`rigger::worktree::sweep_orphan_scratch_roots`]) and report how
+/// many went. The directory is resolved from the ambient `XDG_CACHE_HOME`/`HOME` exactly as
+/// the default scratch-root rung resolves it, so the sweep and the placement can never name
+/// different directories.
+fn reset_scratch_orphans() -> Res {
+    let Some(cache_home) = rigger::driver::replay::cache_home_from(
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    ) else {
+        return Err(
+            "reset --scratch-orphans: neither XDG_CACHE_HOME nor HOME is set, so \
+                    there is no cache-home scratch directory to sweep"
+                .into(),
+        );
+    };
+    let dir = cache_home.join("rigger");
+    let reclaimed = rigger::worktree::sweep_orphan_scratch_roots(&dir);
+    println!(
+        "--scratch-orphans: reclaimed {reclaimed} scratch root(s) whose repo no longer exists \
+         under {}",
+        dir.display()
+    );
+    Ok(())
+}
+
 fn reset_build_cache(loc: &StoreLocation) -> Res {
     let repo = loc
         .dir
@@ -9540,6 +9820,22 @@ fn cmd_validate(args: &[String]) -> Res {
     if let Some(drift) = rigger::grounder::symbols::staleness(root.to_str().unwrap_or(".")) {
         eprintln!("{}", index_staleness_message(&drift));
     }
+    // GRAPH INDEX LAG advisory (spec 92 criterion 1, FRESH ON EVERY INTEGRATION): warn when a
+    // bounded sample of files `graph.db` has previously recorded disagrees with their live
+    // re-extraction - staleness the integration-time reindex above is supposed to prevent,
+    // surfaced before it is felt rather than discovered by a stale `graph --show` line (Design:
+    // "validate reports index lag ... as an advisory, so staleness is visible before it is
+    // felt"). A store-read failure just skips the advisory (never fails validate), exactly like
+    // the model-drift advisory above.
+    if let Ok(lagging) = read_graph_index_lag(
+        &db_path("events.db"),
+        &project_identity(),
+        root.to_str().unwrap_or("."),
+    ) {
+        if let Some(advisory) = graph_index_lag_advisory(&lagging) {
+            eprintln!("{advisory}");
+        }
+    }
     // LOG BLOAT advisory (spec 68, VALIDATE ADVISORIES): warn when the event log's derived
     // index is duplicated above threshold and name `rigger reset --derived`. Reuses the
     // store's OWN aggregate ([`rigger::eventstore::sqlite::Store::measure_derived_duplication`],
@@ -9730,6 +10026,25 @@ fn index_staleness_message(drift: &rigger::grounder::symbols::IndexDrift) -> Str
         rigger::grounder::symbols::store::index_path(".").display(),
         parts.join(", "),
     )
+}
+
+/// The GRAPH INDEX LAG advisory line (spec 92 criterion 1, FRESH ON EVERY INTEGRATION), rendered
+/// from an already-sampled list of files [`rigger::ingest::graph_index_lag_sample`] found
+/// disagreeing with `graph.db`'s own last recorded generation for them. `None` when the sample is
+/// empty - nothing to warn about, not merely nothing measured (the pure formatting stays separate
+/// from the gathering, exactly like [`index_staleness_message`] above). Names every lagging file
+/// (never just a bare count) and the fix, `rigger reindex`, so the same fix that keeps the
+/// `symbols` index fresh also closes the gap this advisory reports.
+fn graph_index_lag_advisory(lagging: &[String]) -> Option<String> {
+    if lagging.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "warning: the context graph has fallen behind {} sampled file(s) it previously indexed \
+         ({}). Run `rigger reindex <file>...` to refresh it.",
+        lagging.len(),
+        lagging.join(", "),
+    ))
 }
 
 /// The derived-index duplication FACTOR (rows per distinct key) above which `rigger validate`
@@ -11949,13 +12264,37 @@ unit=
 case "$worktree_base" in
     rigger-wt-*) unit="${worktree_base#rigger-wt-}" ;;
 esac
+# The relocated per-unit target (spec 89): a unit's build cache is the sibling
+# `cargo-target-<unit>` of its worktree under `<cache home>/rigger/<encoded repo root>`,
+# where the repo root is encoded byte by byte - alphanumerics and `-` kept, every other
+# byte as `_xx` hex - exactly as the binary encodes it, so this shell derivation and the
+# Rust one name the same directory.
+encode_repo_path() {
+    p="$1"; out=""
+    while [ -n "$p" ]; do
+        c=${p%"${p#?}"}; p=${p#?}
+        case "$c" in
+            [A-Za-z0-9-]) out="$out$c" ;;
+            *) out="$out$(printf '_%02x' "'$c")" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
 unit_release=
 unit_debug=
+relocated_release=
+relocated_debug=
 shared_debug=
 if [ -n "$git_common_dir" ]; then
     if [ -n "$unit" ]; then
         unit_release="$git_common_dir/../.rigger/tmp/cargo-target-$unit/release/rigger"
         unit_debug="$git_common_dir/../.rigger/tmp/cargo-target-$unit/debug/rigger"
+        repo_root=$(cd "$git_common_dir/.." 2>/dev/null && pwd -P)
+        if [ -n "$repo_root" ]; then
+            cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/rigger/$(encode_repo_path "$repo_root")"
+            relocated_release="$cache_root/cargo-target-$unit/release/rigger"
+            relocated_debug="$cache_root/cargo-target-$unit/debug/rigger"
+        fi
     fi
     shared_debug="$git_common_dir/../.rigger/tmp/cargo-target/debug/rigger"
 fi
@@ -11965,6 +12304,8 @@ for candidate in \
     "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/rigger}" \
     "./target/release/rigger" \
     "./target/debug/rigger" \
+    "$relocated_release" \
+    "$relocated_debug" \
     "$unit_release" \
     "$unit_debug" \
     "$shared_debug" \
@@ -12321,6 +12662,13 @@ fn cmd_setup(args: &[String]) -> Res {
     // nothing, and any pre-existing pre-commit hook is chained, never clobbered.
     let hook = install_precommit_hook(root)?;
     let provisioned = provision_shim(root)?;
+    // Register the operator's own MCP lookup surface (spec 92, criterion 4: IN EVERY
+    // SESSION'S HAND) - `.mcp.json` gains a `rigger` entry (`rigger mcp`) exposing
+    // rigger_peers/rigger_ground/rigger_graph to THIS session - and the PreToolUse hook
+    // that bounces a bare source grep toward those tools. Both drift-aware like every
+    // install above.
+    let mcp_registered = install_operator_mcp(root)?;
+    let lookup_hook = install_lookup_hook(root)?;
 
     // The --agents import (units 4 + 8 woven) is itself a REQUESTED change: it runs
     // before the silent-no-op check and always reports its outcome, so an import onto
@@ -12348,12 +12696,16 @@ fn cmd_setup(args: &[String]) -> Res {
         .iter()
         .any(|(_, outcome)| *outcome != InstallOutcome::AlreadyCurrent);
     let hook_changed = hook != InstallOutcome::AlreadyCurrent;
+    let mcp_changed = mcp_registered != InstallOutcome::AlreadyCurrent;
+    let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
     if !scaffold.changed()
         && !workflow_changed
         && !skill_changed
         && !hook_changed
         && !provisioned
         && !imported
+        && !mcp_changed
+        && !lookup_hook_changed
     {
         // A silent no-op: nothing drifted, so there is nothing to report.
         return Ok(());
@@ -12409,6 +12761,29 @@ fn cmd_setup(args: &[String]) -> Res {
         }
         InstallOutcome::AlreadyCurrent => {}
     }
+    match mcp_registered {
+        InstallOutcome::Installed => println!(
+            "registered the rigger MCP server (.mcp.json: rigger mcp) - this session now has \
+             rigger_peers/rigger_ground/rigger_graph tools, the same lookups a loop agent gets"
+        ),
+        InstallOutcome::Refreshed => {
+            println!("refreshed the drifted rigger MCP server entry (.mcp.json) to match this rigger build")
+        }
+        InstallOutcome::AlreadyCurrent => {}
+    }
+    match lookup_hook {
+        InstallOutcome::Installed => println!(
+            "installed the graph-first lookup hook - a Grep tool call or `grep` command over \
+             src/, tests/, or workflows/ now bounces toward rigger_ground/rigger_graph (add \
+             --literal to a `grep` command to proceed anyway)"
+        ),
+        InstallOutcome::Refreshed => println!(
+            "installed the graph-first lookup hook into the existing settings.json - a Grep \
+             tool call or `grep` command over src/, tests/, or workflows/ now bounces toward \
+             rigger_ground/rigger_graph (add --literal to a `grep` command to proceed anyway)"
+        ),
+        InstallOutcome::AlreadyCurrent => {}
+    }
     // The starter-fleet pointer fires exactly when default agents were NEWLY
     // scaffolded (spec 05 line 57 clause 2): the per-artifact report's `new_agents`
     // is the scaffolded-new signal.
@@ -12420,6 +12795,70 @@ fn cmd_setup(args: &[String]) -> Res {
     // quiet and never re-prints it (spec 05 crit 4: a rerun prints nothing surprising).
     print_orientation();
     Ok(())
+}
+
+/// The matcher and command the graph-first lookup hook installs under `PreToolUse` (spec
+/// 92, criterion 4: IN EVERY SESSION'S HAND). Fires on the built-in `Grep` tool and on
+/// `Bash` (a `grep` command may be buried inside an arbitrary shell command) - the real
+/// narrowing (is this actually a grep? does it target src/, tests/, or workflows/? was
+/// `--literal` given?) happens in [`grep_guard_decision`], which `rigger grep-guard` (the
+/// installed command) runs, so a Bash call that is not a grep at all is a silent allow,
+/// never a false bounce.
+const GREP_GUARD_MATCHER: &str = "Grep|Bash";
+const GREP_GUARD_COMMAND: &str = "rigger grep-guard";
+
+/// Install the graph-first lookup hook (spec 92, criterion 4): merges the PreToolUse
+/// hook that runs `rigger grep-guard` into `.claude/settings.json`. Drift-aware and
+/// non-destructive like every other `rigger setup` install (see
+/// [`hooks::install_pretooluse_hook`]): idempotent, and any pre-existing PreToolUse hook
+/// (for a different matcher, a different tool, something a person or another tool
+/// installed) is preserved untouched.
+///
+/// The same three-state contract every other `rigger setup` install artifact has:
+/// absent settings.json -> `Installed` (a fresh file, our block its first content),
+/// an existing settings.json gaining the block (fresh OR foreign content already
+/// there) -> `Refreshed` (the FILE existed even though our own array entry did not,
+/// mirroring [`install_operator_mcp`]'s `existed` distinction), already carrying the
+/// block -> `AlreadyCurrent` (a silent no-op).
+fn install_lookup_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    let claude_dir = root.join(".claude");
+    std::fs::create_dir_all(&claude_dir)?;
+    let settings_path = claude_dir.join("settings.json");
+    let existed = settings_path.exists();
+    let existing = std::fs::read(&settings_path).unwrap_or_default();
+    let merged = hooks::install_pretooluse_hook(&existing, GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)?;
+    if merged == existing {
+        return Ok(InstallOutcome::AlreadyCurrent);
+    }
+    std::fs::write(&settings_path, &merged)?;
+    Ok(if existed {
+        InstallOutcome::Refreshed
+    } else {
+        InstallOutcome::Installed
+    })
+}
+
+/// Install the operator's own MCP lookup surface (spec 92, criterion 4): merges a
+/// `rigger` entry (`rigger mcp`, see [`cmd_mcp`]) into `.mcp.json`'s `mcpServers`, so the
+/// interactive session gets `rigger_peers`/`rigger_ground`/`rigger_graph` as tools -  the
+/// same three lookups a loop agent has - instead of a shell. Drift-aware like every other
+/// install (see [`hooks::install_mcp_server`]): a stale entry from an older build
+/// self-heals, every OTHER server entry and top-level key in `.mcp.json` survives
+/// untouched.
+fn install_operator_mcp(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    let mcp_path = root.join(".mcp.json");
+    let existed = mcp_path.exists();
+    let existing = std::fs::read(&mcp_path).unwrap_or_default();
+    let merged = hooks::install_mcp_server(&existing, "rigger", "rigger", &["mcp"])?;
+    if merged == existing {
+        return Ok(InstallOutcome::AlreadyCurrent);
+    }
+    std::fs::write(&mcp_path, &merged)?;
+    Ok(if existed {
+        InstallOutcome::Refreshed
+    } else {
+        InstallOutcome::Installed
+    })
 }
 
 /// Parsed `rigger setup` options. Setup takes no positional arguments; the only
@@ -12657,6 +13096,12 @@ fn docs_context() -> rigger::docs::DocsContext {
         }),
         watch_poll_interval_secs: watch::DEFAULT_INTERVAL_SECS,
         reject_recurrence_diagnose_threshold: watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD,
+        // Spec 92, criterion 4 (IN EVERY SESSION'S HAND): the discipline docs' "Looking
+        // things up" section states the graph-first rule for a human reader by
+        // interpolating the SAME message `rigger grep-guard` (the installed hook's
+        // command) denies with - never a hand-copy that could drift from what the hook
+        // actually enforces.
+        grep_guard_message: GREP_GUARD_MESSAGE.to_string(),
     }
 }
 
@@ -12935,6 +13380,347 @@ fn git_repo_at(root: &Path) -> String {
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
+}
+
+/// `rigger mcp` (spec 92, criterion 4: IN EVERY SESSION'S HAND): the operator's own
+/// read-only MCP surface, the one `rigger setup` registers into `.mcp.json` for the
+/// interactive Claude Code session. Unlike `rigger serve`/`cmd_serve` (the
+/// workflow-driver bridge a loop run spawns, which anchors a run branch and creates unit
+/// worktrees the moment it starts), this command has no run to drive and touches
+/// NOTHING on disk beyond opening the existing event store, side-car, grounder, and
+/// context graph read-only: it answers `rigger_peers`, `rigger_ground`, and
+/// `rigger_graph` over stdio, the same three lookups a loop agent has (`rigger_peers`
+/// through the shim's proxy to `rigger serve`; `ground`/`graph --show`/`graph --around`
+/// as the CLI commands its persona names) - given to an interactive session as tools
+/// instead of a shell.
+///
+/// Served through the SAME [`mcpserver::Server`] the workflow-driver bridge (`cmd_serve`
+/// above) uses, wired with [`Server::with_grounder`](mcpserver::Server::with_grounder) and
+/// [`Server::with_graph`](mcpserver::Server::with_graph) exactly like that call site already
+/// wires `with_graph`/`with_progress` - ONE read loop, JSON-RPC dispatch, and ok/err envelope
+/// answering both tool surfaces, rather than a second small stdio loop reaching for the
+/// concrete grounder/`Projector` across the crate boundary. `rigger_next`/`rigger_result`
+/// need a live `Driver`, but this surface never calls them (wiring a grounder is what marks a
+/// `Server` as the lookup-only surface - see [`mcpserver::Server`]'s own doc comment) - a
+/// freshly constructed, never-`spawn`ed one satisfies the constructor with no side effects.
+///
+/// Grounder resolution is NEVER propagated with `?`: a misconfigured/unavailable grounder
+/// (no `defaults.grounder` pinned on a `--no-default-features` build with no `symbols`
+/// feature, spec 57's own loud-refusal contract) must not take the WHOLE server down -
+/// `rigger_peers`/`rigger_graph` have nothing to do with grounding and must keep answering.
+/// A resolution failure is instead recorded via `with_grounder_unavailable`, so only
+/// `rigger_ground` itself reports it, lazily, exactly as the pre-fix operator surface did.
+fn cmd_mcp(_args: &[String]) -> Res {
+    let (loc, selection) = require_store_dir()?;
+    let backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let peers = Sidecar::start(&store, 0, Filter::default())?;
+    let grounder_name = config::load(".")
+        .map(|cfg| cfg.workflow.defaults.grounder)
+        .unwrap_or_default();
+    let grounder = select_grounder(&grounder_name);
+    let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+    let driver = rigger::driver::workflow::Driver::new();
+    let mut server =
+        mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers).with_graph(&graph);
+    server = match &grounder {
+        Ok(g) => server.with_grounder(g.as_ref()),
+        Err(e) => server.with_grounder_unavailable(e.to_string()),
+    };
+    server.run(std::io::stdin().lock(), std::io::stdout().lock())?;
+    Ok(())
+}
+
+/// A `rigger grep-guard` decision: pass the tool call through untouched, pass it through
+/// with its `tool_input` rewritten first, or block it with the reason shown to the agent
+/// (spec 92, criterion 4: the graph-first lookup hook's stated message).
+#[derive(Debug, PartialEq, Eq)]
+enum GuardDecision {
+    Allow,
+    /// Allow, but only after the real shell runs the REWRITTEN `tool_input` carried here in
+    /// place of the one the agent sent - spec 92's HOOK SCOPE amendment: the `--literal`
+    /// escape-hatch marker has no meaning to a real `grep` invocation (it is not one of
+    /// grep's own flags), so the hook strips it before the command reaches a real shell,
+    /// rather than passing it through to fail there instead.
+    AllowWithUpdatedInput(serde_json::Value),
+    Deny(String),
+}
+
+/// The graph-first lookup hook's stated bounce message (spec 92, criterion 4's Design
+/// text, quoted verbatim so the installed hook and this decision never drift apart).
+const GREP_GUARD_MESSAGE: &str =
+    "use rigger_ground / rigger_graph for code lookups; grep is for literal text - add \
+     `--literal` to proceed";
+
+/// The pure decision core of `rigger grep-guard` (spec 92, criterion 4, HOOK SCOPE
+/// amendment d-spec92-hook-no-target-axis): given the PreToolUse tool name and its raw
+/// `tool_input`, decide whether this call should bounce toward `rigger_ground`/
+/// `rigger_graph`, pass through untouched, or pass through with its `tool_input` rewritten
+/// first. The hook has NO target axis - a shell command's real search target is
+/// undecidable from its text alone (`..`, `*`, `~`, `$(pwd)`, a redirection, a symlink all
+/// defeat a path-based guess) - so every `Grep` tool call and every `grep`-invoking `Bash`
+/// command is denied inside a rigger project, with no path/target ever inspected; the
+/// FORMER guarded-tree apparatus (a `GREP_GUARDED_TREES` allowlist of trees, and the path-
+/// containment machinery built on it) is retired outright, not kept beside this rule. Pure
+/// (no I/O), so the decision is unit-testable against synthesized hook payloads without
+/// spawning a real hook process or touching a real filesystem. `--literal` on a `Bash`
+/// `grep` command is the sole, deliberate escape hatch (Design's CONSTRAINTS WALK: "a
+/// literal-text lookup - `--literal` passes the hook"; the HOOK SCOPE amendment: the hook
+/// STRIPS the marker from the command it allows, via `updatedInput`, because grep itself
+/// has no such flag); the built-in `Grep` tool carries no such flag slot, so a genuinely
+/// literal search through it is `grep --literal` via `Bash` instead - "grep is for literal
+/// text - add `--literal` to proceed" names exactly that path.
+fn grep_guard_decision(tool_name: &str, tool_input: &serde_json::Value) -> GuardDecision {
+    match tool_name {
+        "Grep" => GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+        "Bash" => {
+            let command = tool_input
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            if !command_invokes_grep(command) {
+                return GuardDecision::Allow;
+            }
+            if shell_command_words(command).any(|w| w == "--literal") {
+                let mut updated_input = tool_input.clone();
+                if let Some(obj) = updated_input.as_object_mut() {
+                    obj.insert(
+                        "command".to_string(),
+                        serde_json::Value::String(strip_literal_marker(command)),
+                    );
+                }
+                return GuardDecision::AllowWithUpdatedInput(updated_input);
+            }
+            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string())
+        }
+        _ => GuardDecision::Allow,
+    }
+}
+
+/// Splits a Bash command line into real shell WORDS, PAIRED with each word's `[start, end)`
+/// BYTE range in the raw `command` text - the one scan [`shell_command_words`] (word values
+/// only) and [`strip_literal_marker`] (excising a specific occurrence of the `--literal`
+/// marker from the real command text) both build on, so the two can never drift on what a
+/// "word" is (one mutation authority, not a value-only walk here and a second span-tracking
+/// walk maintained in parallel elsewhere). Word VALUES are already resolved to what a real
+/// shell would pass as argv: ONE coherent walk over the raw command string, not two disjoint
+/// passes (reject-fix round 5: sdet-u92c4r4-backslash-newline-continuation-still-bypasses-
+/// the-guard). A prior version split the raw text on delimiters FIRST and only then resolved
+/// quoting/escaping per token, so a delimiter a real shell would not treat as a separator - a
+/// backslash-newline line continuation - permanently split one command name into two dead
+/// fragments before the escape logic ever ran. This walk instead tracks quote state and finds
+/// word boundaries in the SAME scan: outside any quote, whitespace and the metacharacters
+/// that can fuse two commands (or a command and a redirected path) together with no
+/// whitespace between them - a pipe `|`, a semicolon `;`, `&` (backgrounding/`&&`), `(` `)`
+/// (subshells and `$( )` command substitution), `<` `>` (input/output redirection - reject-
+/// fix round 5: sdet-u92c4r5-redirect-metachar-fuses-guarded-path-first-segment, spec 92's
+/// HOOK SCOPE amendment names `; | & ( ) < >` verbatim), a backtick (the older command-
+/// substitution form), and `$` itself - end the current word (reject-fix adj-u92c4r2-verdict-
+/// reject-shell-metachar-bypass: plain `str::split_whitespace` hid `grep` fused to a
+/// neighbor by one of these with no separating whitespace); single quotes bracket a LITERAL
+/// run (no escape has meaning inside them); double quotes bracket a run where only `\\`,
+/// `\"`, `` \` ``, `\$` and a line continuation are escapes (any other backslash stays
+/// literal); and outside any quote a backslash escapes the very next character LITERALLY -
+/// including a delimiter, which is why an escaped delimiter can no longer split a word -
+/// except a backslash immediately followed by a newline, which vanishes with NO separator
+/// and no output, exactly the join point a real shell removes before word splitting ever
+/// sees it. Quoting can open and close more than once within one word - `g''rep` is `g` + an
+/// EMPTY single-quoted run + `rep` = `grep`, the same word `"grep"`, `'grep'`, and `gr\ep`
+/// each also resolve to; its SPAN still covers the whole raw run (`g''rep`, six raw bytes),
+/// even though the resolved word value is the four-byte `grep`, so excising it by span
+/// removes exactly what was written, quoting included. Quote state resets at each new word
+/// (coarse by the same design this guard already accepts: a quoted metacharacter still ends
+/// the word, the rare false positive `--literal` exists to pass through) - the point is that
+/// a real invocation, however it wraps a line or spells its command name, can now never hide
+/// from the scan.
+fn shell_command_word_spans(command: &str) -> Vec<(String, std::ops::Range<usize>)> {
+    let mut spans: Vec<(String, std::ops::Range<usize>)> = Vec::new();
+    let mut current = String::new();
+    let mut start = 0usize;
+    let mut quote: Option<char> = None;
+    let mut chars = command.char_indices().peekable();
+    while let Some((idx, c)) = chars.next() {
+        if current.is_empty() && quote.is_none() {
+            // Track where the word IN PROGRESS began in the raw text - reset on every char
+            // seen while there is no word yet (a delimiter between words, or the true first
+            // char of the next one); the last assignment before `current` stops being empty
+            // is exactly that word's start.
+            start = idx;
+        }
+        match quote {
+            Some('\'') => {
+                if c == '\'' {
+                    quote = None;
+                } else {
+                    current.push(c);
+                }
+            }
+            Some(_) => {
+                // Inside double quotes: backslash escapes only \\, \", \$, a backtick, or (like
+                // outside any quote) a line continuation - a backslash immediately followed by a
+                // newline vanishes with no separator.
+                if c == '"' {
+                    quote = None;
+                } else if c == '\\' && matches!(chars.peek(), Some((_, '\\' | '"' | '$' | '`'))) {
+                    let (_, next) = chars.next().expect("peeked Some above");
+                    current.push(next);
+                } else if c == '\\' && matches!(chars.peek(), Some((_, '\n'))) {
+                    chars.next();
+                } else {
+                    current.push(c);
+                }
+            }
+            None => match c {
+                '\'' | '"' => quote = Some(c),
+                '\\' if matches!(chars.peek(), Some((_, '\n'))) => {
+                    // Line continuation (reject-fix round 5): removed with zero separator,
+                    // so it can never again split one word into two dead fragments.
+                    chars.next();
+                }
+                '\\' => {
+                    if let Some((_, next)) = chars.next() {
+                        current.push(next);
+                    }
+                }
+                _ if c.is_whitespace() || "|;&()`$<>".contains(c) => {
+                    if !current.is_empty() {
+                        spans.push((std::mem::take(&mut current), start..idx));
+                    }
+                }
+                _ => current.push(c),
+            },
+        }
+    }
+    if !current.is_empty() {
+        spans.push((current, start..command.len()));
+    }
+    spans
+}
+
+/// Word VALUES only - see [`shell_command_word_spans`], the one scan both this and
+/// [`strip_literal_marker`] build on.
+fn shell_command_words(command: &str) -> std::vec::IntoIter<String> {
+    shell_command_word_spans(command)
+        .into_iter()
+        .map(|(word, _)| word)
+        .collect::<Vec<_>>()
+        .into_iter()
+}
+
+/// Removes every raw occurrence of the `--literal` escape-hatch marker from `command` (spec
+/// 92's HOOK SCOPE amendment: "the hook removes that marker from the command it allows...
+/// because grep itself has no such flag" - GNU grep really does reject it: `unrecognized
+/// option '--literal'`, exit 2), using the EXACT span [`shell_command_word_spans`] resolved
+/// each occurrence to, not a naive substring replace - so a quoted or backslash-spliced
+/// spelling of the marker (`'--literal'`, `--liter''al`) is excised by its real extent in
+/// the raw text, never a marker that merely happens to appear inside a later argument like
+/// the search pattern. Removes exactly one adjacent whitespace byte together with each
+/// marker (the one immediately before it, when there is one, else the one immediately after)
+/// so the surrounding words are neither glued together nor left double-spaced -
+/// `grep --literal pattern` becomes `grep pattern`, never `grep  pattern`. Everything else in
+/// the command - pipes, redirections, quoting, the pattern itself - is untouched. Multiple
+/// occurrences are removed in reverse text order so an earlier removal never invalidates a
+/// later span's byte offsets.
+fn strip_literal_marker(command: &str) -> String {
+    let mut result = command.to_string();
+    for (word, range) in shell_command_word_spans(command).into_iter().rev() {
+        if word != "--literal" {
+            continue;
+        }
+        let mut start = range.start;
+        let mut end = range.end;
+        if start > 0
+            && result
+                .as_bytes()
+                .get(start - 1)
+                .is_some_and(u8::is_ascii_whitespace)
+        {
+            start -= 1;
+        } else if result
+            .as_bytes()
+            .get(end)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            end += 1;
+        }
+        result.replace_range(start..end, "");
+    }
+    result
+}
+
+/// The PATH BASENAME of one [`shell_command_words`] word - the substring after its last `/`,
+/// or the whole word when it has none - the same notion a shell uses to resolve a command
+/// name regardless of how it was invoked.
+fn word_basename(word: &str) -> &str {
+    match word.rsplit_once('/') {
+        Some((_, base)) => base,
+        None => word,
+    }
+}
+
+/// True when a Bash command line contains `grep` as a whole [`shell_command_words`] word's
+/// PATH BASENAME (reject-fix round 5, adv-u92c4-r4-path-qualified-grep-bypasses-command-check:
+/// `/usr/bin/grep`, `./grep`, and a relative `bin/grep` all name the same binary a bare
+/// `grep` does, so a directory prefix must not defeat the match), not a substring of a longer
+/// word like `zgrep` or `--grep-something`, and not hidden by fusion to an adjacent command
+/// via `|`/`;`/`&`/`$( )`/a backtick with no surrounding whitespace (adj-u92c4r2-verdict-
+/// reject-shell-metachar-bypass) - the literal command name the Design text names ("a Grep or
+/// a `grep`"), never `rg`/`egrep`/`fgrep` or any other tool this criterion's stated scope
+/// does not cover.
+fn command_invokes_grep(command: &str) -> bool {
+    shell_command_words(command).any(|w| word_basename(&w) == "grep")
+}
+
+/// `rigger grep-guard`: the command the installed PreToolUse hook runs (see
+/// [`install_lookup_hook`]). Reads ONE Claude Code PreToolUse payload as JSON on stdin
+/// (`{"tool_name", "tool_input"}`), writes a `hookSpecificOutput.permissionDecision`
+/// verdict to stdout (an `updatedInput` alongside an "allow" verdict when the decision
+/// rewrote the command - see [`GuardDecision::AllowWithUpdatedInput`]), and always exits 0 -
+/// a hook's own exit code is a SEPARATE failure channel from its JSON decision, so this
+/// command reports "deny" through the JSON body alone, never a nonzero exit (a transport
+/// hiccup stays tellable apart from a deliberate block). Inert outside a rigger project (no
+/// [`RIGGER_DIR`] in the current tree) - malformed or unreadable stdin degrades to an allow
+/// rather than erroring, so the hook never blocks a tool call it failed to understand. This
+/// command does no I/O beyond stdin/stdout and the [`RIGGER_DIR`] check: since the hook has
+/// no target axis (d-spec92-hook-no-target-axis), the pure [`grep_guard_decision`] needs no
+/// resolved project root to decide against.
+fn cmd_grep_guard(_args: &[String]) -> Res {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    let decision = if !Path::new(RIGGER_DIR).is_dir() {
+        GuardDecision::Allow
+    } else {
+        let payload: serde_json::Value =
+            serde_json::from_str(input.trim()).unwrap_or_else(|_| serde_json::json!({}));
+        let tool_name = payload
+            .get("tool_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let tool_input = payload
+            .get("tool_input")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        grep_guard_decision(tool_name, &tool_input)
+    };
+    let out = match decision {
+        GuardDecision::Allow => serde_json::json!({}),
+        GuardDecision::AllowWithUpdatedInput(updated_input) => serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "updatedInput": updated_input,
+            }
+        }),
+        GuardDecision::Deny(reason) => serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }),
+    };
+    println!("{out}");
+    Ok(())
 }
 
 fn print_run_state(rs: &RunState, base: &str) {
@@ -14138,6 +14924,97 @@ mod tests {
     /// criterion OWNS the candidate order and its rendering in the template (c2 owns the
     /// end-to-end fixture-driven behavior, not this test).
     #[test]
+    fn precommit_block_finds_the_relocated_unit_target_with_the_binary_s_own_path_encoding() {
+        // Spec 89 moved a unit's build cache to `<cache home>/rigger/<encoded repo>/
+        // cargo-target-<unit>`; the hook must look there FIRST among the unit-derived
+        // candidates (before the pre-relocation `.rigger/tmp` paths), and its shell encoding
+        // of the repo root must equal `liveness::marker_filename`'s byte for byte, or the two
+        // sides name different directories and the chain silently falls back to PATH.
+        let hook = compose_precommit(None);
+        let loop_start = hook.find("for candidate in").unwrap();
+        let body_start = loop_start + "for candidate in".len();
+        let loop_end = body_start + hook[body_start..].find("; do").unwrap();
+        let candidates = &hook[body_start..loop_end];
+        let local_debug = candidates.find("./target/debug/rigger").unwrap();
+        let relocated_release = candidates
+            .find("$relocated_release")
+            .expect("the relocated per-unit release candidate is tried");
+        let relocated_debug = candidates
+            .find("$relocated_debug")
+            .expect("the relocated per-unit debug candidate is tried");
+        let unit_release = candidates.find("$unit_release").unwrap();
+        assert!(
+            local_debug < relocated_release
+                && relocated_release < relocated_debug
+                && relocated_debug < unit_release,
+            "relocated candidates sit after the local target and before the pre-relocation \
+             unit paths; got:\n{candidates}"
+        );
+        assert!(
+            hook.contains("XDG_CACHE_HOME:-$HOME/.cache") && hook.contains("/rigger/"),
+            "the relocated root honors XDG_CACHE_HOME and nests under rigger/; got:\n{hook}"
+        );
+
+        let fn_start = hook.find("encode_repo_path() {").unwrap();
+        let fn_end = fn_start + hook[fn_start..].find("\n}\n").unwrap() + "\n}\n".len();
+        let shell_fn = &hook[fn_start..fn_end];
+        for path in [
+            "/home/byran/Documents/Development/rigger",
+            "/srv/build farm/proj.x_y-1",
+            "/tmp/a~b@c",
+        ] {
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("{shell_fn}\nencode_repo_path \"$1\"",))
+                .arg("sh")
+                .arg(path)
+                .output()
+                .expect("sh runs the hook's encoder");
+            let encoded = String::from_utf8(out.stdout).unwrap();
+            assert_eq!(
+                encoded,
+                rigger::liveness::marker_filename(path).unwrap(),
+                "shell and Rust encodings must agree for {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_workflow_driver_tells_a_worker_its_units_build_location() {
+        // Spec 77 criterion 1 through the editor's workflow driver: the shipped driver reads
+        // the wave's `cargo_target_dir` and makes exporting it a hard rule for every cargo
+        // command inside the worktree, so a worker never builds a `target/` in its tree.
+        assert!(
+            RIGGER_WORKFLOW.contains("req.cargo_target_dir"),
+            "the driver reads the build location off the wave item"
+        );
+        assert!(
+            RIGGER_WORKFLOW.contains("BUILD LOCATION (hard rule)")
+                && RIGGER_WORKFLOW.contains("export CARGO_TARGET_DIR='${req.cargo_target_dir}'"),
+            "the worker prompt names the export as a hard rule"
+        );
+        let rule = RIGGER_WORKFLOW.find("BUILD LOCATION (hard rule)").unwrap();
+        let heartbeat = RIGGER_WORKFLOW
+            .find("buildLocation +\n    heartbeat +")
+            .unwrap();
+        assert!(
+            rule < heartbeat,
+            "the rule is composed into the prompt ahead of the heartbeat and progress notes"
+        );
+        // The courier's structured return is the only way a wave reaches the driver, and a
+        // key the schema does not REQUIRE is a key the courier can drop while retyping: the
+        // schema requires every field the worker's instructions are built from.
+        let required = RIGGER_WORKFLOW
+            .find("required: ['id', 'unit', 'stage', 'dir', 'max_wall_clock', 'marker_path', 'cargo_target_dir']")
+            .expect("the wave-item schema requires the driver-critical fields");
+        let items = RIGGER_WORKFLOW.find("wave: {").unwrap();
+        assert!(
+            items < required,
+            "the requirement sits on the wave items, not the top level"
+        );
+    }
+
+    #[test]
     fn precommit_block_resolves_a_tree_built_binary_before_path() {
         let hook = compose_precommit(None);
 
@@ -14909,6 +15786,9 @@ mod tests {
             ctx.reject_recurrence_diagnose_threshold,
             watch::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD
         );
+        // Spec 92, criterion 4: the discipline docs' lookup-hook message is read from the
+        // SAME const `rigger grep-guard` decides against, not a hand copy.
+        assert_eq!(ctx.grep_guard_message, GREP_GUARD_MESSAGE);
     }
 
     /// Spec 20, unit 1 (the golden fact test): known code facts appear VERBATIM in BOTH
@@ -14940,6 +15820,17 @@ mod tests {
             assert!(
                 out.contains(spec::ShapeRule::MultiBehavior.name()),
                 "spec-shape rule not verbatim in render"
+            );
+            // Spec 92, criterion 4: the graph-first lookup hook's stated bounce message
+            // appears verbatim - the skill's lookup section can never drift from what
+            // `rigger grep-guard` actually enforces.
+            assert!(
+                out.contains(GREP_GUARD_MESSAGE),
+                "grep-guard message not verbatim in render"
+            );
+            assert!(
+                out.contains("rigger_ground") && out.contains("rigger_graph"),
+                "the operator's own MCP lookup tool names not named in render"
             );
         }
         // The two outputs render from the ONE context: the skill also carries its loadable
@@ -23338,6 +24229,30 @@ mod tests {
         );
     }
 
+    // --- Spec 92 criterion 1, FRESH ON EVERY INTEGRATION: the GRAPH INDEX LAG advisory's pure
+    // formatter (the sample itself is `rigger::ingest::graph_index_lag_sample`, tested beside its
+    // own implementation) ---
+
+    #[test]
+    fn graph_index_lag_advisory_names_every_lagging_file_and_the_fix() {
+        let lagging = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let msg = graph_index_lag_advisory(&lagging).expect("a non-empty sample draws an advisory");
+        assert!(msg.starts_with("warning:"), "advisory: {msg}");
+        assert!(
+            msg.contains("src/a.rs") && msg.contains("src/b.rs"),
+            "the message must name every lagging file: {msg}"
+        );
+        assert!(
+            msg.contains("rigger reindex"),
+            "the message must name the fix: {msg}"
+        );
+    }
+
+    #[test]
+    fn graph_index_lag_advisory_is_none_when_the_sample_is_empty() {
+        assert_eq!(graph_index_lag_advisory(&[]), None);
+    }
+
     #[test]
     fn bloat_advisory_is_none_at_or_below_the_threshold_and_named_above_it() {
         // Exactly at the threshold: not yet a warning-worthy signal.
@@ -24477,6 +25392,31 @@ mod tests {
     /// a duplicate, and (matching every other mode) never implied on its own from a bare
     /// `reset` with no flags at all.
     #[test]
+    fn reset_modes_parses_scratch_orphans_alone_and_composed_and_rejects_duplicates() {
+        let modes = reset_modes(&["--scratch-orphans".to_string()]).expect("alone");
+        assert!(modes.scratch_orphans && !modes.runs && !modes.derived && !modes.build_cache);
+        let modes = reset_modes(&["--build-cache".to_string(), "--scratch-orphans".to_string()])
+            .expect("composed with another mode");
+        assert!(modes.scratch_orphans && modes.build_cache);
+        let err = reset_modes(&[
+            "--scratch-orphans".to_string(),
+            "--scratch-orphans".to_string(),
+        ])
+        .err()
+        .expect("a duplicate is refused")
+        .to_string();
+        assert!(err.contains("more than once"), "{err}");
+        let err = reset_modes(&["--bogus".to_string()])
+            .err()
+            .expect("unknown")
+            .to_string();
+        assert!(
+            err.contains("--scratch-orphans"),
+            "the usage names the new mode: {err}"
+        );
+    }
+
+    #[test]
     fn reset_modes_parses_build_cache_alone_and_composed_and_rejects_duplicates() {
         let modes = reset_modes(&["--build-cache".to_string()]).expect("--build-cache alone");
         assert!(modes.build_cache && !modes.runs && !modes.derived);
@@ -25194,6 +26134,406 @@ mod tests {
              architecture-reviewer, planner, rust-engineer, sdet, sdet-author, plus any \
              others); checked {checked}",
             agents_dir.display()
+        );
+    }
+
+    // =======================================================================================
+    // Spec 92, criterion 4 (IN EVERY SESSION'S HAND): `rigger setup` registers the operator's
+    // own MCP lookup surface and the graph-first PreToolUse hook, and `rigger grep-guard`
+    // bounces a bare source grep.
+    // =======================================================================================
+
+    /// `install_operator_mcp` is drift-aware and re-runnable, the same three-state contract
+    /// every other `rigger setup` install artifact has: absent -> Installed (fresh write),
+    /// drifted (an older build's entry, or a hand edit) -> Refreshed, already matching ->
+    /// AlreadyCurrent (a silent no-op, not even an mtime bump).
+    #[test]
+    fn install_operator_mcp_installs_refreshes_and_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mcp_path = root.join(".mcp.json");
+
+        assert_eq!(
+            install_operator_mcp(root).unwrap(),
+            InstallOutcome::Installed,
+            "the first install reports a fresh install"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        assert_eq!(v["mcpServers"]["rigger"]["command"], "rigger");
+        assert_eq!(v["mcpServers"]["rigger"]["args"][0], "mcp");
+
+        assert_eq!(
+            install_operator_mcp(root).unwrap(),
+            InstallOutcome::AlreadyCurrent,
+            "a rerun on an up-to-date .mcp.json changes nothing"
+        );
+
+        // Simulate drift: an older build (or a hand edit) wrote a different command.
+        std::fs::write(
+            &mcp_path,
+            r#"{"mcpServers":{"rigger":{"command":"/old/stale/path","args":[]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            install_operator_mcp(root).unwrap(),
+            InstallOutcome::Refreshed,
+            "a drifted entry self-heals"
+        );
+        let v2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mcp_path).unwrap()).unwrap();
+        assert_eq!(v2["mcpServers"]["rigger"]["command"], "rigger");
+    }
+
+    /// `install_lookup_hook` has the same three-state contract, and (unlike the SessionStart
+    /// merge, whose event only ever holds rigger's own entry) must preserve an UNRELATED
+    /// PreToolUse hook a machine already carries under a different matcher/command.
+    #[test]
+    fn install_lookup_hook_installs_refreshes_and_is_a_noop_and_preserves_foreign_hooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let settings_path = root.join(".claude").join("settings.json");
+        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &settings_path,
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"prettier --write"}]}]}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            install_lookup_hook(root).unwrap(),
+            InstallOutcome::Refreshed,
+            "the settings file already existed, so adding our hook to it is a refresh"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+        let blocks = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert!(
+            blocks
+                .iter()
+                .any(|b| b["hooks"][0]["command"] == "prettier --write"),
+            "the pre-existing foreign hook must survive"
+        );
+        assert!(
+            blocks
+                .iter()
+                .any(|b| b["hooks"][0]["command"] == GREP_GUARD_COMMAND
+                    && b["matcher"] == GREP_GUARD_MATCHER),
+            "our lookup hook must be installed"
+        );
+
+        assert_eq!(
+            install_lookup_hook(root).unwrap(),
+            InstallOutcome::AlreadyCurrent,
+            "a rerun changes nothing"
+        );
+    }
+
+    /// Asserts `decision` is [`GuardDecision::AllowWithUpdatedInput`] carrying a `command`
+    /// with the `--literal` marker genuinely gone (not merely a bare `Allow`, which round 5
+    /// wrongly accepted: the marker then reached a real shell unchanged, and real GNU grep
+    /// rejects it outright - `unrecognized option '--literal'`, exit 2), then returns that
+    /// stripped command string so a caller can pin further properties of it (redirections,
+    /// the pattern, an exact expected value).
+    fn assert_allows_with_literal_stripped(
+        decision: GuardDecision,
+        original_command: &str,
+    ) -> String {
+        match decision {
+            GuardDecision::AllowWithUpdatedInput(updated) => {
+                let stripped = updated["command"]
+                    .as_str()
+                    .unwrap_or_else(|| {
+                        panic!("updatedInput must carry a string `command`; got {updated}")
+                    })
+                    .to_string();
+                assert!(
+                    !shell_command_words(&stripped).any(|w| w == "--literal"),
+                    "the stripped command must carry no --literal marker for {original_command:?}; \
+                     got {stripped:?}"
+                );
+                stripped
+            }
+            other => panic!(
+                "expected AllowWithUpdatedInput stripping --literal from {original_command:?}, \
+                 got {other:?}"
+            ),
+        }
+    }
+
+    /// The pure decision core, d-spec92-hook-no-target-axis (spec 92's Design amended after
+    /// round 5 to retire the guarded-tree apparatus): a `Bash` `grep` invocation is denied
+    /// with the stated message NO MATTER WHAT it targets - a guarded tree from the old rule
+    /// (`src/`), a tree that rule never covered (`docs/`), a single unrelated file
+    /// (`README.md`), the whole-project convention (`.`), an ancestor (`..`), or an absolute
+    /// path nowhere near this project - because the hook inspects only whether the command
+    /// INVOKES grep, never what it points at. The SAME command with `--literal` passes for
+    /// every one of those targets too, with the marker genuinely REMOVED from the command
+    /// carried onward (spec 92's HOOK SCOPE amendment - reject-fix
+    /// arch-u92c4r5-literal-escape-hatch-never-strips-marker: a bare `Allow` left the marker
+    /// in place for a real shell to choke on, since GNU grep has no such flag).
+    #[test]
+    fn grep_guard_decision_denies_every_bash_grep_target_and_passes_literal() {
+        for target in [
+            "src/",
+            "docs/",
+            "README.md",
+            ".",
+            "..",
+            "/unrelated/absolute/path",
+        ] {
+            let command = format!("grep -rn foo {target}");
+            let decision = grep_guard_decision("Bash", &serde_json::json!({"command": command}));
+            match decision {
+                GuardDecision::Deny(msg) => assert_eq!(msg, GREP_GUARD_MESSAGE),
+                other => panic!("grep targeting {target:?} must be denied, got {other:?}"),
+            }
+
+            let literal_command = format!("grep --literal -rn foo {target}");
+            let decision =
+                grep_guard_decision("Bash", &serde_json::json!({"command": literal_command}));
+            let stripped = assert_allows_with_literal_stripped(decision, &literal_command);
+            assert_eq!(
+                stripped,
+                format!("grep -rn foo {target}"),
+                "the marker and exactly one adjacent space must be removed, nothing else \
+                 rewritten, for target {target:?}"
+            );
+        }
+    }
+
+    /// A `Bash` command that is not a `grep` invocation at all - even one that merely
+    /// mentions "grep" inside another word, like `zgrep` - is never bounced: the guard
+    /// matches the literal command name only, per its own stated scope.
+    #[test]
+    fn grep_guard_decision_allows_non_grep_bash_commands() {
+        assert_eq!(
+            grep_guard_decision("Bash", &serde_json::json!({"command": "ls src/"})),
+            GuardDecision::Allow
+        );
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "zgrep foo src/a.gz"}),
+            ),
+            GuardDecision::Allow,
+            "zgrep is a different tool than the literal `grep` this hook names"
+        );
+    }
+
+    /// The built-in `Grep` tool call is denied for EVERY `path` (d-spec92-hook-no-target-axis:
+    /// no target axis survives - a guarded tree from the old rule, a tree it never covered,
+    /// an omitted path defaulting to the cwd, an absolute path nowhere near this project),
+    /// and carries no `--literal` escape hatch of its own - the built-in tool has no flag
+    /// slot for it, so a genuinely literal search runs through `Bash` `grep --literal`
+    /// instead.
+    #[test]
+    fn grep_guard_decision_denies_every_grep_tool_path() {
+        for path in ["src/", "docs/", "", "/unrelated/absolute/path", ".."] {
+            assert_eq!(
+                grep_guard_decision("Grep", &serde_json::json!({"path": path})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "Grep path={path:?} must be denied - the hook has no target axis"
+            );
+        }
+    }
+
+    /// A tool other than `Grep`/`Bash` is never touched by this hook.
+    #[test]
+    fn grep_guard_decision_ignores_other_tools() {
+        assert_eq!(
+            grep_guard_decision("Read", &serde_json::json!({"file_path": "src/main.rs"})),
+            GuardDecision::Allow
+        );
+    }
+
+    /// Reject-fix (adj-u92c4r2-verdict-reject-shell-metachar-bypass /
+    /// adv-u92c4r2-command-invokes-grep-tokenizes-on-whitespace-only): a `grep` invocation
+    /// fused to an adjacent command with NO surrounding whitespace - via a pipe `|`, a
+    /// semicolon `;`, an `&`, a `$( )` command substitution, or a backtick - must be denied
+    /// exactly like the spaced form already is. Before that fix `command_invokes_grep` split
+    /// on whitespace only, so a fused metacharacter hid the literal word `grep` from the scan
+    /// entirely; this proof survives d-spec92-hook-no-target-axis unchanged, since detecting
+    /// the invocation (not its target) is still exactly what the tokenizer must get right.
+    #[test]
+    fn grep_guard_decision_denies_a_shell_metacharacter_fused_grep() {
+        for command in [
+            "cat src/main.rs|grep pattern",
+            "true;grep pattern src/main.rs",
+            "if $(grep -q pattern src/main.rs); then echo yes; fi",
+            "grep pattern src/main.rs&",
+            "echo hi&&grep pattern src/main.rs",
+            "echo `grep pattern src/main.rs`",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a grep fused to an adjacent command via a shell metacharacter must still \
+                 be denied: {command:?}"
+            );
+        }
+    }
+
+    /// The SAME fused shapes with `--literal` added must still pass through (with the marker
+    /// stripped), proving the escape hatch survives the tokenizer rather than becoming
+    /// unreachable once fusion is detected.
+    #[test]
+    fn grep_guard_decision_literal_survives_a_shell_metacharacter_fused_grep() {
+        let decision = grep_guard_decision(
+            "Bash",
+            &serde_json::json!({"command": "true;grep --literal pattern src/main.rs"}),
+        );
+        assert_allows_with_literal_stripped(decision, "true;grep --literal pattern src/main.rs");
+    }
+
+    /// Reject-fix (sdet-u92c4r5-redirect-metachar-fuses-guarded-path-first-segment): `<` and
+    /// `>` must end a shell word exactly like `;`/`|`/`&`/`(`/`)` already do - spec 92's HOOK
+    /// SCOPE amendment names `; | & ( ) < >` verbatim. This still matters after
+    /// d-spec92-hook-no-target-axis: a redirection fused directly to the command name with no
+    /// whitespace (`grep<file.txt`, a real shell equivalent of `grep <file.txt`) would
+    /// otherwise merge into one word neither equal to nor ending in the bare basename `grep`,
+    /// hiding the invocation from `command_invokes_grep` entirely - independent of what the
+    /// command targets.
+    #[test]
+    fn grep_guard_decision_denies_a_redirect_metacharacter_fused_grep() {
+        for command in [
+            "grep<file.txt pattern",
+            "grep>out.txt pattern file.txt",
+            "true;grep pattern <file.txt",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a grep fused to < or > with no surrounding whitespace must still be \
+                 denied: {command:?}"
+            );
+        }
+    }
+
+    /// The same redirect-fused shape with `--literal` added must still pass through, with the
+    /// redirection itself surviving the marker's removal untouched.
+    #[test]
+    fn grep_guard_decision_literal_survives_a_redirect_metacharacter_fused_grep() {
+        let decision = grep_guard_decision(
+            "Bash",
+            &serde_json::json!({"command": "grep --literal pattern <src/main.rs"}),
+        );
+        let stripped =
+            assert_allows_with_literal_stripped(decision, "grep --literal pattern <src/main.rs");
+        assert_eq!(
+            stripped, "grep pattern <src/main.rs",
+            "only the marker and its one adjacent space must be removed"
+        );
+    }
+
+    /// Reject-fix (adv-u92c4r3-quoted-or-escaped-grep-still-bypasses-the-guard): a `grep` word
+    /// wrapped in double quotes, wrapped in single quotes, split by a backslash escape, or split
+    /// by an EMPTY quoted run in the middle of the word - four ordinary shell idioms a real shell
+    /// resolves to the plain word `grep`, none of them adversarial - must all still be denied.
+    #[test]
+    fn grep_guard_decision_denies_a_quoted_or_escaped_grep() {
+        for command in [
+            r#""grep" pattern src/main.rs"#,
+            "'grep' pattern src/main.rs",
+            r"gr\ep pattern src/main.rs",
+            "g''rep pattern src/main.rs",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a quoted or escaped grep must still be denied: {command:?}"
+            );
+        }
+    }
+
+    /// The same quoted/escaped shapes with a quoted `--literal` must still pass through, the
+    /// entire quoted marker excised by its real span - proving the escape hatch itself
+    /// survives quote/escape normalization AND marker stripping together.
+    #[test]
+    fn grep_guard_decision_literal_survives_a_quoted_literal_on_a_quoted_grep() {
+        let decision = grep_guard_decision(
+            "Bash",
+            &serde_json::json!({"command": r#""grep" "--literal" pattern src/main.rs"#}),
+        );
+        let stripped = assert_allows_with_literal_stripped(
+            decision,
+            r#""grep" "--literal" pattern src/main.rs"#,
+        );
+        assert_eq!(
+            stripped, r#""grep" pattern src/main.rs"#,
+            "the whole quoted marker token must be excised, not merely its interior"
+        );
+    }
+
+    /// Reject-fix (sdet-u92c4r4-backslash-newline-continuation-still-bypasses-the-guard): a
+    /// backslash immediately followed by a newline is an ordinary shell line continuation - it
+    /// vanishes with NO separator, joining what looks like two words into one, exactly as a real
+    /// shell does before word splitting ever runs.
+    #[test]
+    fn grep_guard_decision_denies_a_grep_split_by_a_line_continuation() {
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "gr\\\nep pattern src/main.rs"}),
+            ),
+            GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+            "a backslash-newline line continuation splitting `grep` must still be denied"
+        );
+    }
+
+    /// The same line-continuation shape with `--literal` added must still pass through.
+    #[test]
+    fn grep_guard_decision_literal_survives_a_line_continuation_split_grep() {
+        let decision = grep_guard_decision(
+            "Bash",
+            &serde_json::json!({"command": "gr\\\nep --literal pattern src/main.rs"}),
+        );
+        assert_allows_with_literal_stripped(decision, "gr\\\nep --literal pattern src/main.rs");
+    }
+
+    /// Reject-fix (adv-u92c4-r4-path-qualified-grep-bypasses-command-check): a path-qualified
+    /// spelling of the same binary - `/usr/bin/grep`, `./grep`, a relative `bin/grep` - is the
+    /// same command a bare `grep` names, so it must be denied exactly like the bare form already
+    /// is.
+    #[test]
+    fn grep_guard_decision_denies_a_path_qualified_grep() {
+        for command in [
+            "/usr/bin/grep pattern src/main.rs",
+            "./grep pattern src/main.rs",
+            "bin/grep pattern src/main.rs",
+        ] {
+            assert_eq!(
+                grep_guard_decision("Bash", &serde_json::json!({"command": command})),
+                GuardDecision::Deny(GREP_GUARD_MESSAGE.to_string()),
+                "a path-qualified grep must still be denied: {command:?}"
+            );
+        }
+    }
+
+    /// The same path-qualified shapes with `--literal` added must still pass through.
+    #[test]
+    fn grep_guard_decision_literal_survives_a_path_qualified_grep() {
+        for command in [
+            "/usr/bin/grep --literal pattern src/main.rs",
+            "./grep --literal pattern src/main.rs",
+            "bin/grep --literal pattern src/main.rs",
+        ] {
+            let decision = grep_guard_decision("Bash", &serde_json::json!({"command": command}));
+            assert_allows_with_literal_stripped(decision, command);
+        }
+    }
+
+    /// A path-qualified spelling of a DIFFERENT command (not `grep`) must still be allowed - the
+    /// basename comparison must not become a substring match.
+    #[test]
+    fn grep_guard_decision_allows_a_path_qualified_non_grep_command() {
+        assert_eq!(
+            grep_guard_decision(
+                "Bash",
+                &serde_json::json!({"command": "/usr/bin/zgrep pattern src/main.rs"}),
+            ),
+            GuardDecision::Allow,
+            "a path-qualified different command must not be treated as grep"
         );
     }
 }

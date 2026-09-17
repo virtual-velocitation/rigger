@@ -1335,6 +1335,7 @@ fn docs_context_for_paragraph_comparison() -> rigger::docs::DocsContext {
         ],
         watch_poll_interval_secs: 999_999,
         reject_recurrence_diagnose_threshold: 999,
+        grep_guard_message: "not the real grep-guard message".into(),
     }
 }
 

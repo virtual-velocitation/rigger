@@ -229,6 +229,7 @@ mod tests {
                     },
                 ],
                 refs: vec![],
+                partial: false,
             },
         );
         idx
