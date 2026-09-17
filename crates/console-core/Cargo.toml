@@ -1,0 +1,30 @@
+[package]
+name = "console-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The Mission Control console's WebAssembly ABI: a small, dependency-free calling surface over the pure rigger core (spec 93, criterion 2)."
+
+# `cdylib` is what the nested wasm32-unknown-unknown build (spec 93, criterion 3) needs to
+# produce a loadable module; `rlib` is what lets THIS crate's own `cargo test` link and run
+# the exact same exported functions natively as ordinary Rust functions (THE MODULE AND ITS
+# ABI's own text: "tested with plain Rust tests and needs no WebAssembly runtime").
+[lib]
+name = "console_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The pure subset ONLY (THE FEATURE SPLIT, spec 93 criterion 1): default-features = false
+# drops `store` (and `symbols`), so this crate - and therefore the wasm32 build - never
+# pulls rusqlite/tokio/rustix/fs2/ignore/uuid/kurrentdb. `path = "../.."` is the workspace
+# root package itself, not a new external crate.
+rigger = { path = "../..", default-features = false, features = ["core"] }
+serde = { version = "1", features = ["derive"] }
+# `raw_value` (BUDGETS, spec 93 criterion 2): `fold_reset`/`fold_push` need an event's `data`
+# sub-object handed straight to `Event::new` as raw bytes, never round-tripped through a
+# fully parsed `serde_json::Value` tree and re-serialized - the doubled work the 10,000-
+# event/16ms budget cannot afford (measured: cut this op's own JSON overhead roughly in
+# half). A `serde_json` cargo FEATURE, not a new crate: it adds no dependency-graph edge
+# (`Cargo.lock` is byte-identical with it on), so the no-new-crate-dependency constraint
+# holds.
+serde_json = { version = "1", features = ["raw_value"] }

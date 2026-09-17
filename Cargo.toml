@@ -6,6 +6,23 @@ description = "A config-driven, event-sourced multi-agent dev-loop harness"
 license = "MIT"
 repository = "https://github.com/virtual-velocitation/rigger"
 
+# THE MEMBER CRATE (spec 93, criterion 2): this root package IS a workspace member (a
+# "root package + workspace" manifest, not a virtual one), so a bare `cargo build`/`test`/
+# `clippy` run from here - exactly what every existing gate already invokes - still operate
+# on ONLY this package by default (cargo's documented default-members rule: a non-virtual
+# workspace's default members are the root package alone, unless overridden; empirically
+# verified via `cargo metadata --no-deps` and by grepping a real build/clippy run's output
+# for `console-core`, 0 hits). `crates/console-core` is reached only via `-p console-core`,
+# `--workspace`, or `cd`ing into it, so today's two lanes stay byte-for-byte unchanged,
+# matching THE FEATURE SPLIT's own promise. The one exception is `cargo fmt --check`, which
+# formats every workspace member regardless of default-members (also verified) - harmless,
+# since `crates/console-core` is kept fmt-clean in its own right. `resolver = "2"` is
+# edition 2021's default for a non-virtual root anyway; named explicitly so the workspace's
+# resolution behavior never depends on an implicit default.
+[workspace]
+members = [".", "crates/console-core"]
+resolver = "2"
+
 [lib]
 name = "rigger"
 path = "src/lib.rs"
