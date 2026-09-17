@@ -155,6 +155,22 @@ fn rigger_status_first_line_and_needs_you_section_are_the_consoles_own_fold() {
             "expected the needs-you section to carry {line:?}; got:\n{out}"
         );
     }
+
+    // ConsoleState.blockers (this criterion's third fold fact, alongside the statusline and
+    // the dock): the escalated unit is ALSO a current blocker (spec 19a's classifier already
+    // covers `Escalated`), so the SAME real run must print a "current blockers:" section
+    // carrying console::fold's own blocker line - proving the field the "ONE FOLD" Done-when
+    // names ("blockers") agrees with the real binary too, not only the statusline and the dock.
+    assert!(
+        out.contains("current blockers:"),
+        "an escalated unit is also a current blocker; got:\n{out}"
+    );
+    for line in &want.blockers {
+        assert!(
+            out.contains(line.as_str()),
+            "expected the current-blockers section to carry {line:?}; got:\n{out}"
+        );
+    }
 }
 
 /// A clean run (no units at all) prints the console's `healthy` statusline as its first line,
@@ -204,4 +220,56 @@ fn rigger_status_json_is_unaffected_by_the_console_surface() {
         !out.contains("needs you:"),
         "the console's human rendering must not leak into --json: {out}"
     );
+}
+
+/// `console::dock` and `console::statusline` are independently reachable PUBLIC library API,
+/// not merely private helpers [`console::fold`] composes internally - any external consumer
+/// (this test crate today, the WASM member crate criterion 2 builds tomorrow) can call them
+/// directly and get the exact facts `fold` embeds. Proven over events a REAL SQLite
+/// append/read-back round trip produced, not the hand-built in-memory `Event`s `console.rs`'s
+/// own colocated `mod tests` uses - so a real store/serialization defect reaching either
+/// function's inputs would show here even where it cannot show there. Also closes the two
+/// `ConsoleState` fields (`units`, `blockers`) neither periphery test above independently
+/// asserts, and the `UnitStatuses` type alias they are keyed by.
+#[test]
+fn console_dock_and_statusline_are_reachable_directly_over_a_real_store_round_trip() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[
+            ("UnitStarted", r#"{"id":"u-esc"}"#),
+            ("UnitEscalated", r#"{"id":"u-esc"}"#),
+            ("UnitStarted", r#"{"id":"u-building"}"#),
+        ],
+    );
+
+    let events = read_back_run_events(root);
+    let run = rigger::ledger::project(&events).expect("project a real read-back stream");
+    let blockers =
+        rigger::blocker::from_events(&events, 3).expect("classify blockers over the real stream");
+
+    // dock(): called directly, bypassing fold entirely.
+    let dock = rigger::console::dock(&run, &events);
+    assert_eq!(dock.needs_you.len(), 1, "{:?}", dock.needs_you);
+    assert_eq!(dock.needs_you[0].unit, "u-esc");
+    assert_eq!(
+        dock.lines(),
+        vec!["u-esc: escalated after exhausting remediation"]
+    );
+
+    // statusline(): likewise called directly.
+    let line = rigger::console::statusline(&run, &blockers, &dock);
+    assert_eq!(line, "u-building . 0/2 units . needs-you");
+
+    // fold() over the SAME real read-back stream must equal the direct calls above,
+    // byte-for-byte - the ONE FOLD guarantee, proven this time on the two fields
+    // (`units`, `blockers`) this file's other tests check only through their printed text.
+    let state = rigger::console::fold(&events, 3).expect("fold the same real read-back stream");
+    assert_eq!(state.units.get("u-esc"), Some(&"escalated"));
+    assert_eq!(state.units.get("u-building"), Some(&"grounding"));
+    assert_eq!(state.blockers, rigger::blocker::lines(&blockers));
+    assert_eq!(state.dock, dock);
+    assert_eq!(state.statusline, line);
 }
