@@ -1461,7 +1461,7 @@ pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) ->
 /// one place rigger names for itself, so rigger owns its lifecycle: a root keyed on a repo
 /// that is gone - a test fixture's tempdir, a checkout the operator deleted - has no owner
 /// left to reclaim it, and without this sweep such roots only ever accumulate (105k of them,
-/// 55 GB, gathered under one operator's `~/.cache/rigger` in three days of self-hosted runs
+/// about 1 GB, gathered under one operator's `~/.cache/rigger` in three days of self-hosted runs
 /// before a shell glob over that directory exhausted the machine's memory). A configured
 /// (`defaults.workdir`) or env-overridden (`RIGGER_TMPDIR`) root is the operator's own
 /// directory and is never swept.
