@@ -31855,6 +31855,69 @@ mod tests {
         );
     }
 
+    // Spec 91 checkin, mirroring `resolve_main_worktree_or_refuse_returns_exactly_git_rev_
+    // parse_show_toplevel`'s own pattern (op-checkin-round-4-hang-class-mutants-fail-fast-or-
+    // justify): the whole-diff mutation sweep reported `regenerate_conflicted_paths`'s two
+    // whole-body-stub mutants (`Ok(String::new())` / `Ok("xyzzy".into())`) as TIMEOUT rather
+    // than caught. Its only existing coverage runs the full `run()` lifecycle - this file's
+    // own `an_already_conflict_resolving_resume_reaches_the_real_regenerate_path` above and
+    // `tests/integrate_conflict_merge_periphery.rs` - each a bounded-wait real-subprocess test
+    // asserting a DOWNSTREAM side effect (the landed file content, the unit's Integrated
+    // status) rather than this function's OWN return value, so a wholesale body swap is
+    // invisible to them and the mutation gate's per-mutant timeout budget was exhausted before
+    // ever reaching a fast, deterministic failure. This pins the contract DIRECTLY, in-process,
+    // with no `run()` lifecycle at all (no agents, no driver, no review panel): the returned
+    // sha must be the REAL, dynamically-computed commit `commit_checkpoint` just made - a
+    // value neither literal stub can ever produce - so a wrong return fails on the spot.
+    #[test]
+    fn regenerate_conflicted_paths_returns_the_real_regeneration_commit_sha() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let dir = std::env::temp_dir().join(format!("rigger-wt-regen-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(&repo_path, dir.to_str().unwrap(), "regen-branch", "").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.workflow.regenerate = vec![crate::config::RegenerateRule {
+            paths: vec!["regen.txt".into()],
+            run: "printf 'REGENERATED\\n' > regen.txt".into(),
+        }];
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        let got = ctx
+            .regenerate_conflicted_paths(&wt, "regen-unit", &["regen.txt".to_string()])
+            .expect("a registered regenerable path must regenerate and commit cleanly");
+
+        assert_eq!(
+            std::fs::read_to_string(dir.join("regen.txt")).unwrap(),
+            "REGENERATED\n",
+            "the registered command must actually have run in the worktree"
+        );
+        let real_head = worktree::head_sha_of(dir.to_str().unwrap());
+        assert!(
+            !real_head.is_empty(),
+            "the worktree must have a resolvable HEAD after the regenerate commit"
+        );
+        assert_eq!(
+            got, real_head,
+            "regenerate_conflicted_paths must return the REAL regeneration commit sha it just \
+             made - never a stand-in literal (neither \"\" nor any other fixed string can ever \
+             equal a real, dynamically-computed git sha)"
+        );
+
+        wt.remove().unwrap();
+    }
+
     #[test]
     fn a_live_approved_unit_restores_a_worktree_the_integrate_door_exhaustive_gate_deleted() {
         // Spec 64 criterion 3, adjudication round 2 (adv-u3c3-ensure-present-covers-only-one-
