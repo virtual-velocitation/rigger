@@ -1730,14 +1730,14 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1669 func
 
 ## 2. Duplication Catalog
 
-799 clusters (3861 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+799 clusters (3862 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
 - **Command::new call sites**: 389 site(s) - `dup-0006`
 - **/proc-path string literals**: 60 site(s) - `dup-0148`
 - **sqlite Connection::open call sites**: 46 site(s) - `dup-0126`
-- **.rigger-path string literals**: 741 site(s) - `dup-0061`
+- **.rigger-path string literals**: 742 site(s) - `dup-0061`
 - **error-shaping helper functions**: 8 site(s) - `dup-0080`
 
 ### Clusters (257 exact, 458 near, 84 semantic)
@@ -2781,11 +2781,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:16961-17045` `a_bracketed_id_echo_with_a_paraphrase_still_supersedes_exactly_once`
 - `src/conductor.rs:17048-17120` `a_stale_non_matching_id_falls_back_to_the_verbatim_prose_match`
 
-#### `dup-0061` (semantic, 741 sites)
+#### `dup-0061` (semantic, 742 sites)
 
 Proposed home: `one .rigger-relative path-composition helper`
 
-mandatory sweep: .rigger-path string literals - 741 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: .rigger-path string literals - 742 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/conductor.rs:17327-17327` `"the repo's own .rigger config must load"`
 - `src/config.rs:831-831` `".rigger"`
@@ -2889,9 +2889,11 @@ mandatory sweep: .rigger-path string literals - 741 site(s), collected mechanica
 - `src/ingest.rs:886-886` `".rigger"`
 - `src/ingest.rs:888-888` `".rigger"`
 - `src/ingest.rs:897-897` `"gw/.rigger/workflow.yml@"`
-- `src/ingest.rs:933-933` `".rigger"`
-- `src/ingest.rs:935-935` `".rigger"`
-- `src/ingest.rs:967-967` `".rigger"`
+- `src/ingest.rs:915-915` `"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \
+             must both advance the shared batch count; got {}"`
+- `src/ingest.rs:944-944` `".rigger"`
+- `src/ingest.rs:946-946` `".rigger"`
+- `src/ingest.rs:978-978` `".rigger"`
 - `src/main.rs:63-63` `".rigger"`
 - `src/main.rs:586-586` `"the server event store is selected but no connection string is set - provide one via \
          --conn <url>, the KURRENTDB_CONN environment variable, or the .rigger/store.conn \
@@ -12100,7 +12102,7 @@ METHODOLOGY: every one of the 26 was independently re-verified by hand (NOT take
 
 - **ingest_project** (`src/ingest.rs:126`, `pub` (ambiguous with src/ingest.rs:628), KG degree 3): `delete`. ingest_project - both the #[cfg(feature = "symbols")] single-event lane and the #[cfg(not(feature = "symbols"))] light-lane no-op, one name at two cfg-gated sites - has no production caller on either lane. Production calls ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession.
 - **ingest_project** (`src/ingest.rs:628`, `pub` (ambiguous with src/ingest.rs:126), KG degree 3): `delete`. ingest_project - both the #[cfg(feature = "symbols")] single-event lane and the #[cfg(not(feature = "symbols"))] light-lane no-op, one name at two cfg-gated sites - has no production caller on either lane. Production calls ingest_project_batched exclusively (conductor.rs, main.rs), the batched entry point this fn's own doc comment already names as the thing 'existing callers discard [IngestStats] and are unaffected' by, i.e. it documents its own supersession.
-- **record_current_generation** (`src/ingest.rs:994`, `private`, KG degree 3): `delete`. record_current_generation (spec 92 criterion 1, FRESH ON EVERY INTEGRATION) has no production caller - a private fixture helper inside scoped_reindex_tests that appends `graph_index_lag`/`graph_index_lag_sample`'s test-double `prior: Vec<Event>` stream, factored out once graph_index_lag_sample_derives_its_candidates_from_..., graph_index_lag_sample_reports_a_file_that_changed_..., and graph_index_lag_sample_is_bounded_and_stays_silent_... all needed the identical stamping boilerplate (the same shape already inlined once in graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one, its own sibling test above it in this file). Never called outside this test module.
+- **record_current_generation** (`src/ingest.rs:1005`, `private`, KG degree 3): `delete`. record_current_generation (spec 92 criterion 1, FRESH ON EVERY INTEGRATION) has no production caller - a private fixture helper inside scoped_reindex_tests that appends `graph_index_lag`/`graph_index_lag_sample`'s test-double `prior: Vec<Event>` stream, factored out once graph_index_lag_sample_derives_its_candidates_from_..., graph_index_lag_sample_reports_a_file_that_changed_..., and graph_index_lag_sample_is_bounded_and_stays_silent_... all needed the identical stamping boilerplate (the same shape already inlined once in graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one, its own sibling test above it in this file). Never called outside this test module.
 
 **`src/ledger.rs`**
 
@@ -12205,7 +12207,7 @@ Within a tier, entries are ordered largest-first by the site or line count each 
   - `src/gate.rs`: `resolve_wrapper_name` (line 463)
   - `src/grounder/symbols/events.rs`: `index_events` (line 29)
   - `src/grounder/symbols/model.rs`: `definitions_named` (line 216), `references_named` (line 226)
-  - `src/ingest.rs`: `ingest_project` (line 126), `ingest_project` (line 628), `record_current_generation` (line 994)
+  - `src/ingest.rs`: `ingest_project` (line 126), `ingest_project` (line 628), `record_current_generation` (line 1005)
   - `src/ledger.rs`: `fully_done` (line 574), `is_integrated` (line 651)
   - `src/spawn.rs`: `new` (line 320), `with_system_prompt` (line 338), `with_model` (line 344), `with_tools` (line 350), `with_dir` (line 356), `with_blast_radius` (line 362), `with_title` (line 368), `with_reviews` (line 374), `park` (line 399)
   - `src/worktree.rs`: `is_dirty` (line 679)

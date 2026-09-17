@@ -891,7 +891,7 @@ mod tests {
         .unwrap();
         let root = dir.path().to_str().unwrap();
 
-        let (seq, _stats) = walk(root, 1);
+        let (seq, stats) = walk(root, 1);
         assert!(
             seq.iter()
                 .any(|(k, _, _)| k.starts_with("gw/.rigger/workflow.yml@")),
@@ -904,6 +904,17 @@ mod tests {
                 && t == crate::contextgraph::TYPE_CODE_ENTITY_EXTRACTED),
             "the code half must still ingest alongside it, got {:?}",
             seq.iter().map(|(k, t, _)| (k, t)).collect::<Vec<_>>()
+        );
+        // Pins the shared `batches_emitted` accumulator across BOTH halves: this fixture has no
+        // design-intent doc, so the count is exactly the one code batch (a.rs) plus the one
+        // workflow-definition batch. An accumulator arm that stops advancing the count (a no-op
+        // update rather than `+= 1`) on the workflow-definition loop specifically would still
+        // pass every other assertion here while silently undercounting by one.
+        assert_eq!(
+            stats.batches_emitted, 2,
+            "one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \
+             must both advance the shared batch count; got {}",
+            stats.batches_emitted
         );
     }
 

@@ -766,19 +766,19 @@
   {
     "file": "src/ingest.rs",
     "name": "record_current_generation",
-    "line": 994,
+    "line": 1005,
     "test_only_references": [
       {
         "file": "src/ingest.rs",
-        "line": 1119
+        "line": 1130
       },
       {
         "file": "src/ingest.rs",
-        "line": 1143
+        "line": 1154
       },
       {
         "file": "src/ingest.rs",
-        "line": 1168
+        "line": 1179
       }
     ]
   },
