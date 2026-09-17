@@ -97,6 +97,74 @@
       {
         "file": "src/contextgraph/query.rs",
         "content_hash": "7df0e795af08cebc"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "13ebecbb3cd0ccc6"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "3da4caa86f78910c"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "cbbc44f4ae964815"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "6bdf11fd4a5025c4"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "3da4caa86f78910c"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "418b4521336de6a3"
       }
     ],
     "disposition": "keep-pending",
@@ -140,6 +208,78 @@
       {
         "file": "src/contextgraph/query.rs",
         "content_hash": "352837a34a70c241"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "13ebecbb3cd0ccc6"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "4306264f5d7e03f5"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "08d6cb57d08fc235"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "352837a34a70c241"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "f8fd9c5c3bebcc30"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "f8fd9c5c3bebcc30"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "f8fd9c5c3bebcc30"
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "content_hash": "50267e6ad25d6a54"
       }
     ],
     "disposition": "keep-pending",

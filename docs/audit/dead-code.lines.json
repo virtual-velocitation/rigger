@@ -66,31 +66,95 @@
   {
     "file": "src/contextgraph/query.rs",
     "name": "graph_load",
-    "line": 1729,
+    "line": 1732,
     "test_only_references": [
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1923
+        "line": 1926
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1931
+        "line": 1934
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1941
+        "line": 1944
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 40
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 112
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 133
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 144
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 162
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 173
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 189
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 201
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 214
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 239
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 250
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 298
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 300
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 308
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 322
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 350
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 366
       }
     ]
   },
   {
     "file": "src/contextgraph/query.rs",
     "name": "graph_query",
-    "line": 1754,
+    "line": 1757,
     "test_only_references": [
-      {
-        "file": "src/contextgraph/query.rs",
-        "line": 1943
-      },
       {
         "file": "src/contextgraph/query.rs",
         "line": 1946
@@ -101,23 +165,99 @@
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1960
+        "line": 1952
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1966
+        "line": 1963
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1972
+        "line": 1969
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1984
+        "line": 1975
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1991
+        "line": 1987
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1994
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 40
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 117
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 134
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 147
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 163
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 174
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 191
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 204
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 218
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 228
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 240
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 253
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 271
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 281
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 283
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 287
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 291
+      },
+      {
+        "file": "tests/graph_query_engine_relocation_periphery.rs",
+        "line": 309
       }
     ]
   },
