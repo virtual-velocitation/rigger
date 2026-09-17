@@ -28,18 +28,18 @@ use rigger::contextgraph::query::{graph_load, graph_query};
 use rigger::contextgraph::Graph;
 use rigger::eventstore::Event;
 
-/// The remediation bound `console::fold` needs when a caller never supplies its own via
-/// `fold_reset`'s `max_retries` field. Mirrors the same "unset -> 3" fallback
-/// `conductor.rs`'s own `defaults.max_retries` design-intent note already documents for the
-/// rest of the binary, so a page that never sends a bound reads blockers exactly as the CLI's
-/// own default configuration would.
-const DEFAULT_MAX_RETRIES: u32 = 3;
-
 /// One page's whole console session: the accumulated event log (owned so `fold_push` can
-/// append without a caller resending history every call), the configured remediation bound,
-/// the last computed fold (what `view`/`statusline` answer from), and an optional loaded
-/// graph (`graph_query`'s subject). `thread_local` per THE MEMBER CRATE's own design note - "a
-/// page's module is single-threaded" - so this needs no lock and no `Send`/`Sync` bound.
+/// append without a caller resending history every call), the configured remediation bound
+/// AS THE CALLER GAVE IT (`0` means "never set" - the exact sentinel `console::fold` ->
+/// `blocker::from_events` -> `blocker::effective_max_retries` already resolves to
+/// `safety::MAX_RETRIES` internally), the last computed fold (what `view`/`statusline` answer
+/// from), and an optional loaded graph (`graph_query`'s subject). `thread_local` per THE
+/// MEMBER CRATE's own design note - "a page's module is single-threaded" - so this needs no
+/// lock and no `Send`/`Sync` bound.
+///
+/// This crate resolves nothing itself: `blocker::effective_max_retries` is the ONE place
+/// `0` maps to `safety::MAX_RETRIES`, so `max_retries` here is threaded straight through
+/// verbatim, never shadowed by a second, independently-maintained copy of that constant.
 struct ConsoleSession {
     events: Vec<Event>,
     max_retries: u32,
@@ -51,8 +51,8 @@ impl ConsoleSession {
     fn new() -> Self {
         ConsoleSession {
             events: Vec::new(),
-            max_retries: DEFAULT_MAX_RETRIES,
-            current: console::fold(&[], DEFAULT_MAX_RETRIES).unwrap_or_default(),
+            max_retries: 0,
+            current: console::fold(&[], 0).unwrap_or_default(),
             graph: None,
         }
     }
@@ -467,6 +467,48 @@ mod dispatch_tests {
         assert_eq!(v["units"]["u1"], "integrated", "{v:?}");
     }
 
+    /// A `fold_reset` that never sends `max_retries` (the field omitted entirely, `None`
+    /// after parsing) resolves through the ONE remaining authority - `console::fold` ->
+    /// `blocker::from_events` -> `blocker::effective_max_retries` mapping the unset `0` this
+    /// crate threads through to `safety::MAX_RETRIES` - never a second, locally-minted
+    /// fallback constant. Proven by a `Failed` unit's rendered blocker line naming the SAME
+    /// bound `safety::MAX_RETRIES` carries today (3), so a drift in that one authority is
+    /// exactly what would break this test, never a copy console-core keeps in step by hand.
+    #[test]
+    fn fold_reset_without_max_retries_uses_blockers_own_default_authority() {
+        let mut s = ConsoleSession::new();
+        let input = r#"{"events":[
+            {"type":"UnitStarted","data":{"id":"u1"},"position":1},
+            {"type":"UnitFailed","data":{"id":"u1","attempts":1,"cause":"reject"},"position":2}
+        ]}"#;
+        let v = call(&mut s, "fold_reset", input);
+        assert_eq!(
+            v["blockers"],
+            serde_json::json!(["u1: reject-recurrence #1/3 (reject)"]),
+            "{v:?}"
+        );
+    }
+
+    /// `FoldResetInput.max_retries`'s `Some(n)` override branch, previously untested
+    /// (sdet-u93c2-max-retries-override-untested): a caller-supplied bound is honored end to
+    /// end through `console::fold`/`blocker::classify`, not silently replaced by whatever
+    /// `blocker::effective_max_retries` would otherwise pick - proven with a value (7) that
+    /// differs from `safety::MAX_RETRIES` (3), so the two paths cannot be confused.
+    #[test]
+    fn fold_reset_honors_an_explicit_max_retries_override() {
+        let mut s = ConsoleSession::new();
+        let input = r#"{"events":[
+            {"type":"UnitStarted","data":{"id":"u1"},"position":1},
+            {"type":"UnitFailed","data":{"id":"u1","attempts":1,"cause":"reject"},"position":2}
+        ],"max_retries":7}"#;
+        let v = call(&mut s, "fold_reset", input);
+        assert_eq!(
+            v["blockers"],
+            serde_json::json!(["u1: reject-recurrence #1/7 (reject)"]),
+            "{v:?}"
+        );
+    }
+
     /// `fold_at` answers the fold as of an EARLIER position without discarding the session's
     /// full history: a later `view` call still sees the position it scrubbed to (this op
     /// updates `current`), but the underlying event log is untouched.
@@ -735,10 +777,18 @@ mod abi_tests {
 }
 
 /// BUDGETS (spec 93 criterion 2's own, per `d-spec93-design-owns-query-relocation-and-fold-
-/// budget`): a fold of 10,000 console events completes in under 16ms natively in release
-/// mode, asserted here by driving `fold_reset` (the bulk load path) exactly as a page would
-/// on first opening a run - never a loop of 10,000 individual `fold_push` calls, which is a
-/// different (and not budgeted) access pattern.
+/// budget`): "a fold of 10,000 console events completes in under 16ms natively in release
+/// mode... asserted by its natively compiled ABI tests driving `fold_reset`/`fold_push`" - a
+/// PER-FOLD bound (singular: "a fold"), proven here two ways at the SAME 10,000-event scale:
+/// `fold_reset` driven once as the bulk load path a page uses on first opening a run, and
+/// `fold_push` driven across a RUN of consecutive calls once the session already holds
+/// (and keeps holding, past 10,000) that many events - the hot-incremental-path use pattern
+/// its own doc names, proving every individual call, not just one lucky one, stays under
+/// budget. Neither test sums many independent calls' wall-clock against this single-fold
+/// budget: summing N per-fold costs to bound a whole SESSION's lifetime total is a different,
+/// uncosted question this text never asks (a page that has been open for hours accumulates
+/// wall-clock across thousands of pushes no matter how fast any one of them is - that is a
+/// session-lifetime property, not this fold's own per-call latency).
 #[cfg(test)]
 mod budget_tests {
     use super::*;
@@ -757,40 +807,53 @@ mod budget_tests {
     const UNITS: u64 = 40;
     const EVENTS_PER_UNIT: u64 = 10_000 / UNITS;
 
-    fn ten_thousand_events_reset_input() -> String {
+    /// The ONE authority for what event `i` in the representative fixture looks like - shared
+    /// by the bulk `fold_reset` builder below and the `fold_push` budget test, so pushing
+    /// event `i` one at a time and bulk-loading events `0..=i` always mean the identical
+    /// stream, never two independently-maintained copies of the same generation rule.
+    fn nth_event_fixture(i: u64) -> (&'static str, String) {
+        let unit = i / EVENTS_PER_UNIT;
+        let offset = i % EVENTS_PER_UNIT;
+        if offset == 0 {
+            ("UnitStarted", format!(r#"{{"id":"u{unit}"}}"#))
+        } else if offset == EVENTS_PER_UNIT / 2 && unit.is_multiple_of(5) {
+            (
+                "UnitFailed",
+                format!(r#"{{"id":"u{unit}","attempts":1,"cause":"reject"}}"#),
+            )
+        } else if offset == EVENTS_PER_UNIT - 1 && !unit.is_multiple_of(9) {
+            (
+                "UnitIntegrated",
+                format!(r#"{{"id":"u{unit}","commit":"c{i:08x}"}}"#),
+            )
+        } else {
+            (
+                "DecisionMade",
+                format!(
+                    r#"{{"id":"d-u{unit}-{offset}","summary":"a representative decision body of roughly the length a real implementer or reviewer records, naming what changed and why, for unit u{unit} at step {offset}","governs":["src/example.rs"],"supersedes":""}}"#
+                ),
+            )
+        }
+    }
+
+    /// A `fold_reset` body over the first `n` events of the representative fixture.
+    fn events_reset_input(n: u64) -> String {
         let mut events = String::from(r#"{"events":["#);
-        for i in 0..(UNITS * EVENTS_PER_UNIT) {
+        for i in 0..n {
             if i > 0 {
                 events.push(',');
             }
-            let unit = i / EVENTS_PER_UNIT;
-            let offset = i % EVENTS_PER_UNIT;
-            let (type_, data) = if offset == 0 {
-                ("UnitStarted", format!(r#"{{"id":"u{unit}"}}"#))
-            } else if offset == EVENTS_PER_UNIT / 2 && unit.is_multiple_of(5) {
-                (
-                    "UnitFailed",
-                    format!(r#"{{"id":"u{unit}","attempts":1,"cause":"reject"}}"#),
-                )
-            } else if offset == EVENTS_PER_UNIT - 1 && !unit.is_multiple_of(9) {
-                (
-                    "UnitIntegrated",
-                    format!(r#"{{"id":"u{unit}","commit":"c{i:08x}"}}"#),
-                )
-            } else {
-                (
-                    "DecisionMade",
-                    format!(
-                        r#"{{"id":"d-u{unit}-{offset}","summary":"a representative decision body of roughly the length a real implementer or reviewer records, naming what changed and why, for unit u{unit} at step {offset}","governs":["src/example.rs"],"supersedes":""}}"#
-                    ),
-                )
-            };
+            let (type_, data) = nth_event_fixture(i);
             events.push_str(&format!(
                 r#"{{"type":"{type_}","data":{data},"position":{i}}}"#
             ));
         }
         events.push_str("]}");
         events
+    }
+
+    fn ten_thousand_events_reset_input() -> String {
+        events_reset_input(UNITS * EVENTS_PER_UNIT)
     }
 
     /// Correctness (every profile): `fold_reset` over the 10,000-event fixture answers
@@ -830,5 +893,46 @@ mod budget_tests {
             elapsed.as_millis() < 16,
             "fold_reset of 10,000 events took {elapsed:?}, over the 16ms budget"
         );
+    }
+
+    /// THE BUDGET ITSELF, `fold_push`'s own half: bulk-loads a session to just under the
+    /// 10,000-event mark via `fold_reset` (untimed - that path is proven above), then times a
+    /// RUN of consecutive `fold_push` calls that carries the session past 10,000, one at a
+    /// time - `fold_push`'s own documented hot-incremental-path use pattern, at the scale
+    /// BUDGETS names. Every one of the `TAIL` pushes, not just the first, must individually
+    /// stay under 16ms - `op_fold_push`'s accumulate-and-refold design (clone the whole
+    /// history, re-run `console::fold`) costs essentially what a `fold_reset` of the same
+    /// size costs, so this is the SAME per-fold budget
+    /// `fold_reset_of_ten_thousand_events_completes_under_16ms_in_release_mode` proves,
+    /// driven through `fold_push`'s own call path (the real clone-and-refold cost) instead of
+    /// `fold_reset`'s. This is a per-call bound, not a session-lifetime sum - see this
+    /// module's own doc for why summing `TAIL` independent calls against a single-fold budget
+    /// would be a different, uncosted question.
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn fold_push_at_ten_thousand_events_completes_under_16ms_per_call_in_release_mode() {
+        const TAIL: u64 = 100;
+        let total = UNITS * EVENTS_PER_UNIT;
+        let head = total - TAIL;
+
+        let mut s = ConsoleSession::new();
+        let reset_bytes = dispatch(&mut s, "fold_reset", events_reset_input(head).as_bytes());
+        let reset_v: serde_json::Value = serde_json::from_slice(&reset_bytes).unwrap();
+        assert!(reset_v.get("error").is_none(), "{reset_v:?}");
+
+        for i in head..total {
+            let (type_, data) = nth_event_fixture(i);
+            let push_input = format!(r#"{{"type":"{type_}","data":{data},"position":{i}}}"#);
+            let start = std::time::Instant::now();
+            let bytes = dispatch(&mut s, "fold_push", push_input.as_bytes());
+            let elapsed = start.elapsed();
+            let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(v.get("error").is_none(), "{v:?}");
+            assert!(
+                elapsed.as_millis() < 16,
+                "fold_push at {} events took {elapsed:?}, over the 16ms budget",
+                i + 1
+            );
+        }
     }
 }
