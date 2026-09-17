@@ -9,7 +9,6 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use rigger::blocker;
 use rigger::budget::BuildBudget;
 use rigger::canary;
 use rigger::canary_store;
@@ -18,6 +17,7 @@ use rigger::concepts;
 use rigger::conductor::{self, Deps};
 use rigger::config;
 use rigger::config_store;
+use rigger::console;
 use rigger::contextgraph::{
     self,
     sqlite::{Projector, PruneStats},
@@ -7977,11 +7977,14 @@ fn cmd_status(args: &[String]) -> Res {
         return Ok(());
     }
 
-    // The current-blocker line per unfinished unit (spec 19a, unit 1), from the shared
-    // classifier the dashboard also renders - so `rigger status` and the dashboard show
-    // the SAME lines. Computed even when no agent is parked, so an escalated unit or a
-    // budget halt (which have no live spawn) is still surfaced.
-    let blocker_lines = status_blocker_lines(run_events, max_retries)?;
+    // ONE FOLD (spec 93, criterion 4): the console's own fold over the run's event slice -
+    // unit statuses, the current-blocker lines (the SAME shared classifier the dashboard also
+    // renders, spec 19a), the needs-you dock and the statusline - so `rigger status` prints
+    // exactly what the future console page will render from the identical stream, never a
+    // second, independently-composed copy of any of the four. Computed even when no agent is
+    // parked, so an escalated unit or a budget halt (which have no live spawn) is still
+    // surfaced.
+    let console_state = console::fold(run_events, max_retries)?;
 
     // The ready-to-release handoff (spec 38, criterion 3): surfaced on this status surface
     // when the run is DONE (every unit integrated, no failed deferred gate), naming the run
@@ -8005,22 +8008,27 @@ fn cmd_status(args: &[String]) -> Res {
         println!("{line}");
     }
 
-    // Readable table. The blackout is visible as `last store event` age >> activity age. The
-    // truncation is `ledger::short_run_id` (spec 82, criterion 1's shared authority) so the run
-    // id printed here always matches the one the release-ready PR head is derived from below.
-    let short = ledger::short_run_id;
-    if view.is_empty() && blocker_lines.is_empty() {
-        println!("run {}: no agents in flight", short(&run_id));
-        for line in &release_lines {
-            println!("{line}");
-        }
-        return Ok(());
+    // The run-id header (spec 82, criterion 1's truncation authority): printed only when a
+    // `RunStarted` is on the stream, so a legacy or run-less read stays exactly as bare as the
+    // statusline below leaves it. Kept as ITS OWN line, separate from the statusline, so the
+    // statusline's text - the SAME text a later criterion's `rigger status --line` and the
+    // console page print - never carries a run id the page's own instance selector already
+    // shows.
+    if !run_id.is_empty() {
+        println!("run {}", ledger::short_run_id(&run_id));
     }
-    if view.is_empty() {
-        println!("run {}: no agents in flight", short(&run_id));
-    } else {
+
+    // The statusline (spec 93, criterion 4): the console's own one-line summary, THE first
+    // line `rigger status` prints - the same text a later criterion's `rigger status --line`
+    // prints alone for an editor status bar, so the terminal table and that one-liner are
+    // never two derivations. Printed unconditionally, even for a run holding no units at all,
+    // so the line is always there to anchor the table under it.
+    println!("{}", console_state.statusline);
+
+    // The per-agent "doing" detail, unchanged from before this criterion: one block per
+    // in-flight spawn. The blackout is visible as `last store event` age >> activity age.
+    if !view.is_empty() {
         let age = |s: Option<u64>| s.map(|s| format!("{s}s ago")).unwrap_or_else(|| "-".into());
-        println!("run {}: {} agent(s) in flight", short(&run_id), view.len());
         for a in &view {
             println!("  {} [{}]", a.id, a.stage);
             println!(
@@ -8037,34 +8045,31 @@ fn cmd_status(args: &[String]) -> Res {
             );
         }
     }
-    if !blocker_lines.is_empty() {
-        println!("current blockers:");
-        for line in &blocker_lines {
+
+    // The dock's needs-you section (spec 93, criterion 4): every CURRENT outstanding
+    // condition an operator must act on, from `console::fold`'s own dock - printed even when
+    // empty, with the design's own reassurance line (spec 93 Design, "6.8"), so a quiet run
+    // never leaves an operator wondering whether the check ran at all.
+    println!("needs you:");
+    if console_state.dock.needs_you.is_empty() {
+        println!("  Nothing needs a human right now. Walk away - you will be tapped.");
+    } else {
+        for line in console_state.dock.lines() {
             println!("  {line}");
         }
     }
-    // Non-empty only when the run is done; a no-op otherwise, so an in-flight run prints
-    // nothing here (the done case has no live spawns and is handled in the branch above).
+
+    if !console_state.blockers.is_empty() {
+        println!("current blockers:");
+        for line in &console_state.blockers {
+            println!("  {line}");
+        }
+    }
+    // Non-empty only when the run is done.
     for line in &release_lines {
         println!("{line}");
     }
     Ok(())
-}
-
-/// The current-blocker lines `rigger status` prints (spec 19a, unit 1): one line per
-/// unfinished unit, plus the run-level budget halt, from the SHARED
-/// [`blocker`](rigger::blocker) classifier the dashboard also renders. Pure over the
-/// run's event slice and the configured remediation bound, so it renders identically to
-/// the dashboard (which calls the same [`blocker::from_events`]) and is unit-testable
-/// without a store.
-fn status_blocker_lines(
-    run_events: &[Event],
-    configured_max_retries: u32,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
-    Ok(blocker::lines(&blocker::from_events(
-        run_events,
-        configured_max_retries,
-    )?))
 }
 
 /// The ready-to-release handoff lines `rigger status` prints (spec 38, criterion 3): empty
@@ -16194,10 +16199,10 @@ mod tests {
     /// dashboard render the SAME one-line current-blocker per unfinished unit, from ONE
     /// classifier - covering building, reject-recurrence (#n/max), approved-not-integrated,
     /// escalated, and the run-level budget halt. Proven over the PRODUCTION render of each
-    /// surface: the exact `Vec<String>` `cmd_status` prints (via `status_blocker_lines`)
-    /// versus the `line` field the dashboard serializes into its `/api/state` snapshot (via
-    /// `dash::build_state`). Byte-identical lines are the structural proof there is one
-    /// shared classifier, not two that can drift.
+    /// surface: the exact `Vec<String>` `cmd_status` prints (via `console::fold`, spec 93
+    /// criterion 4) versus the `line` field the dashboard serializes into its `/api/state`
+    /// snapshot (via `dash::build_state`). Byte-identical lines are the structural proof
+    /// there is one shared classifier, not two that can drift.
     #[test]
     fn status_and_dashboard_render_the_same_current_blocker_lines() {
         use rigger::contextgraph::Graph;
@@ -16230,8 +16235,10 @@ mod tests {
         }
         let max_retries = 6;
 
-        // The `rigger status` production render: the exact lines cmd_status prints.
-        let status_lines = status_blocker_lines(&events, max_retries).unwrap();
+        // The `rigger status` production render: the exact lines cmd_status prints, via the
+        // console fold (spec 93, criterion 4) - the SAME `blocker::from_state` classifier the
+        // dashboard render below also calls.
+        let status_lines = console::fold(&events, max_retries).unwrap().blockers;
 
         // The dashboard production render: the `line` fields in the /api/state snapshot.
         let state = dash::build_state(

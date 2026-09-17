@@ -38,6 +38,12 @@ pub mod config;
 /// The write half of [`config`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod config_store;
+/// The console's view models and ONE FOLD (spec 93, criterion 4): the pure
+/// reconstruction of unit statuses, current-blocker lines, the needs-you dock and
+/// the statusline from a recorded event stream, shared between `rigger status`
+/// and the Mission Control console page (specs 94-98). Always compiled (`core`):
+/// no `rusqlite`, `tokio`, `std::fs`, `std::process`, `std::net` or clock read.
+pub mod console;
 pub mod contextgraph;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod dash;
