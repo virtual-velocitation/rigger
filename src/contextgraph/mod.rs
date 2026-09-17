@@ -11,6 +11,12 @@
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod sqlite;
 
+// THE QUERY ENGINE MOVES WITH THE OPS (spec 93 criterion 5): the pure graph query functions
+// (`neighborhood`, `card`, `path`, `clustered_overview`, `cluster_detail`, `communities`'s
+// dispatch, `search`) and the `graph_load`/`graph_query` ops, relocated from `dash.rs` - `core`,
+// like this module itself, never gated.
+pub mod query;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -217,7 +223,11 @@ pub const TIER_AMBIGUOUS: &str = "ambiguous";
 pub const META_ACTOR: &str = "actor";
 
 /// A node in the graph: a decision, artifact, agent, gate, unit, or lesson.
-#[derive(Clone, Debug)]
+///
+/// `Serialize`/`Deserialize` (spec 93 criterion 5): the wire form [`query::graph_load`] parses a
+/// [`Graph`] payload from and the future console page would send - additive, since nothing
+/// previously depended on these types NOT round-tripping through JSON.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node {
     pub id: String,
     pub kind: String,
@@ -226,7 +236,7 @@ pub struct Node {
 
 /// A typed, bi-temporal edge. `valid_to == None` means it currently holds; a set
 /// value means it was invalidated (superseded) and is never deleted.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Edge {
     pub from: String,
     pub to: String,
@@ -241,7 +251,7 @@ pub struct Edge {
 }
 
 /// A set of nodes and the edges among them (e.g. a Subgraph result).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,

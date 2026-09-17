@@ -80,6 +80,72 @@
     "reason": "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not a false positive: spawn_sdet_author (conductor.rs:3980) gates the always-on SDET periphery-test author ONLY on whether an sdet-author agent is configured (self.cfg.agents.get(ROLE_SDET_AUTHOR)) and never consults self.cfg.defaults.sdet_author_enabled() at all, so today an explicit sdet_author: false in a workflow's defaults: block does nothing - the on-by-default opt-out spec 32 documents and this very method's own doc comment claims ('the conductor's build-seam reads through here') is not actually true of the shipped code. keep-pending, citing spec 32 (the sdet-author feature this toggle governs, already landed): deleting the method would delete the documented resolution authority for an already-shipped, still-referenced config field (Defaults::sdet_author) before a follow-up wires spawn_sdet_author to call it - the correct fix is wiring the call site, out of scope here (no production code changes this criterion)."
   },
   {
+    "name": "graph_load",
+    "file": "src/contextgraph/query.rs",
+    "content_hash": "975407e238123fea",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "3da4caa86f78910c"
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "cbbc44f4ae964815"
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "7df0e795af08cebc"
+      }
+    ],
+    "disposition": "keep-pending",
+    "reason": "graph_load (the stateless op-level `payload -> Graph` deserializer, spec 93 criterion 5) has no production caller anywhere - it is called only by its own two unit tests and by graph_query's own proof test, all in this file's `#[cfg(test)] mod graph_ops_tests`. Unlike a stray convenience wrapper, graph_load's tested behavior IS the wire-form contract spec 93 criterion 5 was built to hand off: `console_call`'s future `graph_load(payload)` op (the console/Mission-Control ABI, docs/architecture-addendum-mission-control.md) names this exact function by exact signature - 'the query engine moves with the ops' - so deleting it would delete the shipped mechanism a later criterion (2, the console member crate) wires to a real caller, not an unused alternative to one. keep-pending, citing spec 93 criterion 2: this criterion's own OWNS is the pure query engine and its two op entry points, not their ABI wiring."
+  },
+  {
+    "name": "graph_query",
+    "file": "src/contextgraph/query.rs",
+    "content_hash": "d1e1c89636beab31",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "08d6cb57d08fc235"
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "352837a34a70c241"
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "content_hash": "352837a34a70c241"
+      }
+    ],
+    "disposition": "keep-pending",
+    "reason": "graph_query (the stateless op-level `(&Graph, kind, params) -> Value` dispatcher, spec 93 criterion 5) has no production caller anywhere - it is called only by its own five unit tests in this file's `#[cfg(test)] mod graph_ops_tests`, most directly `graph_query_answers_every_kind_identically_to_the_direct_library_call`, which is this criterion's own done-when proof that the dispatcher and the direct library calls (`neighborhood`, `card`, `path`, `clustered_overview`, `cluster_detail`, `search`) agree. Same reasoning and same citation as the `graph_load` entry immediately above: the console/Mission-Control ABI (spec 93 criterion 2) names `graph_query(kind, params)` as one of its 12 ops and wires to this exact function; deleting it would delete that already-tested dispatch contract before its ABI caller lands. keep-pending, citing spec 93 criterion 2."
+  },
+  {
     "name": "pid_is_alive",
     "file": "src/dash.rs",
     "content_hash": "3589ffc443c8c257",
@@ -117,69 +183,6 @@
     ],
     "disposition": "delete",
     "reason": "pid_is_alive has no production caller. It is the RETIRED predecessor of the real marker-serving check: dash_marker_serving (main.rs:5711, the production predicate ensure_run_dashboard_at is called with) calls dash::dash_serving_on - a REAL network probe of the port - and its own doc comment explains why by name: 'A REAL network probe of the port, never a bare pid-liveness check: a marker left by a self-reaped or pid-recycled dash must never masquerade as still serving just because its pid happens to be alive'. pid_is_alive's only references are its own unit test (dash.rs:9304) and an older fixture test (main.rs:12795-12841) that injects it as a simplified closure for readability, not a claim about production behavior."
-  },
-  {
-    "name": "neighborhood",
-    "file": "src/dash.rs",
-    "content_hash": "017b0ac3890e0793",
-    "visibility": "pub",
-    "ambiguous": false,
-    "test_only_references": [
-      {
-        "file": "src/dash.rs",
-        "content_hash": "41aa7f33c1b0e2d3"
-      },
-      {
-        "file": "src/dash.rs",
-        "content_hash": "0a4677751bad5fea"
-      },
-      {
-        "file": "src/dash.rs",
-        "content_hash": "41aa7f33c1b0e2d3"
-      },
-      {
-        "file": "src/dash.rs",
-        "content_hash": "41aa7f33c1b0e2d3"
-      },
-      {
-        "file": "src/dash.rs",
-        "content_hash": "41aa7f33c1b0e2d3"
-      },
-      {
-        "file": "tests/dash_cluster_detail_drill.rs",
-        "content_hash": "19e529030aee63fe"
-      },
-      {
-        "file": "tests/dash_cluster_detail_drill.rs",
-        "content_hash": "28b97baa337d7460"
-      },
-      {
-        "file": "tests/files_lens_view_periphery.rs",
-        "content_hash": "cabef5d8c6e2da20"
-      },
-      {
-        "file": "tests/files_lens_view_periphery.rs",
-        "content_hash": "76b104c5f032f1d5"
-      },
-      {
-        "file": "tests/subject_lens_reprojection_periphery.rs",
-        "content_hash": "d218ee4a0356d34b"
-      },
-      {
-        "file": "tests/subject_lens_reprojection_periphery.rs",
-        "content_hash": "a6b1dbd1e7fc3d1d"
-      },
-      {
-        "file": "tests/subject_lens_reprojection_periphery.rs",
-        "content_hash": "64ec1ad315bd0717"
-      },
-      {
-        "file": "tests/subject_lens_reprojection_periphery.rs",
-        "content_hash": "3fb4b4655dac6074"
-      }
-    ],
-    "disposition": "delete",
-    "reason": "neighborhood (the single-seed convenience wrapper) has no production caller. The route handler (dash.rs:3404) calls neighborhood_of (the multi-seed core neighborhood delegates to) DIRECTLY, per its own doc comment: 'the re-pointed run-tree click (spec 43) uses it to seed from a unit's several decision/finding content nodes at once'. neighborhood's 13 references are all its own tests exercising the single-seed case directly."
   },
   {
     "name": "serve",
@@ -945,7 +948,7 @@
     "ambiguous": true,
     "ambiguous_with": [
       "src/budget.rs#789015f44c6a905b",
-      "src/dash.rs#30699d151b93d069",
+      "src/contextgraph/query.rs#89165aa8d138af40",
       "src/dash.rs#1d6d73587ac2f278",
       "src/driver/replay.rs#bb5d69d8debb3ee7",
       "src/driver/workflow.rs#f24517a3c13a6746",

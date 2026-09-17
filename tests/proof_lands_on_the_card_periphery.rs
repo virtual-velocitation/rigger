@@ -87,9 +87,9 @@ fn an_outside_combat_test() {
 #[cfg(feature = "symbols")]
 #[test]
 fn proof_lands_through_the_public_pipeline_independent_of_the_implementers_own_fixture() {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::{Projection, KIND_FILE};
-    use rigger::dash::card;
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::index_events;
 
@@ -196,9 +196,9 @@ fn checks_finisher() {
 #[test]
 fn forward_referenced_evidence_through_the_public_pipeline_is_reconciled_once_its_definition_later_folds(
 ) {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
-    use rigger::dash::card;
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::index_events;
 
@@ -352,9 +352,9 @@ fn checks_watch() {
 #[cfg(feature = "symbols")]
 #[test]
 fn cross_file_proof_survives_a_real_reextraction_of_the_defining_file() {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
-    use rigger::dash::card;
 
     let root = tempfile::tempdir().unwrap();
     root_write(&root, "sentinel.rs", SENTINEL_V1_SRC);
@@ -446,9 +446,9 @@ fn checks_right() {
 #[test]
 fn a_real_reextraction_of_a_test_file_supersedes_rather_than_accretes_or_strands_its_own_evidence()
 {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
-    use rigger::dash::card;
 
     // One step of the walk below: `tests/duo_periphery.rs` is (re-)written to `src` and
     // re-extracted fresh, and `left`/`right` must land at exactly `want_left`/`want_right`
@@ -548,9 +548,9 @@ fn checks_shared() {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_real_ambiguous_same_named_pair_never_gets_confident_credit_through_either_resolution_path() {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
-    use rigger::dash::card;
     use rigger::grounder::symbols::build_index;
     use rigger::grounder::symbols::events::index_events;
 
@@ -640,9 +640,9 @@ const GONE_TEST_V2_SRC: &str = "// the test that proved vanish() was deleted\n";
 #[cfg(feature = "symbols")]
 #[test]
 fn a_deleted_test_reference_retracts_its_stale_proof_through_the_real_pipeline() {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
-    use rigger::dash::card;
 
     let root = tempfile::tempdir().unwrap();
     root_write(&root, "gone.rs", GONE_PRODUCT_SRC);
@@ -714,9 +714,9 @@ fn checks_heard() {
 #[cfg(feature = "symbols")]
 #[test]
 fn a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_no_residue() {
+    use rigger::contextgraph::query::card;
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::Projection;
-    use rigger::dash::card;
 
     let root = tempfile::tempdir().unwrap();
     root_write(&root, "tests/blank_helper.rs", BLANK_TESTS_DIR_SRC);

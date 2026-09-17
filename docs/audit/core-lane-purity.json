@@ -8,6 +8,7 @@
     "src/concepts.rs",
     "src/config.rs",
     "src/contextgraph/mod.rs",
+    "src/contextgraph/query.rs",
     "src/eventstore/mod.rs",
     "src/eventstore/namespace.rs",
     "src/failure.rs",
@@ -52,7 +53,7 @@
         "cargo build --lib --no-default-features --features core --target wasm32-unknown-unknown",
         "cargo test --lib --no-default-features --features core"
       ],
-      "result": "all three clean: native lib builds, wasm32-unknown-unknown lib builds (proving every banned CRATE - rusqlite/tokio/rustix/fs2/ignore/uuid/kurrentdb - is genuinely unreachable, since none of them are wasm32-unknown-unknown-compatible and are absent from the core-only dependency graph for that target), and the 181 core-lane library unit tests pass.",
+      "result": "all three clean: native lib builds, wasm32-unknown-unknown lib builds (proving every banned CRATE - rusqlite/tokio/rustix/fs2/ignore/uuid/kurrentdb - is genuinely unreachable, since none of them are wasm32-unknown-unknown-compatible and are absent from the core-only dependency graph for that target), and the 181 core-lane library unit tests pass. (Re-run by u93c5/implementer#0 after spec 93 criterion 5 relocated the dashboard query engine into the new always-on src/contextgraph/query.rs: native build/clippy/test still clean, now 192 core-lane library unit tests pass - the +11 delta is query.rs's own new `search_tests`/`graph_ops_tests` modules, which build under `core` since the module they live in is ungated.)",
       "expensive_rebuild_gated_by": "RIGGER_CORE_LANE_VERIFY=1 cargo test --test core_lane_purity_audit (the gate is a runtime env-var check inside the test body, not #[ignore] - passing -- --ignored filters this test OUT instead of running it)",
       "why_gated": "the wasm cross-compile plus the native build/test each force a fresh recompile under a feature/target combination no other test in the suite otherwise builds, adding real minutes to every future unit's gate cycle - the same reason RIGGER_COMPILER_PASS_VERIFY=1 (spec 87) and RIGGER_AUDIT_WRITE=1 are opt-in rather than wired into the default suite. The always-on cheap_tests above instead assert the static, directly re-checkable textual facts this JSON records."
     }

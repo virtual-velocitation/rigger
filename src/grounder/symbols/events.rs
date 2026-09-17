@@ -1451,7 +1451,7 @@ fn an_integration_test() {
         // PROVEN: product_fn is referenced by the in-file test (line 11) and the tests/-dir
         // integration test (line 3) - proven_by: 2, both file:lines, in fold order (product.rs
         // sorts before tests/integration.rs, so its own evidence lands first).
-        let card = crate::dash::card(&g, "product.rs::product_fn")
+        let card = crate::contextgraph::query::card(&g, "product.rs::product_fn")
             .expect("product.rs::product_fn is a graph node");
         assert_eq!(
             card.proven_by, 2,
@@ -1468,7 +1468,7 @@ fn an_integration_test() {
 
         // UNREFERENCED: unused_fn, defined in the SAME file, is never called by any test - the
         // explicit no-test state (proven_by: 0, no evidence), never a made-up value.
-        let unused = crate::dash::card(&g, "product.rs::unused_fn")
+        let unused = crate::contextgraph::query::card(&g, "product.rs::unused_fn")
             .expect("product.rs::unused_fn is a graph node");
         assert_eq!(
             unused.proven_by, 0,

@@ -794,9 +794,15 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// 92 added it for the exact same reason. Net: total 26 -> 29 (+4 to_event, -1
 /// record_current_generation), delete 23 -> 22 (-1, record_current_generation only -
 /// cataloged_classes and park moved file:name keys with the same disposition, net zero), 0 -> 4
-/// keep-public-surface, 3 keep-pending unchanged.
+/// keep-public-surface, 3 keep-pending unchanged. Now 30/21/4/5 (was 29/22/4/3) after spec 93
+/// criterion 5's dashboard query-engine relocation: `src/dash.rs::neighborhood` moved into
+/// `src/contextgraph/query.rs`, where the new `graph_query` op dispatcher calls it directly, so
+/// its prior `delete` entry is gone outright rather than moved (candidates -1, delete -1); the
+/// criterion's two new op-level entry points, `graph_load` and `graph_query`
+/// (src/contextgraph/query.rs), land as fresh `keep-pending` candidates awaiting their
+/// console/Mission-Control ABI caller, a later criterion (candidates +2, keep-pending +2).
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_22_delete_3_keep_pending_4_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_4_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -813,7 +819,7 @@ fn the_committed_dead_code_json_disposition_split_is_22_delete_3_keep_pending_4_
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (29, 22, 4, 3),
+        (30, 21, 4, 5),
         "the committed disposition split has changed since this criterion's research"
     );
 }

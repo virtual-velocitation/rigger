@@ -3801,8 +3801,9 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // which cannot see this unmerged unit branch's new file split).
         ("src/canary_store.rs", "cataloged_classes") => 2,
         ("src/config.rs", "sdet_author_enabled") => 3,
+        ("src/contextgraph/query.rs", "graph_load") => 3,
+        ("src/contextgraph/query.rs", "graph_query") => 8,
         ("src/dash.rs", "pid_is_alive") => 5,
-        ("src/dash.rs", "neighborhood") => 7,
         ("src/dash.rs", "serve") => 3,
         ("src/distiller.rs", "rebuild") => 15,
         ("src/eventstore/sqlite.rs", "with_content_identity") => 32,
@@ -4661,16 +4662,16 @@ fn render_section_6() -> String {
     );
     out.push_str(
         "#### 2. Close the `Grounder` port gap for whole-project batch ingest (retires \
-        dup-0206 in the same motion)\n\n",
+        dup-0208 in the same motion)\n\n",
     );
     out.push_str(
         "- Scope: section 3 violation 2 (`src/ingest.rs:187-211` `walk_batches`, reaching \
         `grounder::symbols::events::project_batches_paced` and \
         `grounder::design::events::project_batches` by concrete module path) and \
-        duplication cluster `dup-0206` (the same two modules' own twin `project_batches` \
+        duplication cluster `dup-0208` (the same two modules' own twin `project_batches` \
         functions, `src/grounder/symbols/events.rs:36-38` / \
         `src/grounder/design/events.rs:90-114`) are one root cause, not two - fix once. TWO \
-        CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): `dup-0206`'s own mechanical \
+        CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): `dup-0208`'s own mechanical \
         `proposed_home` suggests relocating into `tests/common`, but both sites are \
         production code under `src/grounder/`, not test helpers - the mechanical heuristic \
         has no \"add a port method\" category to route a production duplicate to, so it \
@@ -4680,15 +4681,15 @@ fn render_section_6() -> String {
         - Files: `src/ingest.rs`, `src/grounder/mod.rs`, `src/grounder/symbols/events.rs`, \
         `src/grounder/design/events.rs`.\n\
         - Expected line delta: roughly neutral - one new trait method plus two thin impls, \
-        minus the two duplicate bodies `dup-0206` catalogs.\n\
+        minus the two duplicate bodies `dup-0208` catalogs.\n\
         - Risk: medium. `ingest.rs`'s own module doc calls it \"the ONE walk-and-content-key \
         authority\" - a load-bearing path; needs the existing whole-project-ingest and \
         reindex-freshening coverage to stay green, not just the two duplicate-site tests.\n\
-        - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0206` \
+        - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0208` \
         together, rather than as two separately-tracked fixes.\n\n",
     );
     out.push_str(
-        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0148` + `dup-0149`)\n\n",
+        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0152` + `dup-0153`)\n\n",
     );
     out.push_str(
         "- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
@@ -4696,19 +4697,19 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0149`, 15 sites: `src/dash.rs`, `src/main.rs`, \
+        capstone previously caught (`dup-0153`, 15 sites: `src/dash.rs`, `src/main.rs`, \
         `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \
         91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \
         reason `dash.rs::process_state` does, growing this already-known cluster by one site \
         rather than opening a new one), plus 60 raw `/proc`-path string literals scattered \
         across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no \
-        shared composer (`dup-0148`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
+        shared composer (`dup-0152`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
         re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
         production server, so it is the actual active-correctness risk this tier-1 placement \
         is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) \
         and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
-        rides in this same item only because it shares `dup-0148`/`dup-0149`'s one root cause \
+        rides in this same item only because it shares `dup-0152`/`dup-0153`'s one root cause \
         and one proposed fix with `process_state`, not because retiring it retires any live \
         risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
@@ -4923,7 +4924,7 @@ fn render_section_6() -> String {
         46.\n\n",
     );
     out.push_str(
-        "#### 13. Consolidate the 5 error-shaping helper sites (`dup-0215`) - caution, \
+        "#### 13. Consolidate the 5 error-shaping helper sites (`dup-0217`) - caution, \
         confirm before merging\n\n",
     );
     out.push_str(
@@ -4938,7 +4939,7 @@ fn render_section_6() -> String {
         spec's first job is confirming by reading whether these six sites share actual \
         logic before proposing one helper, not assuming the cluster label proves it.\n\
         - Files: `src/grounder/mod.rs`, `src/worktree.rs`, plus the three test files named \
-        in `docs/audit/duplication-catalog.json` under `dup-0215`.\n\
+        in `docs/audit/duplication-catalog.json` under `dup-0217`.\n\
         - Expected line delta: unknown pending the confirmation read above - potentially \
         zero if the cluster does not survive a human read.\n\
         - Risk: low (the smallest-site-count sweep), but with the stated precondition.\n\
@@ -5047,7 +5048,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
         above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0056`, `dup-0110`, \
-        `dup-0148`, `dup-0149`, `dup-0206`, `dup-0215`); the remaining 327 clusters touching \
+        `dup-0152`, `dup-0153`, `dup-0208`, `dup-0217`); the remaining 327 clusters touching \
         `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
         section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
         exact-duplicate clusters first, consumed directly from \
@@ -6127,6 +6128,35 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              correct fix is wiring the call site, out of scope here (no production code changes \
              this criterion).",
         ),
+        ("src/contextgraph/query.rs", "graph_load") => (
+            KeepPending,
+            "graph_load (the stateless op-level `payload -> Graph` deserializer, spec 93 \
+             criterion 5) has no production caller anywhere - it is called only by its own two \
+             unit tests and by graph_query's own proof test, all in this file's `#[cfg(test)] \
+             mod graph_ops_tests`. Unlike a stray convenience wrapper, graph_load's tested \
+             behavior IS the wire-form contract spec 93 criterion 5 was built to hand off: \
+             `console_call`'s future `graph_load(payload)` op (the console/Mission-Control ABI, \
+             docs/architecture-addendum-mission-control.md) names this exact function by exact \
+             signature - 'the query engine moves with the ops' - so deleting it would delete the \
+             shipped mechanism a later criterion (2, the console member crate) wires to a real \
+             caller, not an unused alternative to one. keep-pending, citing spec 93 criterion 2: \
+             this criterion's own OWNS is the pure query engine and its two op entry points, not \
+             their ABI wiring.",
+        ),
+        ("src/contextgraph/query.rs", "graph_query") => (
+            KeepPending,
+            "graph_query (the stateless op-level `(&Graph, kind, params) -> Value` dispatcher, \
+             spec 93 criterion 5) has no production caller anywhere - it is called only by its \
+             own five unit tests in this file's `#[cfg(test)] mod graph_ops_tests`, most directly \
+             `graph_query_answers_every_kind_identically_to_the_direct_library_call`, which is \
+             this criterion's own done-when proof that the dispatcher and the direct library \
+             calls (`neighborhood`, `card`, `path`, `clustered_overview`, `cluster_detail`, \
+             `search`) agree. Same reasoning and same citation as the `graph_load` entry \
+             immediately above: the console/Mission-Control ABI (spec 93 criterion 2) names \
+             `graph_query(kind, params)` as one of its 12 ops and wires to this exact function; \
+             deleting it would delete that already-tested dispatch contract before its ABI caller \
+             lands. keep-pending, citing spec 93 criterion 2.",
+        ),
         ("src/dash.rs", "pid_is_alive") => (
             Delete,
             "pid_is_alive has no production caller. It is the RETIRED predecessor of the real \
@@ -6138,15 +6168,6 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              its pid happens to be alive'. pid_is_alive's only references are its own unit test \
              (dash.rs:9304) and an older fixture test (main.rs:12795-12841) that injects it as a \
              simplified closure for readability, not a claim about production behavior.",
-        ),
-        ("src/dash.rs", "neighborhood") => (
-            Delete,
-            "neighborhood (the single-seed convenience wrapper) has no production caller. The \
-             route handler (dash.rs:3404) calls neighborhood_of (the multi-seed core \
-             neighborhood delegates to) DIRECTLY, per its own doc comment: 'the re-pointed \
-             run-tree click (spec 43) uses it to seed from a unit's several decision/finding \
-             content nodes at once'. neighborhood's 13 references are all its own tests \
-             exercising the single-seed case directly.",
         ),
         ("src/dash.rs", "serve") => (
             Delete,
@@ -9451,16 +9472,16 @@ mod tests {
         // Cites section 3's two boundary violations by name.
         assert!(rendered.contains("AgentDriver"));
         assert!(rendered.contains("Grounder"));
-        // The two-candidates-one-home resolution for dup-0206 (spec 85 CONSTRAINTS WALK).
-        assert!(rendered.contains("dup-0206"));
+        // The two-candidates-one-home resolution for dup-0208 (spec 85 CONSTRAINTS WALK).
+        assert!(rendered.contains("dup-0208"));
         assert!(rendered.contains("TWO CANDIDATES, ONE HOME"));
         // Cites the mandatory-sweep duplication clusters by id.
         assert!(rendered.contains("dup-0006"));
         assert!(rendered.contains("dup-0056"));
         assert!(rendered.contains("dup-0110"));
-        assert!(rendered.contains("dup-0148"));
-        assert!(rendered.contains("dup-0149"));
-        assert!(rendered.contains("dup-0215"));
+        assert!(rendered.contains("dup-0152"));
+        assert!(rendered.contains("dup-0153"));
+        assert!(rendered.contains("dup-0217"));
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("src/conductor.rs"));
         assert!(rendered.contains("src/main.rs"));
@@ -10869,9 +10890,23 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (29, 22, 4, 3),
+            (30, 21, 4, 5),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}\n\n\
+             Was (29, 22, 4, 3) before spec 93 criterion 5's dashboard query-engine relocation. \
+             That criterion moved `neighborhood` (and its siblings) out of src/dash.rs into the \
+             new src/contextgraph/query.rs, where a new `graph_query` op dispatcher calls \
+             `neighborhood` directly by name - so `(\"src/dash.rs\", \"neighborhood\")`'s prior \
+             `delete` entry is gone outright (delete: 22 -> 21, candidates: -1), not moved, since \
+             the relocated fn is no longer a candidate at all (same pattern as the pre-existing \
+             `is_dirty`/`expect_merged` precedent this file already documents). The criterion's \
+             own two NEW op-level entry points, `graph_load` and `graph_query` \
+             (src/contextgraph/query.rs), both land as fresh `keep-pending` candidates: neither \
+             has a production caller yet (only their own unit tests call them) because the \
+             console/Mission-Control ABI that wires `graph_load(payload)`/`graph_query(kind, \
+             params)` to a real op surface is a LATER criterion (2), not this one - candidates: \
+             +2, keep_pending: 3 -> 5. Net: 29 - 1 + 2 = 30 candidates; 22 - 1 = 21 delete; 4 \
+             keep-public-surface unchanged; 3 + 2 = 5 keep-pending.\n\n\
              Was (26, 23, 0, 3) before spec 93 criterion 1's core/store file splits and its \
              companion scanner fix. The +4 keep-public-surface entries are `to_event` becoming \
              pub(crate) across a new read/write file boundary with a real non-test consumer in \

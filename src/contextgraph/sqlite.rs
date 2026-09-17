@@ -2535,7 +2535,7 @@ fn resolve_proof_target(
 /// directly as `json_set`'s value silently stores a BARE JSON ARRAY, not the JSON-STRING this
 /// function's own contract requires. A plain Rust-computed `String` bound as an ordinary parameter
 /// carries no such subtype tag, so `json_set` correctly quotes it - which is what makes the
-/// round-trip through [`Card`](crate::dash::Card)'s own `usize`/`Vec<String>` parse (`str::parse`,
+/// round-trip through [`Card`](crate::contextgraph::query::Card)'s own `usize`/`Vec<String>` parse (`str::parse`,
 /// `serde_json::from_str`) symmetric with how it is written here.
 fn record_proof(tx: &Transaction, id: &str, evidence: &str, project: &str) -> Result<(), Error> {
     let existing: Option<(Option<i64>, Option<String>)> = tx

@@ -64,17 +64,75 @@
     ]
   },
   {
+    "file": "src/contextgraph/query.rs",
+    "name": "graph_load",
+    "line": 1729,
+    "test_only_references": [
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1923
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1931
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1941
+      }
+    ]
+  },
+  {
+    "file": "src/contextgraph/query.rs",
+    "name": "graph_query",
+    "line": 1754,
+    "test_only_references": [
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1943
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1946
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1949
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1960
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1966
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1972
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1984
+      },
+      {
+        "file": "src/contextgraph/query.rs",
+        "line": 1991
+      }
+    ]
+  },
+  {
     "file": "src/dash.rs",
     "name": "pid_is_alive",
-    "line": 425,
+    "line": 448,
     "test_only_references": [
       {
         "file": "src/dash.rs",
-        "line": 9310
+        "line": 7585
       },
       {
         "file": "src/dash.rs",
-        "line": 9314
+        "line": 7589
       },
       {
         "file": "src/main.rs",
@@ -100,67 +158,8 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "neighborhood",
-    "line": 2815,
-    "test_only_references": [
-      {
-        "file": "src/dash.rs",
-        "line": 8033
-      },
-      {
-        "file": "src/dash.rs",
-        "line": 8044
-      },
-      {
-        "file": "src/dash.rs",
-        "line": 8063
-      },
-      {
-        "file": "src/dash.rs",
-        "line": 8121
-      },
-      {
-        "file": "src/dash.rs",
-        "line": 8142
-      },
-      {
-        "file": "tests/dash_cluster_detail_drill.rs",
-        "line": 46
-      },
-      {
-        "file": "tests/dash_cluster_detail_drill.rs",
-        "line": 332
-      },
-      {
-        "file": "tests/files_lens_view_periphery.rs",
-        "line": 46
-      },
-      {
-        "file": "tests/files_lens_view_periphery.rs",
-        "line": 526
-      },
-      {
-        "file": "tests/subject_lens_reprojection_periphery.rs",
-        "line": 296
-      },
-      {
-        "file": "tests/subject_lens_reprojection_periphery.rs",
-        "line": 298
-      },
-      {
-        "file": "tests/subject_lens_reprojection_periphery.rs",
-        "line": 303
-      },
-      {
-        "file": "tests/subject_lens_reprojection_periphery.rs",
-        "line": 307
-      }
-    ]
-  },
-  {
-    "file": "src/dash.rs",
     "name": "serve",
-    "line": 4665,
+    "line": 2939,
     "test_only_references": [
       {
         "file": "src/mcpserver.rs",
@@ -667,7 +666,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 9779
+        "line": 9800
       }
     ]
   },
@@ -867,8 +866,8 @@
     "line": 376,
     "ambiguous_with": [
       "src/budget.rs:57",
-      "src/dash.rs:1885",
-      "src/dash.rs:4917",
+      "src/contextgraph/query.rs:306",
+      "src/dash.rs:3191",
       "src/driver/replay.rs:237",
       "src/driver/workflow.rs:83",
       "src/eventstore/mod.rs:109",
@@ -915,35 +914,35 @@
       },
       {
         "file": "src/dash.rs",
-        "line": 6127
+        "line": 4402
       },
       {
         "file": "src/dash.rs",
-        "line": 6193
+        "line": 4468
       },
       {
         "file": "src/dash.rs",
-        "line": 6278
+        "line": 4553
       },
       {
         "file": "src/dash.rs",
-        "line": 6279
+        "line": 4554
       },
       {
         "file": "src/dash.rs",
-        "line": 6280
+        "line": 4555
       },
       {
         "file": "src/dash.rs",
-        "line": 6281
+        "line": 4556
       },
       {
         "file": "src/dash.rs",
-        "line": 6282
+        "line": 4557
       },
       {
         "file": "src/dash.rs",
-        "line": 6284
+        "line": 4559
       },
       {
         "file": "src/driver/replay.rs",

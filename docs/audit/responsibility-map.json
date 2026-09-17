@@ -11433,22 +11433,6 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "is_not_back",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "07f80921977b36fa"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "is_not_shared",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "a962df0620aaab60"
-  },
-  {
-    "file": "src/dash.rs",
     "name": "build_state",
     "is_test": false,
     "proposed_module": null,
@@ -11465,158 +11449,6 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "node_label",
-    "is_test": false,
-    "proposed_module": "dash::render",
-    "reason": "name contains \"node\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "b080d185fc177ecc"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "cluster_key",
-    "is_test": false,
-    "proposed_module": "dash::reproject",
-    "reason": "name contains \"cluster\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "c8f7d72df6408904"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "file_of",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "6762d3cdaff85ce6"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "name_suffix",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "8871a002d067e973"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "defs_by_entity_suffix",
-    "is_test": false,
-    "proposed_module": "dash::reproject",
-    "reason": "name contains \"defs\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "276d8ac773cab572"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "from_query",
-    "is_test": false,
-    "proposed_module": "dash::lens",
-    "reason": "method inside `impl Lens`; grouped with its other `Lens` methods.",
-    "content_hash": "9d17bf2502490fbc"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "new",
-    "is_test": false,
-    "proposed_module": "dash::buckets",
-    "reason": "method inside `impl <'g> Buckets<'g>`; grouped with its other `Buckets` methods.",
-    "content_hash": "35c70d8a0d760fe4"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "key",
-    "is_test": false,
-    "proposed_module": "dash::buckets",
-    "reason": "method inside `impl <'g> Buckets<'g>`; grouped with its other `Buckets` methods.",
-    "content_hash": "cf504f3c9bb52353"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "excludes_super_node",
-    "is_test": false,
-    "proposed_module": "dash::buckets",
-    "reason": "method inside `impl <'g> Buckets<'g>`; grouped with its other `Buckets` methods.",
-    "content_hash": "ef8f9beb452d717b"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "underived",
-    "is_test": false,
-    "proposed_module": "dash::buckets",
-    "reason": "method inside `impl <'g> Buckets<'g>`; grouped with its other `Buckets` methods.",
-    "content_hash": "2718022c2c0db763"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "underived_message",
-    "is_test": false,
-    "proposed_module": "dash::buckets",
-    "reason": "method inside `impl <'g> Buckets<'g>`; grouped with its other `Buckets` methods.",
-    "content_hash": "b58aea3f4d834383"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "no_membership_message",
-    "is_test": false,
-    "proposed_module": "dash::buckets",
-    "reason": "method inside `impl <'g> Buckets<'g>`; grouped with its other `Buckets` methods.",
-    "content_hash": "516ddb5d24187e84"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "label_kind",
-    "is_test": false,
-    "proposed_module": "dash::buckets",
-    "reason": "method inside `impl <'g> Buckets<'g>`; grouped with its other `Buckets` methods.",
-    "content_hash": "bebda5cb19e2d43f"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "is_shared",
-    "is_test": false,
-    "proposed_module": "dash::buckets",
-    "reason": "method inside `impl <'g> Buckets<'g>`; grouped with its other `Buckets` methods.",
-    "content_hash": "9adaf281d774c865"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "whole_graph_lens_key",
-    "is_test": false,
-    "proposed_module": "dash::render",
-    "reason": "name contains \"graph\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "74b4f4c8be771565"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "clustered_overview",
-    "is_test": false,
-    "proposed_module": "dash::reproject",
-    "reason": "name contains \"cluster\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "ff7b8c0dab03f993"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "bucket_label_index",
-    "is_test": false,
-    "proposed_module": "dash::reproject",
-    "reason": "name contains \"bucket\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "bc5dd5ab80cd5d7c"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "fold_buckets",
-    "is_test": false,
-    "proposed_module": "dash::reproject",
-    "reason": "name contains \"bucket\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "601793a2fc2613f2"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "cluster_detail",
-    "is_test": false,
-    "proposed_module": "dash::reproject",
-    "reason": "name contains \"cluster\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "1a342a3a4f607702"
-  },
-  {
-    "file": "src/dash.rs",
     "name": "reproject",
     "is_test": false,
     "proposed_module": "dash::reproject",
@@ -11630,14 +11462,6 @@
     "proposed_module": "dash::reproject",
     "reason": "name contains \"cluster\" (graph reprojection); grouped under `dash::reproject`.",
     "content_hash": "50a792b5ab8fd5ef"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "member_set",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "dc83a1217a004511"
   },
   {
     "file": "src/dash.rs",
@@ -11665,99 +11489,11 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "neighborhood",
-    "is_test": false,
-    "proposed_module": "dash::render",
-    "reason": "name contains \"neighborhood\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "827c5345303267fc"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "neighborhood_of",
-    "is_test": false,
-    "proposed_module": "dash::render",
-    "reason": "name contains \"neighborhood\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "0c2823f4f1730002"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "explain",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "5d43351295b967b6"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "node_rationale",
-    "is_test": false,
-    "proposed_module": "dash::render",
-    "reason": "name contains \"node\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "4789a39fe1f40a28"
-  },
-  {
-    "file": "src/dash.rs",
     "name": "rationale_batch",
     "is_test": false,
     "proposed_module": "dash::render",
     "reason": "name contains \"rationale\" (HTML rendering); grouped under `dash::render`.",
     "content_hash": "454204c093df9980"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "memory_rail",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "97c5a09a3979b8bd"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "memory_rail_of",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "78864ba7a221c322"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "whole_graph_degree",
-    "is_test": false,
-    "proposed_module": "dash::render",
-    "reason": "name contains \"graph\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "e52d5d191e1768a0"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "community_label",
-    "is_test": false,
-    "proposed_module": "dash::reproject",
-    "reason": "name contains \"community\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "39dea274a7bd44b3"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "card_ref",
-    "is_test": false,
-    "proposed_module": "dash::render",
-    "reason": "name contains \"card\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "9276cbb329c361a7"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "card",
-    "is_test": false,
-    "proposed_module": "dash::render",
-    "reason": "name contains \"card\" (HTML rendering); grouped under `dash::render`.",
-    "content_hash": "c30629cc720aeac7"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "path",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "4aa17626b52960f9"
   },
   {
     "file": "src/dash.rs",
