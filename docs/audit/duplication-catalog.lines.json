@@ -3579,18 +3579,23 @@
       },
       {
         "file": "src/ingest.rs",
-        "start_line": 933,
-        "end_line": 933
+        "start_line": 915,
+        "end_line": 915
       },
       {
         "file": "src/ingest.rs",
-        "start_line": 935,
-        "end_line": 935
+        "start_line": 944,
+        "end_line": 944
       },
       {
         "file": "src/ingest.rs",
-        "start_line": 967,
-        "end_line": 967
+        "start_line": 946,
+        "end_line": 946
+      },
+      {
+        "file": "src/ingest.rs",
+        "start_line": 978,
+        "end_line": 978
       },
       {
         "file": "src/main.rs",

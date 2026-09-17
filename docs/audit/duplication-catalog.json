@@ -3760,6 +3760,11 @@
       },
       {
         "file": "src/ingest.rs",
+        "name": "\"one code batch (a.rs) plus one workflow-definition batch (.rigger/workflow.yml) \\\n             must both advance the shared batch count; got {}\"",
+        "content_hash": "25597419b8dbb616"
+      },
+      {
+        "file": "src/ingest.rs",
         "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
       },
@@ -7285,7 +7290,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 741 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 742 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0062",
