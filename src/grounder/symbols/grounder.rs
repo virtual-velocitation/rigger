@@ -260,9 +260,7 @@ fn scored_hits<'a>(idx: &'a SymbolIndex, terms: &[&str]) -> Vec<ScoredHit<'a>> {
                 } else {
                     0u8
                 };
-                if tier > hit_tier {
-                    hit_tier = tier;
-                }
+                hit_tier = hit_tier.max(tier);
             }
             if hit_tier == 0 {
                 return;
