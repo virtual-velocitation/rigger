@@ -24,8 +24,8 @@
       },
       {
         "file": "src/console.rs",
-        "start_line": 204,
-        "end_line": 206
+        "start_line": 207,
+        "end_line": 209
       },
       {
         "file": "src/dash.rs",
@@ -8299,18 +8299,18 @@
     "sites": [
       {
         "file": "src/console.rs",
-        "start_line": 268,
-        "end_line": 282
+        "start_line": 271,
+        "end_line": 285
       },
       {
         "file": "src/console.rs",
-        "start_line": 288,
-        "end_line": 299
+        "start_line": 291,
+        "end_line": 302
       },
       {
         "file": "src/console.rs",
-        "start_line": 330,
-        "end_line": 343
+        "start_line": 367,
+        "end_line": 380
       }
     ]
   },
@@ -8319,18 +8319,18 @@
     "sites": [
       {
         "file": "src/console.rs",
-        "start_line": 379,
-        "end_line": 392
+        "start_line": 416,
+        "end_line": 429
       },
       {
         "file": "src/console.rs",
-        "start_line": 397,
-        "end_line": 409
+        "start_line": 434,
+        "end_line": 446
       },
       {
         "file": "src/console.rs",
-        "start_line": 415,
-        "end_line": 425
+        "start_line": 452,
+        "end_line": 462
       }
     ]
   },
