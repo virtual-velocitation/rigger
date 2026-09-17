@@ -11024,13 +11024,13 @@
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1063,
-        "end_line": 1074
+        "start_line": 1071,
+        "end_line": 1082
       },
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1315,
-        "end_line": 1329
+        "start_line": 1323,
+        "end_line": 1337
       }
     ]
   },
@@ -11039,13 +11039,13 @@
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1180,
-        "end_line": 1186
+        "start_line": 1188,
+        "end_line": 1194
       },
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1595,
-        "end_line": 1605
+        "start_line": 1603,
+        "end_line": 1613
       }
     ]
   },
@@ -11054,18 +11054,18 @@
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1232,
-        "end_line": 1278
+        "start_line": 1240,
+        "end_line": 1286
       },
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1281,
-        "end_line": 1307
+        "start_line": 1289,
+        "end_line": 1315
       },
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1608,
-        "end_line": 1635
+        "start_line": 1616,
+        "end_line": 1643
       }
     ]
   },
@@ -11074,18 +11074,18 @@
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1706,
-        "end_line": 1773
+        "start_line": 1714,
+        "end_line": 1781
       },
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1780,
-        "end_line": 1834
+        "start_line": 1789,
+        "end_line": 1843
       },
       {
         "file": "src/grounder/symbols/grounder.rs",
-        "start_line": 1846,
-        "end_line": 1876
+        "start_line": 1854,
+        "end_line": 1885
       }
     ]
   },
