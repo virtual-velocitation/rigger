@@ -4521,6 +4521,14 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "regenerate_conflicted_paths_returns_the_real_regeneration_commit_sha",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "7bf66dd802d57de9"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "a_live_approved_unit_restores_a_worktree_the_integrate_door_exhaustive_gate_deleted",
     "is_test": true,
     "proposed_module": "conductor::tests",
