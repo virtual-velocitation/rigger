@@ -215,6 +215,11 @@ gates:                      # the project's verification library, referenced by 
   # walk from every copy, so without the flag all three copies built into that one dir,
   # serialized on its artifact lock and replaced each other's test binaries under running
   # tests (a copy's later tests executed another mutant's binaries).
+  # `CARGO_PROFILE_DEV_DEBUG=1` / `CARGO_PROFILE_TEST_DEBUG=1` (line tables only) shrink what
+  # every mutant relinks: with full debug info the 188 test binaries are 200-290 MB each, so
+  # three isolated build dirs (28 GB apiece) overflow the sweep's page cache and a relink that
+  # took 7 s against one hot dir took 81 s (measured 2026-09-16, 1.2 mutants a minute).
+  # Panic locations keep file:line; only symbolized backtraces lose detail, which no test reads.
   #
   # `GateSelection::PostMerge` (spec 12, unit 5) re-runs this same gate against
   # `self.deps.repo` after the checkin unit merges - a dir with no per-unit worktree of
@@ -233,7 +238,7 @@ gates:                      # the project's verification library, referenced by 
       test -n "$RIGGER_RUN_BASE" &&
       git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff &&
       rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
-      { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 env -u CARGO_TARGET_DIR
+      { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
       cargo mutants --in-diff unit.diff --test-tool nextest --cargo-arg=--target-dir=target --timeout-multiplier 3 -j 3;
       rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
       test ! -s mutants.out/missed.txt
