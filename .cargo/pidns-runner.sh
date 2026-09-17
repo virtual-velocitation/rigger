@@ -40,7 +40,7 @@ mkdir -p "$TMPDIR" 2>/dev/null || true
 # mutant timeout, a dead driver) never drops its tempdirs, and rigger's in-process unit tests
 # resolve the cache-home scratch root from the ambient environment, so every fixture repo
 # under TMPDIR used to leave one root behind in the OPERATOR's real ~/.cache/rigger - 105k of
-# them (55 GB) in three days, until a shell glob over that directory exhausted memory. So:
+# them (about 1 GB) in three days, until a shell glob over that directory exhausted memory. So:
 # an entry idle for three hours is stale (nothing runs that long under the one-hour cap
 # below) and is removed here; and the cache home for every test binary lives under TMPDIR,
 # refreshed at each start so it is only ever swept when the whole suite has been idle that
