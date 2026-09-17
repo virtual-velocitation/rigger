@@ -700,6 +700,7 @@ impl Grounder for Symbols {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grounder::symbols::model::{Def, FileSymbols, Kind, SymRef};
     use crate::grounder::Grounder;
 
     /// The `symbols` grounder is STRUCTURAL, so its `index_stamp` (unit 3's audit provenance +
@@ -1663,6 +1664,214 @@ mod tests {
         assert!(
             fresh.iter().any(|r| r.file == "workflows/rigger.js"),
             "FRESH must ground to workflows/rigger.js; got {fresh:?}"
+        );
+    }
+
+    /// Test-only fixture: a definition at `line`, real fields elsewhere immaterial to
+    /// [`scored_hits`]'s tie-break (`is_test`/`is_out_of_line_module`/`path_override`/
+    /// `enclosing_inline_module_path` all left at their inert defaults).
+    fn hand_def(name: &str, line: u32) -> Def {
+        Def {
+            kind: Kind::Function,
+            name: name.to_string(),
+            line,
+            is_test: false,
+            is_out_of_line_module: false,
+            path_override: None,
+            enclosing_inline_module_path: None,
+        }
+    }
+
+    /// Test-only fixture: a reference at `line`, uncalled/unattributed (`enclosing: None`) and
+    /// not test evidence - the fields [`scored_hits`] itself never reads.
+    fn hand_ref(name: &str, line: u32) -> SymRef {
+        SymRef {
+            name: name.to_string(),
+            line,
+            enclosing: None,
+            is_test: false,
+        }
+    }
+
+    /// [`scored_hits`]' own tie-break, `let better = ..` (grounder.rs, three clauses over one
+    /// (file, line) location's accumulated best candidate): clause 1 is `hit_tier >
+    /// slot.tier` - a STRICTLY higher tier always wins, no matter how the two candidates compare
+    /// on commonness or lexical kind. Two hand-built candidates collide at the SAME (file, line)
+    /// in each cluster below (the only way [`scored_hits`]' `best.entry(..).and_modify(..)`
+    /// tie-break ever runs at all): a definition is always scored before any reference in the
+    /// SAME file ([`scored_hits`]'s own `for d in &fs.defs { .. } for r in &fs.refs { .. }`), so
+    /// the definition is always the initial slot (`or_insert`) and the reference is always the
+    /// challenger (`and_modify`) whenever both match at one location.
+    #[test]
+    fn scored_hits_a_strictly_higher_tier_always_wins_over_a_worse_commonness_and_lexical() {
+        let mut idx = SymbolIndex::default();
+        idx.insert_file(
+            "fixture.rs".to_string(),
+            FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![
+                    // Cluster A (line 10): the SLOT is a CONTAINS-tier (1) definition that is
+                    // both COMMON (occurs 4x tree-wide, via the 3 extra refs below) and, being a
+                    // definition, lexically favored (3) - every OTHER clause would keep it. Only
+                    // the strictly-higher-tier challenger below can dislodge it.
+                    hand_def("walrus_partial_match_hook", 10),
+                    // Cluster B (line 20): the SLOT is an EXACT-tier (2) definition that is RARE
+                    // (occurs once). The challenger below matches the SAME tier but is common
+                    // (4x) - equal tier must NOT let a worse-commonness challenger win.
+                    hand_def("penguin_rare_def", 20),
+                ],
+                refs: vec![
+                    // Cluster A's challenger: EXACT tier (2, via the term below), strictly
+                    // higher than the slot's CONTAINS tier (1) - must win despite its worse
+                    // (rarer-favoring-the-slot) commonness and worse (reference) lexical kind.
+                    hand_ref("narwhal_full_match_hook", 10),
+                    // Cluster B's challenger: SAME tier (2) as the slot, but common (4x) -
+                    // clause 1 alone must never promote it; the slot must stay.
+                    hand_ref("octopus_common_ref", 20),
+                    // Inflate "walrus_partial_match_hook"'s tree-wide commonness to 4 (the
+                    // definition above plus these three), so cluster A's slot is common, not
+                    // rare - proving the win is from tier alone, not incidental rarity.
+                    hand_ref("walrus_partial_match_hook", 200),
+                    hand_ref("walrus_partial_match_hook", 201),
+                    hand_ref("walrus_partial_match_hook", 202),
+                    // Inflate "octopus_common_ref" to 4 occurrences, so cluster B's challenger
+                    // is common (worse), not merely tied on commonness too.
+                    hand_ref("octopus_common_ref", 210),
+                    hand_ref("octopus_common_ref", 211),
+                    hand_ref("octopus_common_ref", 212),
+                ],
+                partial: false,
+            },
+        );
+        let terms = [
+            "partial_match",           // CONTAINS-tier term for the cluster-A slot
+            "narwhal_full_match_hook", // EXACT-tier term for the cluster-A challenger
+            "penguin_rare_def",        // EXACT-tier term for the cluster-B slot
+            "octopus_common_ref",      // EXACT-tier term for the cluster-B challenger
+        ];
+        let hits = scored_hits(&idx, &terms);
+
+        let at_10 = hits
+            .iter()
+            .find(|h| h.line == 10 && h.file == "fixture.rs")
+            .map(|h| h.name);
+        assert_eq!(
+            at_10,
+            Some("narwhal_full_match_hook"),
+            "a strictly higher tier must win regardless of commonness/lexical; got {at_10:?}"
+        );
+        let at_20 = hits
+            .iter()
+            .find(|h| h.line == 20 && h.file == "fixture.rs")
+            .map(|h| h.name);
+        assert_eq!(
+            at_20,
+            Some("penguin_rare_def"),
+            "an EQUAL tier must never be promoted by clause 1 alone, however common the \
+             challenger; the rarer-and-already-slotted definition must stay; got {at_20:?}"
+        );
+    }
+
+    /// Clause 2, `hit_tier == slot.tier && hit_commonness < slot.commonness`: at a TIED tier,
+    /// the STRICTLY rarer candidate wins outright - even against a worse (reference) lexical
+    /// kind - and a merely EQUAL commonness must never itself promote (that would require
+    /// [`ScoredHit::lexical`] to decide, clause 3's job, proven separately).
+    #[test]
+    fn scored_hits_breaks_a_tier_tie_by_strict_rarity_never_by_an_equal_commonness() {
+        let mut idx = SymbolIndex::default();
+        idx.insert_file(
+            "fixture.rs".to_string(),
+            FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![
+                    // Cluster C (line 30): the SLOT is a common (4x) definition; the challenger
+                    // below is a strictly RARER (1x) reference at the same tier - it must win
+                    // despite its worse lexical kind, proving commonness outranks lexical.
+                    hand_def("quokka_common_def", 30),
+                    // Cluster D (line 40): SLOT and challenger have EQUAL commonness (1x each)
+                    // at the same tier - clause 2's `<` must stay false on a tie, never `<=`.
+                    hand_def("echidna_equal_def", 40),
+                ],
+                refs: vec![
+                    hand_ref("wombat_rare_ref", 30),
+                    hand_ref("platypus_equal_ref", 40),
+                    // Inflate "quokka_common_def" to 4 occurrences (common, worse).
+                    hand_ref("quokka_common_def", 220),
+                    hand_ref("quokka_common_def", 221),
+                    hand_ref("quokka_common_def", 222),
+                ],
+                partial: false,
+            },
+        );
+        let terms = [
+            "quokka_common_def",
+            "wombat_rare_ref",
+            "echidna_equal_def",
+            "platypus_equal_ref",
+        ];
+        let hits = scored_hits(&idx, &terms);
+
+        let at_30 = hits
+            .iter()
+            .find(|h| h.line == 30 && h.file == "fixture.rs")
+            .map(|h| h.name);
+        assert_eq!(
+            at_30,
+            Some("wombat_rare_ref"),
+            "a strictly rarer same-tier challenger must win over a common slot, even as a \
+             reference against a definition; got {at_30:?}"
+        );
+        let at_40 = hits
+            .iter()
+            .find(|h| h.line == 40 && h.file == "fixture.rs")
+            .map(|h| h.name);
+        assert_eq!(
+            at_40,
+            Some("echidna_equal_def"),
+            "an EQUAL commonness must never itself promote a reference over an already-slotted, \
+             same-tier definition; got {at_40:?}"
+        );
+    }
+
+    /// Clause 3, `hit_tier == slot.tier && hit_commonness == slot.commonness && lexical >
+    /// slot.lexical`: the FINAL tie-break, reached only when tier AND commonness both already
+    /// tie. [`ScoredHit::lexical`] is fixed per candidate KIND (3 for a definition, 2 for a
+    /// reference) - and since every definition in a file is always scored before any reference
+    /// in it, a definition can never challenge an already-slotted reference; only a
+    /// same-tier, same-commonness REFERENCE can ever challenge an already-slotted DEFINITION
+    /// (`lexical > slot.lexical` is `2 > 3`, always false - it must never promote the
+    /// reference), or a second definition can challenge a first one at the SAME line (`3 > 3`,
+    /// also always false - the FIRST-inserted definition must stay).
+    #[test]
+    fn scored_hits_lexical_never_promotes_a_tied_reference_or_a_tied_second_definition() {
+        let mut idx = SymbolIndex::default();
+        idx.insert_file(
+            "fixture.rs".to_string(),
+            FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![
+                    // Cluster E (line 50): TWO definitions at the same tier and commonness (1x
+                    // each) - "bandicoot" is scored first (Vec order) and must stay the slot;
+                    // clause 3's `3 > 3` must stay false, never `>=`.
+                    hand_def("bandicoot_alpha_def", 50),
+                    hand_def("dingo_beta_def", 50),
+                ],
+                refs: vec![],
+                partial: false,
+            },
+        );
+        let terms = ["bandicoot_alpha_def", "dingo_beta_def"];
+        let hits = scored_hits(&idx, &terms);
+
+        let at_50 = hits
+            .iter()
+            .find(|h| h.line == 50 && h.file == "fixture.rs")
+            .map(|h| h.name);
+        assert_eq!(
+            at_50,
+            Some("bandicoot_alpha_def"),
+            "tied tier, tied commonness, tied (definition) lexical: the first-scored definition \
+             must stay the slot; got {at_50:?}"
         );
     }
 }

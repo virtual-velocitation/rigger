@@ -13,6 +13,31 @@
 # `reap::`-qualified path. Exclude the file itself instead - the whole module is the reaper.
 exclude_globs = ["src/reap.rs"]
 
+# `scored_hits`' tie-break third clause (grounder.rs, `let better = .. || (hit_tier ==
+# slot.tier && hit_commonness == slot.commonness && lexical > slot.lexical)`) is reached only
+# when a challenger's `ScoredHit::lexical` (3 for a definition, 2 for a reference, fixed per
+# candidate KIND) is STRICTLY GREATER than the current slot's. `scored_hits` scores every
+# definition in a file before any reference in it (`for d in &fs.defs { .. } for r in &fs.refs
+# { .. }`), so whichever candidate is already slotted at a (file, line) was ALWAYS inserted no
+# later than any reference could challenge it: an already-slotted reference (lexical 2) can only
+# ever be challenged by another reference (lexical 2, never greater), and an already-slotted
+# definition (lexical 3) can only ever be challenged by a reference (lexical 2, never greater) or
+# a later same-line definition (lexical 3, never greater either). `lexical > slot.lexical` is
+# therefore UNREACHABLE as true for any input `scored_hits` is ever called with, so the WHOLE
+# three-term `&&` chain it is the final conjunct of is always false regardless of the other two
+# terms' truth values - mutating the FIRST term's operator alone (275:38, `hit_tier == slot.tier`
+# to `!=`) leaves that chain `(term1' && term2) && false`, still always false, so `better`'s own
+# value never changes either: no test, however constructed, can distinguish original from mutant
+# (empirically confirmed: the full `cargo test --lib` suite stays 100% green under this mutant,
+# decision checkin-r6-mutation-accounting). This does NOT extend to the `&&` joining the first two
+# terms (276:29): replacing THAT with `||` regroups by precedence into `term1 || (term2 &&
+# term3)` = `term1 || false` = `term1` alone (`&&` still binds tighter than `||` even though the
+# mutated operator sits where an `&&` used to), which is NOT always false - that mutant is killed
+# by the tier tests instead, exactly like an ordinary tier-equality check.
+exclude_re = [
+    "src/grounder/symbols/grounder\\.rs:275:38: replace == with != in scored_hits",
+]
+
 # Copy `.git` into the build directory cargo-mutants tests in (default: false). Without this,
 # the baseline (unmutated) check fails outright before any mutant is tested:
 # tests/validate_behind_the_tree_periphery.rs's real-binary tests shell out to
