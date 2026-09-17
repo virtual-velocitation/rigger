@@ -78,15 +78,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 14081
+        "line": 14086
       },
       {
         "file": "src/main.rs",
-        "line": 14102
+        "line": 14107
       },
       {
         "file": "src/main.rs",
-        "line": 14617
+        "line": 14622
       },
       {
         "file": "tests/cli.rs",
@@ -788,7 +788,7 @@
   {
     "file": "src/ledger.rs",
     "name": "fully_done",
-    "line": 574,
+    "line": 587,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
@@ -804,38 +804,38 @@
       },
       {
         "file": "src/ledger.rs",
-        "line": 896
+        "line": 909
       },
       {
         "file": "src/ledger.rs",
-        "line": 904
+        "line": 917
       },
       {
         "file": "src/ledger.rs",
-        "line": 914
+        "line": 927
       },
       {
         "file": "src/ledger.rs",
-        "line": 934
+        "line": 947
       },
       {
         "file": "src/ledger.rs",
-        "line": 938
+        "line": 951
       }
     ]
   },
   {
     "file": "src/ledger.rs",
     "name": "is_integrated",
-    "line": 651,
+    "line": 664,
     "test_only_references": [
       {
         "file": "src/ledger.rs",
-        "line": 746
+        "line": 759
       },
       {
         "file": "src/ledger.rs",
-        "line": 845
+        "line": 858
       }
     ]
   },
@@ -876,7 +876,7 @@
       "src/eventstore/mod.rs:546",
       "src/eventstore/namespace.rs:28",
       "src/failure.rs:218",
-      "src/ledger.rs:441",
+      "src/ledger.rs:454",
       "src/mcpserver.rs:116",
       "src/watch.rs:577"
     ],
@@ -995,47 +995,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 17288
+        "line": 17295
       },
       {
         "file": "src/main.rs",
-        "line": 17321
+        "line": 17328
       },
       {
         "file": "src/main.rs",
-        "line": 17340
+        "line": 17347
       },
       {
         "file": "src/main.rs",
-        "line": 17343
+        "line": 17350
       },
       {
         "file": "src/main.rs",
-        "line": 17346
+        "line": 17353
       },
       {
         "file": "src/main.rs",
-        "line": 19216
+        "line": 19223
       },
       {
         "file": "src/main.rs",
-        "line": 19229
+        "line": 19236
       },
       {
         "file": "src/main.rs",
-        "line": 19244
+        "line": 19251
       },
       {
         "file": "src/main.rs",
-        "line": 24689
+        "line": 24696
       },
       {
         "file": "src/main.rs",
-        "line": 24690
+        "line": 24697
       },
       {
         "file": "src/main.rs",
-        "line": 24691
+        "line": 24698
       },
       {
         "file": "src/mcpserver.rs",

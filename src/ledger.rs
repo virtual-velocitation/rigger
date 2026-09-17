@@ -226,6 +226,19 @@ impl AttentionEntry {
             detail: detail.into(),
         }
     }
+
+    /// The one-line render (spec 93, criterion 4): `"<subject>: <detail>"`, where a
+    /// run-scoped entry's subject is the literal `"run"` - the same "subject: prose"
+    /// shape [`crate::blocker::Blocker::full_line`] already uses, so the dock's
+    /// needs-you lines and the current-blocker lines read as one family.
+    pub fn line(&self) -> String {
+        let subject = if self.unit.is_empty() {
+            "run"
+        } else {
+            self.unit.as_str()
+        };
+        format!("{subject}: {}", self.detail)
+    }
 }
 
 /// The ready-to-release handoff (spec 38, criterion 3): the human-facing summary the loop

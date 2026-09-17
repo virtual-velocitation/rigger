@@ -7165,15 +7165,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "5e809ed730400ff5"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "status_blocker_lines",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "a3667be8ae62d664"
+    "content_hash": "1b8613617542b533"
   },
   {
     "file": "src/main.rs",
@@ -8725,7 +8717,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1d6c2b3bf1cce049"
+    "content_hash": "b4f8c98673d4556a"
   },
   {
     "file": "src/main.rs",
