@@ -779,7 +779,7 @@ impl Workflow {
     /// routing and the workflow-DEFINITION graph indexer (which needs the identical rule to derive
     /// a stage's `REVIEWS` edges from `.rigger/workflow.yml` without a live run) read the same
     /// answer rather than two copies that could drift.
-#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the store-gated half under core-only
+    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the store-gated half under core-only
     pub(crate) fn effective_review_panel<'a>(&'a self, st: &'a Stage) -> &'a ReviewPanel {
         if st.review.is_empty() {
             &self.defaults.review
@@ -828,7 +828,6 @@ pub struct Config {
     pub agents: BTreeMap<String, AgentDef>,
     pub workflow: Workflow,
 }
-
 
 /// Fold `defaults.max_wall_clock` onto every agent that did not set its own (spec 10,
 /// unit 3), so an agent's resolved `max_wall_clock` is authoritative wherever a spawn is
@@ -899,7 +898,6 @@ pub fn split_frontmatter(s: &str) -> Result<(&str, &str), Error> {
     let body = after.strip_prefix('\n').unwrap_or(after);
     Ok((front, body))
 }
-
 
 /// The gating (verdict-bearing) agent ids across the WHOLE config: every review panel's
 /// adjudicator (the `defaults.review` panel and every per-stage `review` override, each
@@ -1469,4 +1467,3 @@ pub(crate) fn find_cycle(stages: &BTreeMap<String, Stage>) -> Option<String> {
     }
     None
 }
-

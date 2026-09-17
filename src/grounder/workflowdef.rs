@@ -10,10 +10,10 @@
 //! why the two are never unioned). This is the emit half; the fold half lives in
 //! `contextgraph::sqlite` and stays compiled in both lanes.
 
-use crate::config_store;
-use crate::config::{ReviewPanel, Stage, Workflow};
 #[cfg(test)]
 use crate::config;
+use crate::config::{ReviewPanel, Stage, Workflow};
+use crate::config_store;
 use crate::contextgraph::{
     DocConceptExtracted, DocLinkExtracted, KIND_AGENT, KIND_GATE, KIND_STAGE, REL_NEEDS,
     REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,

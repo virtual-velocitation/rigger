@@ -13511,7 +13511,8 @@ mod tests {
         // Prior run: "old-slug" served this criterion, committed real work on its
         // durable branch, and the run ended without integrating it (escalated /
         // abandoned) - modeled here by simply never emitting UnitIntegrated for it.
-        crate::run_store::start_fresh(&store, &["old campaign".to_string()], "", "", "", "").unwrap();
+        crate::run_store::start_fresh(&store, &["old campaign".to_string()], "", "", "", "")
+            .unwrap();
         let prior_branch = unit_branch("old-slug");
         let prior_dir =
             std::env::temp_dir().join(format!("rigger-wt-prior-{}", uuid::Uuid::new_v4()));
@@ -13594,7 +13595,8 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let cid = "c1-deadbeefcafefeed";
 
-        crate::run_store::start_fresh(&store, &["old campaign".to_string()], "", "", "", "").unwrap();
+        crate::run_store::start_fresh(&store, &["old campaign".to_string()], "", "", "", "")
+            .unwrap();
         let prior_branch = unit_branch("old-slug");
         run_git_test(&repo_path, &["branch", &prior_branch]);
         store
@@ -22326,8 +22328,11 @@ mod tests {
 
         // Step 1: the implementer parks; record its success.
         replay_step(&store);
-        crate::spawn_store::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "the diff"))
-            .unwrap();
+        crate::spawn_store::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&impl0, "the diff"),
+        )
+        .unwrap();
 
         // Step 2: the review LENS parks; record a substantive lens review.
         replay_step(&store);
@@ -22444,8 +22449,11 @@ mod tests {
 
         // Step 1: the implementer parks; record its success.
         replay_step(&store).expect("the implementer step is a clean unwind");
-        crate::spawn_store::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "the diff"))
-            .unwrap();
+        crate::spawn_store::record_result(
+            &store,
+            &crate::spawn::SpawnResult::ok(&impl0, "the diff"),
+        )
+        .unwrap();
 
         // Step 2: the review LENS parks; record a substantive lens review so only the ADJUDICATOR
         // exercises the errored-re-park bound under test.

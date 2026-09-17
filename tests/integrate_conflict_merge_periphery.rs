@@ -441,7 +441,8 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
          - paths: [\"gen/*.json\"]\n\
          \u{20}\u{20}run: \"echo two\"\n",
     );
-    let cfg = config_store::load(configured.path().to_str().unwrap()).expect("load a valid workflow.yml");
+    let cfg =
+        config_store::load(configured.path().to_str().unwrap()).expect("load a valid workflow.yml");
     assert_eq!(
         cfg.workflow.regenerate.len(),
         2,

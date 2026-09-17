@@ -537,10 +537,7 @@ mod tests {
         // is the LAST lifecycle event, so the halt is current.
         let events = positioned(vec![
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                TYPE_BUDGET_EXHAUSTED,
-                r#"{"budget":200,"spawns":200}"#,
-            ),
+            ev(TYPE_BUDGET_EXHAUSTED, r#"{"budget":200,"spawns":200}"#),
         ]);
         let blockers = from_events(&events, 3).unwrap();
         // Budget sorts first, then the unit.
@@ -565,10 +562,7 @@ mod tests {
         // the BudgetExhausted, so the stale halt is NOT re-reported.
         let events = positioned(vec![
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
-            ev(
-                TYPE_BUDGET_EXHAUSTED,
-                r#"{"budget":200,"spawns":200}"#,
-            ),
+            ev(TYPE_BUDGET_EXHAUSTED, r#"{"budget":200,"spawns":200}"#),
             // Resume scheduled the work: a later lifecycle event.
             ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u","commit":"c"}"#),
         ]);

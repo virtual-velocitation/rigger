@@ -24,14 +24,14 @@ use crate::config::{
 // remaining fixture types. Gated so the plain (non-test) library build never carries an
 // unused-import warning for a name only a test uses.
 #[cfg(test)]
-use std::time::Duration;
-#[cfg(test)]
 use crate::config::{
     lint_gating_verdict_lines, literal_is_emit_payload, puts_verdict_on_result_channel,
     unbounded_wall_clock_advisory, Gate, ReviewDepth, ReviewPanel, Stage,
 };
 #[cfg(test)]
 use crate::failure;
+#[cfg(test)]
+use std::time::Duration;
 
 /// Load reads agent definitions from <dir>/.rigger/agents/*.md and the workflow
 /// from <dir>/.rigger/workflow.yml, then validates referential and structural
@@ -280,7 +280,6 @@ impl Config {
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {

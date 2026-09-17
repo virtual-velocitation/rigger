@@ -143,7 +143,9 @@ mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Filter, Revision, Subscription};
-    use crate::spawn::{is_recorded, recorded, result_of, step_result, ROLE_IMPLEMENTER, TYPE_SPAWN_RESULT};
+    use crate::spawn::{
+        is_recorded, recorded, result_of, step_result, ROLE_IMPLEMENTER, TYPE_SPAWN_RESULT,
+    };
 
     #[test]
     fn parking_persists_the_request_and_it_folds_back_from_the_log() {

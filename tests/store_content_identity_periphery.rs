@@ -1038,8 +1038,10 @@ fn a_configured_guard_never_reaches_the_spawn_and_progress_seams() {
     );
 
     let result = rigger::spawn::SpawnResult::ok("u1/impl#0", "done");
-    let a = rigger::spawn_store::record_result(&store, &result).expect("recording a result succeeds");
-    let b = rigger::spawn_store::record_result(&store, &result).expect("recording it again succeeds");
+    let a =
+        rigger::spawn_store::record_result(&store, &result).expect("recording a result succeeds");
+    let b =
+        rigger::spawn_store::record_result(&store, &result).expect("recording it again succeeds");
     assert!(
         a < b,
         "a re-recorded spawn result is a second fact, never a suppressed one: {a} then {b}"
@@ -1163,10 +1165,11 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     // The same answer through the entry the CLI actually calls, which mints over an empty
     // store: a caller that only ever uses the pinned entry must not get a run id either.
     let silent = PortDouble::over_an_empty_stream(vec![None]);
-    let message =
-        rigger::run_store::ensure_started_pinned(&silent, &criteria, "hash-A", false, "base-sha", "", "")
-            .expect_err("the pinned entry mints on an empty store and inherits the same answer")
-            .to_string();
+    let message = rigger::run_store::ensure_started_pinned(
+        &silent, &criteria, "hash-A", false, "base-sha", "", "",
+    )
+    .expect_err("the pinned entry mints on an empty store and inherits the same answer")
+    .to_string();
     assert!(
         message.contains("nothing"),
         "so the mint cannot be laundered through the pinned entry: {message}"
@@ -1186,10 +1189,11 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     assert_eq!(recorded.len(), 1, "the fixture is one real RunStarted");
 
     let drifted = PortDouble::over_a_stream(recorded, vec![None]);
-    let message =
-        rigger::run_store::ensure_started_pinned(&drifted, &criteria, "hash-B", true, "base-sha", "", "")
-            .expect_err("a supersession nobody can locate has not superseded anything")
-            .to_string();
+    let message = rigger::run_store::ensure_started_pinned(
+        &drifted, &criteria, "hash-B", true, "base-sha", "", "",
+    )
+    .expect_err("a supersession nobody can locate has not superseded anything")
+    .to_string();
     assert!(
         message.contains("nothing"),
         "the re-pin reports the lost write rather than announcing a rebase the log does not \

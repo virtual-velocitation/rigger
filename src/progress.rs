@@ -254,5 +254,4 @@ mod tests {
         assert_eq!(view[0].liveness_age_s, None);
         assert_eq!(view[0].last_milestone, None);
     }
-
 }

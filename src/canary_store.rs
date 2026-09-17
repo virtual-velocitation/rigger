@@ -1090,7 +1090,6 @@ mod tests {
         assert_eq!(outcome.findings_raised.get(TIER_LENS), Some(&1));
     }
 
-
     #[test]
     fn run_canary_records_a_batch_and_one_outcome_per_item_in_the_canary_stream() {
         let store = Store::open(":memory:").unwrap();
@@ -1813,5 +1812,4 @@ mod tests {
         let scoped = latest_run(&events);
         assert_eq!(scoped.len(), 3);
     }
-
 }

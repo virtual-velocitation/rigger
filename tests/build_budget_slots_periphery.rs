@@ -231,7 +231,8 @@ fn build_config_max_concurrent_round_trips_through_the_real_on_disk_loader() {
     // 1), now for `max_concurrent`.
     let configured = tempfile::tempdir().expect("create temp project");
     write_workflow(configured.path(), "build:\n  max_concurrent: 2\n");
-    let cfg = config_store::load(configured.path().to_str().unwrap()).expect("load a valid workflow.yml");
+    let cfg =
+        config_store::load(configured.path().to_str().unwrap()).expect("load a valid workflow.yml");
     assert_eq!(cfg.workflow.build.max_concurrent, 2);
 
     // The back-compat case: an OMITTED `build:` section - every workflow.yml
@@ -251,7 +252,8 @@ fn build_config_max_concurrent_round_trips_through_the_real_on_disk_loader() {
     // distinct from the omitted-key default above.
     let unlimited = tempfile::tempdir().expect("create temp project");
     write_workflow(unlimited.path(), "build:\n  max_concurrent: 0\n");
-    let cfg = config_store::load(unlimited.path().to_str().unwrap()).expect("load a valid workflow.yml");
+    let cfg =
+        config_store::load(unlimited.path().to_str().unwrap()).expect("load a valid workflow.yml");
     assert_eq!(
         cfg.workflow.build.max_concurrent, 0,
         "an explicit max_concurrent: 0 must parse as 0 (unlimited) through the real loader"

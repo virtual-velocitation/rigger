@@ -287,9 +287,11 @@ mod tests {
     use super::*;
     #[cfg(any(feature = "store", not(feature = "core")))]
     use crate::contextgraph::sqlite::Projector;
-    use crate::contextgraph::{
-        Edge, Projection, KIND_DECISION, KIND_FILE, REL_IN_COMMUNITY, REL_REALIZES, TIER_EXTRACTED,
-    };
+    // `Projection` (the `.whole()` trait) and the two rel constants are needed only by the
+    // sqlite-backed rebuild test above, gated the same way for the same reason.
+    use crate::contextgraph::{Edge, KIND_DECISION, KIND_FILE, TIER_EXTRACTED};
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    use crate::contextgraph::{Projection, REL_IN_COMMUNITY, REL_REALIZES};
     use std::collections::BTreeMap as Map;
 
     /// One graph [`Node`] of a kind, with optional `title` / `name` attrs.

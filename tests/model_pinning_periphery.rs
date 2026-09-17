@@ -25,7 +25,9 @@
 //! (never a hand-typed fixture) into the same values.
 
 use rigger::canary::{CanaryHeader, CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
-use rigger::canary_store::{apply_model_pins, corpus_hash, record_header, run_canary, CanaryItem, ModelPins};
+use rigger::canary_store::{
+    apply_model_pins, corpus_hash, record_header, run_canary, CanaryItem, ModelPins,
+};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, ReviewPanel};
 use rigger::eventstore::sqlite::Store;

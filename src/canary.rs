@@ -340,5 +340,4 @@ mod tests {
         .to_event("b");
         assert!(CanaryHeader::from_event(&outcome_event).is_none());
     }
-
 }

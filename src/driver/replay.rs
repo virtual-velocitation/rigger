@@ -336,7 +336,8 @@ impl AgentDriver for ReplayDriver<'_> {
             // Park stamped with the run this spawn belongs to (spec 06, unit 1): the
             // conductor threaded the current run id onto `opts`, so the persisted
             // `SpawnRequested` carries the same run-id metadata as the run's other events.
-            spawn_store::park_in_run(self.store, &req, &opts.run_id).map_err(|e| Error(e.to_string()))?;
+            spawn_store::park_in_run(self.store, &req, &opts.run_id)
+                .map_err(|e| Error(e.to_string()))?;
             // ASSIGN this spawn its dedicated scratch dir (spec 34, criterion 1): the moment
             // rigger REQUESTS a spawn it allocates a rigger-owned per-spawn scratch location
             // under the run's scratch root, so a verify/build lands there (not an ad-hoc
@@ -1051,7 +1052,8 @@ mod tests {
         assert!(is_parked(&first.unwrap_err()));
 
         // The courier records the outcome; now the same spawn is answered from the log.
-        spawn_store::record_result(&store, &spawn::SpawnResult::ok("u/implementer#0", "done")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok("u/implementer#0", "done"))
+            .unwrap();
         let answered = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect("a recorded result replays instead of parking again");
@@ -1664,7 +1666,8 @@ mod tests {
             "step 1 parked the implementer, spending the budget"
         );
         // A courier answers the implementer.
-        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&impl_id, "implemented")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&impl_id, "implemented"))
+            .unwrap();
 
         // Step 2: a fresh process whose folded count already equals the budget. The
         // implementer replays free to `verified`, then the review-tier lens is refused.
@@ -2087,7 +2090,8 @@ mod tests {
                 std::slice::from_ref(&sibling_approve),
             )
             .unwrap();
-        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&v_adj, "sibling approved")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&v_adj, "sibling approved"))
+            .unwrap();
 
         // `u`'s adjudicator reports a substantive result with NO verdict line, having emitted
         // NO approve of its own - a GENUINE empty-verdict reject. The sibling's approve lands at
@@ -2287,7 +2291,8 @@ mod tests {
         // The sibling RECORDS its result ABOVE `u`'s approve - CLOSING its window so (v_impl
         // park, v_impl result] brackets `u`'s approve position. This is the overlap the retired
         // bracket rule turned into a silent false-negative.
-        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&v_impl, "implemented")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&v_impl, "implemented"))
+            .unwrap();
 
         // `u`'s adjudicator reports a substantive result with NO verdict line - the emit-only
         // persona.

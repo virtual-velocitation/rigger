@@ -1066,7 +1066,8 @@ mod tests {
             .unwrap();
 
         // Its latest activity, in the SEPARATE progress store, scoped to the run.
-        crate::progress_store::record(&progress, &run_id, &req.id, "grep #12: conductor.rs").unwrap();
+        crate::progress_store::record(&progress, &run_id, &req.id, "grep #12: conductor.rs")
+            .unwrap();
 
         // No scratch root in a unit test, so liveness ages are simply omitted from the view.
         let server = Server::new(&driver, &store, "run", &peers).with_progress(&progress, "");

@@ -989,6 +989,8 @@ mod redact_tests {
 /// Reads answer EMPTY rather than failing: a seam that reads before it appends (a
 /// compare-and-append) must reach its append to be tested at all.
 #[cfg(test)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // every consumer (spawn_store, run_store, progress_store, canary_store, mcpserver,
+                                                                             // conductor) is store-gated, so this double is unused under core-only
 pub(crate) struct SilentStore;
 
 #[cfg(test)]

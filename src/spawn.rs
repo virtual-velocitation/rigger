@@ -1309,8 +1309,12 @@ mod tests {
         // / `record_result_if_absent`, including their atomicity guarantees) has its own
         // integration coverage in `spawn_store`.
         let events = vec![
-            SpawnResult::failed("u/implementer#0", "flaked").to_event().unwrap(),
-            SpawnResult::ok("u/implementer#0", "recovered").to_event().unwrap(),
+            SpawnResult::failed("u/implementer#0", "flaked")
+                .to_event()
+                .unwrap(),
+            SpawnResult::ok("u/implementer#0", "recovered")
+                .to_event()
+                .unwrap(),
         ];
         assert!(result_of(&events, "u/implementer#1").unwrap().is_none());
         let got = result_of(&events, "u/implementer#0").unwrap().unwrap();
@@ -1325,7 +1329,9 @@ mod tests {
     fn a_result_does_not_count_as_a_parked_request() {
         // The request and result halves share the stream but are distinct facts: a
         // result must not make `recorded`/`is_recorded` (which count REQUESTS) match.
-        let events = vec![SpawnResult::ok("u/implementer#0", "done").to_event().unwrap()];
+        let events = vec![SpawnResult::ok("u/implementer#0", "done")
+            .to_event()
+            .unwrap()];
         assert!(
             recorded(&events).unwrap().is_empty(),
             "a result is not a request"

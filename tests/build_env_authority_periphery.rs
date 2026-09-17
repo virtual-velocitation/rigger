@@ -248,7 +248,8 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
             cache_dir.display()
         ),
     );
-    let cfg = config_store::load(project.path().to_str().unwrap()).expect("load a valid workflow.yml");
+    let cfg =
+        config_store::load(project.path().to_str().unwrap()).expect("load a valid workflow.yml");
     assert_eq!(cfg.workflow.build.wrapper, "sccache");
     assert_eq!(cfg.workflow.build.cache_dir, cache_dir.to_string_lossy());
     let resolved = as_map(&BuildEnv::resolve(
