@@ -72,10 +72,13 @@ impl Dock {
 ///   run-level [`blocker::Kind::Budget`] line already surfaces).
 /// - **worker-death-recurred** - a unit currently [`Status::Failed`] (mid-remediation,
 ///   still parked awaiting its next attempt) with two or more recorded
-///   attempts - the same threshold [`blocker::classify`]'s
-///   `RejectRecurrence` line uses, so a unit on the "needs you" list is
-///   always also visible on the current-blocker list, never a surprise entry
-///   with nothing else to point at.
+///   attempts AND no in-effect resume grant ([`ledger::Unit::resumed`] is
+///   `None`) - the same threshold, and the same resumed guard,
+///   [`blocker::classify`]'s `RejectRecurrence`/`Resumed` arms use, so a unit
+///   on the "needs you" list is always also visible on the current-blocker
+///   list as `reject-recurrence` (never a surprise entry with nothing else to
+///   point at), and a unit an operator has just resumed reads as "the
+///   operator already acted", never as still needing one.
 ///
 /// Deterministically ordered by [`ledger::attention_kind_rank`], lexical by
 /// unit within a kind (both `run.units` and the resulting `Vec` walk are
@@ -101,7 +104,7 @@ pub fn dock(run: &RunState, events: &[Event]) -> Dock {
     }
 
     for (id, u) in &run.units {
-        if u.status == Status::Failed && u.attempts >= 2 {
+        if u.status == Status::Failed && u.attempts >= 2 && u.resumed.is_none() {
             needs_you.push(AttentionEntry::unit_scoped(
                 ledger::ATTENTION_WORKER_DEATH_RECURRED,
                 id.clone(),
@@ -319,6 +322,40 @@ mod tests {
         assert!(
             d.needs_you.is_empty(),
             "a resolved budget halt must not appear: {:?}",
+            d.needs_you
+        );
+    }
+
+    /// A unit an operator has just resumed (`rigger resume-unit`, spec 88) is
+    /// re-parked at `Status::Failed` with `resumed = Some` - the exact state
+    /// `blocker::classify`'s own resumed guard already excludes from
+    /// `RejectRecurrence`. The dock's worker-death-recurred arm must agree: a
+    /// just-resumed unit reads "the operator already acted", not "still needs
+    /// you" - mirrors `dock_drops_a_resolved_budget_halt`'s "operator already
+    /// acted -> dock silent" pattern for the budget arm.
+    #[test]
+    fn dock_drops_a_resumed_unit_from_worker_death_recurred() {
+        let events = vec![
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-resumed"}"#),
+            ev(
+                ledger::TYPE_UNIT_FAILED,
+                r#"{"id":"u-resumed","attempts":3,"cause":"reject"}"#,
+            ),
+            ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u-resumed"}"#),
+            ev(
+                ledger::TYPE_UNIT_RESUMED,
+                r#"{"unit":"u-resumed","attempts_granted":2,"by":"operator"}"#,
+            ),
+        ];
+        let run = ledger::project(&events).unwrap();
+        assert!(
+            run.units["u-resumed"].resumed.is_some(),
+            "fixture must actually resume the unit"
+        );
+        let d = dock(&run, &events);
+        assert!(
+            d.needs_you.is_empty(),
+            "a just-resumed unit must not read as still-needs-you: {:?}",
             d.needs_you
         );
     }

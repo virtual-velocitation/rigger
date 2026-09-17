@@ -173,6 +173,91 @@ fn rigger_status_first_line_and_needs_you_section_are_the_consoles_own_fold() {
     }
 }
 
+/// The dock's OTHER two needs-you arms - the budget halt and worker-death-recurred, INCLUDING
+/// its resumed guard - proven through the same real `argv` -> `cmd_status` -> real-store round
+/// trip the escalated arm already gets above. Before this test, only the escalated arm was
+/// wired-proven through the real binary (sdet-u93c4-dock-budget-and-recurrence-arms-not-periphery-proven);
+/// the other two were proven only against hand-built in-memory `Event`s in `console.rs`'s own
+/// `mod tests`. Also pins the fix for adv-u93c4-c4-dock-resumed-unit-false-needs-you (dock's
+/// worker-death-recurred arm now mirrors `blocker::classify`'s resumed guard) through the real
+/// binary, not only through `console.rs`'s own colocated unit test.
+#[test]
+fn rigger_status_needs_you_covers_budget_halt_and_worker_death_recurred_arms() {
+    let proj = temp_project();
+    let root = proj.path();
+    seed_store(root);
+    seed_run_events(
+        root,
+        &[
+            // A unit past the recurrence threshold, never resumed: must appear.
+            ("UnitStarted", r#"{"id":"u-fail"}"#),
+            (
+                "UnitFailed",
+                r#"{"id":"u-fail","attempts":2,"cause":"reject"}"#,
+            ),
+            // A unit an operator has since resumed: must NOT appear - the resumed guard
+            // dock's worker-death-recurred arm now shares with blocker::classify.
+            ("UnitStarted", r#"{"id":"u-resumed"}"#),
+            (
+                "UnitFailed",
+                r#"{"id":"u-resumed","attempts":3,"cause":"reject"}"#,
+            ),
+            ("UnitEscalated", r#"{"id":"u-resumed"}"#),
+            (
+                "UnitResumed",
+                r#"{"unit":"u-resumed","attempts_granted":2,"by":"operator"}"#,
+            ),
+            // The run-level budget halt, seeded last so it is the CURRENT blocker
+            // (`blocker::budget_halt` reports only when no later unit-lifecycle event has
+            // superseded it).
+            ("BudgetExhausted", r#"{"budget":10,"spawns":10}"#),
+        ],
+    );
+
+    let (out, err, ok) = run_rigger(root, &["status"]);
+    assert!(ok, "rigger status must succeed: {err}");
+
+    let events = read_back_run_events(root);
+    let want = rigger::console::fold(&events, 3).expect("console::fold over the real read-back");
+    assert_eq!(
+        want.dock.needs_you.len(),
+        2,
+        "fixture must exercise exactly the budget-halt and u-fail worker-death-recurred arms, \
+         with u-resumed excluded: {:?}",
+        want.dock.needs_you
+    );
+
+    assert!(
+        out.contains("needs you:"),
+        "a non-empty dock must print a needs-you section; got:\n{out}"
+    );
+    for line in want.dock.lines() {
+        assert!(
+            out.contains(&line),
+            "expected the needs-you section to carry {line:?}; got:\n{out}"
+        );
+    }
+
+    // Pin the two literal facts directly, independent of `want`: a regression in
+    // console::fold's own dock logic (not only in cmd_status's wiring of it) would also
+    // break these.
+    assert!(
+        out.contains("run: budget spent 10/10"),
+        "expected the budget-halt line; got:\n{out}"
+    );
+    assert!(
+        out.contains("u-fail: 2 attempts, still parked"),
+        "expected the worker-death-recurred line for u-fail; got:\n{out}"
+    );
+
+    // The regression this round fixes, pinned through the real binary: a just-resumed unit
+    // must not read as still-needs-you.
+    assert!(
+        !out.contains("u-resumed: 3 attempts, still parked"),
+        "a just-resumed unit must not appear as worker-death-recurred; got:\n{out}"
+    );
+}
+
 /// A clean run (no units at all) prints the console's `healthy` statusline as its first line,
 /// and the needs-you section says so explicitly rather than rendering an empty header - so an
 /// operator reading a quiet run's status never wonders whether the needs-you check even ran.

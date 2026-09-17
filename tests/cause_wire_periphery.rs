@@ -14,12 +14,12 @@
 //!   - `blocker.rs`'s own `mod tests` proves `classify` renders the recorded cause on the
 //!     `RejectRecurrence` line, and defaults an empty one to `"unknown"`.
 //!   - `main.rs`'s own `mod tests`
-//!     (`status_and_dashboard_render_the_same_current_blocker_lines`) proves `status_blocker_
-//!     lines` and `dash::build_state` render BYTE-IDENTICAL lines, in process, for a fixed
-//!     `Vec<Event>` it builds by hand.
+//!     (`status_and_dashboard_render_the_same_current_blocker_lines`) proves `console::fold`
+//!     (what `cmd_status` renders) and `dash::build_state` render BYTE-IDENTICAL lines, in
+//!     process, for a fixed `Vec<Event>` it builds by hand.
 //!
-//! None of those ever cross a real process boundary. `status_blocker_lines` and `cmd_status`
-//! are PRIVATE free functions in the `rigger` BINARY crate (`src/main.rs`) - unreachable from an
+//! None of those ever cross a real process boundary. `cmd_status` is a PRIVATE free
+//! function in the `rigger` BINARY crate (`src/main.rs`) - unreachable from an
 //! integration-test crate under `tests/` by any means other than spawning the compiled binary
 //! (mirrors `tests/watchdog_cli_periphery.rs`'s identical situation for `cmd_watch`, and
 //! `tests/cli.rs`'s release-ready periphery section for `cmd_status` itself, which notes the
@@ -30,7 +30,7 @@
 //!
 //! This file drives the compiled `rigger status` binary against a real, on-disk, namespaced
 //! event store - closing both gaps at once: real `argv` -> `main()` dispatch -> `cmd_status` ->
-//! `status_blocker_lines` wiring, and a real SQLite round trip for the additive, serde-defaulted
+//! `console::fold` wiring, and a real SQLite round trip for the additive, serde-defaulted
 //! `cause` field (spec 69, criterion 3's back-compat contract).
 //!
 //! NOT OWNED HERE: `gate_failure_cause`'s `"{gate}: {evidence}"` parsing, and which of the seven
