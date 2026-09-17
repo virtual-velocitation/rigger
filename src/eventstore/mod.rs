@@ -5,14 +5,24 @@
 //! catch-up subscriptions - so a backend swaps without changing the rest of Rigger.
 
 pub mod namespace;
+// THE CORE LANE IS PURE (spec 93, criterion 1): `EventStore` (below) and `Event`/
+// `Position`/`Direction`/`ExpectedRevision`/`Error`/`Appended` are the PORT and stay
+// ungated - `contextgraph` and every other `core` module needs them. `sqlite` and
+// `kurrentdb` are the ADAPTERS (the concrete, I/O-touching implementations Design names
+// explicitly): gated behind `any(feature = "store", not(feature = "core"))`, same
+// predicate as every other store-gated module (see `lib.rs`'s own doc).
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub mod sqlite;
 
-// The KurrentDB adapter is always compiled in (spec 47): the shared-store backend is
-// a first-class product capability reachable in the default build via a runtime flag,
-// never a recompile - so the module is not gated behind a cargo feature.
+// The KurrentDB adapter is always compiled in on every NATIVE lane (spec 47): the
+// shared-store backend is a first-class product capability reachable in the default
+// build via a runtime flag, never a recompile. It is still excluded from the `core`
+// lane (an adapter, not the port) and from the `wasm32` target (its `tokio`/`kurrentdb`
+// dependencies are target-gated out in Cargo.toml regardless).
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub mod kurrentdb;
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 pub mod contract;
 
 use std::collections::BTreeMap;
@@ -97,9 +107,9 @@ impl Event {
     /// `position`, and `revision` on append; `valid_from` defaults to now and may
     /// be overridden with [`Event::with_valid_from`].
     pub fn new(type_: impl Into<String>, data: Vec<u8>) -> Self {
-        let now = SystemTime::now();
+        let now = Self::mint_time();
         Event {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: Self::mint_id(),
             stream: String::new(),
             type_: type_.into(),
             data,
@@ -109,6 +119,42 @@ impl Event {
             position: 0,
             revision: NO_STREAM,
         }
+    }
+
+    /// A fresh random id, minted with real entropy (spec 93, criterion 1: THE CORE LANE
+    /// IS PURE). This is the `store` half - the `core` lane's own stub is below.
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    fn mint_id() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
+    /// The pure `core` lane has no entropy source at all (`uuid` is a banned import, and
+    /// the wasm target the lane also builds for carries no `getrandom` backend without
+    /// extra opt-in). A page constructs an `Event` only to hand its already-decoded JSON
+    /// to `fold_push`/`fold_reset` (spec 93 criterion 2's ABI), which stamps nothing
+    /// itself - the id it read off the wire is already the recorded one - so an empty id
+    /// here is never presented as a real, storable identity; every real mint runs through
+    /// the `store` arm above.
+    #[cfg(all(feature = "core", not(feature = "store")))]
+    fn mint_id() -> String {
+        String::new()
+    }
+
+    /// The construction timestamp, read from the real clock (spec 93, criterion 1). This
+    /// is the `store` half - the `core` lane's own stub is below.
+    #[cfg(any(feature = "store", not(feature = "core")))]
+    fn mint_time() -> SystemTime {
+        SystemTime::now()
+    }
+
+    /// CONSTRAINTS WALK, Clock (spec 93): "the core has no `now()`, every age arrives as
+    /// an input" - `SystemTime::now()` is itself a banned import, so the pure `core`
+    /// lane's own `Event::new` returns the epoch rather than reading the clock; a caller
+    /// that needs a real timestamp on a core-built `Event` sets it explicitly via
+    /// [`Event::with_valid_from`], or reads it off the wire it decoded the event from.
+    #[cfg(all(feature = "core", not(feature = "store")))]
+    fn mint_time() -> SystemTime {
+        SystemTime::UNIX_EPOCH
     }
 
     /// Builder: set a metadata entry (causation / correlation / actor).

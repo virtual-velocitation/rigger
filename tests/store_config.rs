@@ -1,5 +1,5 @@
 //! Spec 48, criterion 2 (rung 4) - the LIB-API contract of the committed-config rung of the
-//! store-selection precedence: `rigger::config::read_store_config` and the `StoreConfig` /
+//! store-selection precedence: `rigger::config_store::read_store_config` and the `StoreConfig` /
 //! `Workflow.store` deserialization surface it rides on.
 //!
 //! `tests/store_precedence.rs` proves the two file-backed rungs are WIRED into the shipped binary
@@ -24,7 +24,8 @@
 
 use std::path::Path;
 
-use rigger::config::{read_store_config, StoreConfig, Workflow};
+use rigger::config::{StoreConfig, Workflow};
+use rigger::config_store::read_store_config;
 use tempfile::TempDir;
 
 /// A temp `.rigger` directory the reader is anchored at (it joins `workflow.yml` onto this). The

@@ -32,6 +32,14 @@ use crate::eventstore::Event;
 use crate::ledger::{self, RunState, Status};
 use crate::safety;
 
+/// The spawn budget is spent - the circuit-breaker tripped (§4.4, §8). Moved here from
+/// `conductor.rs` (spec 93, criterion 1): this module already owns the durable
+/// `BudgetExhausted` fact's interpretation (see [`Budget`] below), and `conductor.rs`
+/// (store-gated) cannot stay this module's dependency, so the definition lives here and
+/// `conductor::TYPE_BUDGET_EXHAUSTED` is now `pub use crate::blocker::TYPE_BUDGET_EXHAUSTED;`
+/// - every existing call site is unchanged.
+pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
+
 /// The run's spawn-budget halt, folded from the durable `BudgetExhausted` fact:
 /// `spent` spawns against a `cap` (`defaults.budget`). Surfaced as the run-level
 /// [`Kind::Budget`] blocker.
@@ -170,7 +178,7 @@ pub fn budget_halt(events: &[Event]) -> Option<Budget> {
     let mut last_lifecycle_pos: u64 = 0;
     for e in events {
         match e.type_.as_str() {
-            crate::conductor::TYPE_BUDGET_EXHAUSTED => {
+            TYPE_BUDGET_EXHAUSTED => {
                 if let Ok(p) = serde_json::from_slice::<BudgetExhausted>(&e.data) {
                     budget = Some((
                         e.position,
@@ -530,7 +538,7 @@ mod tests {
         let events = positioned(vec![
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
             ev(
-                crate::conductor::TYPE_BUDGET_EXHAUSTED,
+                TYPE_BUDGET_EXHAUSTED,
                 r#"{"budget":200,"spawns":200}"#,
             ),
         ]);
@@ -558,7 +566,7 @@ mod tests {
         let events = positioned(vec![
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#),
             ev(
-                crate::conductor::TYPE_BUDGET_EXHAUSTED,
+                TYPE_BUDGET_EXHAUSTED,
                 r#"{"budget":200,"spawns":200}"#,
             ),
             // Resume scheduled the work: a later lifecycle event.

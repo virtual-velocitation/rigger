@@ -149,7 +149,8 @@ use std::sync::Mutex;
 use serde_json::Value;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
-use rigger::config::{self, AgentDef, BuildConfig, Config, Gate, Stage};
+use rigger::config::{AgentDef, BuildConfig, Config, Gate, Stage};
+use rigger::config_store;
 use rigger::contextgraph::TYPE_GATE_VERDICT;
 use rigger::driver::cli;
 use rigger::eventstore::sqlite::Store;
@@ -247,7 +248,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
             cache_dir.display()
         ),
     );
-    let cfg = config::load(project.path().to_str().unwrap()).expect("load a valid workflow.yml");
+    let cfg = config_store::load(project.path().to_str().unwrap()).expect("load a valid workflow.yml");
     assert_eq!(cfg.workflow.build.wrapper, "sccache");
     assert_eq!(cfg.workflow.build.cache_dir, cache_dir.to_string_lossy());
     let resolved = as_map(&BuildEnv::resolve(
@@ -274,7 +275,7 @@ fn build_config_round_trips_through_the_real_on_disk_loader_and_feeds_the_resolv
     // unchanged for every pre-existing project.
     let legacy = tempfile::tempdir().expect("create temp project");
     write_workflow(legacy.path(), "");
-    let cfg = config::load(legacy.path().to_str().unwrap())
+    let cfg = config_store::load(legacy.path().to_str().unwrap())
         .expect("a workflow.yml with no build: section must still load");
     assert_eq!(cfg.workflow.build.wrapper, "");
     assert_eq!(cfg.workflow.build.cache_dir, "");
@@ -298,7 +299,7 @@ fn build_config_round_trips_an_explicit_jobs_value_through_the_real_on_disk_load
     // (agent parsing + `Config::validate` included).
     let project = tempfile::tempdir().expect("create temp project");
     write_workflow(project.path(), "build:\n  jobs: 6\n");
-    let cfg = config::load(project.path().to_str().unwrap())
+    let cfg = config_store::load(project.path().to_str().unwrap())
         .expect("load a valid workflow.yml with an explicit build.jobs value");
     assert_eq!(cfg.workflow.build.jobs, 6);
     assert_eq!(

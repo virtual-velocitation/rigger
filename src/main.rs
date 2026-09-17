@@ -12,10 +12,12 @@ use std::process::{Command, Stdio};
 use rigger::blocker;
 use rigger::budget::BuildBudget;
 use rigger::canary;
+use rigger::canary_store;
 use rigger::community;
 use rigger::concepts;
 use rigger::conductor::{self, Deps};
 use rigger::config;
+use rigger::config_store;
 use rigger::contextgraph::{
     self,
     sqlite::{Projector, PruneStats},
@@ -39,9 +41,10 @@ use rigger::grounder::Grounder;
 use rigger::ledger::{self, RunState};
 use rigger::metrics::{self, Metrics};
 use rigger::run as runscope;
+use rigger::run_store as runscope_store;
 use rigger::sidecar::{PeerDecision, Sidecar};
 use rigger::worktree::{RunBranchSetup, Worktree};
-use rigger::{hooks, mcpserver, playbooks, progress, spawn, spec, watch};
+use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, watch};
 
 // Spec 74, criterion 2: the SAME derivation seam `build.rs` embeds at compile time
 // (`build/gitsemver.rs`, already `#[path]`-included into `build.rs` and the two
@@ -300,7 +303,7 @@ struct RunArgs {
     /// `--fresh`: begin a NEW run for the spec's criteria even when the latest run in the
     /// store already matches them (which `ensure_started` would otherwise adopt). The
     /// evented recovery from a run wedged in a terminal state - e.g. a plan-critique
-    /// escalation - whose spec is unchanged; see [`rigger::run::start_fresh`].
+    /// escalation - whose spec is unchanged; see [`rigger::run_store::start_fresh`].
     fresh: bool,
     /// `--rebase-definition` (spec 13, unit 1): on a live run whose on-disk definition drifted
     /// from the hash pinned at start, record the supersession (old hash, new hash) and continue
@@ -464,7 +467,7 @@ fn env_conn() -> Option<String> {
 ///
 /// A PRESENT-but-unreadable file (a permission or IO fault, distinct from a genuinely absent one)
 /// surfaces LOUDLY as an error, never collapsing into the same `None` an absent file returns - the
-/// exact NotFound-vs-other split [`config::read_store_config`] makes one rung down
+/// exact NotFound-vs-other split [`config_store::read_store_config`] makes one rung down
 /// (d-u2-config-unreadable-loud / d-u2-conn-file-unreadable-loud). Swallowing it (the old
 /// `read_to_string(...).ok()`) let an unreadable secret file fall silently through to the sqlite
 /// default: a courier on a server-pinning box whose `store.conn` it cannot read - the different-user
@@ -654,7 +657,7 @@ fn store_selection_at(
     // 4. the committed project config: the CHOICE the team pins in the repo. Its optional
     //    non-secret URL is the address; absent, the address must come from a credential source -
     //    all of which rungs 1-3 already found empty, so `resolve_conn` names all three.
-    let cfg = config::read_store_config(rigger_dir)?;
+    let cfg = config_store::read_store_config(rigger_dir)?;
     match store_backend_kind(&cfg)? {
         Some(StoreKind::KurrentDb) => {
             let conn = if cfg.url.trim().is_empty() {
@@ -1110,7 +1113,7 @@ fn enforce_definition_pin(
     base_tip: &str,
     spec_path: &str,
 ) -> Res {
-    match runscope::ensure_started_pinned(
+    match runscope_store::ensure_started_pinned(
         store, criteria, definition, rebase, base, base_tip, spec_path,
     )? {
         runscope::RunStart::Ready(_) => Ok(()),
@@ -1987,7 +1990,7 @@ impl StoreLocation {
 /// each passing a `StoreLocation` built from ITS OWN pre-existing repo/cwd resolution -
 /// `cmd_dash`'s raw process cwd and `cmd_replay`'s [`git_repo`] - unchanged by this function;
 /// see each caller's own doc comment for why). Every caller reads via
-/// [`config::read_scratch_defaults`], NEVER [`config::load`]: `config::load` additionally
+/// [`config_store::read_scratch_defaults`], NEVER [`config::load`]: `config::load` additionally
 /// requires a fully loadable `.rigger/agents/` fleet AND a passing [`config::Config::validate`]
 /// just to learn two string/int fields - this project's own committed `.rigger/workflow.yml`
 /// sets `build.mutation: on`, which `validate` rejects whenever `cargo-mutants` is off PATH,
@@ -1996,12 +1999,12 @@ impl StoreLocation {
 /// `.unwrap_or_default()` over `config::load`'s `Err`. Separately, for the FOUR `loc`-from-
 /// `require_store_dir` callers, `loc.dir` is `<owning-root>/.rigger` - the SAME owning root
 /// [`StoreLocation::repo_root`] resolves the scratch root from, never a nested unit
-/// worktree's own cwd (round 1's original defect). [`config::read_scratch_defaults`] requires
+/// worktree's own cwd (round 1's original defect). [`config_store::read_scratch_defaults`] requires
 /// neither a loadable fleet nor a passing validate, so it can never regress on either axis.
-/// Absent/unreadable resolves to `("", 0)`, matching [`config::read_scratch_workdir`]'s own
+/// Absent/unreadable resolves to `("", 0)`, matching [`config_store::read_scratch_workdir`]'s own
 /// tolerant-absent contract.
 fn scratch_defaults(loc: &StoreLocation) -> (String, u32) {
-    let d = config::read_scratch_defaults(&loc.dir).unwrap_or_default();
+    let d = config_store::read_scratch_defaults(&loc.dir).unwrap_or_default();
     (d.workdir, d.max_retries)
 }
 
@@ -2183,7 +2186,7 @@ fn result_advisories(events: &[Event], id: &str, will_supersede: bool) -> Vec<St
 /// `rigger validate` gives. The check itself has ONE authority - `config::lint_gating_verdict_lines`
 /// (spec 18, unit 1) - reused here, never re-derived; this seam only wires it onto the run path.
 fn load_run_config(dir: &str) -> Result<config::Config, Box<dyn std::error::Error>> {
-    let cfg = config::load(dir)?;
+    let cfg = config_store::load(dir)?;
     config::lint_gating_verdict_lines(&cfg)?;
     Ok(cfg)
 }
@@ -2521,13 +2524,13 @@ fn cmd_step(args: &[String]) -> Res {
     // boundary instead of the latest (possibly wedged) run. A one-shot the DRIVER passes
     // on the first step of an explicit restart; plain steps after it adopt the boundary it
     // began. The notice goes to STDERR - stdout carries only the `{wave,done}` JSON the
-    // driver parses. See `runscope::start_fresh`.
+    // driver parses. See `runscope_store::start_fresh`.
     if args.fresh {
         // Persist the resolved run-branch base, and the launching spec path (spec 82,
         // criterion 1), on the fresh boundary (spec 38, criterion 3): `args.base` is the base
         // this step anchored the run branch on, so `rigger status`/dash name the same base
         // and derive the per-run-unique PR head name in the ready-to-release handoff.
-        let run = runscope::start_fresh(
+        let run = runscope_store::start_fresh(
             &store,
             &criteria,
             &definition,
@@ -2698,7 +2701,7 @@ fn cmd_step(args: &[String]) -> Res {
                         // Reclaim EACH freshly-recorded hung spawn's registered scratch the
                         // moment the sweep answers it (spec 77, criterion 2) - `sweep` just
                         // recorded its liveness fault DIRECTLY via
-                        // `spawn::record_result_if_absent`, never through `cmd_result`, so
+                        // `spawn_store::record_result_if_absent`, never through `cmd_result`, so
                         // that courier's own reclaim never runs for it; this call site is the
                         // liveness-fault half of the two-call-site/one-authority shape
                         // [`reclaim_spawn_registered_scratch`]'s doc comment describes (review
@@ -3165,7 +3168,7 @@ fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root:
 /// That read-then-write pair left a TOCTOU window (a self-report landing between the check
 /// and the record was still clobbered), so the death courier now records atomically via a
 /// single `rigger result <id> --if-absent --error <why>` instead (spec 05; the write path
-/// is [`spawn::record_result_if_absent`]). This command is retained as a standalone check -
+/// is [`spawn_store::record_result_if_absent`]). This command is retained as a standalone check -
 /// e.g. an operator asking whether a spawn is answered - not as the courier's guard.
 ///
 /// Composition mirrors [`cmd_result`]: the store is RESOLVED by walking up to the owning
@@ -3343,7 +3346,7 @@ struct StepArgs {
     /// latest run matches (which the conductor's `ensure_started` would adopt). A ONE-SHOT
     /// the DRIVER passes on the first step of an explicit restart - the evented recovery
     /// from a run wedged in a terminal state whose spec is unchanged; see
-    /// [`rigger::run::start_fresh`]. Plain steps after it adopt the boundary it began.
+    /// [`rigger::run_store::start_fresh`]. Plain steps after it adopt the boundary it began.
     fresh: bool,
     /// `--rebase-definition` (spec 13, unit 1): on a live-run step whose on-disk definition
     /// drifted from the hash pinned at start, record the supersession and continue on the new
@@ -3644,7 +3647,7 @@ fn run_cli(parsed: &RunArgs) -> Res {
     let store = Namespaced::new(backend.as_ref(), &project_identity());
     // `--fresh`: begin a NEW run before driving, so the conductor's own `ensure_started`
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
-    // `runscope::start_fresh` - the evented restart for a terminal escalation on an
+    // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
     // unchanged spec. `false`: this is the standalone CLI path, so stdout is the normal
     // human-facing channel and the `--fresh` notice belongs there, unchanged.
     fresh_run_if_requested(parsed, &store, &criteria, false, &base_tip)?;
@@ -3739,7 +3742,7 @@ fn fresh_run_if_requested(
         std::env::var("RIGGER_BASE").ok().as_deref(),
     );
     if parsed.fresh {
-        let run = runscope::start_fresh(
+        let run = runscope_store::start_fresh(
             store,
             criteria,
             &definition,
@@ -5094,7 +5097,7 @@ fn fmt_duration(d: std::time::Duration) -> String {
 /// 61, PROGRESS): the item id, whether the adjudicator's verdict matched the expectation,
 /// which tier(s) actually caught it (`none` when nobody did), and how long scoring this ONE
 /// item took. Pure so its exact content is unit-tested without a live run; the caller
-/// ([`cmd_canary`], wired through [`canary::run_canary`]'s `on_item` hook) prints it AS EACH
+/// ([`cmd_canary`], wired through [`canary_store::run_canary`]'s `on_item` hook) prints it AS EACH
 /// ITEM COMPLETES, never batched into the `format_canary_stats` scorecard rendered after
 /// every item is done. Reuses the crate's ONE duration-format authority ([`fmt_duration`])
 /// rather than a second spelling.
@@ -5522,17 +5525,17 @@ fn read_order_signatures(
 struct CanaryArgs {
     corpus_dir: String,
     if_model_changed: bool,
-    /// `--jobs <n>`: the TOTAL concurrent-spawn budget [`canary::run_canary`] divides
+    /// `--jobs <n>`: the TOTAL concurrent-spawn budget [`canary_store::run_canary`] divides
     /// between its two concurrency dimensions - independent corpus items sharded across
     /// workers, and each item's tier-1 lens fan-out (the LENS FAN-OUT criterion's
     /// already-built inner concurrency) - so neither dimension can push the live review
     /// panel's total concurrent spawns past what the operator asked for. Defaults to
-    /// [`canary::default_jobs`] (always greater than one).
+    /// [`canary_store::default_jobs`] (always greater than one).
     jobs: usize,
     /// `--model <tier>=<id>` pins (repeatable; tiers: `lens`, `adversary`, `adjudicator`,
     /// spec 61 MODEL PINNING criterion): forces the named tier's agent(s) to `<id>` for
     /// THIS run only. Empty when the operator names none.
-    model_pins: canary::ModelPins,
+    model_pins: canary_store::ModelPins,
 }
 
 /// Parse `rigger canary`'s flags: `--corpus <dir>`, `--if-model-changed`, `--jobs <n>`, and
@@ -5541,8 +5544,8 @@ struct CanaryArgs {
 fn parse_canary_args(args: &[String]) -> Result<CanaryArgs, Box<dyn std::error::Error>> {
     let mut corpus_dir = "canaries".to_string();
     let mut if_model_changed = false;
-    let mut jobs = canary::default_jobs();
-    let mut model_pins: canary::ModelPins = canary::ModelPins::new();
+    let mut jobs = canary_store::default_jobs();
+    let mut model_pins: canary_store::ModelPins = canary_store::ModelPins::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -5627,7 +5630,7 @@ fn parse_canary_args(args: &[String]) -> Result<CanaryArgs, Box<dyn std::error::
 ///
 /// `--jobs <n>` bounds the total number of review-panel spawns in flight at once, across
 /// BOTH independent corpus items and each item's tier-1 lens fan-out together (spec 61,
-/// ITEM SHARDING AND THE JOBS CAP); it defaults to [`canary::default_jobs`].
+/// ITEM SHARDING AND THE JOBS CAP); it defaults to [`canary_store::default_jobs`].
 fn cmd_canary(args: &[String]) -> Res {
     let args = parse_canary_args(args)?;
     let corpus_dir = args.corpus_dir;
@@ -5681,7 +5684,7 @@ fn cmd_canary(args: &[String]) -> Res {
         }
     }
 
-    let corpus = canary::load_corpus(Path::new(&corpus_dir))?;
+    let corpus = canary_store::load_corpus(Path::new(&corpus_dir))?;
     if corpus.is_empty() {
         return Err(format!(
             "canary: the corpus at {corpus_dir:?} has no items (add `*.md` canary files)"
@@ -5689,7 +5692,7 @@ fn cmd_canary(args: &[String]) -> Res {
         .into());
     }
 
-    let cfg = config::load(".")?;
+    let cfg = config_store::load(".")?;
     let panel = cfg.workflow.defaults.review.clone();
     if panel.is_empty() {
         return Err("canary: defaults.review declares no review panel to measure".into());
@@ -5697,7 +5700,7 @@ fn cmd_canary(args: &[String]) -> Res {
     // MODEL PINNING criterion (spec 61 c7): resolve `--model <tier>=<id>` pins against a
     // CLONE of `cfg` - the loaded config (and the file it came from) is never mutated, and
     // an un-pinned tier's agent is byte-for-byte what the config declared.
-    let cfg = canary::apply_model_pins(&cfg, &panel, &args.model_pins);
+    let cfg = canary_store::apply_model_pins(&cfg, &panel, &args.model_pins);
 
     std::fs::create_dir_all(RIGGER_DIR)?;
     // Sqlite is the canary's local measurement store; migrate a pre-spec-09 namespace once
@@ -5713,9 +5716,9 @@ fn cmd_canary(args: &[String]) -> Res {
     // Observable progress (spec 61, PROGRESS): stream one line per corpus item the
     // instant it finishes, rather than nothing on stdout until the whole batch is done -
     // wired to run_canary's on_item hook, which fires per item as it genuinely
-    // completes (see canary::run_canary's doc comment for why that hook lives inside
+    // completes (see canary_store::run_canary's doc comment for why that hook lives inside
     // the item-sharding closure, not the aggregation loop after it).
-    let report = canary::run_canary(
+    let report = canary_store::run_canary(
         &store,
         &driver,
         &cfg,
@@ -5735,12 +5738,12 @@ fn cmd_canary(args: &[String]) -> Res {
     // every tier's actually-resolved model id) AFTER scoring, once every item's
     // resolved-model observations are known - never mutating the opening batch marker
     // `run_canary` already wrote.
-    canary::record_header(
+    canary_store::record_header(
         &store,
         &report.batch,
         &canary::CanaryHeader {
             binary_build: version_line(),
-            corpus_hash: canary::corpus_hash(&corpus),
+            corpus_hash: canary_store::corpus_hash(&corpus),
             resolved_models: report.resolved_models,
         },
     )?;
@@ -5917,7 +5920,7 @@ fn cmd_replay(args: &[String]) -> Res {
         let iso = Namespaced::new(iso_backend.as_ref(), "rigger-replay");
         // An offline replay re-fold over an isolated store: no run branch, no PR, so no base
         // or spec path to persist (spec 38, criterion 3; spec 82, criterion 1).
-        runscope::start_fresh(&iso, &criteria, &candidate_definition, "", "", "")?;
+        runscope_store::start_fresh(&iso, &criteria, &candidate_definition, "", "", "")?;
         let trajectory = conductor::replay_trajectory(baseline);
         iso.append(conductor::STREAM, ExpectedRevision::Any, &trajectory)?;
 
@@ -6154,7 +6157,7 @@ fn materialize_config_at_rev(
     }
     // Load BEFORE removing the checkout; both readers return owned values, so the worktree
     // can be torn down immediately after.
-    let loaded = config::load(checkout_str)
+    let loaded = config_store::load(checkout_str)
         .map_err(|e| format!("rigger replay: candidate config at {rev:?} is invalid: {e}"))
         .and_then(|cfg| {
             definition_hash(checkout_str)
@@ -6868,7 +6871,7 @@ fn cmd_dash(args: &[String]) -> Res {
     // losing a configured `defaults.workdir`/`defaults.max_retries` (and every agent's
     // liveness age on the dashboard with it) whenever `Config::validate` failed for an
     // unrelated reason. Anchored at the process's raw cwd (`RIGGER_DIR` alone, exactly what
-    // `config::load(".")` resolved before), matching this function's own pre-existing
+    // `config_store::load(".")` resolved before), matching this function's own pre-existing
     // `git_repo()`-based `scratch_root` resolution below and its documented repo-less degrade
     // (`cmd_dash`, unlike the courier commands, is deliberately never routed through
     // `require_store_dir`'s owning-root walk) - only the VALIDATE-INDEPENDENCE axis changes
@@ -7163,7 +7166,7 @@ fn dash_reap_idle_window() -> std::time::Duration {
 
 /// The scratch root a REGISTERED project at `root` would resolve for ITSELF (spec 62 criterion
 /// 5 round 2: cross-project agent liveness) - that project's OWN `.rigger/workflow.yml`
-/// configured workdir, read through the LIGHTWEIGHT [`config::read_scratch_workdir`] probe
+/// configured workdir, read through the LIGHTWEIGHT [`config_store::read_scratch_workdir`] probe
 /// (never the full [`config::load`], which would additionally require a loadable agent fleet
 /// and a passing [`config::Config::validate`] just to learn one string field - a foreign
 /// project this singleton never launched has no business failing this scan over its own
@@ -7180,7 +7183,7 @@ fn dash_reap_idle_window() -> std::time::Duration {
 /// markers never conjures a `.rigger/tmp` under a project that has none.
 fn foreign_instance_scratch_root(root: &str) -> String {
     let rigger_dir = Path::new(root).join(".rigger");
-    let workdir = config::read_scratch_workdir(&rigger_dir).unwrap_or_default();
+    let workdir = config_store::read_scratch_workdir(&rigger_dir).unwrap_or_default();
     rigger::worktree::scratch_root_path(root, &workdir, None)
 }
 
@@ -7610,7 +7613,7 @@ fn cmd_ground(args: &[String]) -> Res {
     // a project with no `.rigger/workflow.yml` yet falls back to the default grounder
     // (the empty name -> symbols, the scaffold default), so an agent can ground before
     // a workflow is authored rather than hitting a config error.
-    let name = config::load(".")
+    let name = config_store::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     let grounder = select_grounder(&name)?;
@@ -7648,7 +7651,7 @@ fn cmd_reindex(args: &[String]) -> Res {
     // Same selection path as `cmd_ground`: honor `defaults.grounder` when a config
     // is present, else the unset default (symbols). The grounder is rooted at `.`,
     // so the persisted index it loads/updates is this project's `.rigger/symbols/`.
-    let name = config::load(".")
+    let name = config_store::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     // Use the reindex-specific constructor: it loads the persisted index WITHOUT a
@@ -7833,7 +7836,7 @@ fn cmd_progress(args: &[String]) -> Res {
     // Append to the SEPARATE progress store - never the run stream.
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity());
-    let pos = rigger::progress::record(&prog_store, &run_id, id, activity)?;
+    let pos = rigger::progress_store::record(&prog_store, &run_id, id, activity)?;
     println!("progress recorded for {id} (position {pos})");
     Ok(())
 }
@@ -8466,7 +8469,7 @@ fn cmd_reset(args: &[String]) -> Res {
         // A pure filesystem reclaim over the scratch root, orthogonal to the event log and
         // graph `--runs`/`--derived` prune, and carrying NO backend requirement at all
         // (spec 77 Design) - `reset_build_cache` resolves the one config value it needs
-        // (`defaults.workdir`) through the lightweight `config::read_scratch_workdir` probe
+        // (`defaults.workdir`) through the lightweight `config_store::read_scratch_workdir` probe
         // itself, never the full `config::load` (which would additionally require a
         // loadable agent fleet just to reclaim disk space). Dispatched BEFORE `--derived`
         // below (not after, as its Design-bullet order might suggest) so a composed
@@ -8684,8 +8687,8 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
 /// `scratch_root_path_from_env(repo, workdir)` authority `rigger validate`'s residue scan
 /// also resolves through - so `reset --build-cache` can never disagree with either about
 /// which directory is "the shared cache". `workdir` itself comes from
-/// [`config::read_scratch_workdir`], the LIGHTWEIGHT probe (mirroring
-/// [`config::read_store_config`]'s own shape) - never the full [`config::load`], which would
+/// [`config_store::read_scratch_workdir`], the LIGHTWEIGHT probe (mirroring
+/// [`config_store::read_store_config`]'s own shape) - never the full [`config::load`], which would
 /// additionally require a loadable agent fleet and a passing [`config::Config::validate`]
 /// just to learn one string field this pure filesystem reclaim has no other use for.
 ///
@@ -8725,7 +8728,7 @@ fn reset_build_cache(loc: &StoreLocation) -> Res {
         .parent()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let workdir = config::read_scratch_workdir(&loc.dir)?;
+    let workdir = config_store::read_scratch_workdir(&loc.dir)?;
     let scratch = PathBuf::from(rigger::worktree::scratch_root_path_from_env(
         &repo, &workdir,
     ));
@@ -9457,7 +9460,7 @@ fn read_outcome_from_stdin() -> Result<String, Box<dyn std::error::Error>> {
 /// (still exit 0). The thin driver's death courier uses it to record a died-worker
 /// failure without clobbering a self-report that landed first - one atomic operation
 /// closing the TOCTOU window the old two-process `rigger reported <id> || rigger result
-/// <id> --error` guard left open (spec 05). See [`spawn::record_result_if_absent`].
+/// <id> --error` guard left open (spec 05). See [`spawn_store::record_result_if_absent`].
 ///
 /// The [`spawn::SpawnResult`] is appended to the SAME per-project [`Namespaced`] `run`
 /// stream the conductor drives, so the write lands exactly where the replay driver reads.
@@ -9513,7 +9516,7 @@ fn cmd_result(args: &[String]) -> Res {
         // Conditional atomic record: write only if the spawn is still unanswered, never
         // overwriting an existing result. A no-op (a result already stood) is a success,
         // so the courier's `|| ...`-free single command always exits 0.
-        match spawn::record_result_if_absent(&store, &res)? {
+        match spawn_store::record_result_if_absent(&store, &res)? {
             Some(pos) => {
                 println!("recorded {kind} for {} (position {pos})", res.id);
                 Some(pos)
@@ -9527,7 +9530,7 @@ fn cmd_result(args: &[String]) -> Res {
             }
         }
     } else {
-        let pos = spawn::record_result(&store, &res)?;
+        let pos = spawn_store::record_result(&store, &res)?;
         println!("recorded {kind} for {} (position {pos})", res.id);
         Some(pos)
     };
@@ -9626,7 +9629,7 @@ fn reclaim_spawn_scratch(loc: &StoreLocation, prior: &[Event], spawn_id: &str) {
 /// here; `cmd_step`'s liveness-sweep call site delegates here directly for each spawn
 /// [`rigger::liveness::sweep`] just recorded a fault for, using the `scratch_root`/`run_id` it
 /// already resolved for the sweep call itself. Before this second call site existed, a hung
-/// spawn's fault - recorded by the sweep via `spawn::record_result_if_absent` DIRECTLY,
+/// spawn's fault - recorded by the sweep via `spawn_store::record_result_if_absent` DIRECTLY,
 /// in-process, never through `cmd_result` - left its registered mutation-scratch dir
 /// unreclaimed forever unless its owning unit later reached a terminal state (round-2/3 review
 /// reject, spec 77 criterion 2, `adv-u77c2b-liveness-sweep-bypasses-reclaim`): the mechanism
@@ -9719,7 +9722,7 @@ fn cmd_validate(args: &[String]) -> Res {
             eprintln!("{line}");
         }
     }
-    let cfg = config::load(".")?;
+    let cfg = config_store::load(".")?;
     // Static verdict-line lint (spec 18, unit 1): a gating adjudicator whose persona only
     // records its verdict via `rigger_emit` - never on its result output - is a guaranteed
     // stall, because the integration gate reads the result channel, not emitted events. This
@@ -12941,7 +12944,7 @@ fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::
     // the whole prospective fleet BEFORE writing anything (below), so a collision aborts
     // the import atomically instead of leaving half the files on disk to brick every
     // later load.
-    let mut fleet: Vec<(String, config::AgentDef)> = config::read_agents_dir(&dest)
+    let mut fleet: Vec<(String, config::AgentDef)> = config_store::read_agents_dir(&dest)
         .map_err(|e| format!("setup --agents: reading the existing fleet: {e}"))?;
 
     // Pass 1: normalize, parse, and STAGE each file to write - writing nothing yet.
@@ -12996,7 +12999,7 @@ fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::
     let root_str = root
         .to_str()
         .ok_or("setup --agents: project root path is not valid UTF-8")?;
-    config::load(root_str)?;
+    config_store::load(root_str)?;
 
     Ok(summary)
 }
@@ -13415,7 +13418,7 @@ fn cmd_mcp(_args: &[String]) -> Res {
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     let peers = Sidecar::start(&store, 0, Filter::default())?;
-    let grounder_name = config::load(".")
+    let grounder_name = config_store::load(".")
         .map(|cfg| cfg.workflow.defaults.grounder)
         .unwrap_or_default();
     let grounder = select_grounder(&grounder_name);
@@ -19412,7 +19415,7 @@ mod tests {
     #[test]
     fn a_recorded_result_lets_the_replay_driver_advance_past_the_spawn() {
         // The acceptance shape for this unit: a result recorded through the SAME seam
-        // cmd_result uses (build_result -> spawn::record_result on the per-project
+        // cmd_result uses (build_result -> spawn_store::record_result on the per-project
         // namespaced run stream) flips a PARKED spawn to one the replay driver answers -
         // i.e. the next step advances past it (spec 04, Done-when).
         use rigger::conductor::{is_parked, AgentDriver, Error, SpawnOpts};
@@ -19441,7 +19444,7 @@ mod tests {
 
         // `rigger result u/implementer#0 "the diff"` records the outcome through the seam.
         let res = build_result(&id, "the diff", false, None).unwrap();
-        spawn::record_result(&store, &res).unwrap();
+        spawn_store::record_result(&store, &res).unwrap();
 
         // Now the next step ADVANCES PAST it: the same spawn is answered from the log.
         let answered = driver
@@ -19463,7 +19466,7 @@ mod tests {
         let id = spawn::spawn_id("u", spawn::ROLE_IMPLEMENTER, 0);
 
         let res = build_result(&id, "worker died: non-zero exit", true, None).unwrap();
-        spawn::record_result(&store, &res).unwrap();
+        spawn_store::record_result(&store, &res).unwrap();
 
         let driver = ReplayDriver::new(&store);
         let agent = AgentDef::default();
@@ -19499,7 +19502,7 @@ mod tests {
             std::fs::write(agents.join(file), content).unwrap();
         }
 
-        let cfg = config::load(dir.path().to_str().unwrap())
+        let cfg = config_store::load(dir.path().to_str().unwrap())
             .expect("the scaffolded config must load and validate");
 
         // Six CANONICAL agents: planner, rust-engineer, the two reviewer lenses
@@ -19588,7 +19591,7 @@ mod tests {
     #[test]
     // Reads relative paths (`.`, `..`) so it depends on the process CWD. Another test
     // (`cmd_stats_on_a_never_run_project...`) temporarily `set_current_dir`s to a temp
-    // dir; if that runs concurrently, `config::load(".")` here resolves `.` to that
+    // dir; if that runs concurrently, `config_store::load(".")` here resolves `.` to that
     // temp dir and fails ("read architecture-reviewer.md: No such file"). CWD is
     // process-global, so a restore guard in the other test does not close the window -
     // the two must be mutually exclusive. Both share the `cwd` serial key.
@@ -19602,7 +19605,7 @@ mod tests {
             if !path.join(RIGGER_DIR).join("workflow.yml").exists() {
                 continue;
             }
-            let cfg = config::load(root)
+            let cfg = config_store::load(root)
                 .unwrap_or_else(|e| panic!("shipped workflow at {root:?} must load: {e}"));
             assert!(
                 cfg.workflow.defaults.budget > 0,
@@ -19622,7 +19625,7 @@ mod tests {
         );
         assert_eq!(
             a.jobs,
-            canary::default_jobs(),
+            canary_store::default_jobs(),
             "an unflagged run uses the production default jobs budget"
         );
     }
@@ -24750,7 +24753,7 @@ mod tests {
     }
 
     /// `result_of_at` (the read behind `rigger reported`, and the same latest-result read
-    /// `spawn::record_result_if_absent` consults) treats an absent `events.db` as UNREPORTED
+    /// `spawn_store::record_result_if_absent` consults) treats an absent `events.db` as UNREPORTED
     /// (`None`) and does NOT create the file: a never-run project has no result for any spawn,
     /// and opening would create the db, masking the edge. A `None` here makes `rigger reported`
     /// exit non-zero, correctly reporting the spawn as still unanswered.
@@ -25535,7 +25538,7 @@ mod tests {
         // test genuinely discriminates the validate-independent axis, not just field
         // plumbing.
         assert!(
-            config::load(owning_root.path().to_str().unwrap()).is_err(),
+            config_store::load(owning_root.path().to_str().unwrap()).is_err(),
             "fixture bug: config::load must fail on an agents-less root for this test to \
              discriminate the lightweight resolver from the full one"
         );

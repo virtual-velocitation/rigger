@@ -31,9 +31,8 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
-use rigger::canary::{
-    default_jobs, run_canary, CanaryItem, CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS,
-};
+use rigger::canary::{CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
+use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, ReviewPanel};
 use rigger::contextgraph::TYPE_REVIEW_FINDING;

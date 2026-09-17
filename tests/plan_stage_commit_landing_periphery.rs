@@ -1799,7 +1799,7 @@ fn plan_intent_record_is_log_carried_before_any_git_mutation_and_names_the_origi
 /// with the EXACT `DecisionMade` shape `RunCtx::record_plan_landed` itself writes (the technique
 /// gap 2's legacy-event test established), landing the amendment for real through the same
 /// public `Worktree::cherry_pick_onto_run_branch` a crashed prior attempt would itself have
-/// used, then adopting the SAME run (`rigger::run::ensure_started`, matching criteria) with a
+/// used, then adopting the SAME run (`rigger::run_store::ensure_started`, matching criteria) with a
 /// fresh `run()`. Filler commits deliberately push the landed sha beyond `find_landed_by_
 /// patch_id`'s own search window BEFORE the resumed `run()` starts, so a patch-id search alone
 /// could no longer recover it - isolating the log record as the ONLY mechanism that can produce
@@ -1895,7 +1895,7 @@ fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_an
     // read it back correctly in-process (already proven by the implementer's own conductor.rs
     // unit tests).
     let store = Store::open(":memory:").unwrap();
-    rigger::run::ensure_started(&store, &[]).unwrap();
+    rigger::run_store::ensure_started(&store, &[]).unwrap();
     store
         .append(
             STREAM,

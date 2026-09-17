@@ -266,6 +266,7 @@
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
+use rigger::config_store;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{
     Appended, Direction, Error as EsError, EventStore, ExpectedRevision, Filter, Position,
@@ -440,7 +441,7 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
          - paths: [\"gen/*.json\"]\n\
          \u{20}\u{20}run: \"echo two\"\n",
     );
-    let cfg = config::load(configured.path().to_str().unwrap()).expect("load a valid workflow.yml");
+    let cfg = config_store::load(configured.path().to_str().unwrap()).expect("load a valid workflow.yml");
     assert_eq!(
         cfg.workflow.regenerate.len(),
         2,
@@ -465,7 +466,7 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
     // silently-defaulted rule.
     let legacy = tempfile::tempdir().expect("create temp project");
     write_workflow(legacy.path(), "");
-    let cfg = config::load(legacy.path().to_str().unwrap())
+    let cfg = config_store::load(legacy.path().to_str().unwrap())
         .expect("a workflow.yml with no regenerate: section must still load");
     assert!(
         cfg.workflow.regenerate.is_empty(),
@@ -480,7 +481,7 @@ fn regenerate_config_round_trips_through_the_real_on_disk_loader_with_back_compa
     // committed file states: `docs/audit/*.json` (fully-generated artifacts only, spec 89
     // op-89-regenerate-rule-narrowed-to-json-artifacts) regenerated via simplification_audit.
     let project_root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let real_cfg = config::load(project_root.to_str().unwrap())
+    let real_cfg = config_store::load(project_root.to_str().unwrap())
         .expect("the project's own .rigger/workflow.yml must load through the real loader");
     assert!(
         real_cfg

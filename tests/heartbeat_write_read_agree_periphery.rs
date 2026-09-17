@@ -453,7 +453,7 @@ fn status_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_flee
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(&marker, b"heartbeat").unwrap();
 
-    // The WRONG path a `config::load(".")`-from-nested-cwd regression would resolve: the
+    // The WRONG path a `config_store::load(".")`-from-nested-cwd regression would resolve: the
     // nested worktree's own cwd has no workflow.yml at all (never committed), so it falls
     // through to the empty-workdir default rung - a DIFFERENT scratch root than the
     // configured one above, so this test cannot pass vacuously.
@@ -499,7 +499,7 @@ fn status_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_flee
 /// The SAME round-2 seam as `status_resolves_a_configured_workdir_from_the_owning_root_with_
 /// no_agents_fleet_present` above, at `rigger watch`'s own real-binary boundary. The fix's own
 /// doc comment names `watch_poll` as bugged the IDENTICAL way `cmd_status` was: both resolved
-/// `defaults.workdir` via `config::load(".")` off the process's raw cwd, and both would
+/// `defaults.workdir` via `config_store::load(".")` off the process's raw cwd, and both would
 /// silently lose a configured workdir whenever the owning root had no loadable
 /// `.rigger/agents/` fleet - `scratch_defaults` is the ONE shared resolver fixing both call
 /// sites identically. `watch_poll` never renders a per-spawn heartbeat age directly (unlike
@@ -548,7 +548,7 @@ fn watch_once_suppresses_a_false_dead_driver_when_the_configured_workdir_resolve
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(&marker, b"heartbeat").unwrap();
 
-    // The WRONG path a `config::load(".")`-from-nested-cwd regression would resolve: the
+    // The WRONG path a `config_store::load(".")`-from-nested-cwd regression would resolve: the
     // nested worktree's own cwd has no workflow.yml at all (never committed), so it falls
     // through to the empty-workdir default rung - a DIFFERENT scratch root than the configured
     // one above, and one with NO marker, so this test cannot pass vacuously.
@@ -588,7 +588,7 @@ fn watch_once_suppresses_a_false_dead_driver_when_the_configured_workdir_resolve
 /// The SAME round-2 seam as the two tests above, at `rigger dash`'s own real-binary bound
 /// (spec 83 criterion 2, round 3 - `arch-u83c3-dash-scratch-defaults-not-migrated`): `cmd_dash`
 /// still resolved `defaults.workdir`/`defaults.max_retries` via the full, validate-requiring
-/// `config::load(".")` after round 2 moved `cmd_status`/`watch_poll`/`reclaim_spawn_scratch`
+/// `config_store::load(".")` after round 2 moved `cmd_status`/`watch_poll`/`reclaim_spawn_scratch`
 /// onto the shared, validate-independent `scratch_defaults` resolver - a second, unreconciled
 /// implementation of the identical resolution concern for the SAME per-spawn liveness-age
 /// rendering `cmd_status` already gets right (`dash_read_liveness` is fed the identical
@@ -598,7 +598,7 @@ fn watch_once_suppresses_a_false_dead_driver_when_the_configured_workdir_resolve
 /// `defaults.workdir` at an agents-less owning root must still surface the spawn's fresh
 /// heartbeat in the exported snapshot, never a silently ABSENT `liveness_age_s` (the field is
 /// `skip_serializing_if = "Option::is_none"`, so a mis-resolved workdir drops it from the JSON
-/// entirely rather than nulling it) because `config::load(".")` failed on the missing agents
+/// entirely rather than nulling it) because `config_store::load(".")` failed on the missing agents
 /// fleet.
 #[test]
 fn dash_export_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_fleet_present() {
@@ -630,7 +630,7 @@ fn dash_export_resolves_a_configured_workdir_from_the_owning_root_with_no_agents
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(&marker, b"heartbeat").unwrap();
 
-    // The WRONG path a `config::load(".")` regression resolves whenever `Config::validate`
+    // The WRONG path a `config_store::load(".")` regression resolves whenever `Config::validate`
     // fails (here: the missing agents fleet) - the empty-workdir default rung, a DIFFERENT
     // scratch root than the configured one above, so this test cannot pass vacuously.
     let wrong_scratch_root = real_scratch_root(root, "");
@@ -659,7 +659,7 @@ fn dash_export_resolves_a_configured_workdir_from_the_owning_root_with_no_agents
     );
     // A present `liveness_age_s` key proves the marker under the CONFIGURED workdir was found -
     // a mis-resolved workdir (silently falling back to the default, unconfigured root because
-    // `config::load(\".\")` failed on the missing agents fleet) would omit the field entirely
+    // `config_store::load(\".\")` failed on the missing agents fleet) would omit the field entirely
     // (it is `skip_serializing_if = "Option::is_none"`, never a printed `null`).
     assert!(
         html.contains("\"liveness_age_s\":"),

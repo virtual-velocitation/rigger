@@ -105,7 +105,7 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
 use rigger::ledger;
-use rigger::run::start_fresh;
+use rigger::run_store::start_fresh;
 use serde_json::{json, Value};
 use std::sync::Mutex;
 

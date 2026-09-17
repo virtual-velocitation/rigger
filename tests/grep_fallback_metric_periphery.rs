@@ -43,6 +43,7 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, Position};
 use rigger::metrics::grep_fallbacks;
 use rigger::progress::{self, AgentProgress, GREP_FALLBACK_PREFIX};
+use rigger::progress_store;
 
 // --- helpers -------------------------------------------------------------------------------------
 
@@ -139,7 +140,7 @@ fn the_recorded_writer_wire_form_round_trips_into_the_counter() {
     let store = Store::open(":memory:").unwrap();
     let run_id = "436b81a9-run";
 
-    progress::record(
+    progress_store::record(
         &store,
         run_id,
         "u1/implementer#0",
@@ -147,8 +148,8 @@ fn the_recorded_writer_wire_form_round_trips_into_the_counter() {
     )
     .unwrap();
     // Ordinary narration through the same writer - must NOT count.
-    progress::record(&store, run_id, "u1/implementer#0", "cargo build green").unwrap();
-    progress::record(
+    progress_store::record(&store, run_id, "u1/implementer#0", "cargo build green").unwrap();
+    progress_store::record(
         &store,
         run_id,
         "u1/adversary#0",

@@ -413,7 +413,7 @@ fn graph_around_reflects_the_review_panel_fallback_rule_for_a_real_workflow_yml(
 /// configured, end to end through the CLI: round 5's fix (`u2c2-r5-reviews-light-distinct-relation`)
 /// split `workflowdef::reviewers_of` into a full roster and a light roster so a `tiers.light`-only
 /// reviewer is never indistinguishable from a full-panel one on the same stage - proven here only
-/// in-process (an in-memory fixture and `config::load_workflow`), never through the compiled
+/// in-process (an in-memory fixture and `config_store::load_workflow`), never through the compiled
 /// binary's cold `rigger graph build` -> persisted `graph.db` -> `--around` path a reader actually
 /// queries, nor through the new `REL_REVIEWS_LIGHT` fold arm (`contextgraph/sqlite.rs` `fold()`)
 /// which this exercises for the first time off REAL extraction output. Covers BOTH call sites the

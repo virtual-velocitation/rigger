@@ -10,7 +10,10 @@
 //! why the two are never unioned). This is the emit half; the fold half lives in
 //! `contextgraph::sqlite` and stays compiled in both lanes.
 
-use crate::config::{self, ReviewPanel, Stage, Workflow};
+use crate::config_store;
+use crate::config::{ReviewPanel, Stage, Workflow};
+#[cfg(test)]
+use crate::config;
 use crate::contextgraph::{
     DocConceptExtracted, DocLinkExtracted, KIND_AGENT, KIND_GATE, KIND_STAGE, REL_NEEDS,
     REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
@@ -222,13 +225,13 @@ pub fn extract_events(workflow: &Workflow) -> Vec<Event> {
 
 /// Load `.rigger/workflow.yml` at `root` and lower it into events - the production entry point a
 /// live run's [`crate::ingest`] pipeline and a cold `rigger graph build` both use. Reads through
-/// the LIGHTWEIGHT [`config::load_workflow`] (no agents-dir read, no referential validation) - see
+/// the LIGHTWEIGHT [`config_store::load_workflow`] (no agents-dir read, no referential validation) - see
 /// that function's own doc for why indexing the definition must not fail on an unrelated agent
 /// frontmatter concern. Absent or unparseable yields NO events (never a crash), mirroring how a
 /// design doc with no design intent yields nothing to the design extraction pass.
 pub fn project_events(root: &str) -> Vec<Event> {
     let path = Path::new(root).join(".rigger").join("workflow.yml");
-    match config::load_workflow(&path) {
+    match config_store::load_workflow(&path) {
         Ok(wf) => extract_events(&wf),
         Err(_) => Vec::new(),
     }
@@ -493,7 +496,7 @@ mod tests {
     #[test]
     fn a_real_on_disk_workflow_yml_with_tiers_still_tags_the_light_roster_distinctly() {
         // Same guarantee as the in-process fixture above, but through a REAL on-disk
-        // `.rigger/workflow.yml` parsed by `config::load_workflow` (via `project_events`) - not a
+        // `.rigger/workflow.yml` parsed by `config_store::load_workflow` (via `project_events`) - not a
         // hand-built `Workflow` struct - proving the split survives real YAML parsing end to end.
         let dir = tempfile::tempdir().unwrap();
         let rigger_dir = dir.path().join(".rigger");

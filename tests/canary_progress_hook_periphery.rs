@@ -36,7 +36,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use rigger::canary::{run_canary, CanaryItem, CanaryOutcome, TIER_LENS};
+use rigger::canary::{CanaryOutcome, TIER_LENS};
+use rigger::canary_store::{run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, ReviewPanel};
 use rigger::contextgraph::TYPE_REVIEW_FINDING;

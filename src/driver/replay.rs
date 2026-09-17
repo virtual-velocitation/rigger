@@ -28,6 +28,7 @@ use crate::conductor::{parked_spawn, AgentDriver, AgentResult, Error, SpawnOpts,
 use crate::config::AgentDef;
 use crate::eventstore::{Direction, EventStore};
 use crate::spawn::{self, SpawnRequest};
+use crate::spawn_store;
 
 /// The scratch subdirectory a spawn's dedicated per-spawn scratch lives under, a sibling of
 /// the worktrees and the `agent-live` liveness markers. It is the SAME `agent-scratch` tree
@@ -335,7 +336,7 @@ impl AgentDriver for ReplayDriver<'_> {
             // Park stamped with the run this spawn belongs to (spec 06, unit 1): the
             // conductor threaded the current run id onto `opts`, so the persisted
             // `SpawnRequested` carries the same run-id metadata as the run's other events.
-            spawn::park_in_run(self.store, &req, &opts.run_id).map_err(|e| Error(e.to_string()))?;
+            spawn_store::park_in_run(self.store, &req, &opts.run_id).map_err(|e| Error(e.to_string()))?;
             // ASSIGN this spawn its dedicated scratch dir (spec 34, criterion 1): the moment
             // rigger REQUESTS a spawn it allocates a rigger-owned per-spawn scratch location
             // under the run's scratch root, so a verify/build lands there (not an ad-hoc
@@ -792,7 +793,7 @@ mod tests {
     #[test]
     fn answers_an_already_recorded_success_from_the_log() {
         let store = Store::open(":memory:").unwrap();
-        spawn::record_result(
+        spawn_store::record_result(
             &store,
             &spawn::SpawnResult::ok("u/implementer#0", "the diff"),
         )
@@ -815,7 +816,7 @@ mod tests {
     #[test]
     fn answers_a_recorded_failure_as_an_error_not_a_fake_success() {
         let store = Store::open(":memory:").unwrap();
-        spawn::record_result(
+        spawn_store::record_result(
             &store,
             &spawn::SpawnResult::failed("u/implementer#0", "agent crashed: non-zero exit"),
         )
@@ -839,12 +840,12 @@ mod tests {
         // remediation), and appends no duplicate request.
         let store = Store::open(":memory:").unwrap();
         // The spawn was parked, then a liveness fault was recorded on it.
-        spawn::park(
+        spawn_store::park(
             &store,
             &spawn::SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task"),
         )
         .unwrap();
-        spawn::record_result(
+        spawn_store::record_result(
             &store,
             &spawn::SpawnResult::liveness_fault("u/implementer#0", "the agent hung", "infra"),
         )
@@ -866,7 +867,7 @@ mod tests {
         assert_eq!(requested.len(), 1, "no duplicate spawn request is parked");
 
         // A real result recorded LATER (last-write-wins) IS a terminal answer again.
-        spawn::record_result(
+        spawn_store::record_result(
             &store,
             &spawn::SpawnResult::ok("u/implementer#0", "recovered output"),
         )
@@ -886,12 +887,12 @@ mod tests {
         // hung agent PROCESS is infrastructure regardless of the label, so the unit is never
         // charged. This pins the corrected module doc (class is a label, treatment is uniform).
         let store = Store::open(":memory:").unwrap();
-        spawn::park(
+        spawn_store::park(
             &store,
             &spawn::SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task"),
         )
         .unwrap();
-        spawn::record_result(
+        spawn_store::record_result(
             &store,
             &spawn::SpawnResult::liveness_fault("u/implementer#0", "the agent hung", "product"),
         )
@@ -939,7 +940,7 @@ mod tests {
 
         // The sweep records a liveness fault on the hung spawn (a SpawnResult, never a
         // UnitFailed) - exactly what liveness::sweep does on a stale marker.
-        spawn::record_result(
+        spawn_store::record_result(
             &store,
             &spawn::SpawnResult::liveness_fault(&id, "the agent hung", "infra"),
         )
@@ -974,7 +975,7 @@ mod tests {
         }
 
         // Recovery: a real result recorded later (last-write-wins) supersedes the fault.
-        spawn::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
         replay_step(&store, &cfg).expect("a recovered spawn replays and the run advances");
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
@@ -1050,7 +1051,7 @@ mod tests {
         assert!(is_parked(&first.unwrap_err()));
 
         // The courier records the outcome; now the same spawn is answered from the log.
-        spawn::record_result(&store, &spawn::SpawnResult::ok("u/implementer#0", "done")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok("u/implementer#0", "done")).unwrap();
         let answered = driver
             .spawn(&worker(), "do it", &opts_for("u/implementer#0"), &no_emit)
             .expect("a recorded result replays instead of parking again");
@@ -1073,12 +1074,12 @@ mod tests {
         let id = "plan-critique/adjudicator#1";
 
         // Run 1 recorded a REJECT for the spec-independent adjudicator id.
-        crate::run::ensure_started(&store, &["spec-10-crit".into()]).unwrap();
-        spawn::record_result(&store, &spawn::SpawnResult::ok(id, "reject")).unwrap();
+        crate::run_store::ensure_started(&store, &["spec-10-crit".into()]).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(id, "reject")).unwrap();
 
         // A FRESH run begins over the SAME store (distinct criteria => a new RunStarted
         // boundary, so the prior REJECT falls before the current run's slice).
-        crate::run::ensure_started(&store, &["spec-12-crit".into()]).unwrap();
+        crate::run_store::ensure_started(&store, &["spec-12-crit".into()]).unwrap();
 
         // The same-id adjudicator spawn in the new run PARKS (runs its new reviewer), it
         // does NOT replay run 1's stale "reject".
@@ -1093,7 +1094,7 @@ mod tests {
 
         // And once the fresh run records its OWN verdict, THAT answers within the run: the
         // new event overturns the old, and within-run replay is unbroken by the scoping.
-        spawn::record_result(&store, &spawn::SpawnResult::ok(id, "approve")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(id, "approve")).unwrap();
         let answered = driver
             .spawn(&worker(), "critique the dag", &opts_for(id), &no_emit)
             .expect("the fresh run's own recorded verdict answers within the run");
@@ -1117,8 +1118,8 @@ mod tests {
         // calls `ensure_started` before any spawn is parked): the run-scoped replay lookup
         // only answers results INSIDE the current run's slice, so a recorded result must
         // sit after the RunStarted boundary - which it always does live.
-        crate::run::ensure_started(&store, &[]).unwrap();
-        spawn::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
 
         // Three consecutive steps replay the SAME recorded history (the implementer is
         // answered from the log every time; the unit reaches `verified` and, on_pass
@@ -1184,8 +1185,8 @@ mod tests {
         let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
         // Begin the run before recording (production ordering): the run-scoped replay lookup
         // answers only results inside the current run's slice - see the sibling replay test.
-        crate::run::ensure_started(&store, &[]).unwrap();
-        spawn::record_result(
+        crate::run_store::ensure_started(&store, &[]).unwrap();
+        spawn_store::record_result(
             &store,
             &spawn::SpawnResult::ok(&id, "implemented")
                 .with_meta(serde_json::json!({ "resolved_model": "claude-opus-4-8-20260101" })),
@@ -1332,7 +1333,7 @@ mod tests {
         ));
 
         // A courier records the implementer's result.
-        spawn::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
 
         // Step 2: the same conductor run REPLAYS the recorded implementer and advances
         // past it (through gates + the empty review) to `verified`.
@@ -1417,10 +1418,10 @@ mod tests {
         // Run scoping (spec 06, unit 1): the earlier step's spawn belongs to THIS run, so
         // begin the run before parking it - otherwise it sits before the boundary and the
         // cross-step budget fold never counts it.
-        crate::run::ensure_started(&store, &[]).unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
         let prior = SpawnRequest::new("earlier", "earlier", ROLE_IMPLEMENTER, 0, "prior work");
-        spawn::park(&store, &prior).unwrap();
-        spawn::record_result(&store, &spawn::SpawnResult::ok(&prior.id, "done")).unwrap();
+        spawn_store::park(&store, &prior).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&prior.id, "done")).unwrap();
 
         let mut cfg = config_with(vec![stage("u", "worker")]);
         cfg.workflow.defaults.budget = 1;
@@ -1556,7 +1557,7 @@ mod tests {
             "step 1 parked the implementer, spending the budget"
         );
         // A courier answers it.
-        spawn::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&id, "implemented")).unwrap();
 
         // Step 2: a fresh process whose folded count already equals the budget. The
         // recorded spawn must still REPLAY (it is free) and the unit must advance to
@@ -1663,7 +1664,7 @@ mod tests {
             "step 1 parked the implementer, spending the budget"
         );
         // A courier answers the implementer.
-        spawn::record_result(&store, &spawn::SpawnResult::ok(&impl_id, "implemented")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&impl_id, "implemented")).unwrap();
 
         // Step 2: a fresh process whose folded count already equals the budget. The
         // implementer replays free to `verified`, then the review-tier lens is refused.
@@ -1764,7 +1765,7 @@ mod tests {
     /// A courier answering a parked spawn: record its result. An empty `output` is the
     /// degenerate infrastructure answer `build_result` records for an empty reviewer.
     fn courier_records(store: &Store, id: &str, output: &str) {
-        spawn::record_result(store, &spawn::SpawnResult::ok(id, output)).unwrap();
+        spawn_store::record_result(store, &spawn::SpawnResult::ok(id, output)).unwrap();
     }
 
     #[test]
@@ -1897,7 +1898,7 @@ mod tests {
         let cfg = reviewed_unit_cfg();
         // Begin the run before the couriers record (production ordering): the run-scoped
         // replay lookup answers only results inside the current run's slice.
-        crate::run::ensure_started(&store, &[]).unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
         courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
         courier_records(&store, &spawn_id("u", &lens_role("sdet"), 0), "");
         courier_records(
@@ -1945,7 +1946,7 @@ mod tests {
         let cfg = reviewed_unit_cfg();
         // Production ordering: the run starts before any courier records (the run-scoped
         // replay lookup answers only results inside the current run's slice).
-        crate::run::ensure_started(&store, &[]).unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
 
         // The implementer and the lens ran and were answered substantively.
         courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
@@ -1960,7 +1961,7 @@ mod tests {
         // native courier's `rigger emit --spawn <id>`), then reported a substantive result
         // with NO verdict line. Seeded in that exact order (park < emit < result).
         let adj_id = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn::park(
+        spawn_store::park(
             &store,
             &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
         )
@@ -2044,7 +2045,7 @@ mod tests {
         // attempt), never the run-halting halt that would blame the innocent unit.
         let store = Store::open(":memory:").unwrap();
         let cfg = reviewed_unit_cfg();
-        crate::run::ensure_started(&store, &[]).unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
 
         // Unit `u`'s implementer and lens ran and were answered substantively.
         courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
@@ -2056,7 +2057,7 @@ mod tests {
 
         // `u`'s adjudicator PARKS - the LOWER bracket of its window.
         let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn::park(
+        spawn_store::park(
             &store,
             &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
         )
@@ -2068,7 +2069,7 @@ mod tests {
         // park, u_adj result]. This is exactly the interleaving the shared store produces under
         // the parallel fan-out; the stamp is what keeps it the sibling's, not the position.
         let v_adj = spawn_id("v", ROLE_ADJUDICATOR, 0);
-        spawn::park(
+        spawn_store::park(
             &store,
             &spawn::SpawnRequest::new("v", "v", ROLE_ADJUDICATOR, 0, "adjudicate"),
         )
@@ -2086,7 +2087,7 @@ mod tests {
                 std::slice::from_ref(&sibling_approve),
             )
             .unwrap();
-        spawn::record_result(&store, &spawn::SpawnResult::ok(&v_adj, "sibling approved")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&v_adj, "sibling approved")).unwrap();
 
         // `u`'s adjudicator reports a substantive result with NO verdict line, having emitted
         // NO approve of its own - a GENUINE empty-verdict reject. The sibling's approve lands at
@@ -2140,7 +2141,7 @@ mod tests {
         // closed - can suppress `u`'s own stamped approve; the backstop fires regardless.
         let store = Store::open(":memory:").unwrap();
         let cfg = reviewed_unit_cfg();
-        crate::run::ensure_started(&store, &[]).unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
 
         // `u`'s implementer and lens ran and were answered substantively.
         courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
@@ -2152,7 +2153,7 @@ mod tests {
 
         // `u`'s adjudicator PARKS.
         let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn::park(
+        spawn_store::park(
             &store,
             &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
         )
@@ -2162,7 +2163,7 @@ mod tests {
         // answered (result=None) - it emitted NOTHING. This is the parked-unanswered sibling
         // the adversary proved suppressed the backstop under the old is_none_or bracket; under
         // stamp attribution its window is simply irrelevant.
-        spawn::park(
+        spawn_store::park(
             &store,
             &spawn::SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 0, "implement"),
         )
@@ -2240,7 +2241,7 @@ mod tests {
         // interleaving the prior fix missed: v_impl park < u approve < v_impl result < u result.
         let store = Store::open(":memory:").unwrap();
         let cfg = reviewed_unit_cfg();
-        crate::run::ensure_started(&store, &[]).unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
 
         // `u`'s implementer and lens ran and were answered substantively.
         courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
@@ -2252,7 +2253,7 @@ mod tests {
 
         // `u`'s adjudicator PARKS.
         let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn::park(
+        spawn_store::park(
             &store,
             &spawn::SpawnRequest::new("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
         )
@@ -2261,7 +2262,7 @@ mod tests {
         // A CONCURRENT SIBLING unit `v`'s implementer PARKS below `u`'s coming approve (the LOWER
         // edge of a window that will OVERLAP it).
         let v_impl = spawn_id("v", ROLE_IMPLEMENTER, 0);
-        spawn::park(
+        spawn_store::park(
             &store,
             &spawn::SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 0, "implement"),
         )
@@ -2286,7 +2287,7 @@ mod tests {
         // The sibling RECORDS its result ABOVE `u`'s approve - CLOSING its window so (v_impl
         // park, v_impl result] brackets `u`'s approve position. This is the overlap the retired
         // bracket rule turned into a silent false-negative.
-        spawn::record_result(&store, &spawn::SpawnResult::ok(&v_impl, "implemented")).unwrap();
+        spawn_store::record_result(&store, &spawn::SpawnResult::ok(&v_impl, "implemented")).unwrap();
 
         // `u`'s adjudicator reports a substantive result with NO verdict line - the emit-only
         // persona.

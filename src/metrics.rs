@@ -98,16 +98,12 @@
 //! all-zero-upheld panel with `adjudications > 0` is never misread as "the review tier
 //! upheld nothing" when the truth is "the upheld findings were unattributed here".
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::conductor::{
-    partition_with_serialize, META_MODEL_ALIAS, META_MODEL_RESOLVED, META_WORKTREE_SHA,
-    STATUS_SPECULATION_REJECTED, TYPE_BLAST_RADIUS_COMPUTED,
-};
 use crate::contextgraph::{META_ACTOR, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING};
 use crate::eventstore::Event;
 use crate::ledger::{
@@ -119,6 +115,142 @@ use crate::spawn::{
     spawn_role, SpawnRequest, SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED,
     TYPE_SPAWN_RESULT,
 };
+
+// The following consts and the two partition functions below moved here from
+// `conductor.rs` (spec 93, criterion 1): they are audit-metadata vocabulary and pure
+// partition logic this (declared `core`) module reads/calls directly, so they cannot
+// stay behind a module that also depends on `AgentDriver`/`EventStore`. `conductor.rs`
+// re-exports each one (`pub use crate::metrics::X;`), so every existing
+// `conductor::X` call site is unchanged.
+
+/// A unit's computed two-view blast radius, recorded as PURE AUDIT (spec 16 unit 3,
+/// architecture 5.5.9). It carries the unit, the `precise` seed view, the uncapped
+/// `safe`-superset view partitioning and tier-routing key on, the `serialize` (hub) verdict,
+/// and the grounder's `index_stamp` provenance - emitted on EVERY structural-grounding path
+/// including the empty-radius fail-safe, so "why the full panel?" is always answerable and the
+/// wave-level parallelism-retention metric (`metrics::project`) is reconstructable from the log.
+/// It adds no graph node/edge: the context-graph projector matches no fold arm for it and so
+/// ignores it idempotently. It rides ONLY when a STRUCTURAL grounder is active (a non-empty
+/// `index_stamp`); the shipped non-symbols default emits nothing new and stays byte-for-byte
+/// unchanged. This is the ONE new event type the spec authorizes.
+pub const TYPE_BLAST_RADIUS_COMPUTED: &str = "BlastRadiusComputed";
+
+/// The metadata key carrying the REQUESTED model ALIAS on a spawn's recorded unit events
+/// (spec 05 line 52). It is the workflow-configured alias the agent was spawned with
+/// (`AgentDef::model`, the same value that rides the [`SpawnRequest`](crate::spawn::SpawnRequest)),
+/// copied here onto the ledger unit-lifecycle events the conductor emits FOR that spawn -
+/// UnitStarted and the green/verified/reviewed statuses - so every spawn's events name the
+/// model that was asked for, not only the request event. Stamped as metadata (never a new
+/// event type, per spec 05's Global constraints); folds and projections ignore it, exactly
+/// like `META_REPLAY_KEY` and [`contextgraph::META_ACTOR`].
+pub const META_MODEL_ALIAS: &str = "model_alias";
+
+/// The metadata key carrying the RESOLVED model id that actually ran a spawn (spec 05
+/// line 52). Unlike the requested [`META_MODEL_ALIAS`], the resolved id is known only
+/// AFTER the agent runs: the worker reports it via `rigger result --meta
+/// '{"resolved_model": ...}'` (see [`spawn::META_RESOLVED_MODEL`](crate::spawn::META_RESOLVED_MODEL)),
+/// it lands in the spawn's [`SpawnResult`](crate::spawn::SpawnResult) `meta`, the replay
+/// driver surfaces it on `AgentResult::resolved_model`, and the conductor copies it here
+/// onto the unit events it emits once it has consumed that spawn's result (green/verified
+/// for the implementer, reviewed for the adjudicator). Empty (and so omitted) when the
+/// worker reported none.
+pub const META_MODEL_RESOLVED: &str = "model_resolved";
+
+/// The metadata key carrying the WORKTREE HEAD sha the review tiers judged (spec 11,
+/// unit 1). Stamped on the review-boundary events - the `verified` status, the
+/// review-reject `UnitFailed`, and the `reviewed` status - mirroring the commit sha
+/// [`ledger::TYPE_UNIT_INTEGRATED`] already carries, so the metrics fold can tell a
+/// genuine reject-then-approve-on-NEW-code from a flip-flop (two verdicts on the SAME
+/// sha = reviewer noise). Like [`META_MODEL_ALIAS`] it is audit metadata on events that
+/// already exist - no new event type (spec 11's Global constraints) - so folds and
+/// projections ignore it. Empty (and so omitted) on a repo-less run with no worktree.
+pub const META_WORKTREE_SHA: &str = "worktree_sha";
+
+/// The `UnitStatus.status` token a REVIEW-REJECTED speculation candidate carries (spec 13,
+/// unit 3). Like `STATUS_SPECULATION_CANCELLED` it is deliberately NOT a [`ledger::Status`]
+/// variant, so the LEDGER fold leaves the shared unit's real status untouched - driven by the
+/// WINNER's lifecycle, or the group's escalation. A rejected candidate must never fold the
+/// unit out of `Fresh`, which would mis-route a resume of the still-racing group onto the
+/// canonical lane (the resume hazard the winner-status deferral is built to avoid). UNLIKE the
+/// cancelled marker, the METRICS fold DOES count it: it is the in-process review-reject signal
+/// that makes an adjudicator-rejected candidate visible to the spec-11 review-quality fold
+/// exactly as the single-lane `verified`-then-`UnitFailed` pair is, WITHOUT a resume-corrupting
+/// lifecycle status (addresses adv-u13-speculation-losers-invisible-to-review-metrics). It is
+/// recorded IN-PROCESS by the conductor (like every `UnitStatus`), so it survives on a live
+/// driver - unlike the adjudicator `SpawnResult` verdict, which only the courier/replay path
+/// records (adj-u1-verdict-reject-disjoint-attribution), so a fold keyed on that would be
+/// always-zero in production.
+pub const STATUS_SPECULATION_REJECTED: &str = "speculation-rejected";
+
+/// Greedily group stage names into disjoint batches by blast-radius (§3.2, §8).
+/// `items` pairs each stage name with the set of files in its blast radius. A stage
+/// joins the FIRST existing batch none of whose members share any file with it;
+/// otherwise it opens a new batch. Stages with an empty blast radius conflict with
+/// nothing and so all collapse into the first batch. The result is deterministic:
+/// `items` is consumed in order and batches keep insertion order, so callers get a
+/// stable partition for a stable (e.g. sorted) input. The guarantee: two stages
+/// whose blast radii overlap never land in the same batch, so running the batches
+/// sequentially keeps overlapping units off the same file at the same time - they
+/// never share a worktree.
+pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<String>> {
+    let mut batches: Vec<Vec<String>> = Vec::new();
+    // The accumulated file set of each batch, parallel to `batches`, so the
+    // disjointness test is a set lookup rather than a re-scan of every member.
+    let mut batch_files: Vec<HashSet<&str>> = Vec::new();
+    for (name, files) in items {
+        let want: HashSet<&str> = files.iter().map(|f| f.as_str()).collect();
+        let mut placed = false;
+        for (i, taken) in batch_files.iter_mut().enumerate() {
+            if want.is_disjoint(taken) {
+                batches[i].push(name.clone());
+                taken.extend(want.iter().copied());
+                placed = true;
+                break;
+            }
+        }
+        if !placed {
+            batches.push(vec![name.clone()]);
+            batch_files.push(want);
+        }
+    }
+    batches
+}
+
+/// The ONE serialize/empty-aware partition authority (spec 16 unit 3): group `items` -
+/// each `(name, safe-superset files, serialize)` - into batches that never co-schedule two
+/// units that must not run together. A unit is UNPARTITIONED (takes its OWN singleton batch,
+/// never fed to the disjointness grouping) when EITHER its radius is a hub (`serialize`) OR
+/// its safe view is EMPTY. Empty is treated exactly like a hub because an empty radius is a
+/// TOTAL grounding MISS - the worst UNASSESSABLE case - and the whole hazard this partition
+/// exists to prevent is co-scheduling two units that share a file the grounding failed to
+/// surface: `partition_by_blast_radius` reads an empty want-set as disjoint from EVERY batch,
+/// so an empty radius would otherwise fail OPEN into the first shared batch. Own-batching it
+/// is the SAME fail-SAFE stance `route_review_tier` takes (empty -> full panel): when risk
+/// cannot be measured, isolate. The remaining shareable radii (non-serialize, non-empty) go
+/// through the ONE [`partition_by_blast_radius`] disjointness authority; own-batch units are
+/// appended after, in input order, so the result is deterministic for a stable input. This is
+/// the SINGLE writer of the serialize/empty own-batch rule - `partition_wave` (the conductor)
+/// and `metrics::parallelism_retention_of` (the runtime warn metric) both call it, so the two
+/// can never drift.
+pub fn partition_with_serialize(items: &[(String, Vec<String>, bool)]) -> Vec<Vec<String>> {
+    let mut shareable: Vec<(String, Vec<String>)> = Vec::new();
+    let mut own_batch: Vec<String> = Vec::new();
+    for (name, files, serialize) in items {
+        if *serialize || files.is_empty() {
+            own_batch.push(name.clone());
+        } else {
+            let mut files = files.clone();
+            files.sort();
+            files.dedup();
+            shareable.push((name.clone(), files));
+        }
+    }
+    let mut batches = partition_by_blast_radius(&shareable);
+    for name in own_batch {
+        batches.push(vec![name]);
+    }
+    batches
+}
 
 /// The tier a review spawn belongs to, recovered from its deterministic
 /// [`spawn_id`](crate::spawn::spawn_id) `{unit}/{role}#{attempt}` (a retry id may add a
@@ -602,8 +734,8 @@ pub fn project(events: &[Event]) -> Metrics {
     // boundaries (`run_generation` below), mirroring [`crate::run::run_attribution`]'s window
     // fold - NOT from each event's own META_RUN_ID metadata. That distinction is load-bearing:
     // a TYPE_SPAWN_REQUESTED gets META_RUN_ID from TWO production writers (RunCtx's append
-    // chokepoint, and `spawn::park_in_run`), but a TYPE_SPAWN_RESULT is recorded by `rigger
-    // result` (`spawn::record_result`/`record_result_if_absent`) from a SEPARATE process (the
+    // chokepoint, and `spawn_store::park_in_run`), but a TYPE_SPAWN_RESULT is recorded by `rigger
+    // result` (`spawn_store::record_result`/`record_result_if_absent`) from a SEPARATE process (the
     // worker or courier self-reporting) that stamps NO run-id metadata at all - keying on
     // metadata would make every request's real run id fail to match its own result's empty
     // one, silently reporting every genuinely-answered spawn as unpaired in production. Keying
@@ -2182,9 +2314,9 @@ mod tests {
     }
 
     /// PRODUCTION-SHAPE regression: a `TYPE_SPAWN_REQUESTED` carries `META_RUN_ID` (stamped by
-    /// RunCtx's append chokepoint or `spawn::park_in_run`) but its `TYPE_SPAWN_RESULT` carries
+    /// RunCtx's append chokepoint or `spawn_store::park_in_run`) but its `TYPE_SPAWN_RESULT` carries
     /// NONE - exactly what a real `rigger result <id>` self-report produces, since
-    /// `spawn::record_result`/`record_result_if_absent` (a SEPARATE process from the
+    /// `spawn_store::record_result`/`record_result_if_absent` (a SEPARATE process from the
     /// conductor) never stamp a run id. Keying the pairing fold on event METADATA instead of
     /// stream position would make this ordinary, universal production shape unpairable - every
     /// genuinely-answered spawn would misreport as a dead worker. The window-based key must
@@ -2906,7 +3038,7 @@ mod tests {
     }
 
     /// A MODEL PINNING criterion header event (spec 61 c7), matching what
-    /// `canary::record_header` writes.
+    /// `canary_store::record_header` writes.
     fn canary_header_event(
         binary_build: &str,
         corpus_hash: &str,

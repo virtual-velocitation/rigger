@@ -21,7 +21,8 @@
 //! exactly like a live reviewer's, proving both boundary cases neither the implementer's
 //! own unit tests nor the periphery layer previously covered.
 
-use rigger::canary::{default_jobs, run_canary, CanaryItem, TIER_LENS};
+use rigger::canary::{TIER_LENS};
+use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, ReviewPanel};
 use rigger::contextgraph::TYPE_REVIEW_FINDING;

@@ -170,7 +170,7 @@ use rigger::eventstore::{
 };
 use rigger::gate::ExecRunner;
 use rigger::ledger;
-use rigger::run::start_fresh;
+use rigger::run_store::start_fresh;
 use rigger::worktree::{self, Worktree};
 use serde_json::{json, Value};
 

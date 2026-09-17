@@ -27,7 +27,8 @@
 //! `control_false_positives` survive the real wire round trip over four independently-
 //! varying items, not just a fixture typed to match it.
 
-use rigger::canary::{default_jobs, run_canary, CanaryItem, CanaryOutcome, STREAM};
+use rigger::canary::{CanaryOutcome, STREAM};
+use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, ReviewPanel};
 use rigger::contextgraph::TYPE_REVIEW_FINDING;

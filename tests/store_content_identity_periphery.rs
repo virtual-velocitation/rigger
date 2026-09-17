@@ -27,7 +27,7 @@
 //!    of its own, which is only provable by driving it with a key shape this project
 //!    never mints;
 //!  - the seams that now have to express "the store wrote nothing" - `emit_event`,
-//!    `progress::record`, `spawn::record_result` - are module boundaries, and the
+//!    `progress::record`, `spawn_store::record_result` - are module boundaries, and the
 //!    failure they guard against (folding at a fabricated position `0`, which the
 //!    graph's applied ledger records as permanently applied) is only observable from
 //!    outside, by watching what the projection is handed.
@@ -1028,9 +1028,9 @@ fn the_emit_seam_reports_what_the_store_wrote_and_folds_only_there() {
 fn a_configured_guard_never_reaches_the_spawn_and_progress_seams() {
     let store = guarded();
 
-    let first = rigger::progress::record(&store, "run-1", "u1/impl#0", "the same line")
+    let first = rigger::progress_store::record(&store, "run-1", "u1/impl#0", "the same line")
         .expect("recording progress succeeds");
-    let second = rigger::progress::record(&store, "run-1", "u1/impl#0", "the same line")
+    let second = rigger::progress_store::record(&store, "run-1", "u1/impl#0", "the same line")
         .expect("recording the identical line again succeeds");
     assert!(
         first < second,
@@ -1038,8 +1038,8 @@ fn a_configured_guard_never_reaches_the_spawn_and_progress_seams() {
     );
 
     let result = rigger::spawn::SpawnResult::ok("u1/impl#0", "done");
-    let a = rigger::spawn::record_result(&store, &result).expect("recording a result succeeds");
-    let b = rigger::spawn::record_result(&store, &result).expect("recording it again succeeds");
+    let a = rigger::spawn_store::record_result(&store, &result).expect("recording a result succeeds");
+    let b = rigger::spawn_store::record_result(&store, &result).expect("recording it again succeeds");
     assert!(
         a < b,
         "a re-recorded spawn result is a second fact, never a suppressed one: {a} then {b}"
@@ -1061,7 +1061,7 @@ fn the_result_seam_reports_a_store_that_wrote_nothing_as_an_error_naming_what_ha
     let silent = PortDouble::new(vec![None]);
     let result = rigger::spawn::SpawnResult::ok("u1/impl#0", "done");
 
-    let err = rigger::spawn::record_result(&silent, &result)
+    let err = rigger::spawn_store::record_result(&silent, &result)
         .expect_err("a store that wrote nothing has not recorded the result");
     let message = err.to_string();
     assert!(
@@ -1097,7 +1097,7 @@ fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
     let request = rigger::spawn::SpawnRequest::new("u1", "build", "impl", 0, "do the thing");
     let silent = PortDouble::new(vec![None]);
 
-    let err = rigger::spawn::park_in_run(&silent, &request, "run-1")
+    let err = rigger::spawn_store::park_in_run(&silent, &request, "run-1")
         .expect_err("a parked spawn nobody can locate has not been parked");
     let message = err.to_string();
     assert!(
@@ -1114,7 +1114,7 @@ fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
     // then appends - and the append writes nothing.
     let quiet = PortDouble::over_an_empty_stream(vec![None]);
     let result = rigger::spawn::SpawnResult::ok("u1/impl#0", "done");
-    let outcome = rigger::spawn::record_result_if_absent(&quiet, &result);
+    let outcome = rigger::spawn_store::record_result_if_absent(&quiet, &result);
     assert!(
         outcome.is_err(),
         "a store that wrote nothing must never be reported as the idempotent no-op - \
@@ -1151,7 +1151,7 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     let criteria = ["build the thing".to_string()];
 
     let silent = PortDouble::new(vec![None]);
-    let message = rigger::run::start_fresh(&silent, &criteria, "hash-A", "base-sha", "", "")
+    let message = rigger::run_store::start_fresh(&silent, &criteria, "hash-A", "base-sha", "", "")
         .expect_err("a run whose boundary was never written has not started")
         .to_string();
     assert!(
@@ -1164,7 +1164,7 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     // store: a caller that only ever uses the pinned entry must not get a run id either.
     let silent = PortDouble::over_an_empty_stream(vec![None]);
     let message =
-        rigger::run::ensure_started_pinned(&silent, &criteria, "hash-A", false, "base-sha", "", "")
+        rigger::run_store::ensure_started_pinned(&silent, &criteria, "hash-A", false, "base-sha", "", "")
             .expect_err("the pinned entry mints on an empty store and inherits the same answer")
             .to_string();
     assert!(
@@ -1178,7 +1178,7 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     // to the old hash - the silent mid-campaign reconfiguration this pinning exists to
     // stop, now invisible in the very log that was supposed to show it.
     let live = Store::open(":memory:").expect("an in-memory store opens");
-    rigger::run::start_fresh(&live, &criteria, "hash-A", "base-sha", "", "")
+    rigger::run_store::start_fresh(&live, &criteria, "hash-A", "base-sha", "", "")
         .expect("a real run mints");
     let recorded = live
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
@@ -1187,7 +1187,7 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
 
     let drifted = PortDouble::over_a_stream(recorded, vec![None]);
     let message =
-        rigger::run::ensure_started_pinned(&drifted, &criteria, "hash-B", true, "base-sha", "", "")
+        rigger::run_store::ensure_started_pinned(&drifted, &criteria, "hash-B", true, "base-sha", "", "")
             .expect_err("a supersession nobody can locate has not superseded anything")
             .to_string();
     assert!(
@@ -1233,13 +1233,13 @@ fn the_canary_records_nothing_it_cannot_find_afterwards() {
         adjudicator: "adj".into(),
         ..Default::default()
     };
-    let outcome = rigger::canary::run_canary(
+    let outcome = rigger::canary_store::run_canary(
         &silent,
         &NeverSpawns,
         &rigger::config::Config::default(),
         &panel,
         &[],
-        rigger::canary::default_jobs(),
+        rigger::canary_store::default_jobs(),
         &|_, _| {},
     );
     let message = match outcome {

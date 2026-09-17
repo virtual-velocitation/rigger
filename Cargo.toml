@@ -20,7 +20,29 @@ path = "src/main.rs"
 # ships structural grounding. It compiles tree-sitter grammars INTO the binary (no
 # runtime-loaded artifacts and no model download), so `--no-default-features` is the
 # deliberate light opt-out (the literal `grep` grounder only).
-default = ["symbols"]
+default = ["symbols", "store"]
+# THE FEATURE SPLIT (spec 93, criterion 1): `store` gates every module that touches a
+# file, a socket, a process or the clock (the event-store backends, the async runtime,
+# `reap`, `worktree`, `liveness`, the process half of `spawn`, `gate` execution, `dash`
+# serving, `watch`, `registry`, `hooks`, `sidecar`, the binary). It is carried in
+# `default`, but a gated module's real predicate is `any(feature = "store", not(feature
+# = "core"))`, never a bare `feature = "store"` check: `store` alone cannot be forced on
+# under a bare `--no-default-features` invocation (that flag disables every default
+# feature, `store` included), and today's light lane must keep building the full I/O
+# surface unchanged - the `not(core)` half of the predicate is what actually carries
+# that lane. `store` stays the name-carrying half of the check and the literal feature
+# a caller can pass explicitly (e.g. alongside `--no-default-features`) to get the same
+# surface without `symbols`.
+store = []
+# THE PURE SUBSET (spec 93, criterion 1): a `core` module imports none of `std::fs`,
+# `std::process`, `std::net`, `std::time::SystemTime::now`, `rusqlite`, `tokio`,
+# `rustix`, `fs2`, `ignore` or `uuid` - every time and age it needs is an input. Every
+# `store`-gated module's `#[cfg]` excludes it whenever `core` alone is requested (see
+# the `store` feature's own doc above), so `--no-default-features --features core`
+# builds only the pure subset, natively and for `wasm32-unknown-unknown`. Carries no
+# dependency of its own: the pure subset needs nothing beyond `serde`/`serde_json`,
+# already unconditional.
+core = []
 # Deterministic, dependency-light STRUCTURAL grounding (spec 15): tree-sitter parsers +
 # the tags mechanism, compiled into the binary (no runtime-loaded artifacts). Carried in
 # `default`, so a plain `cargo build` ships it; a minimal build drops it via
@@ -41,55 +63,16 @@ symbols = [
 ]
 
 [dependencies]
-rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 # The declarative failure taxonomy (spec 10, unit 2) matches a failure's captured
 # output against a rule's `output_regex`. Pure-Rust and non-optional: `output_regex`
-# matching must resolve in BOTH feature lanes, so `regex` is declared as a direct
-# dependency rather than leaning on any transitive pull that only the default
-# (`symbols`) lane might supply. Compiles in the light (`--no-default-features`) lane too.
+# matching must resolve in every lane (including the `core` lane's wasm target), so
+# `regex` is declared as a direct dependency rather than leaning on any transitive pull
+# that only the default (`symbols`) lane might supply.
 regex = "1"
 serde_json = "1"
 serde_yaml = "0.9"
-# The shared project walk (`grounder::walk_guarded`) scopes ingest + grounding to the
-# project's own sources by honoring the repository's OWN version-control ignore rules
-# (spec 49, section 3). This is the canonical, well-tested pure-Rust gitignore engine:
-# no system libraries, so it compiles in BOTH feature lanes (the walk is UNGATED - it
-# serves the light `grep` grounder too). We use only its
-# committed-`.gitignore` matching (global + `.git/info/exclude` disabled) so the scoping
-# is machine-independent and the same tree yields a byte-identical graph. Non-optional.
-ignore = "0.4"
-uuid = { version = "1", features = ["v4"] }
 thiserror = "2"
-# The reaper's ONLY sanctioned way to signal a process it does not own a `Child` handle to
-# (spec 78): `kill_process`/`test_kill_process`, never a `Command::new("kill")` shell-out and
-# never `libc`. `default-features = false` + explicit `std`+`process` selects the linux_raw
-# backend on Linux, so the `--no-default-features` build pulls no `libc` crate edge and
-# reaps identically (verified: `cargo tree -e normal --no-default-features -i libc` finds no
-# `libc` edge before or after this dependency). Pinned to the 1.x line (not the older 0.38.x
-# also present transitively) because `Pid::from_raw` in 1.x accepts negative raw values and
-# rejects only zero - the reaper's own explicit `pid > 1` guard is therefore load-bearing,
-# never delegated to the type; 1.1.4 is already resolved transitively in `Cargo.lock`, so
-# adding it direct at that version is a no-op for dependency resolution. Non-optional: the
-# reap runs in both feature lanes.
-rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
-# Cross-process advisory file lock (`flock` under the hood) that SERIALIZES `rigger step`
-# (see `acquire_step_lock`) so the run advances ONE step at a time - spec 51 relies on that
-# invariant. A step checks out the run branch and branches unit worktrees off HEAD, then
-# integrates units and appends events; two steps running at once would race that shared
-# checkout/HEAD and interleave their integrations, corrupting the run. Non-optional: the lock
-# must hold in BOTH feature lanes. `fs2` releases the lock when the file drops OR the process
-# dies (even on kill), so a crashed step never leaves a stale lock wedging the run.
-fs2 = "0.4"
-# The KurrentDB EventStore adapter (the trait's server-backed implementation) is
-# part of the product, compiled into EVERY build: the shared-store capability
-# (many rigger instances appending to one KurrentDB so agent context is shared
-# across a team) is reachable in the default binary with a runtime flag, never a
-# recompile. `kurrentdb` is the async gRPC client and `tokio` is the runtime that
-# bridges its async API onto the (sync) EventStore port - both unconditional. The
-# sqlite backend stays the default; `--eventstore kurrentdb` is the runtime opt-in.
-kurrentdb = { version = "1.2" }
-tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 # Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a
 # concrete syntax tree; tree-sitter-tags runs each grammar's `tags` query to yield uniform
 # definition/reference tags. `tree-sitter-tags` requires an exact `tree-sitter` MINOR, so it
@@ -112,6 +95,60 @@ tree-sitter-javascript = { version = "0.23", optional = true }
 tree-sitter-typescript = { version = "0.23", optional = true }
 tree-sitter-go = { version = "0.23", optional = true }
 tree-sitter-python = { version = "0.23", optional = true }
+
+# THE CORE LANE IS PURE (spec 93, criterion 1): these seven crates are exactly the ones
+# the `store`-gated modules need and the pure `core` subset must never see - each is
+# either a native-only binding (`rusqlite`'s bundled sqlite C code, `rustix`'s Linux
+# syscalls, `fs2`'s `flock`) or fails to even COMPILE for `wasm32-unknown-unknown`
+# without extra opt-in (`tokio`'s `mio` epoll backend, `kurrentdb`'s tonic/TLS stack,
+# `uuid`'s `getrandom` entropy source). Cargo resolves a target-cfg'd dependency table
+# ahead of any feature flag, so this is what actually keeps the nested wasm build (spec
+# 93, criterion 3) from ever attempting to compile them - the `store`/`core` feature
+# split (above) additionally keeps the MODULES that use them out of the `core` lane's
+# own native build, but only a target-cfg'd table stops the wasm target from trying to
+# build the crates themselves. `not(target_arch = "wasm32")` is unconditional on every
+# other target, so `default` and `--no-default-features` (native) are byte-for-byte
+# unaffected: these seven are exactly as mandatory there as they were before this split.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+# The shared project walk (`grounder::walk_guarded`) scopes ingest + grounding to the
+# project's own sources by honoring the repository's OWN version-control ignore rules
+# (spec 49, section 3). This is the canonical, well-tested pure-Rust gitignore engine,
+# used only by `store`-gated code (the ingest/grounding walk) - see the target-cfg note
+# above for why it lives in this table rather than the unconditional `[dependencies]`.
+# We use only its committed-`.gitignore` matching (global + `.git/info/exclude`
+# disabled) so the scoping is machine-independent and the same tree yields a
+# byte-identical graph.
+ignore = "0.4"
+uuid = { version = "1", features = ["v4"] }
+# The reaper's ONLY sanctioned way to signal a process it does not own a `Child` handle to
+# (spec 78): `kill_process`/`test_kill_process`, never a `Command::new("kill")` shell-out and
+# never `libc`. `default-features = false` + explicit `std`+`process` selects the linux_raw
+# backend on Linux, so the `--no-default-features` build pulls no `libc` crate edge and
+# reaps identically (verified: `cargo tree -e normal --no-default-features -i libc` finds no
+# `libc` edge before or after this dependency). Pinned to the 1.x line (not the older 0.38.x
+# also present transitively) because `Pid::from_raw` in 1.x accepts negative raw values and
+# rejects only zero - the reaper's own explicit `pid > 1` guard is therefore load-bearing,
+# never delegated to the type; 1.1.4 is already resolved transitively in `Cargo.lock`, so
+# adding it direct at that version is a no-op for dependency resolution.
+rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
+# Cross-process advisory file lock (`flock` under the hood) that SERIALIZES `rigger step`
+# (see `acquire_step_lock`) so the run advances ONE step at a time - spec 51 relies on that
+# invariant. A step checks out the run branch and branches unit worktrees off HEAD, then
+# integrates units and appends events; two steps running at once would race that shared
+# checkout/HEAD and interleave their integrations, corrupting the run. `fs2` releases the
+# lock when the file drops OR the process dies (even on kill), so a crashed step never
+# leaves a stale lock wedging the run.
+fs2 = "0.4"
+# The KurrentDB EventStore adapter (the trait's server-backed implementation) is part of
+# the product, compiled into every NATIVE build: the shared-store capability (many rigger
+# instances appending to one KurrentDB so agent context is shared across a team) is
+# reachable in the default binary with a runtime flag, never a recompile. `kurrentdb` is
+# the async gRPC client and `tokio` is the runtime that bridges its async API onto the
+# (sync) EventStore port - both unconditional on every native target. The sqlite backend
+# stays the default; `--eventstore kurrentdb` is the runtime opt-in.
+kurrentdb = { version = "1.2" }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
 tempfile = "3"

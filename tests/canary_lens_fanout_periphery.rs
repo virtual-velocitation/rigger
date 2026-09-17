@@ -5,10 +5,10 @@
 //! first written and changed WHAT width `run_canary` threads into the lens tier:
 //! `run_canary` no longer resolves the lens width itself from
 //! `crate::parallel::default_workers()` - it now takes a caller-supplied `jobs` total-
-//! concurrent-spawn budget and splits it, via `canary::spawn_budget`, between its own outer
+//! concurrent-spawn budget and splits it, via `canary_store::spawn_budget`, between its own outer
 //! item-sharding width and this inner lens-fan-out width, so their PRODUCT never exceeds
 //! `jobs`. This test drives the PUBLIC entry with the PRODUCTION default
-//! (`canary::default_jobs()`, never a test-pinned override) exactly as `cmd_canary` does
+//! (`canary_store::default_jobs()`, never a test-pinned override) exactly as `cmd_canary` does
 //! when the operator passes no `--jobs` flag.
 //!
 //! The implementer's own unit tests pin the fan-out at the PRIVATE `score_item` seam with
@@ -35,7 +35,8 @@ use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
-use rigger::canary::{run_canary, CanaryItem, CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
+use rigger::canary::{CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
+use rigger::canary_store::{run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, ReviewPanel};
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
@@ -142,7 +143,7 @@ fn item(id: &str, defect_class: &str, planted: bool, verdict: &str, tier: &str) 
 
 /// Drives `run_canary` - the public entry the shipped `rigger canary` command calls - over a
 /// panel of five lenses, an adversary, and an adjudicator, and a three-item corpus, at the
-/// REAL production `--jobs` default (`canary::default_jobs()`, never a test-pinned
+/// REAL production `--jobs` default (`canary_store::default_jobs()`, never a test-pinned
 /// override) - the same budget `cmd_canary` resolves to when the operator names no
 /// `--jobs`. Proves:
 ///
@@ -194,7 +195,7 @@ fn run_canary_fans_out_the_lens_tier_at_the_real_default_width_through_the_publi
         &cfg,
         &panel,
         &corpus,
-        rigger::canary::default_jobs(),
+        rigger::canary_store::default_jobs(),
         &|_, _| {},
     )
     .expect("run_canary succeeds through the public entry");
@@ -290,7 +291,7 @@ fn run_canary_fans_out_the_lens_tier_at_the_real_default_width_through_the_publi
     // CAP), so `run_canary`'s call site always has real budget to shard items and fan the
     // lens tier out with.
     assert!(
-        rigger::canary::default_jobs() > 1,
+        rigger::canary_store::default_jobs() > 1,
         "the default --jobs budget is always greater than one"
     );
 }

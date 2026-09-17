@@ -1,17 +1,17 @@
 //! Periphery (integration) test for spec 61 criterion 5 (ITEM SHARDING AND THE JOBS CAP),
 //! unit u61c5b: `run_canary` gained a caller-supplied `jobs: usize` total-concurrent-spawn
-//! budget, and a new private `canary::spawn_budget` splits it between the function's own
+//! budget, and a new private `canary_store::spawn_budget` splits it between the function's own
 //! OUTER per-item sharding (new: `run_canary` now calls `crate::parallel::map_ordered`
 //! itself, a call site that did not exist before this unit) and the LENS FAN-OUT
 //! criterion's already-built INNER `score_item` fan-out, so their PRODUCT never exceeds
-//! `jobs`. A new `canary::default_jobs()` supplies the production default when the operator
+//! `jobs`. A new `canary_store::default_jobs()` supplies the production default when the operator
 //! (or a direct library caller) does not choose one.
 //!
 //! The implementer's own unit tests pin every property above at the PRIVATE `canary.rs`
 //! seam, with a `#[cfg(test)]`-private `Scripted`/`BarrierGatedEverySpawn` driver
 //! unreachable from here. This suite re-proves the same behavioral contracts from OUTSIDE
-//! the crate, over the library's public surface (`rigger::canary::run_canary`,
-//! `rigger::canary::default_jobs`), using drivers built fresh in this file (the same
+//! the crate, over the library's public surface (`rigger::canary_store::run_canary`,
+//! `rigger::canary_store::default_jobs`), using drivers built fresh in this file (the same
 //! "written FROM SCRATCH, cannot reuse the private one" discipline
 //! `tests/canary_lens_fanout_periphery.rs` already established for criterion 4) - so a
 //! wiring bug between the public entry and the private budget-splitting internals (e.g. a
@@ -29,7 +29,8 @@ use std::sync::{Barrier, Mutex};
 
 use serde_json::{json, Value};
 
-use rigger::canary::{run_canary, CanaryItem, CanaryOutcome, STREAM, TIER_LENS};
+use rigger::canary::{CanaryOutcome, STREAM, TIER_LENS};
+use rigger::canary_store::{run_canary, CanaryItem};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, ReviewPanel};
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
@@ -98,7 +99,7 @@ fn anchor_of(prompt: &str) -> String {
 #[test]
 fn default_jobs_equals_default_workers_floored_at_two() {
     assert_eq!(
-        rigger::canary::default_jobs(),
+        rigger::canary_store::default_jobs(),
         rigger::parallel::default_workers().max(2),
         "default_jobs must be exactly default_workers() floored at 2, not merely > 1"
     );

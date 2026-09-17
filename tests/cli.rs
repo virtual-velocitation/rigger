@@ -504,7 +504,7 @@ fn distiller_consolidation_leaves_the_raw_events_retrievable_via_peers() {
 }
 
 /// Spec 25, criterion 1 - the DISCARD trigger, PROVEN through the REAL production result
-/// path (`rigger result` -> `cmd_result` -> `spawn::record_result`), not a direct
+/// path (`rigger result` -> `cmd_result` -> `spawn_store::record_result`), not a direct
 /// `Projector::apply` on a hand-built event.
 ///
 /// The wiring under test: `rigger emit ReviewFinding` folds two findings about the same file
@@ -1640,7 +1640,7 @@ fn scratch_prints_the_exact_container_rigger_result_reclaims() {
 
 /// PERIPHERY (spec 83 criterion 2, round 3): `cmd_scratch` must resolve `defaults.workdir`
 /// through the SAME validate-independent authority [`reclaim_spawn_scratch`] uses
-/// (`scratch_defaults`/`config::read_scratch_defaults`), never the full `config::load` -
+/// (`scratch_defaults`/`config_store::read_scratch_defaults`), never the full `config::load` -
 /// whose own required `.rigger/agents/` fleet and [`config::Config::validate`] this project's
 /// own committed `build.mutation: on` can trip whenever `cargo-mutants` is off PATH, silently
 /// zeroing a configured workdir. Round 2 fixed `cmd_status`/`watch_poll`/`reclaim_spawn_scratch`
@@ -8847,7 +8847,7 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
 
 /// Regression for the round-2/3 review reject (ADJUDICATOR VERDICT REJECT u77c2b, spec 77
 /// criterion 2 "MUTATION SCRATCH IS REAPED"): `liveness::sweep` records a hung spawn's fault
-/// via `spawn::record_result_if_absent` DIRECTLY, in-process (`src/liveness.rs`), never
+/// via `spawn_store::record_result_if_absent` DIRECTLY, in-process (`src/liveness.rs`), never
 /// through `cmd_result` - so the ONLY production reclaim call site (`reclaim_spawn_scratch`,
 /// wired solely into `cmd_result`) never ran for it, leaking every hung spawn's registered
 /// mutation-scratch dir. The existing "for every outcome" test
@@ -13187,7 +13187,7 @@ fn replay_leaves_no_sqlite_artifact_in_the_scratch_root() {
 /// PERIPHERY (spec 83 criterion 2, round 3 - `adv-u83c3r2-cmd-replay-fourth-unmigrated-site`):
 /// `cmd_replay` resolved `defaults.workdir` (the throwaway scratch placement for the isolated
 /// re-drive store and the candidate config's checkout) via the SAME validate-requiring
-/// `config::load(".")` pattern round 2 fixed for `cmd_status`/`watch_poll`/
+/// `config_store::load(".")` pattern round 2 fixed for `cmd_status`/`watch_poll`/
 /// `reclaim_spawn_scratch` and round 3 fixes for `cmd_dash`/`cmd_scratch` - a fourth call site
 /// no lens named until the adversary's own exhaustive re-enumeration. Configures a NON-DEFAULT
 /// `defaults.workdir` at an agents-less owning root: the agents fleet is removed from the LIVE
@@ -16699,7 +16699,7 @@ fn stats_canary_reports_the_control_false_positive_line() {
 
 /// `rigger canary`'s CLI glue (arg parsing + corpus loading) is exercised through the
 /// real binary on the paths that need no live review agent. The panel-spawning happy path
-/// is covered end-to-end by the library runner test (`canary::run_canary`) with a scripted
+/// is covered end-to-end by the library runner test (`canary_store::run_canary`) with a scripted
 /// driver; here we pin the binary's argument and corpus-loading contracts.
 #[test]
 fn canary_rejects_unknown_arguments_and_a_missing_corpus() {
@@ -16898,8 +16898,8 @@ fn rigger_help_gives_the_model_flag_its_own_description_line_through_the_real_bi
 /// MODEL PINNING criterion (spec 61 c7): `--model <tier>=<id>` argument validation is CLI
 /// glue exercised through the real binary, mirroring
 /// `canary_rejects_unknown_arguments_and_a_missing_corpus` - the happy-path pin resolution
-/// itself is covered end-to-end by the library runner test (`canary::apply_model_pins` /
-/// `canary::run_canary` with a scripted driver), which needs no live review agent.
+/// itself is covered end-to-end by the library runner test (`canary_store::apply_model_pins` /
+/// `canary_store::run_canary` with a scripted driver), which needs no live review agent.
 #[test]
 fn canary_rejects_a_malformed_or_unknown_tier_model_pin() {
     let dir = temp_project();
@@ -23489,7 +23489,7 @@ fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
     // BACK-COMPAT: the fixture's `workflow.yml` says NOTHING about the dash - exactly as every
     // config authored before this key did. It still loads AND keeps the always-on promise.
     write_two_stage_workflow(root);
-    let cfg = rigger::config::load(dir).expect("a workflow that omits `dash` still loads");
+    let cfg = rigger::config_store::load(dir).expect("a workflow that omits `dash` still loads");
     assert!(
         cfg.workflow.dash_enabled(),
         "an omitted `dash` key keeps the always-on dash ON (back-compat)"
@@ -23510,7 +23510,7 @@ fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
     for form in off_forms {
         write_two_stage_workflow(root);
         append_line(&wf_path, form);
-        let cfg = rigger::config::load(dir).expect("a workflow with `dash` set still loads");
+        let cfg = rigger::config_store::load(dir).expect("a workflow with `dash` set still loads");
         assert!(
             !cfg.workflow.dash_enabled(),
             "`{form}` must resolve the opt-out OFF through config::load"
@@ -23523,7 +23523,7 @@ fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
     for form in on_forms {
         write_two_stage_workflow(root);
         append_line(&wf_path, form);
-        let cfg = rigger::config::load(dir).expect("a workflow with `dash` set still loads");
+        let cfg = rigger::config_store::load(dir).expect("a workflow with `dash` set still loads");
         assert!(
             cfg.workflow.dash_enabled(),
             "`{form}` keeps the always-on dash ON through config::load"
@@ -26360,7 +26360,7 @@ fn rigger_workflow_yml_pins_the_checkin_stage_and_mutation_gate_definition_to_sp
 #[test]
 fn rigger_workflow_yml_wires_the_checkin_stage_and_mutation_gate_with_the_spec_91_shape() {
     let root = env!("CARGO_MANIFEST_DIR");
-    let cfg = rigger::config::load(root).unwrap_or_else(|e| {
+    let cfg = rigger::config_store::load(root).unwrap_or_else(|e| {
         panic!("this repository's own .rigger/workflow.yml and agents must load: {e}")
     });
 

@@ -28,7 +28,7 @@
 //! pass every existing test. This file closes that gap.
 //!
 //! 1. `rigger_run_base_reaches_a_real_inline_gate_subprocess_but_not_a_real_agent_subprocess`:
-//!    seeds a `RunStarted` with a `base_tip` (via the real `rigger::run::start_fresh`), then
+//!    seeds a `RunStarted` with a `base_tip` (via the real `rigger::run_store::start_fresh`), then
 //!    drives a full `conductor::run` with ONE inline (`core`) gate and a real agent, both
 //!    spawned as real subprocesses that echo their env - proves the gate sees
 //!    `RIGGER_RUN_BASE=<the persisted tip>` and the agent sees it genuinely unset, from the
@@ -218,7 +218,7 @@ fn rigger_run_base_reaches_a_real_inline_gate_subprocess_but_not_a_real_agent_su
     let store = Store::open(":memory:").unwrap();
     let tip = "deadbeefcafef00d91";
     let criteria: Vec<String> = Vec::new();
-    rigger::run::start_fresh(&store, &criteria, "", "", tip, "").unwrap();
+    rigger::run_store::start_fresh(&store, &criteria, "", "", tip, "").unwrap();
 
     let scratch = tempfile::tempdir().unwrap();
     let agent_bin = write_agent_fixture(scratch.path());
@@ -245,7 +245,7 @@ fn rigger_run_base_reaches_a_real_deferred_gate_subprocess_too() {
     let store = Store::open(":memory:").unwrap();
     let tip = "feedfacecafebeef42";
     let criteria: Vec<String> = Vec::new();
-    rigger::run::start_fresh(&store, &criteria, "", "", tip, "").unwrap();
+    rigger::run_store::start_fresh(&store, &criteria, "", "", tip, "").unwrap();
 
     let scratch = tempfile::tempdir().unwrap();
     let agent_bin = write_agent_fixture(scratch.path());

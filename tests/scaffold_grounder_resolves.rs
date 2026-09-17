@@ -108,7 +108,7 @@ fn rigger_init_scaffolds_a_live_grounder_default() {
 
     // A bonus the string-pin cannot state: the scaffold `rigger init` writes is a config the
     // PUBLIC loader accepts whole, not merely a YAML file that happens to parse.
-    let cfg = rigger::config::load(root.to_str().unwrap())
+    let cfg = rigger::config_store::load(root.to_str().unwrap())
         .expect("the scaffolded project must load through the public config API");
     assert_shipped_grounder_is_live(
         &cfg.workflow.defaults.grounder,
@@ -123,7 +123,7 @@ fn rigger_init_scaffolds_a_live_grounder_default() {
 #[test]
 fn shipped_demo_config_names_a_live_grounder_default() {
     let demo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/demo");
-    let cfg = rigger::config::load(demo.to_str().unwrap())
+    let cfg = rigger::config_store::load(demo.to_str().unwrap())
         .unwrap_or_else(|e| panic!("the shipped demo config must load: {e}"));
     assert_shipped_grounder_is_live(
         &cfg.workflow.defaults.grounder,

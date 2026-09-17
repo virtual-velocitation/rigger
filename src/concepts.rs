@@ -285,6 +285,7 @@ pub fn events(d: &Derivation) -> Vec<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(feature = "store", not(feature = "core")))]
     use crate::contextgraph::sqlite::Projector;
     use crate::contextgraph::{
         Edge, Projection, KIND_DECISION, KIND_FILE, REL_IN_COMMUNITY, REL_REALIZES, TIER_EXTRACTED,
@@ -553,6 +554,11 @@ mod tests {
         assert_eq!(labels[&m["docs/review.md"]], "Review adjudication");
     }
 
+    // Needs a real sqlite-backed EventStore for its rebuild-from-log verification, so it moves
+    // with the `Projector` import above under `#[cfg(any(feature = "store", not(feature =
+    // "core")))]` - the derive/fold logic it exercises is otherwise fully covered by this
+    // module's other (pure) tests.
+    #[cfg(any(feature = "store", not(feature = "core")))]
     #[test]
     fn a_rebuild_from_the_recorded_events_reproduces_identical_membership() {
         // The event-sourced claim: folding the recorded events into a FRESH projection reproduces the

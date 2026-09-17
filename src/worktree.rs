@@ -1622,21 +1622,16 @@ pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
     scratch_root_path(repo, configured, env.as_deref())
 }
 
-/// Filesystem prefix of a unit's DETERMINISTIC worktree dir under the scratch root
-/// (`rigger-wt-<slug>`); the conductor's `unit_worktree_dir` is the single authority that
-/// builds it, and [`sweep_terminal`] / [`unit_cache_sibling`] read it back.
-pub const UNIT_WORKTREE_PREFIX: &str = "rigger-wt-";
-
-/// Filesystem prefix of a unit's per-unit build cache dir (`cargo-target-<slug>`), a
-/// SIBLING of its worktree under the scratch root (Gap 19). Gate commands the conductor
-/// runs inside a unit worktree build into this unit-keyed `CARGO_TARGET_DIR` so divergent
-/// unit trees never share incremental state. [`unit_cache_sibling`] is the single authority
-/// that derives the path (from the worktree dir the gate runs in); it is a plain dir, NOT a
-/// registered git worktree, so nothing git-side reclaims it. [`reclaim_cache_sibling`] does:
-/// [`Worktree::remove`] reclaims it on the DOMINANT graceful path (a unit's worktree is torn
-/// down at the end of `run_stage`), and [`sweep_terminal`] reclaims it on the crash-recovery
-/// path (a killed step process leaves the worktree still registered).
-pub const UNIT_CACHE_PREFIX: &str = "cargo-target-";
+// UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_MUTANTS_PREFIX and
+// unit_mutants_sibling are defined in `crate::spawn` (spec 93, criterion 1) rather than
+// here: `spawn::WaveItem::from` (a PURE fold, part of the `core` lane) needs
+// `unit_cache_sibling`, and this module is `store`-gated (real git/filesystem
+// operations) and excluded from `core`. Re-exported so this module's own ~30 call
+// sites are unaffected.
+pub use crate::spawn::{
+    unit_cache_sibling, unit_mutants_sibling, UNIT_CACHE_PREFIX, UNIT_MUTANTS_PREFIX,
+    UNIT_WORKTREE_PREFIX,
+};
 
 /// The shared gate build cache's directory NAME directly under the scratch root (spec 77
 /// Problem statement: the driver's own `CARGO_TARGET_DIR`, observed at up to 39G) - the
@@ -1697,52 +1692,6 @@ pub fn ensure_scratch_root_cargo_config(worktree_dir: &str) {
     if std::fs::create_dir_all(&dir).is_ok() {
         let _ = std::fs::write(&file, SCRATCH_CARGO_CONFIG);
     }
-}
-
-/// The per-unit build cache dir that is a SIBLING of the unit worktree at `worktree_dir`
-/// (Gap 19): `<root>/rigger-wt-<slug>` -> `<root>/cargo-target-<slug>`. Returns None for any
-/// dir that is not a unit worktree (e.g. a `rigger-review-*` review worktree, or the empty
-/// worktree-less path), which owns no such cache. Because both the worktree dir and the cache
-/// dir derive from the same scratch root and the same slug, swapping the prefix reconstructs
-/// the exact cache path. This is the SINGLE source of the derivation: the conductor's
-/// `run_gates` uses it to point a gate's `CARGO_TARGET_DIR` at the cache, and
-/// [`reclaim_cache_sibling`] uses it to reclaim that same cache when the worktree is removed.
-pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
-    let path = std::path::Path::new(worktree_dir);
-    let slug = path
-        .file_name()?
-        .to_str()?
-        .strip_prefix(UNIT_WORKTREE_PREFIX)?;
-    let parent = path.parent()?.to_str()?;
-    Some(format!("{parent}/{UNIT_CACHE_PREFIX}{slug}"))
-}
-
-/// Filesystem prefix of a unit's per-unit mutants-root dir (`cargo-mutants-<slug>`), a
-/// SIBLING of its worktree under the scratch root (spec 91, THE GATE ENVIRONMENT) - the
-/// exact same sibling shape as [`UNIT_CACHE_PREFIX`]'s `cargo-target-<slug>`. The `checkin`
-/// stage's `mutation` gate command creates/wipes/repopulates this dir itself each run (`rm
-/// -rf "$MUTANTS" && mkdir -p "$MUTANTS"`, per the workflow's own gate command), so this
-/// crate never creates it; [`unit_mutants_sibling`] is the single authority deriving its
-/// path (mirroring [`unit_cache_sibling`]), and [`reclaim_cache_sibling`] reclaims it
-/// alongside the build-cache sibling at unit terminus.
-pub const UNIT_MUTANTS_PREFIX: &str = "cargo-mutants-";
-
-/// The per-unit mutants-root dir that is a SIBLING of the unit worktree at `worktree_dir`
-/// (spec 91): `<root>/rigger-wt-<slug>` -> `<root>/cargo-mutants-<slug>`, exported to the
-/// `checkin` stage's `mutation` gate command as `$MUTANTS` (mirroring how
-/// [`unit_cache_sibling`] is exported as `CARGO_TARGET_DIR`). Returns `None` for any dir
-/// that is not a unit worktree (a `rigger-review-*` review worktree, or the empty
-/// worktree-less path), which owns no such root - the identical shape and identical `None`
-/// cases as [`unit_cache_sibling`], just a different sibling name, so a unit worktree and
-/// its mutants root can never derive from two disagreeing rules.
-pub fn unit_mutants_sibling(worktree_dir: &str) -> Option<String> {
-    let path = std::path::Path::new(worktree_dir);
-    let slug = path
-        .file_name()?
-        .to_str()?
-        .strip_prefix(UNIT_WORKTREE_PREFIX)?;
-    let parent = path.parent()?.to_str()?;
-    Some(format!("{parent}/{UNIT_MUTANTS_PREFIX}{slug}"))
 }
 
 /// The gate store fence's scratch sibling for a STANDALONE REVIEW worktree at

@@ -1,5 +1,5 @@
 //! Spec 77, criterion 4 (BOUNDED SHARED CACHE) - the LIB-API contract of
-//! `rigger::config::read_scratch_workdir`, the LIGHTWEIGHT probe `rigger reset --build-cache`
+//! `rigger::config_store::read_scratch_workdir`, the LIGHTWEIGHT probe `rigger reset --build-cache`
 //! resolves `defaults.workdir` through, mirroring `read_store_config`'s own established shape
 //! (`tests/store_config.rs`) for the identical reason: a pure filesystem reclaim over the
 //! scratch root must not additionally require a fully loadable agent fleet or a `Config::validate`
@@ -22,7 +22,7 @@
 
 use std::path::Path;
 
-use rigger::config::read_scratch_workdir;
+use rigger::config_store::read_scratch_workdir;
 use tempfile::TempDir;
 
 /// A temp `.rigger` directory the reader is anchored at (it joins `workflow.yml` onto this). The

@@ -4,6 +4,11 @@
 //! the adapter. A superseded edge is invalidated (its valid_to set), never
 //! deleted, so retrieval returns the current decision and never the stale one.
 
+// THE QUERY ENGINE MOVES WITH THE OPS (spec 93): this module (model + queries) is
+// `core`; `sqlite` is the concrete projector adapter Design explicitly names as
+// `store`-gated, so it is excluded from the `core` lane (same predicate as every other
+// store-gated module - see `lib.rs`'s own doc).
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub mod sqlite;
 
 use std::collections::BTreeMap;
@@ -418,6 +423,7 @@ pub const TYPE_CONCEPT_DERIVED: &str = "ConceptDerived";
 pub const TYPE_CONCEPT_REALIZED: &str = "ConceptRealized";
 
 #[derive(Deserialize)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct DecisionMade {
     id: String,
     #[serde(default)]
@@ -432,6 +438,7 @@ struct DecisionMade {
 // GATED_BY edges), which the graph no longer models - so those arms are now graph no-ops that
 // deserialize nothing. The events themselves stay in the log, read by metrics and the run-tree.
 #[derive(Deserialize)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct UnitIntegrated {
     // The conductor emits UNIT_INTEGRATED with an `id` key (`{"id": <unit>, "commit": ...}`),
     // unlike UNIT_STARTED which redundantly carries both `id` and `unit`. Accept `id` as an
@@ -442,15 +449,18 @@ struct UnitIntegrated {
     unit: String,
 }
 #[derive(Deserialize)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct AliasDefined {
     alias: String,
     canonical: String,
 }
 #[derive(Deserialize)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct AliasUnresolved {
     mention: String,
 }
 #[derive(Deserialize)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct LessonLearned {
     id: String,
     #[serde(default)]
@@ -459,6 +469,7 @@ struct LessonLearned {
     about: Vec<String>,
 }
 #[derive(Deserialize)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 struct ReviewFinding {
     id: String,
     #[serde(default)]
@@ -475,6 +486,7 @@ struct ReviewFinding {
 /// pass (`grounder::symbols`) constructs and serializes it, and the always-compiled fold
 /// deserializes it - so the field names can never drift between emitter and folder.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 pub(crate) struct CodeEntityExtracted {
     /// The definition's file, as a normalized relative path (the file container node id).
     pub file: String,
@@ -514,6 +526,7 @@ pub(crate) struct CodeEntityExtracted {
 /// same one-contract discipline as [`CodeEntityExtracted`]: emitted by the feature-gated pass,
 /// folded by the always-compiled arm.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 pub(crate) struct EdgeInferred {
     /// The referencing file, as a normalized relative path (the edge's `from` node id).
     pub file: String,
@@ -571,6 +584,7 @@ pub(crate) struct EdgeInferred {
 /// Serde `skip_serializing_if` predicate: an `EdgeInferred::line` of `0` is never a real 1-based
 /// source line, so an ordinary (non-evidence) reference - which leaves `line` at its default -
 /// serializes byte-identically to before this field existed.
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
 }
@@ -593,6 +607,7 @@ fn is_false(b: &bool) -> bool {
 /// kind is `kind` (one of the seven `KIND_*` the two passes produce, below); a payload carrying any
 /// other kind string folds nothing.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 pub(crate) struct DocConceptExtracted {
     /// The node kind: [`KIND_DESIGN_DOC`], [`KIND_ARCH_DECISION`], [`KIND_HANDBOOK_RULE`], or
     /// [`KIND_RATIONALE`] from the design-intent pass; [`KIND_STAGE`], [`KIND_GATE`], or
@@ -623,6 +638,7 @@ pub(crate) struct DocConceptExtracted {
 /// nine relations the two passes produce, below); a payload carrying any other relation folds
 /// nothing (defensive).
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 pub(crate) struct DocLinkExtracted {
     /// The link's source node id (the node the edge emanates from): a doc's relative path (a
     /// `design-doc` / `arch-decision` / `handbook-rule` whole-doc node), a `<file>#L<line>`

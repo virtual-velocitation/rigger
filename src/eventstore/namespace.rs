@@ -169,7 +169,7 @@ fn strip_subscription(inner: Subscription, prefix: String) -> Subscription {
     Subscription::new(rx, err, stop, handle)
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))] // Namespaced's own tests need a real EventStore backend (sqlite); the wrapper itself stays pure/ungated above
 mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;

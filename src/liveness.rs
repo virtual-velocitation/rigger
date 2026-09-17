@@ -40,6 +40,7 @@ use std::time::{Duration, SystemTime};
 use crate::eventstore::{Error, Event, EventStore};
 use crate::failure::{FailureClass, Signal, Taxonomy};
 use crate::spawn::{self, SpawnResult};
+use crate::spawn_store;
 
 /// The scratch subdirectory the per-spawn liveness markers live under, a sibling of the
 /// worktrees and `agent-scratch`. Kept in ONE place so the sweep and the driver-framed
@@ -385,7 +386,7 @@ pub fn sweep(
     let stale = classify_stale(&in_flight, taxonomy, now);
     for s in &stale {
         let fault = SpawnResult::liveness_fault(&s.id, stale_result_message(s), s.class.as_str());
-        spawn::record_result_if_absent(store, &fault)?;
+        spawn_store::record_result_if_absent(store, &fault)?;
     }
     Ok(stale)
 }
@@ -782,7 +783,8 @@ mod tests {
     use crate::conductor::STREAM;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, EventStore};
-    use crate::spawn::{self, park, SpawnRequest, ROLE_IMPLEMENTER};
+    use crate::spawn::{self, SpawnRequest, ROLE_IMPLEMENTER};
+    use crate::spawn_store::park;
 
     /// Park a spawn carrying a wall-clock bound, so the sweep considers it.
     fn park_bounded(store: &Store, unit: &str, secs: u64) -> SpawnRequest {
@@ -915,7 +917,7 @@ mod tests {
 
         // Record a liveness fault directly (as the sweep would).
         let fault = SpawnResult::liveness_fault(&hung.id, "hung", "infra");
-        spawn::record_result(&store, &fault).unwrap();
+        spawn_store::record_result(&store, &fault).unwrap();
         let surfaced = hung_spawns(&read(&store)).unwrap();
         assert_eq!(surfaced.len(), 1);
         assert_eq!(surfaced[0].id, hung.id);
@@ -923,7 +925,7 @@ mod tests {
         assert_eq!(surfaced[0].class, "infra");
 
         // A real result recorded LATER (last-write-wins) supersedes the fault - recovered.
-        spawn::record_result(&store, &SpawnResult::ok(&hung.id, "recovered output")).unwrap();
+        spawn_store::record_result(&store, &SpawnResult::ok(&hung.id, "recovered output")).unwrap();
         assert!(
             hung_spawns(&read(&store)).unwrap().is_empty(),
             "a real result supersedes the liveness fault; the spawn is no longer hung"

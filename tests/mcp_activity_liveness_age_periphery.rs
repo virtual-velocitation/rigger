@@ -94,7 +94,7 @@ fn rigger_activity_reports_a_real_markers_liveness_age_over_a_non_empty_scratch_
     // frontier shape `mcpserver.rs::activity_tool_presents_the_live_per_agent_view` seeds,
     // since only THIS shape (a persisted `TYPE_SPAWN_REQUESTED` event) is what
     // `spawn::step_result` folds into `tool_activity`'s frontier.
-    let run_id = rigger::run::ensure_started(&store, &["crit".to_string()]).unwrap();
+    let run_id = rigger::run_store::ensure_started(&store, &["crit".to_string()]).unwrap();
     store
         .append(
             "run",
@@ -166,7 +166,7 @@ fn rigger_activity_omits_liveness_age_when_no_marker_file_exists_yet() {
     let driver = Driver::new();
     let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
 
-    rigger::run::ensure_started(&store, &["crit".to_string()]).unwrap();
+    rigger::run_store::ensure_started(&store, &["crit".to_string()]).unwrap();
     store
         .append(
             "run",

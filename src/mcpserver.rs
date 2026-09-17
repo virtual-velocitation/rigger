@@ -1052,7 +1052,7 @@ mod tests {
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
 
         // A run: a unit started, its implementer parked (in-flight, no result yet).
-        let run_id = crate::run::ensure_started(&store, &["crit".to_string()]).unwrap();
+        let run_id = crate::run_store::ensure_started(&store, &["crit".to_string()]).unwrap();
         store
             .append(
                 "run",
@@ -1066,7 +1066,7 @@ mod tests {
             .unwrap();
 
         // Its latest activity, in the SEPARATE progress store, scoped to the run.
-        crate::progress::record(&progress, &run_id, &req.id, "grep #12: conductor.rs").unwrap();
+        crate::progress_store::record(&progress, &run_id, &req.id, "grep #12: conductor.rs").unwrap();
 
         // No scratch root in a unit test, so liveness ages are simply omitted from the view.
         let server = Server::new(&driver, &store, "run", &peers).with_progress(&progress, "");

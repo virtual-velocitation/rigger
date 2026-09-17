@@ -13,6 +13,8 @@ use serde_json::{json, Value};
 
 use crate::budget::{self, BuildBudget};
 use crate::config::{AgentDef, Config, RegenerateRule, Stage};
+#[cfg(test)]
+use crate::config_store;
 use crate::contextgraph::{self, Graph, Projection};
 use crate::eventstore::{Appended, Direction, Event, EventStore};
 use crate::failure::{self, Signal};
@@ -24,10 +26,15 @@ use crate::spawn::{
     self, lens_role, spawn_id, spawn_retry_id, speculation_group_id, ROLE_ADJUDICATOR,
     ROLE_ADVERSARY, ROLE_IMPLEMENTER, ROLE_SDET_AUTHOR,
 };
+#[cfg(test)]
+use crate::spawn_store;
 use crate::worktree::{self, Worktree};
 
-/// The run's event stream name.
-pub const STREAM: &str = "run";
+/// The run's event stream name. Defined in [`crate::run`] (spec 93, criterion 1) rather
+/// than here: `run.rs` is a `core` module and needs this constant, while `conductor` is
+/// `store`-gated (the impure orchestration use case) and excluded from `core`.
+/// Re-exported so this module's own ~150 call sites are unaffected.
+pub use crate::run::STREAM;
 
 /// The bounded fan-out pool size (§6): at most this many agents run concurrently
 /// in a wave or a fan-out stage. Items beyond the cap wait for a slot - all still
@@ -42,8 +49,7 @@ pub const TYPE_GATE_PROMOTED: &str = "GatePromoted";
 pub const TYPE_GATE_DEMOTED: &str = "GateDemoted";
 /// A proposed unit with no spec criterion - refused (anti-fragmentation, §8).
 pub const TYPE_SCOPE_CREEP: &str = "ScopeCreep";
-/// The spawn budget is spent - the circuit-breaker tripped (§4.4, §8).
-pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
+pub use crate::blocker::TYPE_BUDGET_EXHAUSTED;
 /// The run is halting because the plan left a spec criterion uncovered - the
 /// coverage gap is a spec defect, not something to silently deviate around (§4.4).
 pub const TYPE_SPEC_DEFECT: &str = "SpecDefect";
@@ -60,17 +66,7 @@ pub const TYPE_MANUAL_REVIEW: &str = ledger::TYPE_MANUAL_REVIEW;
 /// `ledger::TYPE_DEFERRED_GATE_FAILED`.
 pub const TYPE_DEFERRED_GATE_FAILED: &str = ledger::TYPE_DEFERRED_GATE_FAILED;
 
-/// A unit's computed two-view blast radius, recorded as PURE AUDIT (spec 16 unit 3,
-/// architecture 5.5.9). It carries the unit, the `precise` seed view, the uncapped
-/// `safe`-superset view partitioning and tier-routing key on, the `serialize` (hub) verdict,
-/// and the grounder's `index_stamp` provenance - emitted on EVERY structural-grounding path
-/// including the empty-radius fail-safe, so "why the full panel?" is always answerable and the
-/// wave-level parallelism-retention metric (`metrics::project`) is reconstructable from the log.
-/// It adds no graph node/edge: the context-graph projector matches no fold arm for it and so
-/// ignores it idempotently. It rides ONLY when a STRUCTURAL grounder is active (a non-empty
-/// `index_stamp`); the shipped non-symbols default emits nothing new and stays byte-for-byte
-/// unchanged. This is the ONE new event type the spec authorizes.
-pub const TYPE_BLAST_RADIUS_COMPUTED: &str = "BlastRadiusComputed";
+pub use crate::metrics::TYPE_BLAST_RADIUS_COMPUTED;
 
 /// The grounder `k` cap the conductor seeds every unit's PRECISE view at (§5.3): at most this
 /// many distinct files seed a prompt and drive the blast-radius-narrowed gate loop. The
@@ -105,26 +101,9 @@ pub use crate::ingest::META_REPLAY_KEY;
 const BUDGET_EXHAUSTED_KEY: &str = "budget-exhausted";
 const TASK_ABORTED_KEY: &str = "task-aborted";
 
-/// The metadata key carrying the REQUESTED model ALIAS on a spawn's recorded unit events
-/// (spec 05 line 52). It is the workflow-configured alias the agent was spawned with
-/// (`AgentDef::model`, the same value that rides the [`SpawnRequest`](crate::spawn::SpawnRequest)),
-/// copied here onto the ledger unit-lifecycle events the conductor emits FOR that spawn -
-/// UnitStarted and the green/verified/reviewed statuses - so every spawn's events name the
-/// model that was asked for, not only the request event. Stamped as metadata (never a new
-/// event type, per spec 05's Global constraints); folds and projections ignore it, exactly
-/// like [`META_REPLAY_KEY`] and [`contextgraph::META_ACTOR`].
-pub const META_MODEL_ALIAS: &str = "model_alias";
+pub use crate::metrics::META_MODEL_ALIAS;
 
-/// The metadata key carrying the RESOLVED model id that actually ran a spawn (spec 05
-/// line 52). Unlike the requested [`META_MODEL_ALIAS`], the resolved id is known only
-/// AFTER the agent runs: the worker reports it via `rigger result --meta
-/// '{"resolved_model": ...}'` (see [`spawn::META_RESOLVED_MODEL`](crate::spawn::META_RESOLVED_MODEL)),
-/// it lands in the spawn's [`SpawnResult`](crate::spawn::SpawnResult) `meta`, the replay
-/// driver surfaces it on [`AgentResult::resolved_model`], and the conductor copies it here
-/// onto the unit events it emits once it has consumed that spawn's result (green/verified
-/// for the implementer, reviewed for the adjudicator). Empty (and so omitted) when the
-/// worker reported none.
-pub const META_MODEL_RESOLVED: &str = "model_resolved";
+pub use crate::metrics::META_MODEL_RESOLVED;
 
 /// The metadata key carrying the SPAWN ID that emitted an event (spec 18, unit 3) - the
 /// deterministic `{unit}/{role}#{attempt}` (see [`spawn_retry_id`](crate::spawn::spawn_retry_id)),
@@ -147,15 +126,7 @@ pub const META_MODEL_RESOLVED: &str = "model_resolved";
 /// [`gating_spawn_emitted_approve`](RunCtx::gating_spawn_emitted_approve)).
 pub const META_SPAWN: &str = "spawn";
 
-/// The metadata key carrying the WORKTREE HEAD sha the review tiers judged (spec 11,
-/// unit 1). Stamped on the review-boundary events - the `verified` status, the
-/// review-reject `UnitFailed`, and the `reviewed` status - mirroring the commit sha
-/// [`ledger::TYPE_UNIT_INTEGRATED`] already carries, so the metrics fold can tell a
-/// genuine reject-then-approve-on-NEW-code from a flip-flop (two verdicts on the SAME
-/// sha = reviewer noise). Like [`META_MODEL_ALIAS`] it is audit metadata on events that
-/// already exist - no new event type (spec 11's Global constraints) - so folds and
-/// projections ignore it. Empty (and so omitted) on a repo-less run with no worktree.
-pub const META_WORKTREE_SHA: &str = "worktree_sha";
+pub use crate::metrics::META_WORKTREE_SHA;
 
 /// The metadata key carrying a gate verdict's INPUT DIGEST (spec 12, unit 1): the content
 /// address of the gate run, [`input_digest`]`(command, tree-sha)` over the gate command
@@ -288,21 +259,7 @@ pub const META_SPEC_LOSERS: &str = "speculation_losers";
 /// lane, never the unit's terminal state.
 const STATUS_SPECULATION_CANCELLED: &str = "speculation-cancelled";
 
-/// The `UnitStatus.status` token a REVIEW-REJECTED speculation candidate carries (spec 13,
-/// unit 3). Like [`STATUS_SPECULATION_CANCELLED`] it is deliberately NOT a [`ledger::Status`]
-/// variant, so the LEDGER fold leaves the shared unit's real status untouched - driven by the
-/// WINNER's lifecycle, or the group's escalation. A rejected candidate must never fold the
-/// unit out of `Fresh`, which would mis-route a resume of the still-racing group onto the
-/// canonical lane (the resume hazard the winner-status deferral is built to avoid). UNLIKE the
-/// cancelled marker, the METRICS fold DOES count it: it is the in-process review-reject signal
-/// that makes an adjudicator-rejected candidate visible to the spec-11 review-quality fold
-/// exactly as the single-lane `verified`-then-`UnitFailed` pair is, WITHOUT a resume-corrupting
-/// lifecycle status (addresses adv-u13-speculation-losers-invisible-to-review-metrics). It is
-/// recorded IN-PROCESS by the conductor (like every `UnitStatus`), so it survives on a live
-/// driver - unlike the adjudicator `SpawnResult` verdict, which only the courier/replay path
-/// records (adj-u1-verdict-reject-disjoint-attribution), so a fold keyed on that would be
-/// always-zero in production.
-pub const STATUS_SPECULATION_REJECTED: &str = "speculation-rejected";
+pub use crate::metrics::STATUS_SPECULATION_REJECTED;
 
 /// The `UnitStatus.status` token a review-tier ROUTING marker carries (spec 03
 /// "adaptive review depth", spec 13 unit 4 "risk-tiered review depth"). Like
@@ -1780,7 +1737,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // in the log and every fold below scopes to it. A fresh campaign mints a new
     // `RunStarted`; a resume/idle/replay over the same criteria adopts the existing run
     // and appends nothing. The run id then rides every event this process emits.
-    let run_id = crate::run::ensure_started(deps.store, &deps.criteria)?;
+    let run_id = crate::run_store::ensure_started(deps.store, &deps.criteria)?;
 
     // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
     // crashed or re-run conductor skips work that already landed instead of
@@ -2575,7 +2532,7 @@ struct RunCtx<'a> {
     cfg: &'a Config,
     deps: &'a Deps<'a>,
     /// The id of the current run (spec 06, unit 1): the fresh id minted by
-    /// [`crate::run::ensure_started`] when this run began, or the adopted id of the run
+    /// [`crate::run_store::ensure_started`] when this run began, or the adopted id of the run
     /// in flight. Every event this process appends through [`append_and_fold`](RunCtx::append_and_fold)
     /// carries it in [`crate::run::META_RUN_ID`] metadata, and it is threaded onto each
     /// spawn (via [`SpawnOpts::run_id`]) so a parked request is attributable to its run.
@@ -12438,75 +12395,9 @@ fn mutation_scratch_settled(
         ) && stages.get(&u.id).is_some_and(|st| !integrates(st)))
 }
 
-/// Greedily group stage names into disjoint batches by blast-radius (§3.2, §8).
-/// `items` pairs each stage name with the set of files in its blast radius. A stage
-/// joins the FIRST existing batch none of whose members share any file with it;
-/// otherwise it opens a new batch. Stages with an empty blast radius conflict with
-/// nothing and so all collapse into the first batch. The result is deterministic:
-/// `items` is consumed in order and batches keep insertion order, so callers get a
-/// stable partition for a stable (e.g. sorted) input. The guarantee: two stages
-/// whose blast radii overlap never land in the same batch, so running the batches
-/// sequentially keeps overlapping units off the same file at the same time - they
-/// never share a worktree.
-pub fn partition_by_blast_radius(items: &[(String, Vec<String>)]) -> Vec<Vec<String>> {
-    let mut batches: Vec<Vec<String>> = Vec::new();
-    // The accumulated file set of each batch, parallel to `batches`, so the
-    // disjointness test is a set lookup rather than a re-scan of every member.
-    let mut batch_files: Vec<HashSet<&str>> = Vec::new();
-    for (name, files) in items {
-        let want: HashSet<&str> = files.iter().map(|f| f.as_str()).collect();
-        let mut placed = false;
-        for (i, taken) in batch_files.iter_mut().enumerate() {
-            if want.is_disjoint(taken) {
-                batches[i].push(name.clone());
-                taken.extend(want.iter().copied());
-                placed = true;
-                break;
-            }
-        }
-        if !placed {
-            batches.push(vec![name.clone()]);
-            batch_files.push(want);
-        }
-    }
-    batches
-}
+pub use crate::metrics::partition_by_blast_radius;
 
-/// The ONE serialize/empty-aware partition authority (spec 16 unit 3): group `items` -
-/// each `(name, safe-superset files, serialize)` - into batches that never co-schedule two
-/// units that must not run together. A unit is UNPARTITIONED (takes its OWN singleton batch,
-/// never fed to the disjointness grouping) when EITHER its radius is a hub (`serialize`) OR
-/// its safe view is EMPTY. Empty is treated exactly like a hub because an empty radius is a
-/// TOTAL grounding MISS - the worst UNASSESSABLE case - and the whole hazard this partition
-/// exists to prevent is co-scheduling two units that share a file the grounding failed to
-/// surface: `partition_by_blast_radius` reads an empty want-set as disjoint from EVERY batch,
-/// so an empty radius would otherwise fail OPEN into the first shared batch. Own-batching it
-/// is the SAME fail-SAFE stance [`route_review_tier`] takes (empty -> full panel): when risk
-/// cannot be measured, isolate. The remaining shareable radii (non-serialize, non-empty) go
-/// through the ONE [`partition_by_blast_radius`] disjointness authority; own-batch units are
-/// appended after, in input order, so the result is deterministic for a stable input. This is
-/// the SINGLE writer of the serialize/empty own-batch rule - `partition_wave` (the conductor)
-/// and `metrics::parallelism_retention_of` (the runtime warn metric) both call it, so the two
-/// can never drift.
-pub fn partition_with_serialize(items: &[(String, Vec<String>, bool)]) -> Vec<Vec<String>> {
-    let mut shareable: Vec<(String, Vec<String>)> = Vec::new();
-    let mut own_batch: Vec<String> = Vec::new();
-    for (name, files, serialize) in items {
-        if *serialize || files.is_empty() {
-            own_batch.push(name.clone());
-        } else {
-            let mut files = files.clone();
-            files.sort();
-            files.dedup();
-            shareable.push((name.clone(), files));
-        }
-    }
-    let mut batches = partition_by_blast_radius(&shareable);
-    for name in own_batch {
-        batches.push(vec![name]);
-    }
-    batches
-}
+pub use crate::metrics::partition_with_serialize;
 
 /// The rule-6 blast-radius conflicts in a proposed decomposition (Unit 1, spec 10;
 /// `docs/handbook/authoring-loops.md` rule 6: "criteria that share a blast radius
@@ -13620,7 +13511,7 @@ mod tests {
         // Prior run: "old-slug" served this criterion, committed real work on its
         // durable branch, and the run ended without integrating it (escalated /
         // abandoned) - modeled here by simply never emitting UnitIntegrated for it.
-        crate::run::start_fresh(&store, &["old campaign".to_string()], "", "", "", "").unwrap();
+        crate::run_store::start_fresh(&store, &["old campaign".to_string()], "", "", "", "").unwrap();
         let prior_branch = unit_branch("old-slug");
         let prior_dir =
             std::env::temp_dir().join(format!("rigger-wt-prior-{}", uuid::Uuid::new_v4()));
@@ -13703,7 +13594,7 @@ mod tests {
         let store = Store::open(":memory:").unwrap();
         let cid = "c1-deadbeefcafefeed";
 
-        crate::run::start_fresh(&store, &["old campaign".to_string()], "", "", "", "").unwrap();
+        crate::run_store::start_fresh(&store, &["old campaign".to_string()], "", "", "", "").unwrap();
         let prior_branch = unit_branch("old-slug");
         run_git_test(&repo_path, &["branch", &prior_branch]);
         store
@@ -17324,7 +17215,7 @@ mod tests {
         // UnitStarted per real spec criterion, each carrying the REAL criterion text
         // (metrics/stats), never the `coverage: required` label. This is exactly the path
         // the live `rigger workflow specs/01-observability.md` drives.
-        let mut cfg = config::load(".").expect("the repo's own .rigger config must load");
+        let mut cfg = config_store::load(".").expect("the repo's own .rigger config must load");
         // Neutralize the real cargo gate COMMANDS to `true` so this test exercises the
         // decomposition path without recursively invoking cargo (the gate IDENTITIES and
         // the stage graph stay exactly as authored - only the shell command is stubbed).
@@ -22435,7 +22326,7 @@ mod tests {
 
         // Step 1: the implementer parks; record its success.
         replay_step(&store);
-        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "the diff"))
+        crate::spawn_store::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "the diff"))
             .unwrap();
 
         // Step 2: the review LENS parks; record a substantive lens review.
@@ -22447,7 +22338,7 @@ mod tests {
             ),
             "the review lens parked"
         );
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &store,
             &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
         )
@@ -22463,7 +22354,7 @@ mod tests {
             ),
             "the adjudicator parked"
         );
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &store,
             &crate::spawn::SpawnResult::failed(&adj0, "agent killed mid-run: usage limit reached"),
         )
@@ -22494,7 +22385,7 @@ mod tests {
         );
 
         // A COMPLETED real verdict on the re-parked spawn flows into the NORMAL adjudication path.
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &store,
             &crate::spawn::SpawnResult::ok(&adj_retry1, r#"{"verdict":"approve"}"#),
         )
@@ -22553,13 +22444,13 @@ mod tests {
 
         // Step 1: the implementer parks; record its success.
         replay_step(&store).expect("the implementer step is a clean unwind");
-        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "the diff"))
+        crate::spawn_store::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "the diff"))
             .unwrap();
 
         // Step 2: the review LENS parks; record a substantive lens review so only the ADJUDICATOR
         // exercises the errored-re-park bound under test.
         replay_step(&store).expect("the lens step is a clean unwind");
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &store,
             &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
         )
@@ -22577,7 +22468,7 @@ mod tests {
                 crate::spawn::is_recorded(&events, id),
                 "the adjudicator attempt {id} parked before the bound tripped"
             );
-            crate::spawn::record_result(
+            crate::spawn_store::record_result(
                 &store,
                 &crate::spawn::SpawnResult::failed(id, "agent killed mid-run: usage limit reached"),
             )
@@ -22854,7 +22745,7 @@ mod tests {
         //  - a DIFFERENT spawn's stamp is never THIS spawn's, even sharing the reviewer role
         //    token a concurrent sibling carries.
         let store = Store::open(":memory:").unwrap();
-        crate::run::ensure_started(&store, &[]).unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
 
         let me = spawn_id("u", ROLE_ADJUDICATOR, 0);
         let sibling = spawn_id("v", ROLE_ADJUDICATOR, 0);
@@ -25065,9 +24956,9 @@ mod tests {
             !has_status("green"),
             "no candidate emits a routing status before it is chosen the winner"
         );
-        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "cand 0"))
+        crate::spawn_store::record_result(&store, &crate::spawn::SpawnResult::ok(&impl0, "cand 0"))
             .unwrap();
-        crate::spawn::record_result(&store, &crate::spawn::SpawnResult::ok(&impl1, "cand 1"))
+        crate::spawn_store::record_result(&store, &crate::spawn::SpawnResult::ok(&impl1, "cand 1"))
             .unwrap();
 
         // Step 2: candidates replay, candidate 0's gates pass, its review LENS parks. The unit
@@ -25085,7 +24976,7 @@ mod tests {
             "green/verified stay DEFERRED while the winner's review is still parking - the \
              unit stays Fresh so a resume re-enters speculation, never the canonical single-lane path"
         );
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &store,
             &crate::spawn::SpawnResult::ok(&lens0, "lens: no blocker"),
         )
@@ -25100,7 +24991,7 @@ mod tests {
             ),
             "candidate 0's adjudicator parked"
         );
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &store,
             &crate::spawn::SpawnResult::ok(&adj0, r#"{"verdict":"approve"}"#),
         )
@@ -25707,7 +25598,7 @@ mod tests {
                 } else {
                     "ok"
                 };
-                crate::spawn::record_result_if_absent(
+                crate::spawn_store::record_result_if_absent(
                     &store,
                     &crate::spawn::SpawnResult::ok(&id, out),
                 )
@@ -28245,7 +28136,7 @@ mod tests {
         }
 
         let st = Store::open(":memory:").unwrap();
-        crate::run::ensure_started(&st, &[]).unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
@@ -28351,7 +28242,7 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
-        crate::run::ensure_started(&st, &[]).unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
@@ -28387,7 +28278,7 @@ mod tests {
         );
 
         // Answer s1 so it integrates and unlocks s2.
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::ok(spawn_id("s1", ROLE_IMPLEMENTER, 0), "done"),
         )
@@ -28442,7 +28333,7 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
-        crate::run::ensure_started(&st, &[]).unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
@@ -28471,7 +28362,7 @@ mod tests {
         // recorded it before this next `run()` call, exactly as it would in production.
         let id = spawn_id("u", ROLE_IMPLEMENTER, 0);
         let fault = crate::spawn::SpawnResult::liveness_fault(&id, "the agent hung", "infra");
-        crate::spawn::record_result_if_absent(&st, &fault).unwrap();
+        crate::spawn_store::record_result_if_absent(&st, &fault).unwrap();
 
         let rs = step(&st);
         assert_eq!(
@@ -28516,7 +28407,7 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
-        crate::run::ensure_started(&st, &[]).unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
@@ -28540,7 +28431,7 @@ mod tests {
         );
 
         // Attempt 0 fails: `max_retries=1` escalates the unit on THIS single failure.
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 0), "boom"),
         )
@@ -28634,7 +28525,7 @@ mod tests {
         );
 
         let st = Store::open(":memory:").unwrap();
-        crate::run::ensure_started(&st, &[]).unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
@@ -28658,7 +28549,7 @@ mod tests {
         );
 
         // Attempt 0 fails: the FIRST failure is not a recurrence.
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 0), "boom"),
         )
@@ -28672,7 +28563,7 @@ mod tests {
         );
 
         // Attempt 1 fails: the SECOND failure - a recurrence.
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 1), "boom"),
         )
@@ -28692,7 +28583,7 @@ mod tests {
         // Attempt 2 fails: the THIRD failure - another recurrence, AND now the unit
         // already carries more than two recorded (failed) results while a fresh attempt
         // (#3) is still parked awaiting an answer: the stalled-frontier signal.
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 2), "boom"),
         )
@@ -28818,7 +28709,7 @@ mod tests {
         }
 
         let st = Store::open(":memory:").unwrap();
-        crate::run::ensure_started(&st, &[]).unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
 
         let step = |st: &Store| {
             let driver = ReplayDriver::new(st);
@@ -28853,7 +28744,7 @@ mod tests {
 
         // Answer every parked spawn, as a courier would between steps.
         for name in &names {
-            crate::spawn::record_result(
+            crate::spawn_store::record_result(
                 &st,
                 &crate::spawn::SpawnResult::ok(spawn_id(name, ROLE_IMPLEMENTER, 0), "done"),
             )
@@ -29058,12 +28949,12 @@ mod tests {
         // of 2 it already sees the budget spent - even though its own counter started at
         // zero.
         let st = Store::open(":memory:").unwrap();
-        spawn::park(
+        spawn_store::park(
             &st,
             &spawn::SpawnRequest::new("u1", "u1", ROLE_IMPLEMENTER, 0, "p"),
         )
         .unwrap();
-        spawn::park(
+        spawn_store::park(
             &st,
             &spawn::SpawnRequest::new("u2", "u2", ROLE_IMPLEMENTER, 0, "p"),
         )
@@ -29126,7 +29017,7 @@ mod tests {
         // work, but it MUST trip once this process admits a NEW spawn that reaches the
         // budget (spawns > base_spawns). One spawn recorded, budget 2.
         let st = Store::open(":memory:").unwrap();
-        spawn::park(
+        spawn_store::park(
             &st,
             &spawn::SpawnRequest::new("u1", "u1", ROLE_IMPLEMENTER, 0, "p"),
         )
@@ -38742,11 +38633,11 @@ mod tests {
         // Begin the run before recording, as production does (`run` calls `ensure_started`
         // before any spawn is parked): the run-scoped replay lookup answers only results
         // inside the current run's slice, so the recorded result must follow the boundary.
-        crate::run::ensure_started(&st, &[]).unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
         // A courier already recorded the implementer's result, so the replay driver
         // ANSWERS the implementer spawn (never parks it) and the gate is reached both
         // steps.
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::ok(spawn_id("u", ROLE_IMPLEMENTER, 0), "done"),
         )
@@ -38852,8 +38743,8 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         // Begin the run before recording (production ordering): the run-scoped replay lookup
         // answers only results inside the current run's slice.
-        crate::run::ensure_started(&st, &[]).unwrap();
-        crate::spawn::record_result(
+        crate::run_store::ensure_started(&st, &[]).unwrap();
+        crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::ok(spawn_id("u", ROLE_IMPLEMENTER, 0), "done"),
         )
@@ -38989,7 +38880,7 @@ mod tests {
         );
 
         // A courier records the implementer's result: the park drains.
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::ok(spawn_id("u", ROLE_IMPLEMENTER, 0), "done"),
         )
@@ -39314,12 +39205,12 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         // Run scoping (spec 06, unit 1): begin the run first so the recorded result and
         // deferred verdict below fall INSIDE the current run and are replayed on resume.
-        crate::run::ensure_started(&st, &[]).unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
         // The implementer result is recorded (the unit reaches `verified` and the run
         // converges), and a FAILING deferred verdict is already recorded under its replay
         // key - but the DeferredGateFailed is MISSING, exactly as a crash between the two
         // appends would leave it.
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::ok(spawn_id("u", ROLE_IMPLEMENTER, 0), "done"),
         )
@@ -39424,10 +39315,10 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         // Begin the run before recording (production ordering): the run-scoped replay lookup
         // answers only results inside the current run's slice.
-        crate::run::ensure_started(&st, &[]).unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
         // The adjudicator's attempt-0 verdict is recorded as a REJECT, so the replay
         // driver answers it (the review runs to a reject) instead of parking it.
-        crate::spawn::record_result(
+        crate::spawn_store::record_result(
             &st,
             &crate::spawn::SpawnResult::ok(
                 spawn_id("rev", ROLE_ADJUDICATOR, 0),
