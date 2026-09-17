@@ -221,6 +221,19 @@ gates:                      # the project's verification library, referenced by 
   # took 7 s against one hot dir took 81 s (measured 2026-09-16, 1.2 mutants a minute).
   # Panic locations keep file:line; only symbolized backtraces lose detail, which no test reads.
   #
+  # INCREMENTAL RE-SWEEPS (Byran, 2026-09-16: "only run mutations when the test has changed or
+  # the logic has changed"). `anchor` names the tree the previous sweep certified; when it is
+  # an ancestor of HEAD the sweep covers (a) every mutant in the diff since that tree - the
+  # changed logic - and (b) every mutant the previous sweep's `mutants.out/missed.txt` names,
+  # re-run by name (`-F`, line numbers wildcarded so a shifted line still matches; the run
+  # refuses if that rerun examined nothing) into `$MUTANTS/rerun`, its misses appended to the
+  # sweep's own missed.txt so one file is the verdict. A mutant caught last time in unchanged
+  # code stays caught unless a test was removed, which the review reads in the diff. When the
+  # anchor is not an ancestor (a fresh spec, a different tree) the sweep is the whole spec
+  # diff as before. The literal anchor is an operator knob for THIS run - rigger does not yet
+  # record the certified tree or export it; the spec that makes it export
+  # `RIGGER_LAST_SWEEP_TIP` (and the mutant -> catching-test map) replaces the literal.
+  #
   # `GateSelection::PostMerge` (spec 12, unit 5) re-runs this same gate against
   # `self.deps.repo` after the checkin unit merges - a dir with no per-unit worktree of
   # its own. This command's `$MUTANTS` is never left empty there: `RunCtx::run_gates`
@@ -236,11 +249,21 @@ gates:                      # the project's verification library, referenced by 
   mutation:
     run: >-
       test -n "$RIGGER_RUN_BASE" &&
-      git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff &&
+      anchor="028ff78" &&
+      { git merge-base --is-ancestor "$anchor" HEAD 2>/dev/null || anchor="$RIGGER_RUN_BASE"; } &&
+      git diff "$anchor" -- '*.rs' > unit.diff &&
       rm -rf "$MUTANTS" && mkdir -p "$MUTANTS" &&
+      { test "$anchor" = "$RIGGER_RUN_BASE" || test ! -s mutants.out/missed.txt ||
+      sed -E 's/[][\\.*^$+?(){}|]/\\&/g; s/^([^:]+):[0-9]+:[0-9]+:/\1(:[0-9]+:[0-9]+)?:/; s/^/-F\n/' mutants.out/missed.txt > "$MUTANTS/rerun.args"; } &&
       { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
       cargo mutants --in-diff unit.diff --test-tool nextest --cargo-arg=--target-dir=target --timeout-multiplier 3 -j 3;
       rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
+      { test ! -s "$MUTANTS/rerun.args" ||
+      { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
+      xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --output "$MUTANTS/rerun" --baseline skip --timeout 300 --test-tool nextest --cargo-arg=--target-dir=target -j 3;
+      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
+      test "$(grep -c '"summary"' "$MUTANTS/rerun/mutants.out/outcomes.json")" -ge 1 &&
+      { cat "$MUTANTS/rerun/mutants.out/missed.txt" >> mutants.out/missed.txt 2>/dev/null; true; }; } &&
       test ! -s mutants.out/missed.txt
     kind: core
 
