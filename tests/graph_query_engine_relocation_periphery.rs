@@ -127,84 +127,98 @@ fn graph_load_and_graph_query_are_reachable_over_the_public_crate_boundary() {
 // surface - `rigger::contextgraph::query::*` only, no `super::`, no crate-internal visibility.
 // ---------------------------------------------------------------------------
 
+/// Shared assertion for the six kind-parity proofs below: `graph_query`'s JSON answer for
+/// `kind`/`params`, over the graph's own wire-loaded round trip, must equal `want` - the direct
+/// library call's own serialized result. One place for the repeated load+query+compare shape,
+/// rather than seven near-identical bodies differing only in `kind`/`params`/`want`.
+fn assert_op_matches_direct_call(
+    graph: &Graph,
+    kind: &str,
+    params: &[u8],
+    want: serde_json::Value,
+) {
+    let loaded = graph_load(&serde_json::to_vec(graph).unwrap()).unwrap();
+    let got = graph_query(&loaded, kind, params)
+        .unwrap_or_else(|e| panic!("graph_query({kind:?}, ...) must answer, got {e:?}"));
+    assert_eq!(
+        got, want,
+        "graph_query({kind:?}, ...) must match the direct library call"
+    );
+}
+
 #[test]
 fn graph_query_neighborhood_matches_the_direct_library_call() {
     let g = fixture_graph();
-    let loaded = graph_load(&serde_json::to_vec(&g).unwrap()).unwrap();
-    let got = graph_query(&loaded, "neighborhood", br#"{"seed":"src/a.rs","depth":1}"#).unwrap();
-    assert_eq!(
-        got,
-        serde_json::to_value(neighborhood(&g, "src/a.rs", 1)).unwrap()
+    assert_op_matches_direct_call(
+        &g,
+        "neighborhood",
+        br#"{"seed":"src/a.rs","depth":1}"#,
+        serde_json::to_value(neighborhood(&g, "src/a.rs", 1)).unwrap(),
     );
 }
 
 #[test]
 fn graph_query_neighborhood_default_depth_matches_the_direct_library_default() {
     let g = fixture_graph();
-    let loaded = graph_load(&serde_json::to_vec(&g).unwrap()).unwrap();
     // No `depth` key at all: graph_query must apply the SAME DEFAULT_GRAPH_DEPTH a direct caller
     // would have to name explicitly - proving the op layer's own default, not just its dispatch.
-    let got = graph_query(&loaded, "neighborhood", br#"{"seed":"src/a.rs"}"#).unwrap();
-    assert_eq!(
-        got,
+    assert_op_matches_direct_call(
+        &g,
+        "neighborhood",
+        br#"{"seed":"src/a.rs"}"#,
         serde_json::to_value(neighborhood(
             &g,
             "src/a.rs",
-            rigger::contextgraph::query::DEFAULT_GRAPH_DEPTH
+            rigger::contextgraph::query::DEFAULT_GRAPH_DEPTH,
         ))
-        .unwrap()
+        .unwrap(),
     );
 }
 
 #[test]
 fn graph_query_card_matches_the_direct_library_call() {
     let g = fixture_graph();
-    let loaded = graph_load(&serde_json::to_vec(&g).unwrap()).unwrap();
-    let got = graph_query(&loaded, "card", br#"{"id":"src/a.rs::widget"}"#).unwrap();
-    assert_eq!(
-        got,
-        serde_json::to_value(card(&g, "src/a.rs::widget")).unwrap()
+    assert_op_matches_direct_call(
+        &g,
+        "card",
+        br#"{"id":"src/a.rs::widget"}"#,
+        serde_json::to_value(card(&g, "src/a.rs::widget")).unwrap(),
     );
 }
 
 #[test]
 fn graph_query_path_matches_the_direct_library_call() {
     let g = fixture_graph();
-    let loaded = graph_load(&serde_json::to_vec(&g).unwrap()).unwrap();
-    let got = graph_query(
-        &loaded,
+    assert_op_matches_direct_call(
+        &g,
         "path",
         br#"{"from":"src/a.rs","to":"src/a.rs::widget"}"#,
-    )
-    .unwrap();
-    assert_eq!(
-        got,
-        serde_json::to_value(path(&g, "src/a.rs", "src/a.rs::widget")).unwrap()
+        serde_json::to_value(path(&g, "src/a.rs", "src/a.rs::widget")).unwrap(),
     );
 }
 
 #[test]
 fn graph_query_communities_overview_matches_the_direct_library_call() {
     let g = fixture_graph();
-    let loaded = graph_load(&serde_json::to_vec(&g).unwrap()).unwrap();
     // No `key`: the whole-graph overview shape (clustered_overview), the default Lens::Files.
-    let got = graph_query(&loaded, "communities", b"{}").unwrap();
-    assert_eq!(
-        got,
-        serde_json::to_value(clustered_overview(&g, &Lens::Files)).unwrap()
+    assert_op_matches_direct_call(
+        &g,
+        "communities",
+        b"{}",
+        serde_json::to_value(clustered_overview(&g, &Lens::Files)).unwrap(),
     );
 }
 
 #[test]
 fn graph_query_communities_drill_matches_the_direct_library_call() {
     let g = fixture_graph();
-    let loaded = graph_load(&serde_json::to_vec(&g).unwrap()).unwrap();
     // A `key`: the bucket-drill shape (cluster_detail) - the SAME two-shape dispatch dash.rs's
     // `/api/graph` route makes on `cluster=`, now reachable through the op layer too.
-    let got = graph_query(&loaded, "communities", br#"{"key":"src"}"#).unwrap();
-    assert_eq!(
-        got,
-        serde_json::to_value(cluster_detail(&g, "src", &Lens::Files)).unwrap()
+    assert_op_matches_direct_call(
+        &g,
+        "communities",
+        br#"{"key":"src"}"#,
+        serde_json::to_value(cluster_detail(&g, "src", &Lens::Files)).unwrap(),
     );
 }
 
@@ -236,11 +250,11 @@ fn graph_query_communities_threads_the_lens_param_to_the_direct_library_call() {
 #[test]
 fn graph_query_search_matches_the_direct_library_call() {
     let g = fixture_graph();
-    let loaded = graph_load(&serde_json::to_vec(&g).unwrap()).unwrap();
-    let got = graph_query(&loaded, "search", br#"{"query":"widget"}"#).unwrap();
-    assert_eq!(
-        got,
-        serde_json::to_value(search(&g, "widget", SEARCH_RESULT_LIMIT)).unwrap()
+    assert_op_matches_direct_call(
+        &g,
+        "search",
+        br#"{"query":"widget"}"#,
+        serde_json::to_value(search(&g, "widget", SEARCH_RESULT_LIMIT)).unwrap(),
     );
 }
 
