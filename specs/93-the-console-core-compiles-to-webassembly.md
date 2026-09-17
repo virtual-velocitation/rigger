@@ -64,8 +64,21 @@ ONE FOLD, decided: `rigger status` prints its first line and its needs-you lines
 parity test folds a recorded stream through `console::fold` and through the status
 projection and asserts identical unit statuses, blockers, attention entries and statusline.
 
-BUDGETS, decided: the module is under 3 MB; a fold of 10,000 console events completes in
-under 16 ms natively in release mode (the page-side bound follows from the same code).
+THE QUERY ENGINE MOVES WITH THE OPS, decided: the graph queries the dashboard computes
+today (`neighborhood`, `card`, `path`, `clustered_overview` and `cluster_detail` in
+`src/dash.rs`, with their `Lens`, `Neighborhood` and `ClusterOverview` result types) are
+pure over `contextgraph::Graph` and relocate into `contextgraph` (the "model and queries" the
+feature split names as core), where `communities` and `search` are authored beside them;
+`dash.rs` stays wholly behind `store` and calls the relocated functions. "The graph ops" of criterion 5
+ARE this relocated engine plus the two new queries behind `graph_load`/`graph_query`: the
+relocation is criterion 5's work, no other unit touches those functions, and "the library's
+own query functions" in criterion 5 means these, in core. The map engine remains spec 84's.
+
+BUDGETS, decided: the module is under 3 MB - criterion 3's bound, measured on the artifact -
+and a fold of 10,000 console events completes in under 16 ms natively in release mode (the
+page-side bound follows from the same code) - criterion 2's bound, asserted by its natively
+compiled ABI tests driving `fold_reset`/`fold_push`, since those tests already exercise the
+fold through the same surface the page will call.
 
 CONSTRAINTS WALK: target missing - the named error, no silent skip. `--no-default-features`
 alone - unchanged (light lane, no core). Core lane natively - builds and its tests run on the
@@ -78,8 +91,9 @@ state; a page re-sends the snapshot.
 
 The `console` view-model functions are consumed by specs 94-98; this spec ships them with
 their types and the fold, proven by the parity and ABI tests, and no page. The CLI keeps
-`rigger graph`'s text renderers; only the query functions move into the core surface. The
-JavaScript loader that calls the ABI is spec 94's.
+`rigger graph`'s text renderers; only the query functions move into the core surface, and
+that move is criterion 5's (see THE QUERY ENGINE MOVES WITH THE OPS). The JavaScript loader
+that calls the ABI is spec 94's.
 
 ## Global constraints
 
