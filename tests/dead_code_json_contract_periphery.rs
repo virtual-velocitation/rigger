@@ -468,10 +468,14 @@ fn deserializing_then_reserializing_the_committed_dead_code_json_reproduces_the_
 /// The real tree's own out-of-line test files, named explicitly rather than re-derived through
 /// the production pipeline's public API: spec 87's own Goal text names exactly these two
 /// (`src/eventstore/contract.rs`, `src/blast_radius_eval.rs`) as the worked misclassification
-/// example, and a fresh grep of the real tree today (`grep -rn 'cfg(test)' -A1 src/ | grep 'mod
-/// [a-z_0-9]*;'`) finds no third: `src/eventstore/mod.rs` declares `#[cfg(test)] pub mod
-/// contract;`, `src/lib.rs` declares `#[cfg(test)] mod blast_radius_eval;`. A hard-coded list
-/// deliberately does NOT re-derive the production resolver's effect here (that would duplicate
+/// example. Since spec 93 criterion 1, both declarations carry a wider, store-only compound
+/// predicate rather than the original bare `#[cfg(test)]` - `src/eventstore/mod.rs` declares
+/// `#[cfg(all(test, any(feature = "store", not(feature = "core"))))] pub mod contract;`,
+/// `src/lib.rs` declares the same compound gate on `mod blast_radius_eval;` - which the
+/// scanner's `cfg_all_contains_bare_test` (`tests/simplification_audit.rs`) recognizes as still
+/// test-in-full, a strict subset of plain `cfg(test)`; this list of two names is unaffected
+/// either way. A hard-coded list deliberately does NOT re-derive the production resolver's
+/// effect here (that would duplicate
 /// `production_out_of_line_exclusion_set` in `tests/simplification_audit.rs`, which is already
 /// exercised, on fixtures and the real tree, by the implementer's own `resolvers_agree_on_*`
 /// tests) - this test's whole point is independence from that derivation: even if a future edit
@@ -763,7 +767,7 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
     );
 }
 
-/// The exact 23/3/0 `delete`/`keep-pending`/`keep-public-surface` split this criterion's research
+/// The exact `delete`/`keep-pending`/`keep-public-surface` split this criterion's research
 /// established, pinned against the persisted file (mirrors
 /// `the_real_tree_disposition_split_matches_this_criterions_research` in
 /// `tests/simplification_audit.rs`, checked there against the in-memory producer value - this is
@@ -774,10 +778,25 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// total) until spec 88 criterion 1 round 4 moved `expect_merged` (src/worktree.rs, `delete`) out
 /// of production entirely (into `src/worktree.rs`'s own `#[cfg(test)] mod tests`, alongside
 /// `IntegrateOutcome` and a test-only `integrate` recomposition of the newly-split
-/// `merge_into_worktree`/`land`), dropping the total to 25 and `delete` to 22 - and now back up
-/// to 26/23 by the unrelated addition above.
+/// `merge_into_worktree`/`land`), dropping the total to 25 and `delete` to 22, then back up to
+/// 26/23 by the unrelated addition above. Now 29/22/4/3 (was 26/23/0/3) after spec 93
+/// criterion 1's core/store file splits (`to_event` becoming `pub(crate)` across 3 new
+/// read/write file boundaries - CanaryOutcome's and CanaryHeader's in src/canary.rs, plus
+/// src/progress.rs's and src/run.rs's - adds 4 real `keep-public-surface` candidates) AND its
+/// companion scanner fix (`cfg_all_contains_bare_test` in `tests/simplification_audit.rs`:
+/// widening a store-only whole-module gate from a bare `#[cfg(test)]` to `#[cfg(all(test,
+/// any(feature = "store", not(feature = "core"))))]` on blast_radius_eval.rs and
+/// eventstore/mod.rs's `pub mod contract;` exposed this scanner's own pre-existing gap in
+/// recognizing a compound `cfg(all(...))` as test-in-full - closing it correctly ALSO
+/// un-candidates `record_current_generation` above, since it was never a real production
+/// concern either: a private fixture helper that always lived inside `src/ingest.rs`'s own
+/// `#[cfg(all(test, feature = "symbols"))] mod scoped_reindex_tests`, misclassified since spec
+/// 92 added it for the exact same reason. Net: total 26 -> 29 (+4 to_event, -1
+/// record_current_generation), delete 23 -> 22 (-1, record_current_generation only -
+/// cataloged_classes and park moved file:name keys with the same disposition, net zero), 0 -> 4
+/// keep-public-surface, 3 keep-pending unchanged.
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_23_delete_3_keep_pending_0_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_22_delete_3_keep_pending_4_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -794,7 +813,7 @@ fn the_committed_dead_code_json_disposition_split_is_23_delete_3_keep_pending_0_
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (26, 23, 0, 3),
+        (29, 22, 4, 3),
         "the committed disposition split has changed since this criterion's research"
     );
 }

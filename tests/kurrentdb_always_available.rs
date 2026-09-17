@@ -13,7 +13,12 @@
 //!   2. `testcontainers`, which drives the contract TEST only, is a dev-dependency
 //!      and never sits in the production dependency tree; and
 //!   3. `kurrentdb` and `tokio` (the gRPC client and its runtime, part of the
-//!      product) are UNCONDITIONAL `[dependencies]`, not optional; and
+//!      product) are UNCONDITIONAL for every real target the product ships on - never
+//!      `optional = true`, so no feature flag is needed to activate them - whether that
+//!      declaration lives in plain `[dependencies]` or (spec 93 criterion 1, THE CORE
+//!      LANE IS PURE) `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`, the
+//!      target-cfg table that excludes ONLY the wasm32-unknown-unknown target this
+//!      product never shipped the adapter on and that cannot compile it; and
 //!   4. the hand-maintained blueprint `docs/architecture.md` no longer describes
 //!      `kurrentdb` as a build-time cargo feature (a broken install command or a
 //!      self-contradictory "behind the feature" line).
@@ -74,6 +79,21 @@ fn dependency_line(manifest: &str, header: &str, dep: &str) -> Option<String> {
     })
 }
 
+/// The target-cfg table (spec 93 criterion 1) that carries every dependency unconditional
+/// on every real target this product ships on, but absent for the wasm32-unknown-unknown
+/// target the pure `core` lane also builds for - `rusqlite`, `kurrentdb`, `tokio`, `rustix`,
+/// `fs2`, `uuid` and `ignore` all live here now instead of in `[dependencies]` because none
+/// of them compile for that one target, not because any of them became optional.
+const NATIVE_TARGET_HEADER: &str = "target.'cfg(not(target_arch = \"wasm32\"))'.dependencies";
+
+/// `dep`'s declaration line, checked across BOTH homes an unconditional-on-native
+/// dependency may legitimately live in: plain `[dependencies]`, or the native-only
+/// target-cfg table `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`.
+fn native_dependency_line(manifest: &str, dep: &str) -> Option<String> {
+    dependency_line(manifest, "dependencies", dep)
+        .or_else(|| dependency_line(manifest, NATIVE_TARGET_HEADER, dep))
+}
+
 /// DEP HYGIENE (spec 47, criterion 2, part one): the `kurrentdb` cargo feature is
 /// retired. With no `[features]` entry named `kurrentdb`, cargo rejects `-F
 /// kurrentdb` as an unknown feature, and no `#[cfg(feature = "kurrentdb")]` in the
@@ -121,13 +141,17 @@ fn testcontainers_is_a_dev_dependency_only() {
 fn kurrentdb_and_tokio_are_unconditional_dependencies() {
     let m = manifest_text();
     for dep in ["kurrentdb", "tokio"] {
-        let line = dependency_line(&m, "dependencies", dep).unwrap_or_else(|| {
-            panic!("{dep} must be an unconditional [dependencies] entry (spec 47)")
+        let line = native_dependency_line(&m, dep).unwrap_or_else(|| {
+            panic!(
+                "{dep} must be an unconditional dependency on every real (non-wasm32) target \
+                 (spec 47) - either [dependencies] or \
+                 [target.'cfg(not(target_arch = \"wasm32\"))'.dependencies] (spec 93 criterion 1)"
+            )
         });
         assert!(
             !line.contains("optional = true"),
             "{dep} must be unconditional (not optional): the adapter and its runtime are part of \
-             the product, compiled into every build; got: {line}"
+             the product, compiled into every real build; got: {line}"
         );
     }
 }

@@ -344,7 +344,10 @@ fn scan_file_core(file: &str, content: &str) -> FileScanCore {
                 i += 1;
             }
             let attr_text: String = chars[start..i].iter().collect();
-            if attr_text.contains("cfg(test)") || attr_text.contains("#[test]") {
+            if attr_text.contains("cfg(test)")
+                || attr_text.contains("#[test]")
+                || cfg_all_contains_bare_test(&attr_text)
+            {
                 pending_cfg_test = true;
             }
             let compact: String = attr_text.chars().filter(|c| !c.is_whitespace()).collect();
@@ -638,6 +641,69 @@ fn scan_file_core(file: &str, content: &str) -> FileScanCore {
         out_of_line_mods,
         mod_spans,
     }
+}
+
+/// Whether `attr_text` (a full `#[...]` attribute, braces included) is a `cfg` that can ONLY
+/// ever be active under a test build - so classifying it as `is_test` is always sound, never a
+/// false positive. This scanner stays textual (spec 87 criterion 2's own doc comment: "it never
+/// evaluates a `#[cfg(...)]` predicate at all - only `cfg(test)`/`#[test]` are given any
+/// semantic meaning"), so this widens that ONE recognized shape by exactly one conservative
+/// step rather than growing into a general boolean-cfg evaluator: `cfg(all(test, ANYTHING))` -
+/// bare `test` as one of `all`'s own top-level, comma-separated clauses - is a logical SUBSET
+/// of plain `cfg(test)` (every condition under which it compiles also satisfies `cfg(test)`),
+/// so treating it as test-in-full can never misclassify a real production fn as test. This is
+/// spec 93 criterion 1's own fix for `dead-code-json-out-of-line-classifier-missed-compound-
+/// cfg-all-test`: widening a store-only whole-module gate from a bare `#[cfg(test)]` to
+/// `#[cfg(all(test, any(feature = "store", not(feature = "core"))))]` (blast_radius_eval.rs,
+/// eventstore/mod.rs's `pub mod contract;`) made this scanner's literal `contains("cfg(test)")`
+/// check miss the module entirely, surfacing its already-test-only functions as spurious
+/// production dead-code candidates - the exact misclassification
+/// `no_committed_candidate_comes_from_a_known_out_of_line_test_file` exists to catch. Anything
+/// OTHER than a bare `test` token at top level inside the `all(...)` - `not(test)`, `test` only
+/// nested inside a further `any(...)`/`all(...)`, or no `all(` at all - is deliberately left
+/// unrecognized rather than guessed at, the same "disclosed limitation over silent guessing"
+/// discipline the rest of this textual scanner already follows.
+fn cfg_all_contains_bare_test(attr_text: &str) -> bool {
+    let Some(all_start) = attr_text.find("all(") else {
+        return false;
+    };
+    // Require the `all(` to be reached from a `cfg(` (skipping only whitespace in between) so
+    // `#[foo(all(test, x))]` on some unrelated attribute is never mistaken for a cfg.
+    let before = attr_text[..all_start].trim_end();
+    if !before.ends_with("cfg(") {
+        return false;
+    }
+    let inner_start = all_start + "all(".len();
+    let chars: Vec<char> = attr_text.chars().collect();
+    let byte_to_char = |byte_idx: usize| attr_text[..byte_idx].chars().count();
+    let start_ci = byte_to_char(inner_start);
+    let mut depth = 1i32;
+    let mut ci = start_ci;
+    let mut clause_start = start_ci;
+    while ci < chars.len() && depth > 0 {
+        match chars[ci] {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let clause: String = chars[clause_start..ci].iter().collect();
+                    if clause.trim() == "test" {
+                        return true;
+                    }
+                }
+            }
+            ',' if depth == 1 => {
+                let clause: String = chars[clause_start..ci].iter().collect();
+                if clause.trim() == "test" {
+                    return true;
+                }
+                clause_start = ci + 1;
+            }
+            _ => {}
+        }
+        ci += 1;
+    }
+    false
 }
 
 /// The first `"..."` substring's contents (no escape processing - attribute string values in
@@ -3727,7 +3793,13 @@ fn render_section_3() -> String {
 /// discloses it), not this function's own imprecision.
 fn kg_degree_for(file: &str, name: &str) -> u32 {
     match (file, name) {
-        ("src/canary.rs", "cataloged_classes") => 12,
+        // Spec 93 criterion 1's read/write file split relocated cataloged_classes into
+        // canary_store.rs and reduced its live reference count (2 test-only refs, 0 local
+        // outgoing calls - a pure BTreeSet-collecting iterator chain) - re-derived by the same
+        // two-part count the is_dirty entry below documents (test_only_references + call-out),
+        // not a live `rigger graph --show` run (the tool reflects the checked-out base branch,
+        // which cannot see this unmerged unit branch's new file split).
+        ("src/canary_store.rs", "cataloged_classes") => 2,
         ("src/config.rs", "sdet_author_enabled") => 3,
         ("src/dash.rs", "pid_is_alive") => 5,
         ("src/dash.rs", "neighborhood") => 7,
@@ -3739,7 +3811,6 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         ("src/grounder/symbols/model.rs", "definitions_named") => 7,
         ("src/grounder/symbols/model.rs", "references_named") => 10,
         ("src/ingest.rs", "ingest_project") => 3,
-        ("src/ingest.rs", "record_current_generation") => 3,
         ("src/ledger.rs", "fully_done") => 6,
         ("src/ledger.rs", "is_integrated") => 3,
         ("src/spawn.rs", "new") => 5,
@@ -3750,7 +3821,26 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         ("src/spawn.rs", "with_blast_radius") => 6,
         ("src/spawn.rs", "with_title") => 7,
         ("src/spawn.rs", "with_reviews") => 5,
-        ("src/spawn.rs", "park") => 14,
+        // Spec 93 criterion 1's read/write file split relocated park (and park_in_run) into
+        // spawn_store.rs; re-counted on the current tree (20 test-only refs across
+        // conductor.rs/driver/replay.rs/liveness.rs/spawn_store.rs's own test module + 1 local
+        // outgoing call, park_in_run) rather than a live `rigger graph --show` run, for the
+        // same reason cataloged_classes above gives.
+        ("src/spawn_store.rs", "park") => 21,
+        // Spec 93 criterion 1's read/write splits (canary.rs/canary_store.rs,
+        // progress.rs/progress_store.rs, run.rs/run_store.rs) made each of these `to_event`
+        // methods `pub(crate)` so a sibling store-only file could reach them, dropping their
+        // local (same-file) reference count to zero - the FILE-AWARE scan above only sees a
+        // reference within the same file, so a real cross-file production caller
+        // (canary_store::append, progress_store::record, run_store::start_fresh; see
+        // disposition_for above) does not count here. Each degree is 0 test-only refs plus its
+        // own body's local outgoing calls (Event::new, and one or two Event::with_meta calls).
+        // canary.rs has two distinct `to_event` methods (CanaryOutcome's and CanaryHeader's) at
+        // different lines sharing this one (file, name) key; both happen to compute the same
+        // degree (2), so the shared key is not ambiguous in practice.
+        ("src/canary.rs", "to_event") => 2,
+        ("src/progress.rs", "to_event") => 2,
+        ("src/run.rs", "to_event") => 3,
         // Round 3 (spec 89 criterion 1, `arch-u89c1r2-dirty-check-duplicated-and-diverges-
         // fail-direction`) shifts `is_dirty` to line 635 AND changes its body (a one-line
         // delegation to the new `path_is_dirty` free fn, replacing the direct `git(...)` call).
@@ -5967,18 +6057,58 @@ fn build_dead_code_candidates(
 /// the SAME reason text the report's full list cites, so the JSON and the report can never state
 /// two different reasons for one candidate.
 fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
-    use Disposition::{Delete, KeepPending};
+    use Disposition::{Delete, KeepPending, KeepPublicSurface};
     match (file, name) {
-        ("src/canary.rs", "cataloged_classes") => (
+        ("src/canary.rs", "to_event") => (
+            KeepPublicSurface,
+            "to_event names two methods in this file (CanaryOutcome::to_event, canary.rs:94; \
+             CanaryHeader::to_event, canary.rs:185), both newly surfaced as candidates by spec \
+             93 criterion 1's read/write split of this file: before the split their only \
+             callers lived in this same file, so no cross-file visibility (and no separate \
+             candidacy-scan entry) was needed; now each is `pub(crate)` so its real consumer in \
+             the write half can reach it - CanaryOutcome::to_event is called from the \
+             production write path `canary_store::append` (canary_store.rs:312) and \
+             CanaryHeader::to_event from `canary_store::record_header` (canary_store.rs:228), \
+             neither of which is test-only code. Keep-public-surface: a real, non-test consumer \
+             in a sibling module, the same reason the split needed `pub(crate)` at all rather \
+             than a narrower visibility.",
+        ),
+        ("src/progress.rs", "to_event") => (
+            KeepPublicSurface,
+            "AgentProgress::to_event, newly surfaced as a candidate by spec 93 criterion 1's \
+             read/write split of the old progress.rs: before the split its only caller lived in \
+             this same file, so no cross-file visibility (and no separate candidacy-scan entry) \
+             was needed; now it is `pub(crate)` so its real consumer in the write half can reach \
+             it - called from the production write path `progress_store::record` \
+             (progress_store.rs:27), not test-only code. Keep-public-surface: a real, non-test \
+             consumer in a sibling module, the same reason the split needed `pub(crate)` at all \
+             rather than a narrower visibility.",
+        ),
+        ("src/run.rs", "to_event") => (
+            KeepPublicSurface,
+            "RunStarted::to_event, newly surfaced as a candidate by spec 93 criterion 1's \
+             read/write split of the old run.rs: before the split its only caller lived in this \
+             same file, so no cross-file visibility (and no separate candidacy-scan entry) was \
+             needed; now it is `pub(crate)` so its real consumer in the write half can reach it \
+             - called from the production write path `run_store::start_fresh` \
+             (run_store.rs:227), not test-only code. Keep-public-surface: a real, non-test \
+             consumer in a sibling module, the same reason the split needed `pub(crate)` at all \
+             rather than a narrower visibility.",
+        ),
+        ("src/canary_store.rs", "cataloged_classes") => (
             Delete,
             "cataloged_classes has no production caller anywhere in src/ (checked whole-tree, \
-             recursively). Its only two references are its own inline tests \
-             (canary.rs:1419/1433); the one behavior it exists to prove - the shipped corpus \
-             catalogs >= 3 defect classes (spec 13 unit 5) - is asserted by \
-             the_shipped_corpus_loads_and_catalogs_at_least_three_defect_classes, which is the \
-             ONLY caller and would go dead with it. run_canary (the real production review-panel \
-             loop) never consults it: corpus diversity is a load-time authoring check, not a \
-             runtime one.",
+             recursively). Its only two references are its own inline tests, now in this file \
+             after spec 93 criterion 1's read/write split of the old canary.rs moved every \
+             disk/store-touching function here \
+             (cataloged_classes_counts_only_planted_distinct_classes, canary_store.rs:1150; \
+             the_shipped_corpus_loads_and_catalogs_at_least_three_defect_classes, \
+             canary_store.rs:1164); the latter is the one behavior it exists to prove - the \
+             shipped corpus catalogs >= 3 defect classes (spec 13 unit 5) - and would go dead \
+             with it. run_canary (the real production review-panel loop) never consults it: \
+             corpus diversity is a load-time authoring check, not a runtime one. This entry \
+             carries forward the original disposition and reasoning unchanged, only relocated \
+             to this candidate's new file:name key.",
         ),
         ("src/config.rs", "sdet_author_enabled") => (
             KeepPending,
@@ -6105,18 +6235,6 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              this fn's own doc comment already names as the thing 'existing callers discard \
              [IngestStats] and are unaffected' by, i.e. it documents its own supersession.",
         ),
-        ("src/ingest.rs", "record_current_generation") => (
-            Delete,
-            "record_current_generation (spec 92 criterion 1, FRESH ON EVERY INTEGRATION) has no \
-             production caller - a private fixture helper inside scoped_reindex_tests that \
-             appends `graph_index_lag`/`graph_index_lag_sample`'s test-double `prior: Vec<Event>` \
-             stream, factored out once graph_index_lag_sample_derives_its_candidates_from_..., \
-             graph_index_lag_sample_reports_a_file_that_changed_..., and \
-             graph_index_lag_sample_is_bounded_and_stays_silent_... all needed the identical \
-             stamping boilerplate (the same shape already inlined once in \
-             graph_index_lag_reports_a_changed_file_and_not_an_unchanged_one, its own sibling \
-             test above it in this file). Never called outside this test module.",
-        ),
         ("src/ledger.rs", "fully_done") => (
             Delete,
             "fully_done has no production caller. Its own doc comment's three-conjunct \
@@ -6190,15 +6308,18 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              names by name); see the disposition on SpawnRequest::new (spawn.rs:320) for the \
              shared root cause and citation.",
         ),
-        ("src/spawn.rs", "park") => (
+        ("src/spawn_store.rs", "park") => (
             Delete,
             "park (the zero-run-id convenience wrapper around park_in_run) - part of the \
              SpawnRequest-construction dead set; see the disposition on SpawnRequest::new \
-             (spawn.rs:320) for the shared root cause and citation. park_in_run itself (spawn.rs:410, \
-             the real park authority) is correctly NOT a candidate: its own body is the one real \
-             production reference driver/replay.rs:338 needs - this scanner counts direct \
-             references, not reachability, so park_in_run reads alive even though its only OTHER \
-             caller (park) is itself dead.",
+             (spawn.rs:320) for the shared root cause and citation. This entry's file:name key \
+             moved from src/spawn.rs to src/spawn_store.rs (unchanged reasoning) when spec 93 \
+             criterion 1's read/write split relocated both park and park_in_run into the new \
+             store-only sibling file; park_in_run itself (spawn_store.rs:36, the real park \
+             authority) is correctly NOT a candidate: its own body is the one real production \
+             reference driver/replay.rs:339 needs - this scanner counts direct references, not \
+             reachability, so park_in_run reads alive even though its only OTHER caller (park) \
+             is itself dead.",
         ),
         ("src/worktree.rs", "is_dirty") => (
             Delete,
@@ -6771,6 +6892,70 @@ mod tests {
             "{:?}",
             core.out_of_line_mods[0]
         );
+    }
+
+    #[test]
+    fn a_cfg_all_test_and_feature_compound_out_of_line_mod_is_flagged_test_the_real_blast_radius_eval_shape(
+    ) {
+        // Spec 93 criterion 1's real lib.rs shape for a store-only whole-module gate:
+        // `#[cfg(all(test, any(feature = "store", not(feature = "core"))))]` - a strict subset
+        // of `cfg(test)` (it can only ever compile when `cfg(test)` also holds), so it must
+        // classify as test-in-full exactly like the bare `#[cfg(test)]` case above. This is the
+        // regression `cfg_all_contains_bare_test` exists to close.
+        let core = scan_str_core(
+            "#[cfg(all(test, any(feature = \"store\", not(feature = \"core\"))))]\n\
+             mod blast_radius_eval;\n",
+        );
+        assert_eq!(core.out_of_line_mods.len(), 1);
+        assert_eq!(core.out_of_line_mods[0].name, "blast_radius_eval");
+        assert!(
+            core.out_of_line_mods[0].is_test,
+            "{:?}",
+            core.out_of_line_mods[0]
+        );
+    }
+
+    #[test]
+    fn a_cfg_all_test_pub_mod_is_flagged_test_the_real_eventstore_contract_shape() {
+        // `src/eventstore/mod.rs`'s real post-spec-93 declaration for `contract`.
+        let core = scan_str_core(
+            "#[cfg(all(test, any(feature = \"store\", not(feature = \"core\"))))]\n\
+             pub mod contract;\n",
+        );
+        assert_eq!(core.out_of_line_mods.len(), 1);
+        assert!(
+            core.out_of_line_mods[0].is_test,
+            "{:?}",
+            core.out_of_line_mods[0]
+        );
+    }
+
+    #[test]
+    fn cfg_all_with_test_nested_inside_a_further_any_is_not_recognized() {
+        // `test` must be a BARE top-level clause of the `all(...)` - one nested one level
+        // deeper inside an `any(...)` changes the boolean meaning entirely (this predicate can
+        // be true even when NOT a test build, via the `debug_assertions` arm), so it must NOT
+        // be classified as test-in-full. Conservative non-recognition, not a misclassification.
+        assert!(!cfg_all_contains_bare_test(
+            "#[cfg(all(any(test, debug_assertions), feature = \"store\"))]"
+        ));
+    }
+
+    #[test]
+    fn cfg_all_with_not_test_is_not_recognized() {
+        // The exact inverse of the real shape - `not(test)` inside an `all(...)` means this
+        // compiles only OUTSIDE a test build, so recognizing it as test-in-full would be a real
+        // false positive, not just an over-broad guess. Must stay unrecognized.
+        assert!(!cfg_all_contains_bare_test(
+            "#[cfg(all(not(test), feature = \"x\"))]"
+        ));
+    }
+
+    #[test]
+    fn cfg_all_on_an_unrelated_attribute_is_not_recognized() {
+        // `all(` reached from something other than `cfg(` (an arbitrary hypothetical attribute
+        // macro taking its own `all(...)` argument) must not be mistaken for a cfg predicate.
+        assert!(!cfg_all_contains_bare_test("#[other(all(test))]"));
     }
 
     #[test]
@@ -10684,9 +10869,33 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (26, 23, 0, 3),
+            (29, 22, 4, 3),
             "the real-tree candidate count or disposition split has changed since this \
-             criterion's research - {candidates:#?}"
+             criterion's research - {candidates:#?}\n\n\
+             Was (26, 23, 0, 3) before spec 93 criterion 1's core/store file splits and its \
+             companion scanner fix. The +4 keep-public-surface entries are `to_event` becoming \
+             pub(crate) across a new read/write file boundary with a real non-test consumer in \
+             the sibling: CanaryOutcome::to_event and CanaryHeader::to_event (both in \
+             src/canary.rs, hence +2 from that one file:name key), AgentProgress::to_event \
+             (src/progress.rs), and RunStarted::to_event (src/run.rs). Delete drops by exactly \
+             one (23 -> 22), not zero: cataloged_classes and park only moved file:name keys \
+             (canary.rs->canary_store.rs, spawn.rs->spawn_store.rs, same disposition, net \
+             zero), but src/ingest.rs's record_current_generation - ALREADY misclassified \
+             before this session touched anything, a private fixture helper that always lived \
+             inside a `#[cfg(all(test, feature = \"symbols\"))] mod scoped_reindex_tests` - \
+             drops out entirely: this criterion's own gate-shape widening \
+             (`#[cfg(all(test, any(feature = \"store\", not(feature = \"core\"))))]` on \
+             blast_radius_eval.rs and eventstore/mod.rs's `pub mod contract;`) exposed a \
+             pre-existing gap in this scanner's own textual `cfg(test)` recognition (Design: \
+             \"only cfg(test)/#[test] are given any semantic meaning\" - a literal `cfg(all(` \
+             compound was recognized by neither the old code nor this record_current_generation \
+             entry's own research). The fix, `cfg_all_contains_bare_test`, closes the general \
+             case - bare `test` as a top-level clause of any `cfg(all(...))` is a strict subset \
+             of plain `cfg(test)`, so recognizing it can never misclassify a real production fn \
+             - not a special case for this criterion's own two files, so it also correctly \
+             un-candidates record_current_generation (never a real one) with no disposition \
+             entry needed for it any more, and keep_pending stays at its original 3 (no new \
+             blast_radius_eval.rs/contract.rs entries either, for the same reason)."
         );
     }
 }

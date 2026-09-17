@@ -1,0 +1,60 @@
+{
+  "spec": "93",
+  "criterion": "1 - THE CORE LANE IS PURE",
+  "core_modules": [
+    "src/blocker.rs",
+    "src/canary.rs",
+    "src/community.rs",
+    "src/concepts.rs",
+    "src/config.rs",
+    "src/contextgraph/mod.rs",
+    "src/eventstore/mod.rs",
+    "src/eventstore/namespace.rs",
+    "src/failure.rs",
+    "src/ledger.rs",
+    "src/metrics.rs",
+    "src/progress.rs",
+    "src/run.rs",
+    "src/safety.rs",
+    "src/spawn.rs"
+  ],
+  "core_modules_note": "The exact set of `pub mod X;` / `mod X;` declarations in src/lib.rs (and their own always-on submodules: contextgraph::mod's `sqlite` is gated so excluded, eventstore::mod's `sqlite`/`kurrentdb`/`contract` are gated so excluded, `namespace` is not so included) that carry NO `#[cfg(any(feature = \"store\", not(feature = \"core\")))]` gate - i.e. the modules the `core` feature ships. `budget`, `conductor`, `dash`, `distiller`, `docs`, `driver`, `gate`, `grounder`, `hooks`, `ingest`, `liveness`, `mcpserver`, `parallel`, `playbooks`, `reap`, `registry`, `sidecar`, `spec`, `watch`, `worktree`, and the five `*_store` write-half siblings are all gated and so excluded from this list.",
+  "banned_patterns": {
+    "std_paths": ["std::fs", "std::process", "std::net", "SystemTime::now"],
+    "crates": ["rusqlite", "tokio::", "use tokio", "rustix::", "use rustix", "fs2::", "use fs2", "ignore::", "use ignore", "uuid::", "use uuid", "kurrentdb::", "use kurrentdb"],
+    "note": "`crates` patterns require a `::` or a `use` keyword immediately adjacent (never a bare substring match) so a string-literal test fixture - e.g. eventstore::mod.rs's redact_conn tests, which build fixture strings like \"kurrentdb://user:pass@host\" - is never misread as a real import; `std_paths` patterns are similarly path-shaped, never single words a doc comment could contain in prose."
+  },
+  "scan_excludes": "Any line whose trimmed text starts with `//` (doc or plain comments) - so a comment EXPLAINING why a banned import is absent (e.g. 'SystemTime::now() is itself a banned import') never counts as an occurrence."
+  ,
+  "found_occurrences": [
+    {
+      "file": "src/eventstore/mod.rs",
+      "line": 128,
+      "pattern": "uuid::",
+      "gated_by_line": 126,
+      "reason": "Event::new's mint_id() store-arm mints real entropy via uuid; gated #[cfg(any(feature = \"store\", not(feature = \"core\")))], with a sibling core-only arm (mint_id() below, returning an empty string) satisfying the same call site under core-only - see that module's own doc on the split."
+    },
+    {
+      "file": "src/eventstore/mod.rs",
+      "line": 147,
+      "pattern": "SystemTime::now",
+      "gated_by_line": 145,
+      "reason": "Event::new's mint_time() store-arm reads the real clock; gated #[cfg(any(feature = \"store\", not(feature = \"core\")))], with a sibling core-only arm (mint_time() below, returning SystemTime::UNIX_EPOCH) satisfying the same call site under core-only - CONSTRAINTS WALK's 'the core has no now(), every age arrives as an input'."
+    }
+  ],
+  "found_occurrences_note": "The ONLY two banned-pattern occurrences across every core module's source text, both inside Event::new's mint_id/mint_time split (spec 93's own Clock constraint) and both gated one line below the #[cfg(any(feature = \"store\", not(feature = \"core\")))] attribute the always-run test below verifies is genuinely present.",
+  "verification": {
+    "cheap_tests": "tests/core_lane_purity_audit.rs re-scans every file in core_modules for banned_patterns (identically to how this record was produced) and asserts the result matches found_occurrences exactly - zero more, zero fewer - plus that each found occurrence's cited gated_by_line actually carries the required #[cfg(...)] text. This runs on every `cargo test`, no subprocess, no recompile.",
+    "expensive_rebuild": {
+      "manual_run_by": "u93c1/implementer#0",
+      "commands": [
+        "cargo build --lib --no-default-features --features core",
+        "cargo build --lib --no-default-features --features core --target wasm32-unknown-unknown",
+        "cargo test --lib --no-default-features --features core"
+      ],
+      "result": "all three clean: native lib builds, wasm32-unknown-unknown lib builds (proving every banned CRATE - rusqlite/tokio/rustix/fs2/ignore/uuid/kurrentdb - is genuinely unreachable, since none of them are wasm32-unknown-unknown-compatible and are absent from the core-only dependency graph for that target), and the 181 core-lane library unit tests pass.",
+      "expensive_rebuild_gated_by": "RIGGER_CORE_LANE_VERIFY=1 cargo test --test core_lane_purity_audit -- --ignored",
+      "why_gated": "the wasm cross-compile plus the native build/test each force a fresh recompile under a feature/target combination no other test in the suite otherwise builds, adding real minutes to every future unit's gate cycle - the same reason RIGGER_COMPILER_PASS_VERIFY=1 (spec 87) and RIGGER_AUDIT_WRITE=1 are opt-in rather than wired into the default suite. The always-on cheap_tests above instead assert the static, directly re-checkable textual facts this JSON records."
+    }
+  }
+}

@@ -1,43 +1,65 @@
 [
   {
     "file": "src/canary.rs",
+    "name": "to_event",
+    "line": 94,
+    "ambiguous_with": [
+      "src/canary.rs:185",
+      "src/progress.rs:71",
+      "src/run.rs:132"
+    ],
+    "test_only_references": []
+  },
+  {
+    "file": "src/canary.rs",
+    "name": "to_event",
+    "line": 185,
+    "ambiguous_with": [
+      "src/canary.rs:94",
+      "src/progress.rs:71",
+      "src/run.rs:132"
+    ],
+    "test_only_references": []
+  },
+  {
+    "file": "src/canary_store.rs",
     "name": "cataloged_classes",
-    "line": 180,
+    "line": 129,
     "test_only_references": [
       {
-        "file": "src/canary.rs",
-        "line": 1426
+        "file": "src/canary_store.rs",
+        "line": 1157
       },
       {
-        "file": "src/canary.rs",
-        "line": 1440
+        "file": "src/canary_store.rs",
+        "line": 1171
       }
     ]
   },
   {
     "file": "src/config.rs",
     "name": "sdet_author_enabled",
-    "line": 452,
+    "line": 456,
     "test_only_references": [
       {
-        "file": "src/config.rs",
-        "line": 2363
+        "file": "src/config_store.rs",
+        "line": 936
       },
       {
-        "file": "src/config.rs",
-        "line": 2368
+        "file": "src/config_store.rs",
+        "line": 941
       },
       {
-        "file": "src/config.rs",
-        "line": 2373
+        "file": "src/config_store.rs",
+        "line": 946
       },
       {
-        "file": "src/config.rs",
-        "line": 2378
+        "file": "src/config_store.rs",
+        "line": 951
       },
       {
-        "file": "src/config.rs",
-        "line": 2384
+        "file": "src/config_store.rs",
+        "line": 957
       }
     ]
   },
@@ -56,15 +78,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 14078
+        "line": 14081
       },
       {
         "file": "src/main.rs",
-        "line": 14099
+        "line": 14102
       },
       {
         "file": "src/main.rs",
-        "line": 14614
+        "line": 14617
       },
       {
         "file": "tests/cli.rs",
@@ -183,7 +205,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 19267
+        "line": 19160
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -323,39 +345,39 @@
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1548
+        "line": 1552
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1566
+        "line": 1570
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1687
+        "line": 1691
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1830
+        "line": 1834
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1854
+        "line": 1858
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1962
+        "line": 1966
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 2008
+        "line": 2012
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 2150
+        "line": 2154
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 2189
+        "line": 2193
       }
     ]
   },
@@ -366,19 +388,19 @@
     "test_only_references": [
       {
         "file": "tests/build_env_authority_periphery.rs",
-        "line": 157
+        "line": 158
       },
       {
         "file": "tests/build_env_authority_periphery.rs",
-        "line": 1126
+        "line": 1128
       },
       {
         "file": "tests/build_env_authority_periphery.rs",
-        "line": 1135
+        "line": 1137
       },
       {
         "file": "tests/build_env_authority_periphery.rs",
-        "line": 1142
+        "line": 1144
       }
     ]
   },
@@ -645,7 +667,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 9594
+        "line": 9779
       }
     ]
   },
@@ -764,40 +786,21 @@
     ]
   },
   {
-    "file": "src/ingest.rs",
-    "name": "record_current_generation",
-    "line": 1005,
-    "test_only_references": [
-      {
-        "file": "src/ingest.rs",
-        "line": 1130
-      },
-      {
-        "file": "src/ingest.rs",
-        "line": 1154
-      },
-      {
-        "file": "src/ingest.rs",
-        "line": 1179
-      }
-    ]
-  },
-  {
     "file": "src/ledger.rs",
     "name": "fully_done",
     "line": 574,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 38532
+        "line": 38431
       },
       {
         "file": "src/conductor.rs",
-        "line": 38599
+        "line": 38498
       },
       {
         "file": "src/conductor.rs",
-        "line": 39374
+        "line": 39273
       },
       {
         "file": "src/ledger.rs",
@@ -837,18 +840,40 @@
     ]
   },
   {
+    "file": "src/progress.rs",
+    "name": "to_event",
+    "line": 71,
+    "ambiguous_with": [
+      "src/canary.rs:94",
+      "src/canary.rs:185",
+      "src/run.rs:132"
+    ],
+    "test_only_references": []
+  },
+  {
+    "file": "src/run.rs",
+    "name": "to_event",
+    "line": 132,
+    "ambiguous_with": [
+      "src/canary.rs:94",
+      "src/canary.rs:185",
+      "src/progress.rs:71"
+    ],
+    "test_only_references": []
+  },
+  {
     "file": "src/spawn.rs",
     "name": "new",
-    "line": 320,
+    "line": 376,
     "ambiguous_with": [
       "src/budget.rs:57",
       "src/dash.rs:1885",
       "src/dash.rs:4917",
-      "src/driver/replay.rs:236",
+      "src/driver/replay.rs:237",
       "src/driver/workflow.rs:83",
-      "src/eventstore/mod.rs:99",
-      "src/eventstore/mod.rs:299",
-      "src/eventstore/mod.rs:500",
+      "src/eventstore/mod.rs:109",
+      "src/eventstore/mod.rs:345",
+      "src/eventstore/mod.rs:546",
       "src/eventstore/namespace.rs:28",
       "src/failure.rs:218",
       "src/ledger.rs:441",
@@ -858,35 +883,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 21582
+        "line": 21475
       },
       {
         "file": "src/conductor.rs",
-        "line": 21659
+        "line": 21552
       },
       {
         "file": "src/conductor.rs",
-        "line": 21753
+        "line": 21646
       },
       {
         "file": "src/conductor.rs",
-        "line": 21840
+        "line": 21733
       },
       {
         "file": "src/conductor.rs",
-        "line": 21935
+        "line": 21828
       },
       {
         "file": "src/conductor.rs",
-        "line": 29063
+        "line": 28962
       },
       {
         "file": "src/conductor.rs",
-        "line": 29068
+        "line": 28967
       },
       {
         "file": "src/conductor.rs",
-        "line": 29131
+        "line": 29030
       },
       {
         "file": "src/dash.rs",
@@ -922,63 +947,59 @@
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 844
+        "line": 846
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 891
+        "line": 893
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 1421
+        "line": 1424
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 1965
+        "line": 1969
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2061
+        "line": 2065
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2073
+        "line": 2077
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2157
+        "line": 2162
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2167
+        "line": 2172
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2257
+        "line": 2262
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2266
+        "line": 2271
       },
       {
         "file": "src/liveness.rs",
-        "line": 789
+        "line": 791
       },
       {
         "file": "src/liveness.rs",
-        "line": 898
+        "line": 900
       },
       {
         "file": "src/main.rs",
-        "line": 17285
+        "line": 17288
       },
       {
         "file": "src/main.rs",
-        "line": 17318
-      },
-      {
-        "file": "src/main.rs",
-        "line": 17337
+        "line": 17321
       },
       {
         "file": "src/main.rs",
@@ -990,27 +1011,31 @@
       },
       {
         "file": "src/main.rs",
-        "line": 19213
+        "line": 17346
       },
       {
         "file": "src/main.rs",
-        "line": 19226
+        "line": 19216
       },
       {
         "file": "src/main.rs",
-        "line": 19241
+        "line": 19229
       },
       {
         "file": "src/main.rs",
-        "line": 24686
+        "line": 19244
       },
       {
         "file": "src/main.rs",
-        "line": 24687
+        "line": 24689
       },
       {
         "file": "src/main.rs",
-        "line": 24688
+        "line": 24690
+      },
+      {
+        "file": "src/main.rs",
+        "line": 24691
       },
       {
         "file": "src/mcpserver.rs",
@@ -1018,143 +1043,163 @@
       },
       {
         "file": "src/metrics.rs",
-        "line": 2027
+        "line": 2159
       },
       {
         "file": "src/progress.rs",
-        "line": 283
+        "line": 200
       },
       {
         "file": "src/progress.rs",
-        "line": 332
+        "line": 249
       },
       {
         "file": "src/spawn.rs",
-        "line": 1159
+        "line": 1091
       },
       {
         "file": "src/spawn.rs",
-        "line": 1168
+        "line": 1100
       },
       {
         "file": "src/spawn.rs",
-        "line": 1184
+        "line": 1116
       },
       {
         "file": "src/spawn.rs",
-        "line": 1200
+        "line": 1132
       },
       {
         "file": "src/spawn.rs",
-        "line": 1223
+        "line": 1157
       },
       {
         "file": "src/spawn.rs",
-        "line": 1244
+        "line": 1158
       },
       {
         "file": "src/spawn.rs",
-        "line": 1245
+        "line": 1227
       },
       {
         "file": "src/spawn.rs",
-        "line": 1311
+        "line": 1235
       },
       {
         "file": "src/spawn.rs",
-        "line": 1319
+        "line": 1348
       },
       {
         "file": "src/spawn.rs",
-        "line": 1740
+        "line": 1364
       },
       {
         "file": "src/spawn.rs",
-        "line": 1758
+        "line": 1368
       },
       {
         "file": "src/spawn.rs",
-        "line": 1764
+        "line": 1371
       },
       {
         "file": "src/spawn.rs",
-        "line": 1769
+        "line": 1431
       },
       {
         "file": "src/spawn.rs",
-        "line": 1830
+        "line": 1459
       },
       {
         "file": "src/spawn.rs",
-        "line": 1858
+        "line": 1474
       },
       {
         "file": "src/spawn.rs",
-        "line": 1873
+        "line": 1490
       },
       {
         "file": "src/spawn.rs",
-        "line": 1889
+        "line": 1504
       },
       {
         "file": "src/spawn.rs",
-        "line": 1903
+        "line": 1523
       },
       {
         "file": "src/spawn.rs",
-        "line": 1923
+        "line": 1582
       },
       {
         "file": "src/spawn.rs",
-        "line": 1983
+        "line": 1606
       },
       {
         "file": "src/spawn.rs",
-        "line": 2007
+        "line": 1624
       },
       {
         "file": "src/spawn.rs",
-        "line": 2025
+        "line": 1644
       },
       {
         "file": "src/spawn.rs",
-        "line": 2045
+        "line": 1662
       },
       {
         "file": "src/spawn.rs",
-        "line": 2064
+        "line": 1680
       },
       {
         "file": "src/spawn.rs",
-        "line": 2084
+        "line": 1681
       },
       {
         "file": "src/spawn.rs",
-        "line": 2085
+        "line": 1721
       },
       {
         "file": "src/spawn.rs",
-        "line": 2128
+        "line": 1752
       },
       {
         "file": "src/spawn.rs",
-        "line": 2161
+        "line": 1866
       },
       {
-        "file": "src/spawn.rs",
-        "line": 2276
+        "file": "src/spawn_store.rs",
+        "line": 153
+      },
+      {
+        "file": "src/spawn_store.rs",
+        "line": 483
+      },
+      {
+        "file": "src/spawn_store.rs",
+        "line": 488
+      },
+      {
+        "file": "src/spawn_store.rs",
+        "line": 493
       },
       {
         "file": "src/worktree.rs",
-        "line": 4769
+        "line": 4718
       },
       {
         "file": "src/worktree.rs",
-        "line": 4792
+        "line": 4741
       },
       {
         "file": "src/worktree.rs",
-        "line": 4828
+        "line": 4777
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4809
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 4844
       },
       {
         "file": "src/worktree.rs",
@@ -1162,27 +1207,19 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 4895
+        "line": 4887
       },
       {
         "file": "src/worktree.rs",
-        "line": 4911
+        "line": 4917
       },
       {
         "file": "src/worktree.rs",
-        "line": 4938
+        "line": 4924
       },
       {
         "file": "src/worktree.rs",
-        "line": 4968
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 4975
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 4983
+        "line": 4932
       },
       {
         "file": "tests/cli.rs",
@@ -1338,7 +1375,7 @@
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
-        "line": 1097
+        "line": 1099
       },
       {
         "file": "tests/worktree_liveness_fence_periphery.rs",
@@ -1361,248 +1398,216 @@
   {
     "file": "src/spawn.rs",
     "name": "with_system_prompt",
-    "line": 338,
+    "line": 394,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1169
+        "line": 1101
       },
       {
         "file": "src/spawn.rs",
-        "line": 1185
+        "line": 1117
       }
     ]
   },
   {
     "file": "src/spawn.rs",
     "name": "with_model",
-    "line": 344,
+    "line": 400,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1170
+        "line": 1102
       },
       {
         "file": "src/spawn.rs",
-        "line": 1186
+        "line": 1118
       },
       {
         "file": "src/spawn.rs",
-        "line": 1224
+        "line": 1159
+      },
+      {
+        "file": "src/spawn_store.rs",
+        "line": 154
       }
     ]
   },
   {
     "file": "src/spawn.rs",
     "name": "with_tools",
-    "line": 350,
+    "line": 406,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1171
+        "line": 1103
       },
       {
         "file": "src/spawn.rs",
-        "line": 1187
+        "line": 1119
       }
     ]
   },
   {
     "file": "src/spawn.rs",
     "name": "with_dir",
-    "line": 356,
+    "line": 412,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1172
+        "line": 1104
       },
       {
         "file": "src/spawn.rs",
-        "line": 1188
+        "line": 1120
       }
     ]
   },
   {
     "file": "src/spawn.rs",
     "name": "with_blast_radius",
-    "line": 362,
+    "line": 418,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1173
+        "line": 1105
       },
       {
         "file": "src/spawn.rs",
-        "line": 1189
+        "line": 1121
       },
       {
         "file": "src/spawn.rs",
-        "line": 1225
+        "line": 1160
+      },
+      {
+        "file": "src/spawn_store.rs",
+        "line": 155
       }
     ]
   },
   {
     "file": "src/spawn.rs",
     "name": "with_title",
-    "line": 368,
+    "line": 424,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1859
+        "line": 1460
       },
       {
         "file": "src/spawn.rs",
-        "line": 1889
+        "line": 1490
       },
       {
         "file": "src/spawn.rs",
-        "line": 1924
+        "line": 1524
       }
     ]
   },
   {
     "file": "src/spawn.rs",
     "name": "with_reviews",
-    "line": 374,
+    "line": 430,
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1983
+        "line": 1582
       },
       {
         "file": "src/spawn.rs",
-        "line": 2026
+        "line": 1625
       },
       {
         "file": "src/spawn.rs",
-        "line": 2065
+        "line": 1663
       }
     ]
   },
   {
-    "file": "src/spawn.rs",
+    "file": "src/spawn_store.rs",
     "name": "park",
-    "line": 399,
+    "line": 25,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 29061
+        "line": 28960
       },
       {
         "file": "src/conductor.rs",
-        "line": 29066
+        "line": 28965
       },
       {
         "file": "src/conductor.rs",
-        "line": 29129
+        "line": 29028
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 842
+        "line": 844
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 889
+        "line": 891
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 1422
+        "line": 1425
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 1963
+        "line": 1967
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2059
+        "line": 2063
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2071
+        "line": 2075
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2155
+        "line": 2160
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2165
+        "line": 2170
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2255
+        "line": 2260
       },
       {
         "file": "src/driver/replay.rs",
-        "line": 2264
+        "line": 2269
       },
       {
         "file": "src/liveness.rs",
-        "line": 785
+        "line": 787
       },
       {
         "file": "src/liveness.rs",
-        "line": 791
+        "line": 793
       },
       {
         "file": "src/liveness.rs",
-        "line": 899
+        "line": 901
       },
       {
-        "file": "src/spawn.rs",
-        "line": 1227
+        "file": "src/spawn_store.rs",
+        "line": 157
       },
       {
-        "file": "src/spawn.rs",
-        "line": 1246
+        "file": "src/spawn_store.rs",
+        "line": 484
       },
       {
-        "file": "src/spawn.rs",
-        "line": 1247
+        "file": "src/spawn_store.rs",
+        "line": 486
       },
       {
-        "file": "src/spawn.rs",
-        "line": 1738
-      },
-      {
-        "file": "src/spawn.rs",
-        "line": 1759
-      },
-      {
-        "file": "src/spawn.rs",
-        "line": 1762
-      },
-      {
-        "file": "src/spawn.rs",
-        "line": 1767
-      },
-      {
-        "file": "src/spawn.rs",
-        "line": 1925
-      },
-      {
-        "file": "src/spawn.rs",
-        "line": 2066
-      },
-      {
-        "file": "src/spawn.rs",
-        "line": 2086
-      },
-      {
-        "file": "src/spawn.rs",
-        "line": 2087
-      },
-      {
-        "file": "src/spawn.rs",
-        "line": 2126
-      },
-      {
-        "file": "src/spawn.rs",
-        "line": 2159
-      },
-      {
-        "file": "src/spawn.rs",
-        "line": 2278
+        "file": "src/spawn_store.rs",
+        "line": 491
       }
     ]
   },
@@ -1613,19 +1618,19 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 13824
+        "line": 13717
       },
       {
         "file": "src/worktree.rs",
-        "line": 4336
+        "line": 4285
       },
       {
         "file": "src/worktree.rs",
-        "line": 4346
+        "line": 4295
       },
       {
         "file": "src/worktree.rs",
-        "line": 4412
+        "line": 4361
       }
     ]
   }
