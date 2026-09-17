@@ -239,6 +239,14 @@ gates:                      # the project's verification library, referenced by 
   # ancestor (a reclaimed unit, a fresh spec) or the run's first sweep: the whole spec diff
   # against `$RIGGER_RUN_BASE`, exactly as before. A solo-merging unit's post-merge re-sweep is
   # therefore the empty merge delta and passes in seconds - the merged tree IS the examined one.
+  #
+  # THE GATE OWNS ITS INSTRUMENT (2026-09-17: remediation round 6 excluded two survivors by name
+  # in `.cargo/mutants.toml` with an equivalence argument that was wrong for one of them - `&&`
+  # binds tighter than `||`, so the "dead clause" mutant had collapsed the whole predicate).
+  # The unit diff since `$RIGGER_RUN_BASE` may add no exclusion or examine key to
+  # `.cargo/mutants.toml` and no `mutants::skip` attribute; a diff that does fails the gate
+  # before any sweep, naming the lines. A mutant no test can distinguish is dead code to
+  # delete, never a name to exclude: the graded party does not narrow the instrument.
   mutation:
     run: >-
       test -n "$RIGGER_RUN_BASE" &&
@@ -251,6 +259,7 @@ gates:                      # the project's verification library, referenced by 
       test -z "$changed" || awk -F '\t' -v ch="$changed" 'BEGIN { n = split(ch, a, "\n"); for (i = 1; i <= n; i++) set[a[i]] = 1 } ($2 in set) || ("ALL" in set) { print $1 }' "$last/caught.map" 2>/dev/null;
       fi | sort -u )" &&
       { if test -n "$anchor"; then git diff "$anchor" -- '*.rs' > unit.diff; else git diff "$RIGGER_RUN_BASE" -- '*.rs' > unit.diff; fi; } &&
+      { ! { git diff "$RIGGER_RUN_BASE" -- .cargo/mutants.toml; git diff "$RIGGER_RUN_BASE" -- '*.rs'; } | grep -E '^\+.*(exclude_re|examine_re|exclude_globs|examine_globs|mutants::skip)' || { echo "mutation gate: the unit narrows the sweep itself (an exclusion in .cargo/mutants.toml or a mutants::skip in the code); the gate owns its instrument - remove it and pin the mutant with a test or delete the code it mutates"; false; }; } &&
       rm -rf "$MUTANTS" mutants.out mutants.out.old && mkdir -p "$MUTANTS/last" mutants.out &&
       { test -z "$rerun" || printf '%s\n' "$rerun" | sed -E 's/[][\\.*^$+?(){}|]/\\&/g; s/^([^:]+):[0-9]+:[0-9]+:/\1(:[0-9]+:[0-9]+)?:/; s/^/-F\n/' > "$MUTANTS/rerun.args"; } &&
       { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
