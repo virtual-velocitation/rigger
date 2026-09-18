@@ -70,23 +70,23 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 857
+        "line": 950
       },
       {
         "file": "src/console/map.rs",
-        "line": 883
+        "line": 976
       },
       {
         "file": "src/console/map.rs",
-        "line": 895
+        "line": 988
       },
       {
         "file": "src/console/map.rs",
-        "line": 904
+        "line": 997
       },
       {
         "file": "src/console/map.rs",
-        "line": 905
+        "line": 998
       },
       {
         "file": "tests/code_lens_map_real_store_periphery.rs",

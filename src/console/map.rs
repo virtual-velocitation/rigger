@@ -731,6 +731,99 @@ mod tests {
         );
     }
 
+    /// Design, DISTRICTS's own running example ("`liveness`/`spawn` both read `liveness &
+    /// heartbeats`"), never previously exercised through `build`: two DIFFERENT communities whose
+    /// dominant modules share ONE curated purpose must fold into a SINGLE district, its
+    /// population the SUM across both communities - never two separate one-purpose districts.
+    #[test]
+    fn build_folds_two_communities_sharing_a_curated_purpose_into_one_district() {
+        let nodes = vec![
+            code_node(
+                "src/liveness.rs::heartbeat_loop",
+                "heartbeat_loop",
+                "function",
+            ),
+            code_node(
+                "src/spawn.rs::spawn_worktree_agent",
+                "spawn_worktree_agent",
+                "function",
+            ),
+        ];
+        let edges = vec![
+            in_community("src/liveness.rs::heartbeat_loop", "community/1/0"),
+            in_community("src/spawn.rs::spawn_worktree_agent", "community/1/1"),
+        ];
+        let model = build(&Graph { nodes, edges });
+
+        assert_eq!(
+            model.districts.len(),
+            1,
+            "two communities sharing one curated purpose must fold into ONE district, not two: {:?}",
+            model.districts.iter().map(|d| &d.purpose).collect::<Vec<_>>()
+        );
+        let district = &model.districts[0];
+        assert_eq!(district.purpose, "liveness & heartbeats");
+        assert_eq!(
+            district.population, 2,
+            "the merged district's population must be the SUM across both communities"
+        );
+        assert_eq!(
+            model.entities.len(),
+            2,
+            "both communities' members must still be present as map entities"
+        );
+        for e in &model.entities {
+            assert_eq!(
+                e.district, "liveness & heartbeats",
+                "entity {:?} must carry the merged district's purpose, not a per-community one",
+                e.id
+            );
+        }
+        // The two entities keep their OWN distinct community ids even though they share a district
+        // - the merge is purpose-level only, never a community-identity merge.
+        let communities: BTreeSet<&str> = model
+            .entities
+            .iter()
+            .map(|e| e.community.as_str())
+            .collect();
+        assert_eq!(
+            communities,
+            BTreeSet::from(["community/1/0", "community/1/1"])
+        );
+    }
+
+    /// Design's own tie-break rule ("ties broken to the lexicographically-smallest module",
+    /// mirrored in `build`'s own dominant-module comment): a community whose members split evenly
+    /// across two modules resolves to the ALPHABETICALLY-FIRST module's purpose, never whichever
+    /// happened to be counted first.
+    #[test]
+    fn build_breaks_a_dominant_module_tie_by_the_lexicographically_smallest_module() {
+        // "worktree" > "dash" lexicographically, so a 1-1 tie between them must resolve to
+        // "dash"'s own curated purpose ("dashboard rendering"), never "worktree lifecycle" -
+        // insertion order below is deliberately worktree-first, so a bug that picked "whichever
+        // module was counted first" would still pass if this test inserted dash first.
+        let nodes = vec![
+            code_node(
+                "src/worktree.rs::spawn_worktree",
+                "spawn_worktree",
+                "function",
+            ),
+            code_node("src/dash.rs::live_page", "live_page", "function"),
+        ];
+        let edges = vec![
+            in_community("src/worktree.rs::spawn_worktree", "community/1/0"),
+            in_community("src/dash.rs::live_page", "community/1/0"),
+        ];
+        let model = build(&Graph { nodes, edges });
+
+        assert_eq!(model.districts.len(), 1, "{:?}", model.districts);
+        assert_eq!(
+            model.districts[0].purpose, "dashboard rendering",
+            "a 1-1 dominant-module tie must resolve to the lexicographically-smallest module \
+             ('dash' < 'worktree'), not whichever module was counted first"
+        );
+    }
+
     #[test]
     fn build_never_labels_an_entity_with_its_file() {
         let model = build(&two_district_graph());
