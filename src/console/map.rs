@@ -33,10 +33,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::contextgraph::query::{file_of, name_suffix};
-use crate::contextgraph::{
-    Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_IN_COMMUNITY, REL_REFERENCES,
-};
+use crate::contextgraph::query::{file_of, name_suffix, Buckets, Lens};
+use crate::contextgraph::{Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_REFERENCES};
 
 /// The community-detection resolution grain the map reads (mirrors
 /// [`crate::contextgraph::query::DEFAULT_COMMUNITY_RESOLUTION`] - the code lens's default grain,
@@ -196,18 +194,6 @@ fn degree_map(graph: &Graph) -> BTreeMap<&str, usize> {
     deg
 }
 
-/// Every node id's live `IN_COMMUNITY` membership at [`RESOLUTION`].
-fn community_of(graph: &Graph) -> BTreeMap<&str, &str> {
-    let prefix = format!("community/{RESOLUTION}/");
-    let mut m = BTreeMap::new();
-    for e in &graph.edges {
-        if e.valid_to.is_none() && e.rel == REL_IN_COMMUNITY && e.to.starts_with(&prefix) {
-            m.insert(e.from.as_str(), e.to.as_str());
-        }
-    }
-    m
-}
-
 /// World-space layout constants. A deterministic phyllotaxis spiral (the standard sunflower-seed
 /// packing angle) lays out a district's members with steadily increasing spacing as rank grows -
 /// no physics simulation, no randomness, so the same graph always builds the byte-identical model.
@@ -229,7 +215,13 @@ const GOLDEN_ANGLE: f64 = 2.399_963_229_728_653;
 /// sharing a purpose fold into ONE district.
 pub fn build(graph: &Graph) -> MapModel {
     let deg = degree_map(graph);
-    let comm = community_of(graph);
+    // Community membership at RESOLUTION comes from the SAME single fold authority the code
+    // lens itself uses (`Buckets`'s own doc: "ONE bucket-fold authority, never two") - never a
+    // second, independently-maintained `IN_COMMUNITY` scan reconciled after the fact.
+    let lens = Lens::Code {
+        resolution: RESOLUTION.to_string(),
+    };
+    let comm = Buckets::new(graph, &lens);
 
     let mut by_community: BTreeMap<&str, Vec<&Node>> = BTreeMap::new();
     for n in &graph.nodes {
@@ -246,7 +238,7 @@ pub fn build(graph: &Graph) -> MapModel {
         if n.kind != KIND_CODE_ENTITY || !n.attrs.contains_key("name") {
             continue;
         }
-        if let Some(c) = comm.get(n.id.as_str()) {
+        if let Some(c) = comm.membership.get(n.id.as_str()) {
             by_community.entry(c).or_default().push(n);
         }
     }
@@ -581,7 +573,7 @@ fn place_label(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contextgraph::{CommunityAssigned, Edge, Node, TIER_EXTRACTED};
+    use crate::contextgraph::{CommunityAssigned, Edge, Node, REL_IN_COMMUNITY, TIER_EXTRACTED};
     use crate::eventstore::Position;
 
     fn code_node(id: &str, name: &str, kind: &str) -> Node {

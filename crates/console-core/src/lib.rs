@@ -240,6 +240,15 @@ fn op_graph_load(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
             let nodes = g.nodes.len();
             let edges = g.edges.len();
             session.graph = Some(g);
+            // A reload invalidates any map `map_build` computed from the PRIOR graph (adv-u84c1-
+            // map-stale-after-graph-reload): the page re-fetches the graph payload per index stamp
+            // while the session persists (docs/architecture-addendum-mission-control.md's own "THE
+            // GRAPH PAYLOAD" note - this is the documented normal flow, not an edge case), so
+            // `map_frame` must never silently keep answering the pre-reload model. Clearing both
+            // here forces the same "call map_build first" error `map_frame` already gives a session
+            // that never built one - never a second staleness check duplicated at the read site.
+            session.map = None;
+            session.map_viewport = (0.0, 0.0);
             ok_json(serde_json::json!({ "ok": true, "nodes": nodes, "edges": edges }))
         }
         Err(e) => error_reply(format!("graph_load: {e}")),
@@ -714,6 +723,73 @@ mod dispatch_tests {
         let entities = frame["entities"].as_array().unwrap();
         assert_eq!(entities.len(), 1, "{frame:?}");
         assert_eq!(entities[0]["name"], "spawn_worktree", "{frame:?}");
+    }
+
+    /// A same-session `graph_load` reload invalidates the PRIOR `map_build`: `map_frame` must go
+    /// back to the "no map built" error until the caller calls `map_build` again against the new
+    /// graph (adv-u84c1-map-stale-after-graph-reload) - the page re-fetches the graph payload per
+    /// index stamp while the session persists (docs/architecture-addendum-mission-control.md's
+    /// own "THE GRAPH PAYLOAD" note), so silently answering the pre-reload model would be wrong,
+    /// not merely stale-looking. A fresh `map_build` after the reload still answers real counts
+    /// from the NEW graph, proving the session's viewport also reset rather than merely erroring.
+    #[test]
+    fn map_frame_errors_again_after_a_graph_reload_until_map_build_runs_again() {
+        use rigger::contextgraph::{
+            Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
+        };
+        use rigger::eventstore::Position;
+        let one_entity_graph = |fn_name: &str| {
+            let g = Graph {
+                nodes: vec![Node {
+                    id: format!("src/worktree.rs::{fn_name}"),
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    attrs: [
+                        ("name".to_string(), fn_name.to_string()),
+                        ("kind".to_string(), "function".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                }],
+                edges: vec![Edge {
+                    from: format!("src/worktree.rs::{fn_name}"),
+                    to: "community/1/0".to_string(),
+                    rel: REL_IN_COMMUNITY.to_string(),
+                    valid_from: 0,
+                    valid_to: None,
+                    source: Position::default(),
+                    tier: TIER_EXTRACTED.to_string(),
+                }],
+            };
+            serde_json::to_vec(&g).unwrap()
+        };
+        let mut s = ConsoleSession::new();
+
+        let first = one_entity_graph("spawn_worktree");
+        call(&mut s, "graph_load", std::str::from_utf8(&first).unwrap());
+        let build = call(&mut s, "map_build", r#"{"w":800,"h":600}"#);
+        assert_eq!(build["ok"], true, "{build:?}");
+        let frame = call(&mut s, "map_frame", r#"{"zoom":0}"#);
+        assert!(frame.get("error").is_none(), "{frame:?}");
+
+        // Reload, same session - no map_build in between.
+        let second = one_entity_graph("reap_terminate");
+        let reload = call(&mut s, "graph_load", std::str::from_utf8(&second).unwrap());
+        assert_eq!(reload["ok"], true, "{reload:?}");
+
+        let stale_frame = call(&mut s, "map_frame", r#"{"zoom":0}"#);
+        assert!(
+            stale_frame.get("error").is_some(),
+            "map_frame must error after a reload with no map_build yet, never silently answer \
+             the pre-reload model: {stale_frame:?}"
+        );
+
+        let rebuild = call(&mut s, "map_build", r#"{"w":800,"h":600}"#);
+        assert_eq!(rebuild["ok"], true, "{rebuild:?}");
+        let fresh_frame = call(&mut s, "map_frame", r#"{"zoom":0}"#);
+        assert!(fresh_frame.get("error").is_none(), "{fresh_frame:?}");
+        let entities = fresh_frame["entities"].as_array().unwrap();
+        assert_eq!(entities.len(), 1, "{fresh_frame:?}");
+        assert_eq!(entities[0]["name"], "reap_terminate", "{fresh_frame:?}");
     }
 
     /// `map_frame` at a higher zoom answers a strictly larger entities array than the full-extent
