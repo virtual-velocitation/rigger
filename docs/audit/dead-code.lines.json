@@ -28,11 +28,11 @@
     "test_only_references": [
       {
         "file": "src/canary_store.rs",
-        "line": 1157
+        "line": 1198
       },
       {
         "file": "src/canary_store.rs",
-        "line": 1171
+        "line": 1212
       }
     ]
   },
@@ -70,15 +70,15 @@
     "test_only_references": [
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1926
+        "line": 1959
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1934
+        "line": 1967
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1944
+        "line": 1977
       },
       {
         "file": "tests/graph_query_engine_relocation_periphery.rs",
@@ -133,35 +133,35 @@
     "test_only_references": [
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1946
+        "line": 1979
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1949
+        "line": 1982
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1952
+        "line": 1985
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1963
+        "line": 1996
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1969
+        "line": 2002
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1975
+        "line": 2008
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1987
+        "line": 2020
       },
       {
         "file": "src/contextgraph/query.rs",
-        "line": 1994
+        "line": 2027
       },
       {
         "file": "tests/graph_query_engine_relocation_periphery.rs",

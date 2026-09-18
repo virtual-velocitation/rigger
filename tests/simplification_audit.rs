@@ -4689,7 +4689,7 @@ fn render_section_6() -> String {
         together, rather than as two separately-tracked fixes.\n\n",
     );
     out.push_str(
-        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0154` + `dup-0155`)\n\n",
+        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0158` + `dup-0159`)\n\n",
     );
     out.push_str(
         "- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
@@ -4697,19 +4697,19 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0155`, 15 sites: `src/dash.rs`, `src/main.rs`, \
+        capstone previously caught (`dup-0159`, 15 sites: `src/dash.rs`, `src/main.rs`, \
         `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \
         91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \
         reason `dash.rs::process_state` does, growing this already-known cluster by one site \
         rather than opening a new one), plus 60 raw `/proc`-path string literals scattered \
         across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no \
-        shared composer (`dup-0154`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
+        shared composer (`dup-0158`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
         re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
         production server, so it is the actual active-correctness risk this tier-1 placement \
         is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) \
         and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
-        rides in this same item only because it shares `dup-0154`/`dup-0155`'s one root cause \
+        rides in this same item only because it shares `dup-0158`/`dup-0159`'s one root cause \
         and one proposed fix with `process_state`, not because retiring it retires any live \
         risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
@@ -5048,7 +5048,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
         above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0056`, `dup-0110`, \
-        `dup-0154`, `dup-0155`, `dup-0208`, `dup-0217`); the remaining 327 clusters touching \
+        `dup-0158`, `dup-0159`, `dup-0208`, `dup-0217`); the remaining 327 clusters touching \
         `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
         section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
         exact-duplicate clusters first, consumed directly from \
@@ -9479,8 +9479,8 @@ mod tests {
         assert!(rendered.contains("dup-0006"));
         assert!(rendered.contains("dup-0056"));
         assert!(rendered.contains("dup-0110"));
-        assert!(rendered.contains("dup-0154"));
-        assert!(rendered.contains("dup-0155"));
+        assert!(rendered.contains("dup-0158"));
+        assert!(rendered.contains("dup-0159"));
         assert!(rendered.contains("dup-0217"));
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("src/conductor.rs"));

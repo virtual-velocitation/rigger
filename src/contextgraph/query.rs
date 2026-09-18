@@ -1880,6 +1880,39 @@ mod search_tests {
     fn an_unmatched_query_returns_no_hits() {
         assert!(search(&graph(), "no-such-thing-in-this-graph", 50).is_empty());
     }
+
+    /// A node whose ID alone is a PREFIX match outranks a mere substring match even when
+    /// that SAME node's own label is not a prefix match - the prefix tier is `id_l.starts_with
+    /// OR label_l.starts_with`, not AND: an id-only prefix hit must not be demoted to the
+    /// lower substring tier just because its label happens not to also start with the query.
+    #[test]
+    fn an_id_only_prefix_match_still_ranks_above_a_mere_substring_match() {
+        let g = Graph {
+            nodes: vec![
+                // id is a PREFIX match ("findme..."); label ("unrelated-thing") is not -
+                // must still rank in the prefix tier (2), not fall to the substring tier (3).
+                node("findme-file.rs", KIND_FILE, &[("name", "unrelated-thing")]),
+                // id contains "findme" only mid-string (never a prefix) and its label
+                // doesn't match at all - genuinely tier 3 either way, and its id sorts
+                // BEFORE "findme-file.rs" so a tier-3-vs-tier-3 tie would put it FIRST,
+                // the opposite of the correct tier-2-vs-tier-3 order.
+                node(
+                    "aardvark-findme-mid.rs",
+                    KIND_FILE,
+                    &[("name", "irrelevant")],
+                ),
+            ],
+            edges: Vec::new(),
+        };
+        let hits = search(&g, "findme", 50);
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["findme-file.rs", "aardvark-findme-mid.rs"],
+            "the id-prefix match must rank first even though its label is not a prefix \
+             match: {ids:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1992,5 +2025,246 @@ mod graph_ops_tests {
     fn graph_query_rejects_malformed_params_without_panicking() {
         let g = sample_graph();
         assert!(graph_query(&g, "card", b"not json").is_err());
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    fn node(id: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            kind: KIND_FILE.to_string(),
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    fn edge(from: &str, to: &str) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: REL_ABOUT.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: "extracted".to_string(),
+        }
+    }
+
+    /// `path`'s own documented contract: an EMPTY path when "either endpoint is absent" - `to`
+    /// need not be UNREACHABLE, it must not even be a real NODE. The gate is
+    /// `!is_node(from) || !is_node(to)`, not `&&` (both absent): either one missing is already
+    /// disqualifying, so a dangling edge (an endpoint string naming no real node - a malformed
+    /// projection the function must still refuse defensively) must never let the walk "find" a
+    /// `to` that never passed the is-a-node gate.
+    #[test]
+    fn an_absent_to_endpoint_yields_no_path_even_via_a_dangling_edge() {
+        let g = Graph {
+            nodes: vec![node("src/a.rs")],
+            // "ghost" is never a node, only an edge endpoint.
+            edges: vec![edge("src/a.rs", "ghost")],
+        };
+        assert_eq!(
+            path(&g, "src/a.rs", "ghost"),
+            Vec::<String>::new(),
+            "to is not a real node, so no path may be returned even though a dangling edge \
+             names it"
+        );
+    }
+}
+
+#[cfg(test)]
+mod member_set_tests {
+    use super::*;
+
+    fn node(id: &str, kind: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    fn edge(from: &str, to: &str, rel: &str, valid_to: Option<i64>) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to,
+            source: 0,
+            tier: "extracted".to_string(),
+        }
+    }
+
+    /// `member_set` of a COMMUNITY counts ONLY a currently-valid `IN_COMMUNITY` edge whose
+    /// target is EXACTLY this community - all three conjuncts load-bearing, each proven by an
+    /// edge that satisfies every OTHER one: a superseded membership, a live `IN_COMMUNITY`
+    /// edge to a DIFFERENT community, and a live edge of a DIFFERENT rel to THIS community must
+    /// every one be excluded, while the one edge satisfying all three is the only member.
+    #[test]
+    fn member_set_of_a_community_counts_only_its_own_live_in_community_edges() {
+        let com1 = "community/1/0";
+        let com2 = "community/1/1";
+        let g = Graph {
+            nodes: vec![
+                node(com1, KIND_COMMUNITY),
+                node(com2, KIND_COMMUNITY),
+                node("src/w.rs::w", KIND_CODE_ENTITY), // the one genuine live member
+                node("src/x.rs::x", KIND_CODE_ENTITY), // live IN_COMMUNITY, wrong community
+                node("src/y.rs::y", KIND_CODE_ENTITY), // right rel+target, but superseded
+                node("src/z.rs::z", KIND_CODE_ENTITY), // right target, wrong rel
+            ],
+            edges: vec![
+                edge("src/w.rs::w", com1, REL_IN_COMMUNITY, None),
+                edge("src/x.rs::x", com2, REL_IN_COMMUNITY, None),
+                edge("src/y.rs::y", com1, REL_IN_COMMUNITY, Some(9)),
+                edge("src/z.rs::z", com1, REL_ABOUT, None),
+            ],
+        };
+        let ids: Vec<&str> = member_set(&g, com1).iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["src/w.rs::w"],
+            "only the live, right-rel, right-target edge should count as membership: {ids:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod bucket_fold_edge_case_tests {
+    use super::*;
+
+    /// A file id with a LEADING slash (an absolute-looking path) still names a real
+    /// directory-less file: `rsplit_once('/')` finds a separator but the part before it is
+    /// EMPTY, which must still fall back to [`CLUSTER_ROOT`] - the guard is `!dir.is_empty()`,
+    /// not an unconditional match, or an empty-string "directory" would leak out as the
+    /// cluster key instead of the root bucket.
+    #[test]
+    fn a_leading_slash_file_id_folds_to_cluster_root_not_an_empty_directory() {
+        assert_eq!(cluster_key("/root.rs", KIND_FILE), CLUSTER_ROOT);
+    }
+
+    /// A CONCEPT super-node is excluded from its own (or any) concepts-lens bucket - it IS a
+    /// bucket, never a member - so `Buckets::key` must return `None` for it, never
+    /// `Some(node.kind)`. Pins `excludes_super_node`'s `Lens::Concepts` arm
+    /// (`kind == KIND_CONCEPT`) specifically: a mutant flipping it to `!=` would instead
+    /// exclude every NON-concept node from the concepts fold and let a concept super-node
+    /// leak in as if it were an ordinary membership-less member.
+    #[test]
+    fn a_concept_super_node_is_excluded_from_the_concepts_lens_member_fold() {
+        let lens = Lens::Concepts {
+            resolution: "1".to_string(),
+        };
+        let g = Graph {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        };
+        let buckets = Buckets::new(&g, &lens);
+        let concept = Node {
+            id: "concept/1/0".to_string(),
+            kind: KIND_CONCEPT.to_string(),
+            attrs: BTreeMap::new(),
+        };
+        assert_eq!(
+            buckets.key(&concept),
+            None,
+            "a concept super-node must never fold into a bucket under the concepts lens"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cluster_detail_budget_ranking_tests {
+    use super::*;
+
+    fn member(id: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: BTreeMap::new(),
+        }
+    }
+
+    fn edge(from: &str, to: &str, rel: &str, valid_to: Option<i64>) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            rel: rel.to_string(),
+            valid_from: 0,
+            valid_to,
+            source: 0,
+            tier: "extracted".to_string(),
+        }
+    }
+
+    /// `cluster_detail`'s INTRA-CLUSTER degree fold only ever shows up in the OUTPUT through
+    /// WHICH members survive an over-budget cluster's truncation - under budget every member
+    /// renders regardless of degree - so this drives a cluster over [`CLUSTER_RENDER_BUDGET`]
+    /// and pins the kept/dropped split against three load-bearing details of that fold:
+    ///
+    /// - a member reached ONLY by a SUPERSEDED (invalidated) edge must stay at degree 0 (the
+    ///   `valid_to.is_none()` membership conjunct);
+    /// - a member reached ONLY as an edge's `to` endpoint must still gain real degree (the
+    ///   `e.to != e.from` non-self-loop guard's TRUE branch, and the `+=` accumulate it guards,
+    ///   are both load-bearing for a purely-incoming edge - a mutant that turns either into a
+    ///   no-op silently drops it).
+    #[test]
+    fn an_over_budget_cluster_ranks_members_by_the_real_intra_cluster_degree() {
+        const COM: &str = "community/1/0";
+        let lens = Lens::Code {
+            resolution: "1".to_string(),
+        };
+
+        let mut nodes = vec![Node {
+            id: COM.to_string(),
+            kind: KIND_COMMUNITY.to_string(),
+            attrs: BTreeMap::new(),
+        }];
+        let mut edges = Vec::new();
+
+        // The anchor: sends one VALID edge to the receiver (real degree for both ends) and one
+        // SUPERSEDED edge to the victim (must contribute nothing to either end).
+        nodes.push(member("a0-anchor"));
+        edges.push(edge("a0-anchor", COM, REL_IN_COMMUNITY, None));
+        nodes.push(member("zzz-receiver"));
+        edges.push(edge("zzz-receiver", COM, REL_IN_COMMUNITY, None));
+        edges.push(edge("a0-anchor", "zzz-receiver", REL_ABOUT, None));
+        nodes.push(member("zzz-victim"));
+        edges.push(edge("zzz-victim", COM, REL_IN_COMMUNITY, None));
+        edges.push(edge("a0-anchor", "zzz-victim", REL_ABOUT, Some(1)));
+        // 59 filler members with no degree-bearing edge at all (degree 0, tied with the
+        // victim); ids "f00000".."f00058" all sort before both "zzz-..." ids.
+        for i in 0..59 {
+            let id = format!("f{i:05}");
+            edges.push(edge(&id, COM, REL_IN_COMMUNITY, None));
+            nodes.push(member(&id));
+        }
+        // total members = anchor + receiver + victim + 59 fillers = 62, over the 60 budget by
+        // exactly 2.
+
+        let g = Graph { nodes, edges };
+        let drill = cluster_detail(&g, COM, &lens);
+        assert_eq!(drill.truncated, Some(62));
+        assert_eq!(drill.nodes.len(), 60);
+        let kept: BTreeSet<&str> = drill.nodes.iter().map(|n| n.id.as_str()).collect();
+
+        assert!(
+            kept.contains("a0-anchor"),
+            "the sender of the real edge always ranks in (degree 1)"
+        );
+        assert!(
+            kept.contains("zzz-receiver"),
+            "a member reached only as an edge's `to` endpoint must still gain real degree and \
+             rank ahead of the degree-0 tier, even though its id sorts after every filler and \
+             the victim"
+        );
+        assert!(
+            !kept.contains("zzz-victim"),
+            "a SUPERSEDED edge must contribute no degree - the victim stays tied with the \
+             degree-0 fillers and, carrying the largest id in that tie, is one of the two \
+             dropped"
+        );
     }
 }

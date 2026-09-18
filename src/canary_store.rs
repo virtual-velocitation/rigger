@@ -698,6 +698,47 @@ mod tests {
         }
     }
 
+    /// `canary_opts` builds the REAL canary-reviewer spawn options, never
+    /// `SpawnOpts::default()`: the deterministic `canary:<item>:<role>` id/unit, the
+    /// `"canary"` stage, and the agent's own composed system prompt - a default (empty
+    /// id/unit/stage/system_prompt) would file the spawn under no unit at all and run it
+    /// with no persona.
+    #[test]
+    fn canary_opts_builds_the_real_spawn_options_not_a_default() {
+        let item = CanaryItem {
+            id: "item-1".to_string(),
+            ..Default::default()
+        };
+        let a = AgentDef {
+            id: "sdet".to_string(),
+            prompt: "REVIEW CAREFULLY".to_string(),
+            ..Default::default()
+        };
+        let opts = canary_opts(&item, "lens:sdet", &a);
+        assert_eq!(opts.id, "canary:item-1:lens:sdet");
+        assert_eq!(opts.unit, "canary:item-1");
+        assert_eq!(opts.stage, "canary");
+        assert_eq!(opts.attempt, 0);
+        assert_eq!(opts.system_prompt, build_system_prompt(&a.prompt));
+        assert!(
+            !opts.system_prompt.is_empty(),
+            "a real agent persona must produce a non-empty composed system prompt"
+        );
+        // The canary contract this function's own doc states: no worktree, no live
+        // work-line, no build env, no routed review roster - every one of these happens
+        // to also be `SpawnOpts::default()`'s value, so together with the assertions
+        // above (which a bare `Default::default()` fails) this pins the REAL function,
+        // not a stand-in.
+        assert!(opts.dir.is_empty());
+        assert!(!opts.isolation);
+        assert!(!opts.parallel);
+        assert!(opts.blast_radius.is_empty());
+        assert!(opts.run_id.is_empty());
+        assert!(opts.title.is_empty());
+        assert!(opts.env.is_empty());
+        assert!(opts.reviews.is_empty());
+    }
+
     fn cfg() -> Config {
         let mut c = Config::default();
         for id in ["sdet", "adv", "adj"] {
