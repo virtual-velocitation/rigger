@@ -18,6 +18,10 @@
 //! rather than composing its own copy of any of these four facts - the "CLI's
 //! use of the core" half of this criterion.
 
+/// The code lens's map engine (spec 84, criterion 1: "THE MAP LANDS LABELLED" - districts,
+/// semantic zoom, label placement). `core`, like this module itself - see [`map`]'s own doc.
+pub mod map;
+
 use std::collections::BTreeMap;
 
 use crate::blocker::{self, Blocker};

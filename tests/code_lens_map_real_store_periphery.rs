@@ -1,0 +1,173 @@
+//! Periphery (integration) test for spec 84 criterion 1's own Done-when: "THE MAP LANDS
+//! LABELLED". Design's CONSTRAINTS WALK is explicit that this claim is proven against a REAL
+//! graph, never a fixture: "Real store - every rendering criterion is proven against this
+//! repository's actual graph, not a fixture: a fixture cannot reproduce the file-co-location
+//! degeneration this spec exists to fix."
+//!
+//! "This repository's real store" here means this project's OWN real source tree
+//! (`env!("CARGO_MANIFEST_DIR")/src`), ingested through the SAME production entry points a cold
+//! `rigger graph build` + `rigger graph communities` use
+//! (`grounder::symbols::events::project_batches`, `community::Coupling::from_graph`/`detect`/
+//! `events`) - never a hand-typed fixture graph, and never dependent on a specific operator's own
+//! `.rigger/graph.db` (which a fresh checkout, a CI runner, or this very unit's own isolated
+//! worktree does not carry - there is no prior run history to read here). This reproduces spec
+//! 84's own Goal exactly: communities that form by REAL file co-location, at real repository
+//! scale - the thing a two-node hand fixture cannot exhibit.
+//!
+//! Gated on `symbols` (the tree-sitter extraction pass `project_batches` needs), mirroring
+//! `live_project_ingestion.rs`'s own per-test gate - the light (`--no-default-features`) lane
+//! compiles this file to nothing rather than fail to find the extraction module.
+
+// Every use of these lives behind `#[cfg(feature = "symbols")]` below (the extraction pass this
+// whole file exists to drive against), so the imports themselves are gated too - otherwise the
+// light (`--no-default-features`) lane would compile this file down to nothing BUT these
+// top-level imports and flag every one of them unused.
+#[cfg(feature = "symbols")]
+use rigger::community;
+#[cfg(feature = "symbols")]
+use rigger::console::map;
+#[cfg(feature = "symbols")]
+use rigger::contextgraph::sqlite::Projector;
+#[cfg(feature = "symbols")]
+use rigger::contextgraph::{Graph, Projection};
+
+/// Ingest this repository's own `src/` tree into a fresh in-memory projection, run the real
+/// community-detection pass over its real coupling layer, and return the resulting live graph -
+/// the "real store" this criterion's rendering claim is proven against.
+#[cfg(feature = "symbols")]
+fn real_graph() -> Graph {
+    use rigger::grounder::symbols::events::project_batches;
+
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    let batches = project_batches(root);
+    assert!(
+        !batches.is_empty(),
+        "this repository's own src/ tree must yield extraction batches - a barren tree would \
+         silently make this test's 'real store' claim vacuous"
+    );
+
+    let projector = Projector::open(":memory:", "code-lens-map-real-store-test")
+        .expect("open an in-memory projection");
+    // `project_batches` mints raw events via `Event::new` (position 0 - the STORE's own job to
+    // stamp on append, per that constructor's own doc); the projector's idempotency guard keys on
+    // `position` being globally unique (`INSERT OR IGNORE INTO applied (position)`), so folding
+    // straight off `Event::new`'s default would apply only the very first position-0 event and
+    // silently `IGNORE` every other one. Stamp a real, strictly-increasing position onto every
+    // event before folding - exactly what a real store append does - so this in-memory projection
+    // folds its whole real batch, not a near-empty one.
+    let mut next_position: u64 = 1;
+    for (_, events) in &batches {
+        let mut stamped = events.clone();
+        for e in &mut stamped {
+            e.position = next_position;
+            next_position += 1;
+        }
+        projector
+            .apply_batch(&stamped)
+            .expect("fold this repository's own real extraction batch");
+    }
+
+    let whole = projector.whole().expect("read the whole live projection");
+    let coupling = community::Coupling::from_graph(&whole);
+    assert!(
+        !coupling.is_empty(),
+        "this repository's own coupling layer must be non-empty - the community-detection pass \
+         this criterion's districts read needs real coupling edges to group"
+    );
+    let assignment = community::detect(&coupling, community::DEFAULT_RESOLUTION);
+    let mut community_events = community::events(&assignment);
+    for e in &mut community_events {
+        e.position = next_position;
+        next_position += 1;
+    }
+    projector
+        .apply_batch(&community_events)
+        .expect("fold the real community-detection pass's own events");
+
+    projector
+        .whole()
+        .expect("read the community-derived live projection")
+}
+
+/// THE MAP LANDS LABELLED (spec 84 criterion 1's own Done-when, verbatim): "opening the code
+/// lens against this repository's real store renders the map at full extent in which every
+/// visible node is a code entity with a placed label and kind dot, every district carries its
+/// purpose label, and no node or district is labelled with a file name - and zooming in strictly
+/// increases the labelled-entity count without ever drawing an unlabelled node."
+#[cfg(feature = "symbols")]
+#[test]
+fn the_map_lands_labelled_against_this_repositorys_real_store() {
+    let graph = real_graph();
+    let model = map::build(&graph);
+
+    assert!(
+        !model.districts.is_empty(),
+        "this repository's real store must yield at least one district"
+    );
+    assert!(
+        !model.entities.is_empty(),
+        "this repository's real store must yield at least one map entity"
+    );
+
+    let full_extent = map::frame(&model, 1400.0, 900.0, 0.0);
+
+    // "every district carries its purpose label" - present at every zoom, never blank, never a
+    // file name.
+    assert_eq!(
+        full_extent.districts.len(),
+        model.districts.len(),
+        "every district's pill must be present at the full-extent frame"
+    );
+    for d in &full_extent.districts {
+        assert!(
+            !d.purpose.is_empty(),
+            "a district's purpose label must never be blank"
+        );
+        assert!(
+            !d.purpose.ends_with(".rs") && !d.purpose.contains('/'),
+            "district {:?} is labelled with what looks like a file name",
+            d.purpose
+        );
+    }
+
+    // "every visible node is a code entity with a placed label and kind dot ... and no node ...
+    // is labelled with a file name".
+    assert!(
+        !full_extent.entities.is_empty(),
+        "the full-extent frame over the real store must draw at least one entity"
+    );
+    for e in &full_extent.entities {
+        assert!(!e.name.is_empty(), "entity {:?} has no placed label", e.id);
+        assert!(!e.kind.is_empty(), "entity {:?} has no kind dot", e.id);
+        assert!(
+            !e.name.ends_with(".rs") && !e.name.contains('/'),
+            "entity {:?} is labelled with what looks like a file name: {:?}",
+            e.id,
+            e.name
+        );
+    }
+
+    // "zooming in strictly increases the labelled-entity count without ever drawing an
+    // unlabelled node" - reasserted directly against the real graph, not just the synthetic
+    // fixtures `console::map`'s own unit tests use.
+    let zoomed_in = map::frame(&model, 1400.0, 900.0, 6.0);
+    assert!(
+        zoomed_in.entities.len() > full_extent.entities.len(),
+        "zooming in against the real store must strictly increase the labelled-entity count: \
+         full extent {} vs zoomed in {}",
+        full_extent.entities.len(),
+        zoomed_in.entities.len()
+    );
+    for e in &zoomed_in.entities {
+        assert!(
+            !e.name.is_empty(),
+            "a drawn entity must always carry a placed label"
+        );
+        assert!(
+            !e.name.ends_with(".rs") && !e.name.contains('/'),
+            "entity {:?} is labelled with what looks like a file name: {:?}",
+            e.id,
+            e.name
+        );
+    }
+}

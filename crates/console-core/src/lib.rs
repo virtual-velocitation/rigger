@@ -45,6 +45,15 @@ struct ConsoleSession {
     max_retries: u32,
     current: console::ConsoleState,
     graph: Option<Graph>,
+    /// The last `map_build`-computed map engine model (spec 84 criterion 1: districts, rank,
+    /// world-space layout) - `map_frame` renders a screen-space [`console::map::DrawList`] from
+    /// this at whatever zoom it is called with, exactly like `graph`/`graph_query` above.
+    map: Option<console::map::MapModel>,
+    /// The viewport `(w, h)` the last `map_build` call fixed - the ABI doc's own grouping,
+    /// `map_build(w,h)` then `map_frame(cam,sel)`: the viewport is set once at build time, not
+    /// resent on every frame (a resize calls `map_build` again). `(0.0, 0.0)` before any
+    /// `map_build` call, which `map_frame` never reaches anyway (it errors first - no map).
+    map_viewport: (f64, f64),
 }
 
 impl ConsoleSession {
@@ -54,6 +63,8 @@ impl ConsoleSession {
             max_retries: 0,
             current: console::fold(&[], 0).unwrap_or_default(),
             graph: None,
+            map: None,
+            map_viewport: (0.0, 0.0),
         }
     }
 }
@@ -250,18 +261,75 @@ fn op_graph_query(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
     }
 }
 
+/// The `map_build(w,h)` wire input (spec 84 criterion 1): the viewport `map_frame` renders into
+/// until the next `map_build` call. Both default to `0.0` on a malformed/omitted field rather
+/// than erroring the op - a degenerate viewport yields a degenerate (not a crashing) frame.
+#[derive(serde::Deserialize, Default)]
+struct MapBuildInput {
+    #[serde(default)]
+    w: f64,
+    #[serde(default)]
+    h: f64,
+}
+
+/// Build the map engine's model (spec 84 criterion 1) from whatever `graph_load` last loaded, and
+/// fix the viewport every subsequent `map_frame` call renders into. Errors when no graph is
+/// loaded yet - the same "call the loader first" contract `graph_query` already keeps.
+fn op_map_build(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
+    let p: MapBuildInput = match serde_json::from_slice(input) {
+        Ok(v) => v,
+        Err(e) => return error_reply(format!("map_build: malformed input: {e}")),
+    };
+    let Some(graph) = session.graph.as_ref() else {
+        return error_reply("map_build: no graph loaded - call graph_load first");
+    };
+    let model = console::map::build(graph);
+    let districts = model.districts.len();
+    let entities = model.entities.len();
+    session.map_viewport = (p.w, p.h);
+    session.map = Some(model);
+    ok_json(serde_json::json!({ "ok": true, "districts": districts, "entities": entities }))
+}
+
+/// The `map_frame(cam,sel)` wire input's `cam` half this criterion owns: `zoom` alone (`<= 0.0`
+/// is the full-extent camera - see [`console::map::frame`]'s own doc). Criterion 2 extends this
+/// shape with pan and the `sel` half; this struct accepting only `zoom` today, defaulted, means a
+/// future field lands additively, never breaking this reply.
+#[derive(serde::Deserialize, Default)]
+struct MapFrameInput {
+    #[serde(default)]
+    zoom: f64,
+}
+
+/// Render one frame of the last `map_build`-computed model at the given zoom, using the viewport
+/// that build call fixed. Errors when no map has been built yet.
+fn op_map_frame(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
+    let p: MapFrameInput = match serde_json::from_slice(input) {
+        Ok(v) => v,
+        Err(e) => return error_reply(format!("map_frame: malformed input: {e}")),
+    };
+    let Some(model) = session.map.as_ref() else {
+        return error_reply("map_frame: no map built - call map_build first");
+    };
+    let (w, h) = session.map_viewport;
+    let draw = console::map::frame(model, w, h, p.zoom);
+    match serde_json::to_value(&draw) {
+        Ok(v) => ok_json(v),
+        Err(e) => error_reply(format!("map_frame: reply serialization failed: {e}")),
+    }
+}
+
 /// Answer one op call: `op` names one of the twelve ops THE MEMBER CRATE's design lists;
 /// `input` is that op's raw JSON argument bytes. Never panics - every failure path (an
 /// unknown op, malformed JSON, a graph query with no graph loaded yet) is a JSON `{"error":
 /// ...}` reply instead, the ABI's own documented contract.
 ///
-/// `map_build`/`map_frame`/`map_hit` (the map engine's ops) and `scrub_track`/
-/// `palette_commands` (view models no unit in this spec's DAG builds - see `view`'s own doc)
-/// answer with that SAME error-reply disposition rather than a stub shaped like real data:
-/// spec 93's own plan-critique record (finding `rf-pc93r2-c2-map-ops-not-self-disclaimed`)
-/// names exactly this stubbing as the correct, non-blocking disposition for the map ops
-/// pending spec 84's own engine, and the identical reasoning ("no unit in this DAG claims
-/// it") applies to the still-unbuilt view models specs 94-98 own.
+/// `map_build`/`map_frame` are spec 84 criterion 1's own engine (districts, rank, label
+/// placement - see [`console::map`]'s own doc): real data now, not the stub spec 93 left them
+/// as. `map_hit` (hit-testing over a selection - criterion 2's own, per the plan-critique record
+/// `u84-plan-dag-c1-c2-c3-c4`: "c2 ... adds map_hit on top of c1's entity model") and
+/// `scrub_track`/`palette_commands` (view models no unit in this spec's DAG builds - see `view`'s
+/// own doc) still answer the documented error-reply stub rather than fabricated data.
 fn dispatch(session: &mut ConsoleSession, op: &str, input: &[u8]) -> Vec<u8> {
     match op {
         "fold_reset" => op_fold_reset(session, input),
@@ -270,9 +338,11 @@ fn dispatch(session: &mut ConsoleSession, op: &str, input: &[u8]) -> Vec<u8> {
         "view" => op_view(session, input),
         "graph_load" => op_graph_load(session, input),
         "graph_query" => op_graph_query(session, input),
-        "map_build" | "map_frame" | "map_hit" => error_reply(format!(
-            "{op}: the map engine is spec 84's, not yet available"
-        )),
+        "map_build" => op_map_build(session, input),
+        "map_frame" => op_map_frame(session, input),
+        "map_hit" => {
+            error_reply("map_hit: hit-testing is spec 84 criterion 2's own, not yet available")
+        }
         "scrub_track" => error_reply("scrub_track: not yet available"),
         "statusline" => ok_json(serde_json::json!({ "statusline": session.current.statusline })),
         "palette_commands" => error_reply("palette_commands: not yet available"),
@@ -572,16 +642,142 @@ mod dispatch_tests {
         );
     }
 
-    /// Every one of the three map ops answers with the documented error-reply stub (spec
-    /// 84's own engine, not yet available), never a panic and never data shaped like a real
-    /// map frame.
+    /// `map_hit` still answers the documented error-reply stub (spec 84 criterion 2's own
+    /// hit-testing, not yet available) - unlike `map_build`/`map_frame` below, this one never
+    /// starts answering real data in this crate's own DAG.
     #[test]
-    fn map_ops_answer_with_a_not_yet_available_error_reply() {
+    fn map_hit_answers_a_not_yet_available_error_reply() {
         let mut s = ConsoleSession::new();
-        for op in ["map_build", "map_frame", "map_hit"] {
-            let v = call(&mut s, op, "{}");
-            assert!(v.get("error").is_some(), "op {op:?}: {v:?}");
+        let v = call(&mut s, "map_hit", "{}");
+        assert!(v.get("error").is_some(), "{v:?}");
+    }
+
+    /// `map_build`/`map_frame` before any `graph_load` are error replies, never a panic on a
+    /// `None` graph/map - the same "call the loader first" contract `graph_query` already keeps.
+    #[test]
+    fn map_build_and_map_frame_before_graph_load_answer_with_an_error_reply() {
+        let mut s = ConsoleSession::new();
+        let build = call(&mut s, "map_build", r#"{"w":800,"h":600}"#);
+        assert!(build.get("error").is_some(), "{build:?}");
+        let frame = call(&mut s, "map_frame", r#"{"zoom":0}"#);
+        assert!(frame.get("error").is_some(), "{frame:?}");
+    }
+
+    /// A `graph_load`ed graph with a live community membership, then `map_build`, answers real
+    /// district/entity counts - not the spec-93 stub. `map_frame` with no prior `map_build` still
+    /// errors even once a graph is loaded (the two calls are independently gated).
+    #[test]
+    fn map_build_answers_real_district_and_entity_counts_from_the_loaded_graph() {
+        use rigger::contextgraph::{
+            Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
+        };
+        use rigger::eventstore::Position;
+        let g = Graph {
+            nodes: vec![Node {
+                id: "src/worktree.rs::spawn_worktree".to_string(),
+                kind: KIND_CODE_ENTITY.to_string(),
+                attrs: [
+                    ("name".to_string(), "spawn_worktree".to_string()),
+                    ("kind".to_string(), "function".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            }],
+            edges: vec![Edge {
+                from: "src/worktree.rs::spawn_worktree".to_string(),
+                to: "community/1/0".to_string(),
+                rel: REL_IN_COMMUNITY.to_string(),
+                valid_from: 0,
+                valid_to: None,
+                source: Position::default(),
+                tier: TIER_EXTRACTED.to_string(),
+            }],
+        };
+        let payload = serde_json::to_vec(&g).unwrap();
+        let mut s = ConsoleSession::new();
+        call(&mut s, "graph_load", std::str::from_utf8(&payload).unwrap());
+
+        let frame_before_build = call(&mut s, "map_frame", r#"{"zoom":0}"#);
+        assert!(
+            frame_before_build.get("error").is_some(),
+            "map_frame must still error before its OWN map_build call: {frame_before_build:?}"
+        );
+
+        let build = call(&mut s, "map_build", r#"{"w":800,"h":600}"#);
+        assert_eq!(build["ok"], true, "{build:?}");
+        assert_eq!(build["districts"], 1, "{build:?}");
+        assert_eq!(build["entities"], 1, "{build:?}");
+
+        let frame = call(&mut s, "map_frame", r#"{"zoom":0}"#);
+        assert!(frame.get("error").is_none(), "{frame:?}");
+        assert_eq!(frame["districts"].as_array().unwrap().len(), 1, "{frame:?}");
+        let entities = frame["entities"].as_array().unwrap();
+        assert_eq!(entities.len(), 1, "{frame:?}");
+        assert_eq!(entities[0]["name"], "spawn_worktree", "{frame:?}");
+    }
+
+    /// `map_frame` at a higher zoom answers a strictly larger entities array than the full-extent
+    /// (zoom 0) frame of the SAME built model - proving the ABI wiring carries the map engine's
+    /// own monotonic-zoom property (pinned directly against the model in `console::map`'s own
+    /// tests) through the wire, not just in the pure function.
+    #[test]
+    fn map_frame_zooming_in_answers_more_entities_through_the_wire() {
+        use rigger::contextgraph::{
+            Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
+        };
+        use rigger::eventstore::Position;
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for d in 0..6 {
+            for m in 0..14 {
+                let id = format!("src/worktree.rs::f_{d}_{m}");
+                nodes.push(Node {
+                    id: id.clone(),
+                    kind: KIND_CODE_ENTITY.to_string(),
+                    attrs: [
+                        ("name".to_string(), format!("f_{d}_{m}")),
+                        ("kind".to_string(), "function".to_string()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                });
+                edges.push(Edge {
+                    from: id,
+                    to: format!("community/1/{d}"),
+                    rel: REL_IN_COMMUNITY.to_string(),
+                    valid_from: 0,
+                    valid_to: None,
+                    source: Position::default(),
+                    tier: TIER_EXTRACTED.to_string(),
+                });
+            }
         }
+        let g = Graph { nodes, edges };
+        let payload = serde_json::to_vec(&g).unwrap();
+        let mut s = ConsoleSession::new();
+        call(&mut s, "graph_load", std::str::from_utf8(&payload).unwrap());
+        call(&mut s, "map_build", r#"{"w":1200,"h":800}"#);
+
+        let out = call(&mut s, "map_frame", r#"{"zoom":0}"#);
+        let in_ = call(&mut s, "map_frame", r#"{"zoom":6}"#);
+        let out_n = out["entities"].as_array().unwrap().len();
+        let in_n = in_["entities"].as_array().unwrap().len();
+        assert!(
+            in_n > out_n,
+            "zooming in through the wire must strictly increase the entities array: {out_n} vs {in_n}"
+        );
+    }
+
+    /// A malformed `map_build`/`map_frame` input is an error reply, never a panic - the SAME
+    /// per-parsing-op discipline `malformed_input_answers_with_an_error_reply_for_every_parsing_op`
+    /// already proves for the other six parsing ops.
+    #[test]
+    fn map_build_and_map_frame_answer_with_an_error_reply_on_malformed_input() {
+        let mut s = ConsoleSession::new();
+        let build = call(&mut s, "map_build", "not json");
+        assert!(build.get("error").is_some(), "{build:?}");
+        let frame = call(&mut s, "map_frame", "not json");
+        assert!(frame.get("error").is_some(), "{frame:?}");
     }
 
     /// `scrub_track` and `palette_commands` - view models no unit in this spec's DAG builds

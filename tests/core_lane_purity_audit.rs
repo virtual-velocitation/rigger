@@ -131,8 +131,8 @@ fn purity_audit_record_has_the_shape_every_consumer_relies_on() {
 /// itself in `src/lib.rs` - i.e. the record's own module list has not drifted from `lib.rs`'s
 /// actual gates. A cheap structural cross-check, not a full parse: every listed file's basename
 /// (or `mod.rs` parent dir name) must appear as a `pub mod <name>;` / `mod <name>;` line in
-/// `lib.rs` (or, for a submodule under `contextgraph`/`eventstore`, in that module's own
-/// `mod.rs`) that is NOT immediately preceded by the store-gate attribute.
+/// `lib.rs` (or, for a submodule under `contextgraph`/`eventstore`/`console`, in that module's
+/// own `mod.rs`) that is NOT immediately preceded by the store-gate attribute.
 #[test]
 fn every_listed_core_module_is_declared_ungated_in_its_parent() {
     let r = record();
@@ -172,16 +172,22 @@ fn every_listed_core_module_is_declared_ungated_in_its_parent() {
         fs::read_to_string("src/contextgraph/mod.rs").expect("reading src/contextgraph/mod.rs");
     let eventstore_text =
         fs::read_to_string("src/eventstore/mod.rs").expect("reading src/eventstore/mod.rs");
+    let console_text =
+        fs::read_to_string("src/console/mod.rs").expect("reading src/console/mod.rs");
 
     for m in &modules {
         let (parent_text, name): (&str, &str) = if m == "src/contextgraph/mod.rs" {
             (&lib_text, "contextgraph")
         } else if m == "src/eventstore/mod.rs" {
             (&lib_text, "eventstore")
+        } else if m == "src/console/mod.rs" {
+            (&lib_text, "console")
         } else if let Some(rest) = m.strip_prefix("src/contextgraph/") {
             (&contextgraph_text, rest.trim_end_matches(".rs"))
         } else if let Some(rest) = m.strip_prefix("src/eventstore/") {
             (&eventstore_text, rest.trim_end_matches(".rs"))
+        } else if let Some(rest) = m.strip_prefix("src/console/") {
+            (&console_text, rest.trim_end_matches(".rs"))
         } else {
             let name = m
                 .strip_prefix("src/")
