@@ -867,6 +867,84 @@ fn console_call_wires_graph_query_map_argued_about_through_the_public_abi() {
     );
 }
 
+/// `map_argued_about`'s live-edge-only filter (`console::map::argued_about_in_review`'s own
+/// `valid_to.is_some()` skip) wires through the exported ABI - the test above this one only ever
+/// pins findings with LIVE edges, so it could not catch a regression that counted a SUPERSEDED
+/// finding too. This fixture pins one live finding on `hub` and one SUPERSEDED finding (`valid_to:
+/// Some(...)`) on `bridge` - `bridge` must never appear in the reply, only `hub`.
+#[test]
+fn console_call_wires_graph_query_map_argued_about_excludes_a_superseded_finding_edge_through_the_public_abi(
+) {
+    use rigger::console::map;
+    use rigger::contextgraph::{Edge, Node, KIND_FINDING, REL_ABOUT, TIER_EXTRACTED};
+    use rigger::eventstore::Position;
+
+    let mut graph = cross_district_fixture();
+    graph.nodes.push(Node {
+        id: "finding/live".to_string(),
+        kind: KIND_FINDING.to_string(),
+        attrs: Default::default(),
+    });
+    graph.edges.push(Edge {
+        from: "finding/live".to_string(),
+        to: "src/worktree.rs::hub".to_string(),
+        rel: REL_ABOUT.to_string(),
+        valid_from: 0,
+        valid_to: None,
+        source: Position::default(),
+        tier: TIER_EXTRACTED.to_string(),
+    });
+    graph.nodes.push(Node {
+        id: "finding/superseded".to_string(),
+        kind: KIND_FINDING.to_string(),
+        attrs: Default::default(),
+    });
+    graph.edges.push(Edge {
+        from: "finding/superseded".to_string(),
+        to: "src/dash.rs::bridge".to_string(),
+        rel: REL_ABOUT.to_string(),
+        valid_from: 0,
+        valid_to: Some(100),
+        source: Position::default(),
+        tier: TIER_EXTRACTED.to_string(),
+    });
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let queried = unsafe {
+        call(
+            "graph_query",
+            r#"{"kind":"map_argued_about","params":{"limit":5}}"#,
+        )
+    };
+
+    let model = map::build(&graph);
+    let direct = map::argued_about_in_review(&model, &graph, 5);
+    assert!(
+        direct.iter().any(|c| c.id == "src/worktree.rs::hub"),
+        "the live-pinned entity must still be a candidate: {direct:?}"
+    );
+    assert!(
+        direct.iter().all(|c| c.id != "src/dash.rs::bridge"),
+        "the entity whose ONLY pinned finding is superseded must never be a candidate: {direct:?}"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "candidates": direct }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_argued_about reply through the exported ABI must exclude the \
+         superseded finding edge the same way console::map::argued_about_in_review's own direct \
+         answer does"
+    );
+}
+
 /// `graph_query`'s `map_changing` kind wires through the exported ABI - the one `map_*` kind
 /// whose own params carry a field (`touched`) none of the others do, so this is the one test
 /// proving THAT field actually deserializes across the real ABI boundary, not merely within
@@ -1171,5 +1249,168 @@ fn console_call_graph_query_map_fit_entity_of_unknown_id_answers_an_error_throug
         expected_len,
         "graph_query's map_fit_entity error reply through the exported ABI must be the same \
          length as op_map_query's own documented error-message shape for an unknown id"
+    );
+}
+
+/// A single-community fixture built to put two entities' dots within [`map::HIT_RADIUS_PX`]-
+/// equivalent screen range of one another WITHOUT drifting them onto the low-rank ids `hit`'s own
+/// budget already admits: every one of `N` members gets 3 self-loop `REL_CALLS` edges (degree
+/// `4` counting the shared `REL_IN_COMMUNITY` edge) EXCEPT `a`/`b`, which get 2 self-loops plus
+/// ONE mutual `REL_CALLS` edge between themselves - tying every member at the SAME degree, so
+/// rank is pure id order (`a`/`b`'s own ids place them at ranks 494/549, far past any zoom's
+/// `budget`). That same mutual edge makes `b` one of `a`'s own [`map::capped_neighbors`] (never
+/// exported, but exercised the same way `frame`'s own CONSTRAINTS WALK test already forces an
+/// out-of-budget neighbour into view), so selecting `a` draws BOTH regardless of budget - letting
+/// their real, degree-tied-shortest world-distance (~52 units, the golden-angle spiral's own
+/// floor, confirmed empirically, never a hardcoded magic number) be shrunk under any target pixel
+/// gap by an ordinary positive zoom, far from every district pill's own reserved label footprint
+/// (`a`'s own world radius is 700+ units out, nowhere near the district centre a pill reserves
+/// around).
+fn tiebreak_fixture() -> (rigger::contextgraph::Graph, String, String) {
+    use rigger::contextgraph::{
+        Edge, Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED,
+    };
+    use rigger::eventstore::Position;
+
+    let code = |id: &str, name: &str| Node {
+        id: id.to_string(),
+        kind: KIND_CODE_ENTITY.to_string(),
+        attrs: [
+            ("name".to_string(), name.to_string()),
+            ("kind".to_string(), "function".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let edge = |from: &str, to: &str, rel: &str| Edge {
+        from: from.to_string(),
+        to: to.to_string(),
+        rel: rel.to_string(),
+        valid_from: 0,
+        valid_to: None,
+        source: Position::default(),
+        tier: TIER_EXTRACTED.to_string(),
+    };
+
+    const N: usize = 600;
+    const A_IDX: usize = 494;
+    const B_IDX: usize = 549;
+    let id_of = |i: usize| format!("src/z.rs::e{i:03}");
+
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for i in 0..N {
+        let id = id_of(i);
+        nodes.push(code(&id, &format!("e{i:03}")));
+        edges.push(edge(&id, "community/1/0", REL_IN_COMMUNITY));
+        let self_loops = if i == A_IDX || i == B_IDX { 2 } else { 3 };
+        for _ in 0..self_loops {
+            edges.push(edge(&id, &id, REL_CALLS));
+        }
+    }
+    edges.push(edge(&id_of(A_IDX), &id_of(B_IDX), REL_CALLS));
+
+    (Graph { nodes, edges }, id_of(A_IDX), id_of(B_IDX))
+}
+
+/// `map_hit`'s nearest-wins tie-break (the `d < bd` replacement inside `console::map::hit`'s own
+/// entity loop - HIT_RADIUS_PX's doc cites a regression test for exactly this, but never proves
+/// it crossing the real ABI): two entities both within hit range of one click must answer the
+/// STRICTLY NEARER one, not merely the first one the loop happens to examine. `a` (the lower-rank
+/// selection, examined FIRST since `MapModel::entities` walks rank-ascending) sits at the click
+/// itself's own equal-but-nonzero distance while `b` (examined SECOND, as a forced neighbour) sits
+/// exactly ON the click - if `hit` merely kept its first in-range match instead of comparing
+/// distances, this would answer `a` and fail.
+#[test]
+fn console_call_wires_map_hit_through_the_public_abi_preferring_the_nearer_of_two_in_range_dots() {
+    use rigger::console::map;
+
+    let (graph, a_id, b_id) = tiebreak_fixture();
+    let model = map::build(&graph);
+    let (vw, vh) = (900.0, 700.0);
+
+    // Measure the pair's FULL-EXTENT screen gap (both forced into view by selecting `a`) to
+    // derive a zoom that shrinks it under HIT_RADIUS_PX, without hardcoding a magic scale.
+    let full = map::frame(&model, vw, vh, &map::Camera::default(), Some(a_id.as_str()));
+    let a0 = full
+        .entities
+        .iter()
+        .find(|e| e.id == a_id)
+        .expect("a drawn at full extent as the selection");
+    let b0 = full
+        .entities
+        .iter()
+        .find(|e| e.id == b_id)
+        .expect("b drawn at full extent as a's own forced neighbour");
+    let d0 = ((a0.x - b0.x).powi(2) + (a0.y - b0.y).powi(2)).sqrt();
+    assert!(
+        d0 > 0.0,
+        "the fixture's own pair must not already coincide at full extent"
+    );
+
+    const TARGET_GAP_PX: f64 = 6.0;
+    let zoom = TARGET_GAP_PX / d0;
+    let camera = map::Camera {
+        cx: 0.0,
+        cy: 0.0,
+        zoom,
+    };
+
+    let dl = map::frame(&model, vw, vh, &camera, Some(a_id.as_str()));
+    let a = dl
+        .entities
+        .iter()
+        .find(|e| e.id == a_id)
+        .expect("a must still be drawn at the shrunk zoom");
+    let b = dl
+        .entities
+        .iter()
+        .find(|e| e.id == b_id)
+        .expect("b must still be drawn at the shrunk zoom, close beside a");
+    let gap = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+    assert!(
+        gap < 10.0,
+        "the fixture's own shrunk pair must land inside map_hit's real hit radius: {gap}px"
+    );
+
+    // The click lands EXACTLY on b's own dot - a is close (the shrunk gap above) but strictly
+    // farther, so a correct hit() must answer b, never a.
+    let (px, py) = (b.x, b.y);
+    let a_dist_to_click = ((a.x - px).powi(2) + (a.y - py).powi(2)).sqrt();
+    assert!(
+        a_dist_to_click > 0.0 && a_dist_to_click < 10.0,
+        "a must be a GENUINE competing candidate (in range, but farther than b) for this test to \
+         exercise the tie-break at all: {a_dist_to_click}px"
+    );
+
+    let direct = map::hit(&model, vw, vh, &camera, Some(a_id.as_str()), px, py);
+    assert_eq!(
+        direct,
+        Some(map::Hit::Entity(b_id.clone())),
+        "console::map::hit must prefer the strictly nearer b over the farther-but-still-in-range \
+         a, examined first"
+    );
+
+    unsafe {
+        call(
+            "graph_load",
+            std::str::from_utf8(&serde_json::to_vec(&graph).unwrap()).unwrap(),
+        );
+        call("map_build", &format!(r#"{{"w":{vw},"h":{vh}}}"#));
+    }
+    let hit = unsafe {
+        call(
+            "map_hit",
+            &format!(r#"{{"zoom":{zoom},"cx":0,"cy":0,"sel":"{a_id}","x":{px},"y":{py}}}"#),
+        )
+    };
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "hit": "entity", "id": b_id }))
+        .unwrap()
+        .len();
+    assert_eq!(
+        reply_len(hit),
+        expected_len,
+        "map_hit's tie-break reply through the exported ABI must be the same length as the \
+         reply shape built from console::map::hit's own direct (correct) answer"
     );
 }
