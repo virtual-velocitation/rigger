@@ -327,3 +327,100 @@ fn console_call_map_frame_zooming_in_answers_a_longer_reply_through_the_public_a
         reply_len(zoomed_in)
     );
 }
+
+/// A same-session `graph_load` reload invalidates whatever `map_build` computed from the PRIOR
+/// graph (adv-u84c1-map-stale-after-graph-reload): `map_frame` must go back to the documented
+/// "no map built" error until the caller calls `map_build` again, proven through the real
+/// exported ABI - the implementer's own same-crate `dispatch_tests::
+/// map_frame_errors_again_after_a_graph_reload_until_map_build_runs_again` drives this identical
+/// fix but only through the private `dispatch()` backdoor (see this crate's own `call_inner`
+/// doc), never across the FFI boundary this file exists to guard: a regression that broke only
+/// the ABI-level wiring of the reload-clears-the-map fix (the marshaling `console_call` adds on
+/// top of `dispatch`) would still pass that internal test. Reply content is unreadable natively
+/// (see module doc), so the post-reload reply's length is compared against the exact
+/// `{"error": ...}` reply length `op_map_frame`'s own documented "no map built - call map_build
+/// first" contract text serializes to - the same length-of-a-known-value technique this file's
+/// other assertions use, never a hardcoded byte count.
+#[test]
+fn console_call_map_frame_errors_again_after_a_graph_reload_through_the_public_abi() {
+    use rigger::console::map;
+    use rigger::contextgraph::{
+        Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
+    };
+    use rigger::eventstore::Position;
+
+    fn one_entity_graph(fn_name: &str) -> Graph {
+        Graph {
+            nodes: vec![Node {
+                id: format!("src/a.rs::{fn_name}"),
+                kind: KIND_CODE_ENTITY.to_string(),
+                attrs: [
+                    ("name".to_string(), fn_name.to_string()),
+                    ("kind".to_string(), "function".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            }],
+            edges: vec![Edge {
+                from: format!("src/a.rs::{fn_name}"),
+                to: "community/1/0".to_string(),
+                rel: REL_IN_COMMUNITY.to_string(),
+                valid_from: 0,
+                valid_to: None,
+                source: Position::default(),
+                tier: TIER_EXTRACTED.to_string(),
+            }],
+        }
+    }
+
+    let first = one_entity_graph("f");
+    let first_bytes = serde_json::to_vec(&first).expect("serializing the first fixture graph");
+    unsafe {
+        call("graph_load", std::str::from_utf8(&first_bytes).unwrap());
+        call("map_build", r#"{"w":800,"h":600}"#);
+    }
+    let built_frame = unsafe { call("map_frame", r#"{"zoom":0}"#) };
+    assert!(
+        reply_len(built_frame) > 0,
+        "map_frame after a real map_build must answer a non-empty reply through the exported ABI"
+    );
+
+    // Reload, same session - no map_build in between.
+    let second = one_entity_graph("g");
+    let second_bytes = serde_json::to_vec(&second).expect("serializing the second fixture graph");
+    let reload = unsafe { call("graph_load", std::str::from_utf8(&second_bytes).unwrap()) };
+    assert!(
+        reply_len(reload) > 0,
+        "graph_load must answer a non-empty reply through the exported ABI"
+    );
+
+    let stale_frame = unsafe { call("map_frame", r#"{"zoom":0}"#) };
+    let expected_error_len = serde_json::to_vec(&serde_json::json!({
+        "error": "map_frame: no map built - call map_build first"
+    }))
+    .unwrap()
+    .len();
+    assert_eq!(
+        reply_len(stale_frame),
+        expected_error_len,
+        "map_frame through the real exported ABI must go back to the documented \"no map \
+         built\" error after a same-session graph_load reload, never silently keep answering \
+         the pre-reload model"
+    );
+
+    // A fresh map_build after the reload answers real data again from the NEW graph.
+    unsafe {
+        call("map_build", r#"{"w":800,"h":600}"#);
+    }
+    let fresh_frame = unsafe { call("map_frame", r#"{"zoom":0}"#) };
+
+    let model = map::build(&second);
+    let direct = map::frame(&model, 800.0, 600.0, 0.0);
+    let expected_len = serde_json::to_vec(&direct).unwrap().len();
+    assert_eq!(
+        reply_len(fresh_frame),
+        expected_len,
+        "map_frame after the post-reload map_build must answer real data from the NEW graph \
+         through the exported ABI, matching console::map's own frame() output for it"
+    );
+}
