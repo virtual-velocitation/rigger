@@ -805,9 +805,18 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// (src/console/map.rs) lands as a fresh `keep-public-surface` candidate - its one real caller,
 /// console-core's `op_map_frame`, lives in a separate workspace-member crate outside `src/` (this
 /// scanner's own scope), invisible by construction, but is already landed and wired today, not a
-/// future one (candidates +1, keep-public-surface +1).
+/// future one (candidates +1, keep-public-surface +1). Now 38/21/12/5 (was 31/21/5/5) after spec
+/// 84 criterion 2's rail/search/camera engine: 8 new pub fns land in src/console/map.rs (`hit`,
+/// `landmarks`, `bridges_between_districts`, `changing_right_now`, `argued_about_in_review`,
+/// `search`, `fit_whole_map`, `fit_district`) as fresh `keep-public-surface` candidates - each
+/// wired through console-core's new `map_hit` op or the extended `graph_query` op's new `map_*`
+/// kinds, both living outside `src/` same as criterion 1's `frame` - AND `frame` itself drops out
+/// of the candidate list entirely, since criterion 2's own `hit()` now calls it directly from the
+/// same file (a real in-src/ production caller for the first time, not merely console-core's
+/// cross-crate one). Candidates +8 -1 = +7 (31 -> 38), keep-public-surface +8 -1 = +7 (5 -> 12),
+/// delete and keep-pending unchanged.
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_5_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_12_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -824,7 +833,7 @@ fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_5_
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (31, 21, 5, 5),
+        (38, 21, 12, 5),
         "the committed disposition split has changed since this criterion's research"
     );
 }

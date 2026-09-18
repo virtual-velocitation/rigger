@@ -25,16 +25,21 @@
 //!
 //! **Three units share this ABI; this module owns exactly one slice of it** (the plan-critique
 //! record `adv-pc84-text-treatment-ownership-confirmed` / `op-pc84-approve-spec84-dag`): districts,
-//! the degree rank, and label placement are THIS criterion's; the explore rail, search, selection
-//! and the interactive camera are criterion 2's (a later unit composes with [`frame`]'s draw list,
-//! adding lit-selection data, without touching what this module computes); the legend and the text
-//! TREATMENTS (underline/italic styling) are criterion 3's, rendered by the page from this module's
-//! plain draw list.
+//! the degree rank, and label placement are criterion 1's; the explore rail, search, selection
+//! and the interactive camera are THIS criterion's (spec 84 criterion 2, "EXPLORATION NEEDS NO
+//! VOCABULARY" - [`landmarks`], [`bridges_between_districts`], [`changing_right_now`] and
+//! [`argued_about_in_review`] are the rail's four candidate lists; [`search`] the search box;
+//! [`hit`] hit-testing a click; [`frame`]'s own `camera`/`selection` params the pan/zoom/lit-
+//! selection [`fit_whole_map`] and [`fit_district`] are the only two ways a camera resets); the
+//! legend and the text TREATMENTS (underline/italic styling) are criterion 3's, rendered by the
+//! page from this module's plain draw list.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contextgraph::query::{file_of, name_suffix, Buckets, Lens};
-use crate::contextgraph::{Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_REFERENCES};
+use crate::contextgraph::{
+    Graph, Node, KIND_CODE_ENTITY, KIND_FINDING, REL_ABOUT, REL_CALLS, REL_REFERENCES,
+};
 
 /// The community-detection resolution grain the map reads (mirrors
 /// [`crate::contextgraph::query::DEFAULT_COMMUNITY_RESOLUTION`] - the code lens's default grain,
@@ -405,6 +410,9 @@ pub struct DrawDistrict {
 
 /// One entity's rendered dot: its label and SCREEN position at this frame's camera. Appearing in
 /// [`DrawList::entities`] at ALL means its label placed successfully - see [`frame`]'s own doc.
+/// `lit` (spec 84 criterion 2, SEMANTIC ZOOM: "the selected entity is underlined") is true for
+/// the selected entity itself AND its drawn callers/callees - criterion 3's own text-treatment
+/// styling reads this flag; this module computes the FACT, never the styling.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DrawEntity {
     pub id: String,
@@ -412,23 +420,55 @@ pub struct DrawEntity {
     pub kind: String,
     pub x: f64,
     pub y: f64,
+    pub lit: bool,
 }
 
-/// One typed edge between two DRAWN entities.
+/// One typed edge between two DRAWN entities. `lit` (Design, SEMANTIC ZOOM: "a lit edge shows
+/// its relation type ... at its midpoint") is true when the edge touches the current selection.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DrawEdge {
     pub from: String,
     pub to: String,
     pub rel: String,
+    pub lit: bool,
+}
+
+/// One neighbour row on the selection card (Design, THE CARD: "CALLED BY and CALLS rows listing
+/// neighbours by name with the relation type") - the OTHER endpoint's id/name plus the edge's own
+/// relation, so a page never resolves an id to a name itself.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct NeighborRef {
+    pub id: String,
+    pub name: String,
+    pub rel: String,
+}
+
+/// The selected entity's card (spec 84 criterion 2; Design's SEMANTIC ZOOM: "clicking an entity
+/// lights its callers and callees and lists them BY NAME on the card"). `degree` is the entity's
+/// HONEST whole-map degree (Design, RENDER BUDGET: "a hub ... shows ... an honest degree on the
+/// card, never a hairball") even when `called_by`/`calls` are themselves capped to
+/// [`CARD_NEIGHBOR_CAP`] top neighbours by degree (Design, CONSTRAINTS WALK's hub carve-out: "the
+/// card shows the honest degree and the top neighbours by degree").
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SelectedCard {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub district: String,
+    pub degree: usize,
+    pub called_by: Vec<NeighborRef>,
+    pub calls: Vec<NeighborRef>,
 }
 
 /// One frame's whole draw list: every district pill (always present, Design's own words),
-/// every LABELLED entity dot (never an unlabelled one), and every edge between two drawn entities.
+/// every LABELLED entity dot (never an unlabelled one), every edge between two drawn entities,
+/// and the current selection's own card (`None` when nothing is selected).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct DrawList {
     pub districts: Vec<DrawDistrict>,
     pub entities: Vec<DrawEntity>,
     pub edges: Vec<DrawEdge>,
+    pub selected: Option<SelectedCard>,
 }
 
 /// The number of a community's top-ranked members visible at `zoom` (Design, SEMANTIC ZOOM: "the
@@ -443,26 +483,141 @@ pub(crate) fn budget(zoom: f64) -> usize {
     BUDGET_BASE + (zoom.max(0.0) * BUDGET_STEP).round() as usize
 }
 
-/// Render one frame of `model` at `zoom` for a `viewport_w` x `viewport_h` canvas. `zoom <= 0.0` is
-/// the FULL EXTENT (Design, SEED: "the initial camera is the full extent"): the whole world
-/// bounding box scaled to fit the viewport (with a small margin), centred on its own centroid - c1
-/// implements no panning (that is criterion 2's camera), so every frame is centred the same way,
-/// magnified by `zoom`.
+/// The interactive camera (spec 84 criterion 2; Design, CAMERA: "scroll zooms about the cursor,
+/// drag pans"). `zoom <= 0.0` is the FULL EXTENT sentinel c1 already defined (Design, SEED) and,
+/// in that case ALONE, `cx`/`cy` are ignored in favour of the model's own bounds centroid - so a
+/// default `Camera` (`zoom: 0.0`) renders EXACTLY what c1's zoom-only `frame` always rendered.
+/// At `zoom > 0.0`, `(cx, cy)` is the WORLD-SPACE point the viewport centres on (the pan this
+/// criterion adds); the base fit-to-viewport SCALE is always computed from the model's own world
+/// bounds regardless of pan - panning only moves the visible window, never changes how big
+/// things are, ordinary map-camera semantics. A page never hand-assembles a `Camera` other than
+/// forwarding its own scroll/drag deltas - [`fit_whole_map`] and [`fit_district`] are the only
+/// two ways this module RESETS one (Design, CAMERA: "the camera never resets except through
+/// fit-whole-map or a district double-click").
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Camera {
+    pub cx: f64,
+    pub cy: f64,
+    pub zoom: f64,
+}
+
+/// spec 84 criterion 2's own NEIGHBOR CAP for a selected entity: how many of its own callers/
+/// callees the MAP draws beyond the zoom budget, and how many the CARD lists - ONE fixed number
+/// for both (Design, CONSTRAINTS WALK, two paragraphs folded together: "a selected entity whose
+/// neighbours are outside the rank budget - they are drawn anyway" for an ordinary entity, and
+/// the hub carve-out "the card shows the honest degree and the top neighbours by degree; the map
+/// draws those within the budget" for one with hundreds). An ordinary entity's neighbours all fit
+/// under this cap, so "drawn anyway" holds in full; a hub's are capped to its own top-by-degree,
+/// never literally hundreds of dots.
+const CARD_NEIGHBOR_CAP: usize = 20;
+
+/// Which side of an edge a neighbour sits on relative to the selection - Design's own CALLED BY
+/// (`to == selection`) vs CALLS (`from == selection`) card rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dir {
+    CalledBy,
+    Calls,
+}
+
+/// The selection's own neighbours on one [`Dir`] side, ranked by neighbour degree descending (id
+/// ascending on a tie) and capped to [`CARD_NEIGHBOR_CAP`] - the ONE computation both [`frame`]'s
+/// always-visible-neighbour eligibility and the [`SelectedCard`]'s row lists read, so the two can
+/// never drift apart (a neighbour drawn on the map is always a neighbour the card lists, and vice
+/// versa).
+fn capped_neighbors<'a>(
+    model: &'a MapModel,
+    by_id: &BTreeMap<&str, &'a MapEntity>,
+    sel: &str,
+    dir: Dir,
+) -> Vec<(&'a MapEntity, &'a str)> {
+    let mut v: Vec<(&MapEntity, &str)> = model
+        .edges
+        .iter()
+        .filter_map(|(from, to, rel)| match dir {
+            Dir::CalledBy if to == sel => Some((from.as_str(), rel.as_str())),
+            Dir::Calls if from == sel => Some((to.as_str(), rel.as_str())),
+            _ => None,
+        })
+        .filter_map(|(id, rel)| by_id.get(id).map(|e| (*e, rel)))
+        .collect();
+    v.sort_by(|a, b| {
+        b.0.degree
+            .cmp(&a.0.degree)
+            .then_with(|| a.0.id.cmp(&b.0.id))
+    });
+    v.truncate(CARD_NEIGHBOR_CAP);
+    v
+}
+
+/// The selected entity's [`SelectedCard`] plus the id set of every neighbour [`frame`] must draw
+/// regardless of the zoom budget - `None` when `sel` names no entity this model carries (an
+/// unknown/stale selection is a graceful no-op, never a panic).
+fn selection_card_and_neighbors<'a>(
+    model: &'a MapModel,
+    by_id: &BTreeMap<&str, &'a MapEntity>,
+    sel: &str,
+) -> Option<(SelectedCard, BTreeSet<&'a str>)> {
+    let entity = *by_id.get(sel)?;
+    let called_by = capped_neighbors(model, by_id, sel, Dir::CalledBy);
+    let calls = capped_neighbors(model, by_id, sel, Dir::Calls);
+    let neighbor_ids: BTreeSet<&str> = called_by
+        .iter()
+        .chain(calls.iter())
+        .map(|(e, _)| e.id.as_str())
+        .collect();
+    let to_refs = |ns: &[(&MapEntity, &str)]| -> Vec<NeighborRef> {
+        ns.iter()
+            .map(|(e, rel)| NeighborRef {
+                id: e.id.clone(),
+                name: e.name.clone(),
+                rel: (*rel).to_string(),
+            })
+            .collect()
+    };
+    let card = SelectedCard {
+        id: entity.id.clone(),
+        name: entity.name.clone(),
+        kind: entity.kind.clone(),
+        district: entity.district.clone(),
+        degree: entity.degree,
+        called_by: to_refs(&called_by),
+        calls: to_refs(&calls),
+    };
+    Some((card, neighbor_ids))
+}
+
+/// Render one frame of `model` at `camera` for a `viewport_w` x `viewport_h` canvas, highlighting
+/// `selection` (an entity id, or `None`). `camera.zoom <= 0.0` is the FULL EXTENT (Design, SEED:
+/// "the initial camera is the full extent"): the whole world bounding box scaled to fit the
+/// viewport (with a small margin), centred on its own centroid; at a positive zoom the viewport
+/// centres on `camera.cx`/`camera.cy` instead (see [`Camera`]'s own doc).
 ///
 /// THE LABELLED-MAP INVARIANT, enforced by construction: district pills are placed FIRST,
 /// unconditionally, and reserve their screen bounding box - so "entity labels never displace
 /// district labels" (Design) holds because an entity candidate overlapping a pill is simply
 /// rejected, never placed over it. Entities are then walked in `model.entities`'s FIXED rank-primary
-/// order; an entity beyond this zoom's [`budget`] is skipped outright, and an eligible entity whose
-/// label cannot be placed at any of [`place_label`]'s four candidates is likewise skipped - in
-/// BOTH cases it is never pushed onto [`DrawList::entities`], so every returned entity carries a
-/// placed label and no unlabelled node is ever drawn.
-pub fn frame(model: &MapModel, viewport_w: f64, viewport_h: f64, zoom: f64) -> DrawList {
+/// order; an entity is ELIGIBLE when its rank is under this zoom's [`budget`] OR it is the
+/// selection itself or one of its [`capped_neighbors`] (Design, CONSTRAINTS WALK: "a selected
+/// entity whose neighbours are outside the rank budget - they are drawn anyway"); an eligible
+/// entity whose label cannot be placed at any of [`place_label`]'s four candidates is skipped
+/// regardless - in every skip case it is never pushed onto [`DrawList::entities`], so every
+/// returned entity carries a placed label and no unlabelled node is ever drawn.
+pub fn frame(
+    model: &MapModel,
+    viewport_w: f64,
+    viewport_h: f64,
+    camera: &Camera,
+    selection: Option<&str>,
+) -> DrawList {
     let (min_x, min_y, max_x, max_y) = model.bounds;
     let world_w = (max_x - min_x).max(1.0);
     let world_h = (max_y - min_y).max(1.0);
-    let world_cx = (min_x + max_x) / 2.0;
-    let world_cy = (min_y + max_y) / 2.0;
+    let zoom = camera.zoom;
+    let (world_cx, world_cy) = if zoom > 0.0 {
+        (camera.cx, camera.cy)
+    } else {
+        ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+    };
 
     const MARGIN: f64 = 0.9;
     let fit = (viewport_w / world_w).min(viewport_h / world_h) * MARGIN;
@@ -491,25 +646,39 @@ pub fn frame(model: &MapModel, viewport_w: f64, viewport_h: f64, zoom: f64) -> D
         });
     }
 
+    let by_id: BTreeMap<&str, &MapEntity> =
+        model.entities.iter().map(|e| (e.id.as_str(), e)).collect();
+    let sel_card = selection.and_then(|sel| selection_card_and_neighbors(model, &by_id, sel));
+    let sel_neighbor_ids: BTreeSet<&str> = sel_card
+        .as_ref()
+        .map(|(_, ids)| ids.clone())
+        .unwrap_or_default();
+
     let visible_rank = budget(zoom);
     let mut drawn: BTreeSet<&str> = BTreeSet::new();
     let mut entities = Vec::new();
     for e in &model.entities {
-        if e.rank >= visible_rank {
+        let is_selected = selection == Some(e.id.as_str());
+        let is_neighbor = sel_neighbor_ids.contains(e.id.as_str());
+        if e.rank >= visible_rank && !is_selected && !is_neighbor {
             continue;
         }
         let (sx, sy) = project(e.x, e.y);
         if place_label(sx, sy, &e.name, &mut reserved).is_some() {
             drawn.insert(e.id.as_str());
+            let lit = is_selected || is_neighbor;
             entities.push(DrawEntity {
                 id: e.id.clone(),
                 name: e.name.clone(),
                 kind: e.kind.clone(),
                 x: sx,
                 y: sy,
+                lit,
             });
         }
-        // else: the entity's label could not be placed - it is NOT drawn (the invariant).
+        // else: the entity's label could not be placed - it is NOT drawn (the invariant), even
+        // when it is the selection or one of its neighbours - the labelled-map invariant beats
+        // "always visible" exactly as it beats zoom-budget density.
     }
 
     let edges = model
@@ -520,6 +689,13 @@ pub fn frame(model: &MapModel, viewport_w: f64, viewport_h: f64, zoom: f64) -> D
             from: from.clone(),
             to: to.clone(),
             rel: rel.clone(),
+            // A lit edge is one touching the SELECTION itself (Design, SEMANTIC ZOOM: "a lit
+            // edge shows its relation type ... at its midpoint") - never merely an edge between
+            // two OTHER lit (neighbour) entities, which would light edges the click never
+            // actually explored.
+            lit: selection
+                .map(|sel| from.as_str() == sel || to.as_str() == sel)
+                .unwrap_or(false),
         })
         .collect();
 
@@ -527,6 +703,7 @@ pub fn frame(model: &MapModel, viewport_w: f64, viewport_h: f64, zoom: f64) -> D
         districts,
         entities,
         edges,
+        selected: sel_card.map(|(card, _)| card),
     }
 }
 
@@ -568,6 +745,279 @@ fn place_label(
         }
     }
     None
+}
+
+// ---- criterion 2: hit-testing, the explore rail, search, and the reset-only camera -----------
+
+/// What a click on the rendered map landed on (spec 84 criterion 2's own `map_hit`): a code
+/// entity's dot, or a district's hull - "double-click a district fits it" needs to tell the two
+/// apart from a click on one of its own members.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Hit {
+    Entity(String),
+    District(String),
+}
+
+/// How close (in SCREEN pixels) a click must land to an entity's dot to hit it - generous enough
+/// for an imprecise pointer, small enough that two adjacent dots stay individually clickable
+/// (dots are placed at least [`RING_STEP`]-derived world spacing apart, which even at the
+/// highest zoom this crate's own tests reach never collapses two dots inside this radius of one
+/// another - see `hit_prefers_the_nearest_entity_when_two_are_within_radius` for the tie-break
+/// this constant's generosity makes reachable).
+const HIT_RADIUS_PX: f64 = 10.0;
+
+/// Hit-test a SCREEN-space click `(x, y)` against the frame [`frame`] itself would render for
+/// this exact `camera`/`selection` - reusing `frame`'s OWN projection (by calling it directly)
+/// so hit-testing can never drift from what is actually drawn on screen; a dot the labelled-map
+/// invariant kept off-screen (an unplaceable label, or outside the zoom budget) is exactly as
+/// un-hittable as it is invisible. Entities win over districts on any overlap (Design: clicking
+/// a dot must always select that entity, never the district hull beneath it) - only when NO
+/// entity is within [`HIT_RADIUS_PX`] does a district hull get checked, and only then does a
+/// district hit register. `None` when the click lands on neither.
+pub fn hit(
+    model: &MapModel,
+    viewport_w: f64,
+    viewport_h: f64,
+    camera: &Camera,
+    selection: Option<&str>,
+    x: f64,
+    y: f64,
+) -> Option<Hit> {
+    let draw = frame(model, viewport_w, viewport_h, camera, selection);
+
+    let mut nearest_entity: Option<(f64, &str)> = None;
+    for e in &draw.entities {
+        let d = ((e.x - x).powi(2) + (e.y - y).powi(2)).sqrt();
+        if d <= HIT_RADIUS_PX && nearest_entity.is_none_or(|(bd, _)| d < bd) {
+            nearest_entity = Some((d, e.id.as_str()));
+        }
+    }
+    if let Some((_, id)) = nearest_entity {
+        return Some(Hit::Entity(id.to_string()));
+    }
+
+    let mut nearest_district: Option<(f64, &str)> = None;
+    for d in &draw.districts {
+        let dist = ((d.x - x).powi(2) + (d.y - y).powi(2)).sqrt();
+        if dist <= d.radius && nearest_district.is_none_or(|(bd, _)| dist < bd) {
+            nearest_district = Some((dist, d.purpose.as_str()));
+        }
+    }
+    nearest_district.map(|(_, purpose)| Hit::District(purpose.to_string()))
+}
+
+/// One always-available Explore rail chip's target (Design, EXPLORE RAIL): an entity id/name/kind
+/// the page can fly the camera to and select, with no vocabulary of its own required to find it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RailCandidate {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+}
+
+fn as_candidate(e: &MapEntity) -> RailCandidate {
+    RailCandidate {
+        id: e.id.clone(),
+        name: e.name.clone(),
+        kind: e.kind.clone(),
+    }
+}
+
+/// Landmarks (Design, EXPLORE RAIL: "busiest entities") - the whole map's top `limit` entities by
+/// WHOLE-MAP degree, ties broken by id. Never by [`MapEntity::rank`], which is only a
+/// per-community rank c1's zoom budget reads - a landmark is busy ACROSS the whole map, not
+/// merely dominant within its own small community.
+pub fn landmarks(model: &MapModel, limit: usize) -> Vec<RailCandidate> {
+    let mut v: Vec<&MapEntity> = model.entities.iter().collect();
+    v.sort_by(|a, b| b.degree.cmp(&a.degree).then_with(|| a.id.cmp(&b.id)));
+    v.into_iter().take(limit).map(as_candidate).collect()
+}
+
+/// Bridges between districts (Design, EXPLORE RAIL: "entities with the most cross-district
+/// edges") - ranked by how many of an entity's OWN edges cross into a DIFFERENT district, never
+/// by whole-map degree (a busy entity wholly inside one district is a landmark, not a bridge).
+/// An entity with zero cross-district edges never appears - a "bridge" chip must bridge something.
+pub fn bridges_between_districts(model: &MapModel, limit: usize) -> Vec<RailCandidate> {
+    let by_id: BTreeMap<&str, &MapEntity> =
+        model.entities.iter().map(|e| (e.id.as_str(), e)).collect();
+    let mut crossings: BTreeMap<&str, usize> = BTreeMap::new();
+    for (from, to, _) in &model.edges {
+        let (Some(a), Some(b)) = (by_id.get(from.as_str()), by_id.get(to.as_str())) else {
+            continue;
+        };
+        if a.district != b.district {
+            *crossings.entry(from.as_str()).or_default() += 1;
+            *crossings.entry(to.as_str()).or_default() += 1;
+        }
+    }
+    let mut v: Vec<(&MapEntity, usize)> = crossings
+        .into_iter()
+        .filter_map(|(id, n)| by_id.get(id).map(|e| (*e, n)))
+        .collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.id.cmp(&b.0.id)));
+    v.into_iter()
+        .take(limit)
+        .map(|(e, _)| as_candidate(e))
+        .collect()
+}
+
+/// Changing right now (Design, EXPLORE RAIL: "the live run's blast radius") - the map's own
+/// entities among `touched`, ranked by whole-map degree. This module has no way to know whether
+/// a run is live or what it is touching (that is the RUN's own event log, outside a pure function
+/// over a `Graph`), so the CALLER (the console-core session, which already folds that log) hands
+/// the touched-entity-id set in; an empty `touched` (no run is live, or a live run has not yet
+/// computed a blast radius) answers an empty list - the EMPTY-STATE Design names, never a
+/// fabricated placeholder.
+pub fn changing_right_now(
+    model: &MapModel,
+    touched: &BTreeSet<String>,
+    limit: usize,
+) -> Vec<RailCandidate> {
+    let mut v: Vec<&MapEntity> = model
+        .entities
+        .iter()
+        .filter(|e| touched.contains(&e.id))
+        .collect();
+    v.sort_by(|a, b| b.degree.cmp(&a.degree).then_with(|| a.id.cmp(&b.id)));
+    v.into_iter().take(limit).map(as_candidate).collect()
+}
+
+/// Argued about in review (Design, EXPLORE RAIL: "entities with findings pinned") - map entities
+/// with at least one live [`KIND_FINDING`] node reachable by a live [`REL_ABOUT`] edge (a
+/// finding's own `from`, per this graph's convention - see `mcpserver`'s own ReviewFinding fold),
+/// ranked by how MANY findings are pinned, ties by id. Purely a graph read (spec 29b's own
+/// findings-as-graph-nodes ingest already puts these on `graph`) - unlike [`changing_right_now`],
+/// which needs data this module has no way to derive on its own.
+pub fn argued_about_in_review(model: &MapModel, graph: &Graph, limit: usize) -> Vec<RailCandidate> {
+    let by_id: BTreeMap<&str, &MapEntity> =
+        model.entities.iter().map(|e| (e.id.as_str(), e)).collect();
+    let finding_ids: BTreeSet<&str> = graph
+        .nodes
+        .iter()
+        .filter(|n| n.kind == KIND_FINDING)
+        .map(|n| n.id.as_str())
+        .collect();
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for e in &graph.edges {
+        if e.valid_to.is_some() || e.rel != REL_ABOUT || !finding_ids.contains(e.from.as_str()) {
+            continue;
+        }
+        if by_id.contains_key(e.to.as_str()) {
+            *counts.entry(e.to.as_str()).or_default() += 1;
+        }
+    }
+    let mut v: Vec<(&MapEntity, usize)> = counts
+        .into_iter()
+        .filter_map(|(id, n)| by_id.get(id).map(|e| (*e, n)))
+        .collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.id.cmp(&b.0.id)));
+    v.into_iter()
+        .take(limit)
+        .map(|(e, _)| as_candidate(e))
+        .collect()
+}
+
+/// One search hit (Design, EXPLORE RAIL: "a search box (prefix and substring, kind and degree
+/// beside each hit)").
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct SearchHit {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub degree: usize,
+}
+
+/// Search (Design, EXPLORE RAIL: "prefix and substring, kind and degree beside each hit") - a
+/// case-insensitive match over every map entity's OWN display name (never its raw id, which
+/// would leak the file - the SAME name-not-id discipline [`build`] already keeps for the map's
+/// own labels). Prefix hits rank above substring-only hits; within each tier, higher degree
+/// first, then id for a deterministic tie-break. An empty `query` answers an empty list - a
+/// blank search box is not "match everything".
+pub fn search(model: &MapModel, query: &str, limit: usize) -> Vec<SearchHit> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let q = query.to_lowercase();
+    let mut prefix: Vec<&MapEntity> = Vec::new();
+    let mut substring: Vec<&MapEntity> = Vec::new();
+    for e in &model.entities {
+        let name = e.name.to_lowercase();
+        if name.starts_with(&q) {
+            prefix.push(e);
+        } else if name.contains(&q) {
+            substring.push(e);
+        }
+    }
+    let by_rank =
+        |a: &&MapEntity, b: &&MapEntity| b.degree.cmp(&a.degree).then_with(|| a.id.cmp(&b.id));
+    prefix.sort_by(by_rank);
+    substring.sort_by(by_rank);
+    prefix
+        .into_iter()
+        .chain(substring)
+        .take(limit)
+        .map(|e| SearchHit {
+            id: e.id.clone(),
+            name: e.name.clone(),
+            kind: e.kind.clone(),
+            degree: e.degree,
+        })
+        .collect()
+}
+
+/// Fit whole map (Design, EXPLORE RAIL and CAMERA: "a 'fit whole map' control returns to the full
+/// extent") - the one camera [`frame`]'s own FULL EXTENT sentinel already renders
+/// (`camera.zoom <= 0.0`), returned as an explicit [`Camera`] value so a page never has to know
+/// that sentinel exists on its own; it only ever calls this fn or [`fit_district`] to RESET the
+/// camera (Design, CAMERA: "the camera never resets except through fit-whole-map or a district
+/// double-click" - these two functions are the only way this module resets one).
+pub fn fit_whole_map(model: &MapModel) -> Camera {
+    let (min_x, min_y, max_x, max_y) = model.bounds;
+    Camera {
+        cx: (min_x + max_x) / 2.0,
+        cy: (min_y + max_y) / 2.0,
+        zoom: 0.0,
+    }
+}
+
+/// How much of the smaller viewport dimension a double-clicked district's own hull should fill
+/// after [`fit_district`] - generous enough to read as "fit", short of the whole viewport so a
+/// district's own label and its neighbours' context stay visible around it.
+const DISTRICT_FIT_FRACTION: f64 = 0.35;
+
+/// Fit district (Design, CAMERA: "double-click a district fits it") - a camera centred on the
+/// named district whose zoom makes its own hull occupy [`DISTRICT_FIT_FRACTION`] of the smaller
+/// viewport dimension, using the SAME fit-to-viewport scale formula [`frame`] itself computes
+/// (never a second one), solved for the zoom that hits the target radius. `None` for an unknown
+/// purpose - the caller's own double-click already named a real district (via [`hit`]'s own
+/// `Hit::District`), so this is a defensive contract, not a documented UI path.
+pub fn fit_district(
+    model: &MapModel,
+    viewport_w: f64,
+    viewport_h: f64,
+    purpose: &str,
+) -> Option<Camera> {
+    let d = model.districts.iter().find(|d| d.purpose == purpose)?;
+    let (min_x, min_y, max_x, max_y) = model.bounds;
+    let world_w = (max_x - min_x).max(1.0);
+    let world_h = (max_y - min_y).max(1.0);
+    const MARGIN: f64 = 0.9;
+    let base_fit = (viewport_w / world_w).min(viewport_h / world_h) * MARGIN;
+    let target_radius_px = DISTRICT_FIT_FRACTION * viewport_w.min(viewport_h) / 2.0;
+    let scale_needed = if d.radius > 0.0 {
+        target_radius_px / d.radius
+    } else {
+        base_fit
+    };
+    // `frame`'s own `scale = fit * (1 + zoom.max(0) * 0.5)`, solved for `zoom`; floored just
+    // above zero so this NEVER answers the full-extent sentinel `frame` would otherwise
+    // reinterpret as "ignore cx/cy" (see `Camera`'s own doc) - a district fit must always pan.
+    let zoom = ((scale_needed / base_fit - 1.0) / 0.5).max(0.0001);
+    Some(Camera {
+        cx: d.x,
+        cy: d.y,
+        zoom,
+    })
 }
 
 #[cfg(test)]
@@ -939,7 +1389,16 @@ mod tests {
     fn frame_never_draws_an_entity_without_a_placed_label() {
         let model = build(&populous_graph(6, 3, 12));
         for zoom in [0.0, 1.0, 3.0, 6.0] {
-            let dl = frame(&model, 1200.0, 800.0, zoom);
+            let dl = frame(
+                &model,
+                1200.0,
+                800.0,
+                &Camera {
+                    zoom,
+                    ..Camera::default()
+                },
+                None,
+            );
             // Every drawn entity's name must be non-empty (a placed label exists), and the count
             // of drawn entities can never exceed the eligible (budgeted) set.
             let eligible = model
@@ -965,7 +1424,16 @@ mod tests {
     fn frame_always_carries_every_districts_pill_at_every_zoom() {
         let model = build(&populous_graph(4, 2, 5));
         for zoom in [0.0, 2.0, 5.0] {
-            let dl = frame(&model, 1000.0, 700.0, zoom);
+            let dl = frame(
+                &model,
+                1000.0,
+                700.0,
+                &Camera {
+                    zoom,
+                    ..Camera::default()
+                },
+                None,
+            );
             assert_eq!(
                 dl.districts.len(),
                 model.districts.len(),
@@ -977,7 +1445,7 @@ mod tests {
     #[test]
     fn frame_district_pill_is_never_a_file_name() {
         let model = build(&populous_graph(3, 1, 4));
-        let dl = frame(&model, 900.0, 600.0, 0.0);
+        let dl = frame(&model, 900.0, 600.0, &Camera::default(), None);
         for d in &dl.districts {
             assert!(!d.purpose.ends_with(".rs") && !d.purpose.contains('/'));
         }
@@ -986,8 +1454,17 @@ mod tests {
     #[test]
     fn frame_zooming_in_strictly_increases_the_labelled_entity_count() {
         let model = build(&populous_graph(8, 3, 14));
-        let out = frame(&model, 1200.0, 800.0, 0.0);
-        let in_ = frame(&model, 1200.0, 800.0, 6.0);
+        let out = frame(&model, 1200.0, 800.0, &Camera::default(), None);
+        let in_ = frame(
+            &model,
+            1200.0,
+            800.0,
+            &Camera {
+                zoom: 6.0,
+                ..Camera::default()
+            },
+            None,
+        );
         assert!(
             in_.entities.len() > out.entities.len(),
             "zooming in must strictly increase the labelled-entity count: full extent {} vs zoomed {}",
@@ -1035,5 +1512,547 @@ mod tests {
             first, second,
             "the second label must not choose the same offset as the first"
         );
+    }
+
+    // ---- criterion 2: camera pan, selection lighting, hit-testing, the rail, search ----------
+
+    /// A->B, C->A (C calls A, A calls B), all one community/district - the minimum fixture with
+    /// both a CALLED BY neighbour (C) and a CALLS neighbour (B) of the middle entity A.
+    fn caller_callee_graph() -> Graph {
+        let nodes = vec![
+            code_node("src/a.rs::a_fn", "a_fn", "function"),
+            code_node("src/a.rs::b_fn", "b_fn", "function"),
+            code_node("src/a.rs::c_fn", "c_fn", "function"),
+        ];
+        let edges = vec![
+            in_community("src/a.rs::a_fn", "community/1/0"),
+            in_community("src/a.rs::b_fn", "community/1/0"),
+            in_community("src/a.rs::c_fn", "community/1/0"),
+            live_edge("src/a.rs::a_fn", "src/a.rs::b_fn", REL_CALLS),
+            live_edge("src/a.rs::c_fn", "src/a.rs::a_fn", REL_CALLS),
+        ];
+        Graph { nodes, edges }
+    }
+
+    #[test]
+    fn frame_at_full_extent_ignores_camera_pan() {
+        let model = build(&populous_graph(3, 1, 5));
+        let default_cam = frame(&model, 900.0, 700.0, &Camera::default(), None);
+        let panned_but_zoom_zero = frame(
+            &model,
+            900.0,
+            700.0,
+            &Camera {
+                cx: 9999.0,
+                cy: -9999.0,
+                zoom: 0.0,
+            },
+            None,
+        );
+        let positions = |dl: &DrawList| -> Vec<(String, f64, f64)> {
+            dl.entities
+                .iter()
+                .map(|e| (e.id.clone(), e.x, e.y))
+                .collect()
+        };
+        assert_eq!(
+            positions(&default_cam),
+            positions(&panned_but_zoom_zero),
+            "zoom <= 0.0 must ignore camera cx/cy entirely - it is the full-extent sentinel"
+        );
+    }
+
+    #[test]
+    fn frame_at_a_positive_zoom_pans_with_the_camera() {
+        let model = build(&populous_graph(2, 1, 6));
+        let centered = frame(
+            &model,
+            1000.0,
+            800.0,
+            &Camera {
+                zoom: 2.0,
+                ..Camera::default()
+            },
+            None,
+        );
+        let panned = frame(
+            &model,
+            1000.0,
+            800.0,
+            &Camera {
+                cx: 500.0,
+                cy: 0.0,
+                zoom: 2.0,
+            },
+            None,
+        );
+        fn x_by_id(dl: &DrawList) -> BTreeMap<&str, f64> {
+            dl.entities.iter().map(|e| (e.id.as_str(), e.x)).collect()
+        }
+        let a = x_by_id(&centered);
+        let b = x_by_id(&panned);
+        assert!(
+            !a.is_empty() && !b.is_empty(),
+            "the fixture must actually draw entities at zoom 2"
+        );
+        // The SAME model+viewport+zoom but a different camera cx must move at least one shared
+        // entity's screen x - proving pan actually panning, never a no-op.
+        let panned_entity_ids: BTreeSet<&str> = b.keys().copied().collect();
+        assert!(
+            panned_entity_ids.iter().any(|id| {
+                a.get(id)
+                    .map(|&ax| (ax - b[id]).abs() > 1e-6)
+                    .unwrap_or(false)
+            }),
+            "panning the camera must move at least one shared entity's projected position"
+        );
+    }
+
+    #[test]
+    fn frame_with_no_selection_lights_nothing() {
+        let model = build(&caller_callee_graph());
+        let dl = frame(&model, 800.0, 600.0, &Camera::default(), None);
+        assert!(dl.selected.is_none(), "{dl:?}");
+        assert!(
+            dl.entities.iter().all(|e| !e.lit),
+            "no entity may be lit with no selection: {dl:?}"
+        );
+        assert!(
+            dl.edges.iter().all(|e| !e.lit),
+            "no edge may be lit with no selection: {dl:?}"
+        );
+    }
+
+    #[test]
+    fn frame_selection_lights_the_entity_and_its_callers_and_callees() {
+        let model = build(&caller_callee_graph());
+        let dl = frame(
+            &model,
+            800.0,
+            600.0,
+            &Camera::default(),
+            Some("src/a.rs::a_fn"),
+        );
+        let lit_ids: BTreeSet<&str> = dl
+            .entities
+            .iter()
+            .filter(|e| e.lit)
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(
+            lit_ids,
+            BTreeSet::from(["src/a.rs::a_fn", "src/a.rs::b_fn", "src/a.rs::c_fn"]),
+            "the selection AND both its caller (c_fn) and callee (b_fn) must be lit: {dl:?}"
+        );
+    }
+
+    #[test]
+    fn frame_selection_lights_only_edges_touching_the_selection() {
+        let model = build(&caller_callee_graph());
+        let dl = frame(
+            &model,
+            800.0,
+            600.0,
+            &Camera::default(),
+            Some("src/a.rs::a_fn"),
+        );
+        for e in &dl.edges {
+            let touches_selection = e.from == "src/a.rs::a_fn" || e.to == "src/a.rs::a_fn";
+            assert_eq!(
+                e.lit, touches_selection,
+                "edge {:?}->{:?} lit must equal whether it touches the selection: {dl:?}",
+                e.from, e.to
+            );
+        }
+        assert!(dl.edges.iter().any(|e| e.lit), "{dl:?}");
+    }
+
+    #[test]
+    fn frame_selected_card_lists_called_by_and_calls_by_name_with_relation_type() {
+        let model = build(&caller_callee_graph());
+        let dl = frame(
+            &model,
+            800.0,
+            600.0,
+            &Camera::default(),
+            Some("src/a.rs::a_fn"),
+        );
+        let card = dl
+            .selected
+            .expect("a_fn is a real entity, must have a card");
+        assert_eq!(card.id, "src/a.rs::a_fn");
+        assert_eq!(card.name, "a_fn");
+        assert_eq!(
+            card.called_by,
+            vec![NeighborRef {
+                id: "src/a.rs::c_fn".to_string(),
+                name: "c_fn".to_string(),
+                rel: REL_CALLS.to_string(),
+            }]
+        );
+        assert_eq!(
+            card.calls,
+            vec![NeighborRef {
+                id: "src/a.rs::b_fn".to_string(),
+                name: "b_fn".to_string(),
+                rel: REL_CALLS.to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn frame_selection_neighbors_are_drawn_even_beyond_the_zoom_budget() {
+        // One community with 10 members (budget(0.0) == 3, so most ranks are normally
+        // ineligible at full extent) - a hub with an edge to every other member, and one LOW-
+        // degree leaf whose only edge is to the hub. Selecting the hub must still draw the
+        // leaf even though its rank alone would never clear the zoom-0 budget.
+        let mut nodes = vec![code_node("src/a.rs::hub", "hub", "function")];
+        let mut edges = vec![in_community("src/a.rs::hub", "community/1/0")];
+        for i in 0..9 {
+            let id = format!("src/a.rs::leaf_{i}");
+            nodes.push(code_node(&id, &format!("leaf_{i}"), "function"));
+            edges.push(in_community(&id, "community/1/0"));
+            edges.push(live_edge("src/a.rs::hub", &id, REL_CALLS));
+        }
+        let model = build(&Graph { nodes, edges });
+        let leaf_rank = model
+            .entities
+            .iter()
+            .find(|e| e.id == "src/a.rs::leaf_8")
+            .unwrap()
+            .rank;
+        assert!(
+            leaf_rank >= budget(0.0),
+            "the fixture must actually put leaf_8 outside the zoom-0 budget for this test to \
+             prove anything: rank {leaf_rank} vs budget {}",
+            budget(0.0)
+        );
+        let without_selection = frame(&model, 800.0, 600.0, &Camera::default(), None);
+        assert!(
+            !without_selection
+                .entities
+                .iter()
+                .any(|e| e.id == "src/a.rs::leaf_8"),
+            "sanity: leaf_8 must NOT be drawn with no selection"
+        );
+        let with_selection = frame(
+            &model,
+            800.0,
+            600.0,
+            &Camera::default(),
+            Some("src/a.rs::hub"),
+        );
+        assert!(
+            with_selection
+                .entities
+                .iter()
+                .any(|e| e.id == "src/a.rs::leaf_8"),
+            "leaf_8 is a neighbour of the selected hub - it must be drawn anyway: {with_selection:?}"
+        );
+    }
+
+    #[test]
+    fn frame_selected_card_reports_the_honest_degree_but_caps_the_neighbor_rows() {
+        // A hub with 30 callees (CARD_NEIGHBOR_CAP is 20) - the card's own `degree` must be the
+        // TRUE count (30), while `calls` is capped to the top 20 by degree.
+        let mut nodes = vec![code_node("src/a.rs::hub", "hub", "function")];
+        let mut edges = vec![in_community("src/a.rs::hub", "community/1/0")];
+        for i in 0..30 {
+            let id = format!("src/a.rs::callee_{i:02}");
+            nodes.push(code_node(&id, &format!("callee_{i:02}"), "function"));
+            edges.push(in_community(&id, "community/1/0"));
+            edges.push(live_edge("src/a.rs::hub", &id, REL_CALLS));
+        }
+        let model = build(&Graph { nodes, edges });
+        let dl = frame(
+            &model,
+            1200.0,
+            900.0,
+            &Camera::default(),
+            Some("src/a.rs::hub"),
+        );
+        let card = dl.selected.expect("hub must have a card");
+        // 30 CALLS edges plus the hub's own IN_COMMUNITY membership edge (degree_map counts
+        // every live edge touching a node, not only CALLS - the SAME whole-map degree every
+        // other entity on the map carries).
+        assert_eq!(
+            card.degree, 31,
+            "the card's degree must be the HONEST whole-map count"
+        );
+        assert_eq!(
+            card.calls.len(),
+            CARD_NEIGHBOR_CAP,
+            "the card's own neighbour rows must be capped, never literally all 30"
+        );
+    }
+
+    #[test]
+    fn frame_an_unknown_selection_is_a_graceful_no_op() {
+        let model = build(&caller_callee_graph());
+        let dl = frame(
+            &model,
+            800.0,
+            600.0,
+            &Camera::default(),
+            Some("src/a.rs::does_not_exist"),
+        );
+        assert!(dl.selected.is_none(), "{dl:?}");
+        assert!(dl.entities.iter().all(|e| !e.lit), "{dl:?}");
+        assert!(dl.edges.iter().all(|e| !e.lit), "{dl:?}");
+    }
+
+    // ---- hit ----------------------------------------------------------------------------------
+
+    #[test]
+    fn hit_finds_the_nearest_entity_within_radius() {
+        let model = build(&caller_callee_graph());
+        let dl = frame(&model, 800.0, 600.0, &Camera::default(), None);
+        let target = dl.entities.first().expect("a fixture entity must be drawn");
+        let got = hit(
+            &model,
+            800.0,
+            600.0,
+            &Camera::default(),
+            None,
+            target.x,
+            target.y,
+        );
+        assert_eq!(got, Some(Hit::Entity(target.id.clone())), "{dl:?}");
+    }
+
+    #[test]
+    fn hit_returns_none_far_from_everything() {
+        let model = build(&caller_callee_graph());
+        let got = hit(
+            &model,
+            800.0,
+            600.0,
+            &Camera::default(),
+            None,
+            -1.0e9,
+            -1.0e9,
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn hit_falls_back_to_a_district_when_no_entity_is_near_but_the_click_is_inside_its_hull() {
+        let model = build(&populous_graph(1, 1, 6));
+        let dl = frame(&model, 900.0, 700.0, &Camera::default(), None);
+        let d = dl.districts.first().expect("one district in this fixture");
+        // Just inside the hull's radius, but nowhere near HIT_RADIUS_PX of any entity dot.
+        let x = d.x + d.radius * 0.99;
+        let y = d.y;
+        let too_far_from_any_dot = dl
+            .entities
+            .iter()
+            .all(|e| ((e.x - x).powi(2) + (e.y - y).powi(2)).sqrt() > HIT_RADIUS_PX);
+        assert!(
+            too_far_from_any_dot,
+            "the probe point must not accidentally land on an entity dot for this test to prove \
+             the district fallback"
+        );
+        let got = hit(&model, 900.0, 700.0, &Camera::default(), None, x, y);
+        assert_eq!(got, Some(Hit::District(d.purpose.clone())));
+    }
+
+    #[test]
+    fn hit_prefers_an_entity_dot_over_the_district_hull_beneath_it() {
+        let model = build(&caller_callee_graph());
+        let dl = frame(&model, 800.0, 600.0, &Camera::default(), None);
+        let target = dl.entities.first().expect("a fixture entity must be drawn");
+        // This entity necessarily sits inside its own district's hull too - an exact hit on the
+        // dot must still resolve to the ENTITY, never the district.
+        let got = hit(
+            &model,
+            800.0,
+            600.0,
+            &Camera::default(),
+            None,
+            target.x,
+            target.y,
+        );
+        assert_eq!(got, Some(Hit::Entity(target.id.clone())));
+    }
+
+    // ---- explore rail: landmarks, bridges, changing, argued-about -----------------------------
+
+    fn cross_district_graph() -> Graph {
+        let nodes = vec![
+            code_node("src/worktree.rs::hub", "hub", "function"),
+            code_node("src/worktree.rs::leaf", "leaf", "function"),
+            code_node("src/dash.rs::bridge", "bridge", "function"),
+            code_node("src/dash.rs::quiet", "quiet", "function"),
+        ];
+        let edges = vec![
+            in_community("src/worktree.rs::hub", "community/1/0"),
+            in_community("src/worktree.rs::leaf", "community/1/0"),
+            in_community("src/dash.rs::bridge", "community/1/1"),
+            in_community("src/dash.rs::quiet", "community/1/1"),
+            live_edge("src/worktree.rs::hub", "src/worktree.rs::leaf", REL_CALLS),
+            // The only cross-district edge: dash::bridge calls worktree::hub.
+            live_edge("src/dash.rs::bridge", "src/worktree.rs::hub", REL_CALLS),
+        ];
+        Graph { nodes, edges }
+    }
+
+    #[test]
+    fn landmarks_ranks_by_whole_map_degree_descending() {
+        let model = build(&cross_district_graph());
+        let top = landmarks(&model, 1);
+        // hub has degree 3 (its own IN_COMMUNITY edge plus CALLS to leaf and from bridge), the
+        // highest in the fixture.
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].id, "src/worktree.rs::hub");
+    }
+
+    #[test]
+    fn landmarks_respects_the_limit() {
+        let model = build(&cross_district_graph());
+        assert_eq!(landmarks(&model, 2).len(), 2);
+        assert_eq!(landmarks(&model, 100).len(), model.entities.len());
+    }
+
+    #[test]
+    fn bridges_between_districts_only_includes_entities_with_a_cross_district_edge() {
+        let model = build(&cross_district_graph());
+        let bridges = bridges_between_districts(&model, 10);
+        let ids: BTreeSet<&str> = bridges.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            BTreeSet::from(["src/dash.rs::bridge", "src/worktree.rs::hub"]),
+            "only the two endpoints of the one cross-district edge may appear: {bridges:?}"
+        );
+        assert!(
+            !ids.contains("src/worktree.rs::leaf") && !ids.contains("src/dash.rs::quiet"),
+            "an entity with only intra-district edges is not a bridge: {bridges:?}"
+        );
+    }
+
+    #[test]
+    fn changing_right_now_filters_to_the_touched_set() {
+        let model = build(&cross_district_graph());
+        let touched: BTreeSet<String> = ["src/worktree.rs::leaf".to_string()].into_iter().collect();
+        let v = changing_right_now(&model, &touched, 10);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!(v[0].id, "src/worktree.rs::leaf");
+    }
+
+    #[test]
+    fn changing_right_now_is_empty_when_nothing_is_touched() {
+        let model = build(&cross_district_graph());
+        let v = changing_right_now(&model, &BTreeSet::new(), 10);
+        assert!(
+            v.is_empty(),
+            "no run live (an empty touched set) must answer an empty list, the EMPTY-STATE \
+             Design names: {v:?}"
+        );
+    }
+
+    #[test]
+    fn argued_about_in_review_ranks_entities_by_pinned_finding_count() {
+        use crate::contextgraph::{Edge, KIND_FINDING};
+        use crate::eventstore::Position;
+        let mut g = cross_district_graph();
+        g.nodes.push(Node {
+            id: "f1".to_string(),
+            kind: KIND_FINDING.to_string(),
+            attrs: Default::default(),
+        });
+        g.nodes.push(Node {
+            id: "f2".to_string(),
+            kind: KIND_FINDING.to_string(),
+            attrs: Default::default(),
+        });
+        let about = |finding: &str, subject: &str| Edge {
+            from: finding.to_string(),
+            to: subject.to_string(),
+            rel: REL_ABOUT.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: Position::default(),
+            tier: TIER_EXTRACTED.to_string(),
+        };
+        g.edges.push(about("f1", "src/worktree.rs::hub"));
+        g.edges.push(about("f2", "src/worktree.rs::hub"));
+        let model = build(&g);
+        let v = argued_about_in_review(&model, &g, 10);
+        assert_eq!(v.len(), 1, "{v:?}");
+        assert_eq!(v[0].id, "src/worktree.rs::hub");
+    }
+
+    #[test]
+    fn argued_about_in_review_is_empty_when_no_findings_are_pinned() {
+        let g = cross_district_graph();
+        let model = build(&g);
+        assert!(argued_about_in_review(&model, &g, 10).is_empty());
+    }
+
+    // ---- search ---------------------------------------------------------------------------
+
+    #[test]
+    fn search_ranks_prefix_hits_above_substring_only_hits() {
+        let model = build(&cross_district_graph());
+        // "bridge" is a substring of nothing else here, but "b" prefix-matches "bridge" only,
+        // and substring-matches nothing else - add a name that substring-matches "hub" to prove
+        // ordering: search for "leaf" prefix-matches "leaf" and nothing substring-matches it.
+        let hits = search(&model, "hu", 10);
+        assert_eq!(hits[0].id, "src/worktree.rs::hub", "{hits:?}");
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let model = build(&cross_district_graph());
+        let hits = search(&model, "HUB", 10);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].id, "src/worktree.rs::hub");
+    }
+
+    #[test]
+    fn search_of_an_empty_query_answers_no_hits() {
+        let model = build(&cross_district_graph());
+        assert!(search(&model, "", 10).is_empty());
+    }
+
+    #[test]
+    fn search_hit_carries_kind_and_degree_beside_the_name() {
+        let model = build(&cross_district_graph());
+        let hits = search(&model, "hub", 10);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, "function");
+        // hub's own IN_COMMUNITY edge (+1) plus its two CALLS edges (leaf, bridge) - the SAME
+        // whole-map degree_map every entity on the map carries.
+        assert_eq!(hits[0].degree, 3);
+    }
+
+    // ---- fit_whole_map / fit_district -------------------------------------------------------
+
+    #[test]
+    fn fit_whole_map_is_the_full_extent_sentinel_centered_on_the_bounds() {
+        let model = build(&populous_graph(3, 1, 5));
+        let cam = fit_whole_map(&model);
+        assert_eq!(cam.zoom, 0.0);
+        let (min_x, min_y, max_x, max_y) = model.bounds;
+        assert_eq!(cam.cx, (min_x + max_x) / 2.0);
+        assert_eq!(cam.cy, (min_y + max_y) / 2.0);
+    }
+
+    #[test]
+    fn fit_district_centers_on_the_named_district_at_a_positive_zoom() {
+        let model = build(&populous_graph(3, 1, 5));
+        let purpose = model.districts[0].purpose.clone();
+        let cam = fit_district(&model, 1000.0, 800.0, &purpose).expect("a real district");
+        assert_eq!(cam.cx, model.districts[0].x);
+        assert_eq!(cam.cy, model.districts[0].y);
+        assert!(
+            cam.zoom > 0.0,
+            "a district fit must always pan, never fall back to the full-extent sentinel"
+        );
+    }
+
+    #[test]
+    fn fit_district_of_an_unknown_purpose_is_none() {
+        let model = build(&populous_graph(2, 1, 4));
+        assert_eq!(fit_district(&model, 900.0, 700.0, "no-such-district"), None);
     }
 }

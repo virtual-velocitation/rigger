@@ -255,11 +255,172 @@ fn op_graph_load(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
     }
 }
 
+/// The seven `map_*` kinds spec 84 criterion 2 adds to `graph_query` (the Explore rail's own
+/// four candidate lists, search, and the two camera RESETS - `fit_whole_map`/`fit_district`):
+/// routed here rather than to the library's own `contextgraph::query::graph_query` (which knows
+/// nothing of a built map, only a `Graph`), because `graph_query` is this crate's ONE extensible
+/// multi-kind query op - THE MODULE AND ITS ABI's own twelve-op budget has no room for seven more
+/// named ops, and `graph_query` already exists precisely to carry a `kind` + arbitrary `params`
+/// payload. Every kind here needs `session.map` (`map_build` fills it); `map_argued_about`
+/// additionally reads `session.graph` directly, always `Some` whenever `session.map` is
+/// (`map_build` itself requires a loaded graph, and a reload clears both together - see
+/// `op_graph_load`'s own doc).
+const MAP_QUERY_KINDS: &[&str] = &[
+    "map_landmarks",
+    "map_bridges",
+    "map_argued_about",
+    "map_changing",
+    "map_search",
+    "map_fit_whole",
+    "map_fit_district",
+];
+
+/// A rail chip's own reasonable working set when a caller omits `limit` entirely - unlike
+/// [`MapBuildInput`]/[`MapFrameInput`]'s numeric fields (where a `0.0` degenerate viewport/zoom
+/// is a harmless no-op a real caller never actually sends), an OMITTED `limit` is a plausible
+/// real mistake and a silent `0` would make every rail chip look permanently empty - a caller
+/// that truly wants zero candidates can still ask for `"limit":0` explicitly.
+fn default_rail_limit() -> usize {
+    8
+}
+
+/// Shared `limit` shape for `map_landmarks`/`map_bridges`/`map_argued_about` (Design, EXPLORE
+/// RAIL).
+#[derive(serde::Deserialize)]
+struct RailLimitParams {
+    #[serde(default = "default_rail_limit")]
+    limit: usize,
+}
+
+impl Default for RailLimitParams {
+    fn default() -> Self {
+        RailLimitParams {
+            limit: default_rail_limit(),
+        }
+    }
+}
+
+/// `map_changing`'s own extra field: the entity ids the CALLER already knows the live run is
+/// touching right now (Design, EXPLORE RAIL: "Changing right now (the live run's blast radius)"),
+/// since this crate has no run-lifecycle state of its own to derive it from (see
+/// [`console::map::changing_right_now`]'s own doc for why that fn takes the same set as a plain
+/// parameter rather than reaching into a run's event log itself). An omitted `touched` is the
+/// documented EMPTY-STATE (no run live), not a parsing error.
+#[derive(serde::Deserialize)]
+struct ChangingParams {
+    #[serde(default = "default_rail_limit")]
+    limit: usize,
+    #[serde(default)]
+    touched: Vec<String>,
+}
+
+impl Default for ChangingParams {
+    fn default() -> Self {
+        ChangingParams {
+            limit: default_rail_limit(),
+            touched: Vec::new(),
+        }
+    }
+}
+
+/// `map_search`'s own params (Design, EXPLORE RAIL: "a search box (prefix and substring, kind
+/// and degree beside each hit)"). An omitted `query` is the empty string, which
+/// [`console::map::search`] itself already answers with no hits - never a parsing error.
+#[derive(serde::Deserialize)]
+struct SearchParams {
+    #[serde(default)]
+    query: String,
+    #[serde(default = "default_rail_limit")]
+    limit: usize,
+}
+
+impl Default for SearchParams {
+    fn default() -> Self {
+        SearchParams {
+            query: String::new(),
+            limit: default_rail_limit(),
+        }
+    }
+}
+
+/// `map_fit_district`'s own param: the district `purpose` (from a prior `map_hit`'s own
+/// `Hit::District`, or one of `map_frame`'s own district pills) to fit the camera to. An empty/
+/// omitted `purpose` simply matches no real district - [`console::map::fit_district`]'s own
+/// documented `None` contract, answered as an error reply here rather than a crash.
+#[derive(serde::Deserialize, Default)]
+struct FitDistrictParams {
+    #[serde(default)]
+    purpose: String,
+}
+
+fn op_map_query(session: &ConsoleSession, kind: &str, params: &serde_json::Value) -> Vec<u8> {
+    let Some(model) = session.map.as_ref() else {
+        return error_reply(format!(
+            "graph_query: {kind}: no map built - call map_build first"
+        ));
+    };
+    match kind {
+        "map_landmarks" => {
+            let p: RailLimitParams = serde_json::from_value(params.clone()).unwrap_or_default();
+            ok_json(serde_json::json!({ "candidates": console::map::landmarks(model, p.limit) }))
+        }
+        "map_bridges" => {
+            let p: RailLimitParams = serde_json::from_value(params.clone()).unwrap_or_default();
+            ok_json(serde_json::json!({
+                "candidates": console::map::bridges_between_districts(model, p.limit)
+            }))
+        }
+        "map_argued_about" => {
+            let p: RailLimitParams = serde_json::from_value(params.clone()).unwrap_or_default();
+            let Some(graph) = session.graph.as_ref() else {
+                return error_reply(
+                    "graph_query: map_argued_about: no graph loaded - call graph_load first",
+                );
+            };
+            ok_json(serde_json::json!({
+                "candidates": console::map::argued_about_in_review(model, graph, p.limit)
+            }))
+        }
+        "map_changing" => {
+            let p: ChangingParams = serde_json::from_value(params.clone()).unwrap_or_default();
+            let touched: std::collections::BTreeSet<String> = p.touched.into_iter().collect();
+            ok_json(serde_json::json!({
+                "candidates": console::map::changing_right_now(model, &touched, p.limit)
+            }))
+        }
+        "map_search" => {
+            let p: SearchParams = serde_json::from_value(params.clone()).unwrap_or_default();
+            ok_json(serde_json::json!({ "hits": console::map::search(model, &p.query, p.limit) }))
+        }
+        "map_fit_whole" => {
+            let cam = console::map::fit_whole_map(model);
+            ok_json(serde_json::json!({ "cx": cam.cx, "cy": cam.cy, "zoom": cam.zoom }))
+        }
+        "map_fit_district" => {
+            let p: FitDistrictParams = serde_json::from_value(params.clone()).unwrap_or_default();
+            let (w, h) = session.map_viewport;
+            match console::map::fit_district(model, w, h, &p.purpose) {
+                Some(cam) => {
+                    ok_json(serde_json::json!({ "cx": cam.cx, "cy": cam.cy, "zoom": cam.zoom }))
+                }
+                None => error_reply(format!(
+                    "graph_query: map_fit_district: unknown district {:?}",
+                    p.purpose
+                )),
+            }
+        }
+        other => error_reply(format!("graph_query: unreachable map kind {other:?}")),
+    }
+}
+
 fn op_graph_query(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
     let q: GraphQueryInput = match serde_json::from_slice(input) {
         Ok(v) => v,
         Err(e) => return error_reply(format!("graph_query: malformed input: {e}")),
     };
+    if MAP_QUERY_KINDS.contains(&q.kind.as_str()) {
+        return op_map_query(session, &q.kind, &q.params);
+    }
     let Some(graph) = session.graph.as_ref() else {
         return error_reply("graph_query: no graph loaded - call graph_load first");
     };
@@ -300,18 +461,27 @@ fn op_map_build(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
     ok_json(serde_json::json!({ "ok": true, "districts": districts, "entities": entities }))
 }
 
-/// The `map_frame(cam,sel)` wire input's `cam` half this criterion owns: `zoom` alone (`<= 0.0`
-/// is the full-extent camera - see [`console::map::frame`]'s own doc). Criterion 2 extends this
-/// shape with pan and the `sel` half; this struct accepting only `zoom` today, defaulted, means a
-/// future field lands additively, never breaking this reply.
+/// The `map_frame(cam,sel)` wire input, now WHOLE (spec 84 criterion 2 extends criterion 1's
+/// zoom-only `cam` with the pan `cx`/`cy`, plus the `sel` half): `zoom`/`cx`/`cy` together are
+/// [`console::map::Camera`] (`zoom <= 0.0` is the full-extent camera and ignores `cx`/`cy` - see
+/// that type's own doc), and `sel` is the selected entity id (absent/`null` = no selection). All
+/// four default on a malformed/omitted field rather than erroring the op - a degenerate camera
+/// yields a degenerate (not a crashing) frame, the same discipline [`MapBuildInput`] already
+/// keeps for its own numeric fields.
 #[derive(serde::Deserialize, Default)]
 struct MapFrameInput {
     #[serde(default)]
     zoom: f64,
+    #[serde(default)]
+    cx: f64,
+    #[serde(default)]
+    cy: f64,
+    #[serde(default)]
+    sel: Option<String>,
 }
 
-/// Render one frame of the last `map_build`-computed model at the given zoom, using the viewport
-/// that build call fixed. Errors when no map has been built yet.
+/// Render one frame of the last `map_build`-computed model at the given camera/selection, using
+/// the viewport that build call fixed. Errors when no map has been built yet.
 fn op_map_frame(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
     let p: MapFrameInput = match serde_json::from_slice(input) {
         Ok(v) => v,
@@ -321,10 +491,64 @@ fn op_map_frame(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
         return error_reply("map_frame: no map built - call map_build first");
     };
     let (w, h) = session.map_viewport;
-    let draw = console::map::frame(model, w, h, p.zoom);
+    let camera = console::map::Camera {
+        cx: p.cx,
+        cy: p.cy,
+        zoom: p.zoom,
+    };
+    let draw = console::map::frame(model, w, h, &camera, p.sel.as_deref());
     match serde_json::to_value(&draw) {
         Ok(v) => ok_json(v),
         Err(e) => error_reply(format!("map_frame: reply serialization failed: {e}")),
+    }
+}
+
+/// The `map_hit(cam,sel,x,y)` wire input: the SAME camera/selection shape [`MapFrameInput`]
+/// takes, plus the SCREEN-space click point being tested.
+#[derive(serde::Deserialize, Default)]
+struct MapHitInput {
+    #[serde(default)]
+    zoom: f64,
+    #[serde(default)]
+    cx: f64,
+    #[serde(default)]
+    cy: f64,
+    #[serde(default)]
+    sel: Option<String>,
+    #[serde(default)]
+    x: f64,
+    #[serde(default)]
+    y: f64,
+}
+
+/// Hit-test a click against the last `map_build`-computed model, at the given camera/selection -
+/// spec 84 criterion 2's own engine ([`console::map::hit`], which reuses `frame`'s own projection
+/// so this can never drift from what a page actually draws). Errors when no map has been built
+/// yet, the SAME contract `map_frame` already keeps. The reply is tagged (`"hit": "entity"` with
+/// an `id`, `"hit": "district"` with a `purpose`, or `"hit": "none"`) so a page never has to infer
+/// which shape it got.
+fn op_map_hit(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
+    let p: MapHitInput = match serde_json::from_slice(input) {
+        Ok(v) => v,
+        Err(e) => return error_reply(format!("map_hit: malformed input: {e}")),
+    };
+    let Some(model) = session.map.as_ref() else {
+        return error_reply("map_hit: no map built - call map_build first");
+    };
+    let (w, h) = session.map_viewport;
+    let camera = console::map::Camera {
+        cx: p.cx,
+        cy: p.cy,
+        zoom: p.zoom,
+    };
+    match console::map::hit(model, w, h, &camera, p.sel.as_deref(), p.x, p.y) {
+        Some(console::map::Hit::Entity(id)) => {
+            ok_json(serde_json::json!({ "hit": "entity", "id": id }))
+        }
+        Some(console::map::Hit::District(purpose)) => {
+            ok_json(serde_json::json!({ "hit": "district", "purpose": purpose }))
+        }
+        None => ok_json(serde_json::json!({ "hit": "none" })),
     }
 }
 
@@ -334,11 +558,14 @@ fn op_map_frame(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
 /// ...}` reply instead, the ABI's own documented contract.
 ///
 /// `map_build`/`map_frame` are spec 84 criterion 1's own engine (districts, rank, label
-/// placement - see [`console::map`]'s own doc): real data now, not the stub spec 93 left them
-/// as. `map_hit` (hit-testing over a selection - criterion 2's own, per the plan-critique record
-/// `u84-plan-dag-c1-c2-c3-c4`: "c2 ... adds map_hit on top of c1's entity model") and
-/// `scrub_track`/`palette_commands` (view models no unit in this spec's DAG builds - see `view`'s
-/// own doc) still answer the documented error-reply stub rather than fabricated data.
+/// placement - see [`console::map`]'s own doc); `map_frame`'s pan/selection half and `map_hit`
+/// (hit-testing) are criterion 2's, per the plan-critique record `u84-plan-dag-c1-c2-c3-c4`: "c2
+/// ... adds map_hit on top of c1's entity model" - real data now, not the stubs spec 93/c1 left
+/// them as. Criterion 2 also adds five `map_*` `kind`s to `graph_query` (the Explore rail's four
+/// candidate lists plus search - see [`MAP_QUERY_KINDS`]'s own doc for why they ride `graph_query`
+/// rather than a new op). `scrub_track`/`palette_commands` (view models no unit in this spec's DAG
+/// builds - see `view`'s own doc) still answer the documented error-reply stub rather than
+/// fabricated data.
 fn dispatch(session: &mut ConsoleSession, op: &str, input: &[u8]) -> Vec<u8> {
     match op {
         "fold_reset" => op_fold_reset(session, input),
@@ -349,9 +576,7 @@ fn dispatch(session: &mut ConsoleSession, op: &str, input: &[u8]) -> Vec<u8> {
         "graph_query" => op_graph_query(session, input),
         "map_build" => op_map_build(session, input),
         "map_frame" => op_map_frame(session, input),
-        "map_hit" => {
-            error_reply("map_hit: hit-testing is spec 84 criterion 2's own, not yet available")
-        }
+        "map_hit" => op_map_hit(session, input),
         "scrub_track" => error_reply("scrub_track: not yet available"),
         "statusline" => ok_json(serde_json::json!({ "statusline": session.current.statusline })),
         "palette_commands" => error_reply("palette_commands: not yet available"),
@@ -651,14 +876,320 @@ mod dispatch_tests {
         );
     }
 
-    /// `map_hit` still answers the documented error-reply stub (spec 84 criterion 2's own
-    /// hit-testing, not yet available) - unlike `map_build`/`map_frame` below, this one never
-    /// starts answering real data in this crate's own DAG.
+    /// `map_hit` before any `map_build` is the SAME "call map_build first" error reply
+    /// `map_frame` already answers - never a panic on a `None` map.
     #[test]
-    fn map_hit_answers_a_not_yet_available_error_reply() {
+    fn map_hit_before_map_build_answers_an_error_reply() {
         let mut s = ConsoleSession::new();
         let v = call(&mut s, "map_hit", "{}");
         assert!(v.get("error").is_some(), "{v:?}");
+    }
+
+    /// A `graph_load`ed + `map_build`-built session with one district, two entities, one CALLS
+    /// edge between them (worktree.rs::spawn_worktree -> worktree.rs::remove_worktree) - the
+    /// shared fixture every `map_hit`/`graph_query` `map_*`-kind test below builds on, so each
+    /// test's own assertions stay about the OP's wiring, not about re-deriving a fixture graph.
+    fn built_map_session() -> ConsoleSession {
+        use rigger::contextgraph::{
+            Edge, Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED,
+        };
+        use rigger::eventstore::Position;
+        let code = |id: &str, name: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: [
+                ("name".to_string(), name.to_string()),
+                ("kind".to_string(), "function".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let membership = |id: &str| Edge {
+            from: id.to_string(),
+            to: "community/1/0".to_string(),
+            rel: REL_IN_COMMUNITY.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: Position::default(),
+            tier: TIER_EXTRACTED.to_string(),
+        };
+        let g = Graph {
+            nodes: vec![
+                code("src/worktree.rs::spawn_worktree", "spawn_worktree"),
+                code("src/worktree.rs::remove_worktree", "remove_worktree"),
+            ],
+            edges: vec![
+                membership("src/worktree.rs::spawn_worktree"),
+                membership("src/worktree.rs::remove_worktree"),
+                Edge {
+                    from: "src/worktree.rs::spawn_worktree".to_string(),
+                    to: "src/worktree.rs::remove_worktree".to_string(),
+                    rel: REL_CALLS.to_string(),
+                    valid_from: 0,
+                    valid_to: None,
+                    source: Position::default(),
+                    tier: TIER_EXTRACTED.to_string(),
+                },
+            ],
+        };
+        let payload = serde_json::to_vec(&g).unwrap();
+        let mut s = ConsoleSession::new();
+        call(&mut s, "graph_load", std::str::from_utf8(&payload).unwrap());
+        call(&mut s, "map_build", r#"{"w":800,"h":600}"#);
+        s
+    }
+
+    /// `map_hit` at the exact screen position `map_frame` itself just placed an entity's dot
+    /// answers that SAME entity - proven by comparing against `console::map::hit`'s own direct
+    /// answer for the identical camera/point, never a hardcoded id.
+    #[test]
+    fn map_hit_answers_the_entity_the_click_landed_on() {
+        let mut s = built_map_session();
+        let frame = call(&mut s, "map_frame", r#"{"zoom":0}"#);
+        let entity = &frame["entities"][0];
+        let x = entity["x"].as_f64().unwrap();
+        let y = entity["y"].as_f64().unwrap();
+        let v = call(
+            &mut s,
+            "map_hit",
+            &format!(r#"{{"zoom":0,"x":{x},"y":{y}}}"#),
+        );
+        assert_eq!(v["hit"], "entity", "{v:?}");
+        assert_eq!(v["id"], entity["id"].clone(), "{v:?}");
+    }
+
+    /// A click nowhere near anything answers `{"hit": "none"}`, never an error and never a
+    /// fabricated id.
+    #[test]
+    fn map_hit_of_empty_space_answers_hit_none() {
+        let mut s = built_map_session();
+        let v = call(&mut s, "map_hit", r#"{"zoom":0,"x":-1.0e9,"y":-1.0e9}"#);
+        assert_eq!(v["hit"], "none", "{v:?}");
+    }
+
+    /// A malformed `map_hit` input is an error reply, never a panic - the SAME per-parsing-op
+    /// discipline the other real ops already keep.
+    #[test]
+    fn map_hit_answers_an_error_reply_on_malformed_input() {
+        let mut s = ConsoleSession::new();
+        let v = call(&mut s, "map_hit", "not json");
+        assert!(v.get("error").is_some(), "{v:?}");
+    }
+
+    /// Every `map_*` `graph_query` kind before `map_build` is the same "call map_build first"
+    /// error reply - proven once across all seven, mirroring
+    /// `malformed_input_answers_with_an_error_reply_for_every_parsing_op`'s own uniform-property
+    /// pattern.
+    #[test]
+    fn graph_query_map_kinds_before_map_build_answer_with_an_error_reply() {
+        for kind in [
+            "map_landmarks",
+            "map_bridges",
+            "map_argued_about",
+            "map_changing",
+            "map_search",
+            "map_fit_whole",
+            "map_fit_district",
+        ] {
+            let mut s = ConsoleSession::new();
+            let v = call(
+                &mut s,
+                "graph_query",
+                &format!(r#"{{"kind":"{kind}","params":{{}}}}"#),
+            );
+            assert!(v.get("error").is_some(), "kind {kind:?}: {v:?}");
+        }
+    }
+
+    /// `graph_query`'s `map_landmarks` kind answers the SAME candidates `console::map::landmarks`
+    /// itself returns for the identical model - proven via the real session/dispatch path, not
+    /// just the library call.
+    #[test]
+    fn graph_query_map_landmarks_matches_the_librarys_own_result() {
+        let mut s = built_map_session();
+        let v = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_landmarks","params":{"limit":5}}"#,
+        );
+        let candidates = v["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 2, "{v:?}");
+        let direct = console::map::landmarks(s.map.as_ref().unwrap(), 5);
+        assert_eq!(candidates[0]["id"], direct[0].id, "{v:?}");
+    }
+
+    /// `graph_query`'s `map_bridges` kind: the fixture's two entities are in the SAME (only)
+    /// district, so neither has a cross-district edge - the candidate list must be empty, not
+    /// merely non-erroring.
+    #[test]
+    fn graph_query_map_bridges_is_empty_when_nothing_crosses_a_district() {
+        let mut s = built_map_session();
+        let v = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_bridges","params":{}}"#,
+        );
+        assert_eq!(v["candidates"], serde_json::json!([]), "{v:?}");
+    }
+
+    /// `graph_query`'s `map_changing` kind: empty `touched` answers an empty list (Design's own
+    /// EMPTY-STATE); a `touched` naming one of the fixture's own entities answers exactly that
+    /// one.
+    #[test]
+    fn graph_query_map_changing_filters_to_the_callers_own_touched_list() {
+        let mut s = built_map_session();
+        let empty = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_changing","params":{}}"#,
+        );
+        assert_eq!(empty["candidates"], serde_json::json!([]), "{empty:?}");
+
+        let filled = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_changing","params":{"touched":["src/worktree.rs::spawn_worktree"]}}"#,
+        );
+        let candidates = filled["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 1, "{filled:?}");
+        assert_eq!(
+            candidates[0]["id"], "src/worktree.rs::spawn_worktree",
+            "{filled:?}"
+        );
+    }
+
+    /// `graph_query`'s `map_argued_about` kind reads live `KIND_FINDING`/`REL_ABOUT` edges
+    /// straight off `session.graph` (never a second copy) - proven by loading a graph that
+    /// carries a finding pinned to one of the fixture's own entities.
+    #[test]
+    fn graph_query_map_argued_about_reads_pinned_findings_from_the_loaded_graph() {
+        use rigger::contextgraph::{
+            Edge, Graph, Node, KIND_CODE_ENTITY, KIND_FINDING, REL_ABOUT, REL_IN_COMMUNITY,
+            TIER_EXTRACTED,
+        };
+        use rigger::eventstore::Position;
+        let code = |id: &str, name: &str| Node {
+            id: id.to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: [
+                ("name".to_string(), name.to_string()),
+                ("kind".to_string(), "function".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let g = Graph {
+            nodes: vec![
+                code("src/worktree.rs::spawn_worktree", "spawn_worktree"),
+                Node {
+                    id: "f1".to_string(),
+                    kind: KIND_FINDING.to_string(),
+                    attrs: Default::default(),
+                },
+            ],
+            edges: vec![
+                Edge {
+                    from: "src/worktree.rs::spawn_worktree".to_string(),
+                    to: "community/1/0".to_string(),
+                    rel: REL_IN_COMMUNITY.to_string(),
+                    valid_from: 0,
+                    valid_to: None,
+                    source: Position::default(),
+                    tier: TIER_EXTRACTED.to_string(),
+                },
+                Edge {
+                    from: "f1".to_string(),
+                    to: "src/worktree.rs::spawn_worktree".to_string(),
+                    rel: REL_ABOUT.to_string(),
+                    valid_from: 0,
+                    valid_to: None,
+                    source: Position::default(),
+                    tier: TIER_EXTRACTED.to_string(),
+                },
+            ],
+        };
+        let payload = serde_json::to_vec(&g).unwrap();
+        let mut s = ConsoleSession::new();
+        call(&mut s, "graph_load", std::str::from_utf8(&payload).unwrap());
+        call(&mut s, "map_build", r#"{"w":800,"h":600}"#);
+
+        let v = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_argued_about","params":{}}"#,
+        );
+        let candidates = v["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 1, "{v:?}");
+        assert_eq!(
+            candidates[0]["id"], "src/worktree.rs::spawn_worktree",
+            "{v:?}"
+        );
+    }
+
+    /// `graph_query`'s `map_search` kind answers hits matching the fixture's own entity name,
+    /// carrying kind and degree - and an empty query answers no hits.
+    #[test]
+    fn graph_query_map_search_matches_by_name() {
+        let mut s = built_map_session();
+        let v = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_search","params":{"query":"spawn"}}"#,
+        );
+        let hits = v["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "{v:?}");
+        assert_eq!(hits[0]["id"], "src/worktree.rs::spawn_worktree", "{v:?}");
+
+        let empty = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_search","params":{"query":""}}"#,
+        );
+        assert_eq!(empty["hits"], serde_json::json!([]), "{empty:?}");
+    }
+
+    /// `graph_query`'s `map_fit_whole` kind answers the SAME camera
+    /// `console::map::fit_whole_map` itself returns for the built model - the full-extent
+    /// sentinel (`zoom: 0`) centred on the model's own bounds.
+    #[test]
+    fn graph_query_map_fit_whole_matches_the_librarys_own_result() {
+        let mut s = built_map_session();
+        let v = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_fit_whole","params":{}}"#,
+        );
+        let direct = console::map::fit_whole_map(s.map.as_ref().unwrap());
+        assert_eq!(v["cx"].as_f64(), Some(direct.cx), "{v:?}");
+        assert_eq!(v["cy"].as_f64(), Some(direct.cy), "{v:?}");
+        assert_eq!(v["zoom"].as_f64(), Some(direct.zoom), "{v:?}");
+    }
+
+    /// `graph_query`'s `map_fit_district` kind answers the SAME camera
+    /// `console::map::fit_district` itself returns for the fixture's own (only) district, using
+    /// the session's own `map_build`-fixed viewport - and an unknown purpose is an error reply,
+    /// never a panic.
+    #[test]
+    fn graph_query_map_fit_district_matches_the_librarys_own_result() {
+        let mut s = built_map_session();
+        let purpose = s.map.as_ref().unwrap().districts[0].purpose.clone();
+        let v = call(
+            &mut s,
+            "graph_query",
+            &format!(r#"{{"kind":"map_fit_district","params":{{"purpose":"{purpose}"}}}}"#),
+        );
+        let direct =
+            console::map::fit_district(s.map.as_ref().unwrap(), 800.0, 600.0, &purpose).unwrap();
+        assert_eq!(v["cx"].as_f64(), Some(direct.cx), "{v:?}");
+        assert_eq!(v["cy"].as_f64(), Some(direct.cy), "{v:?}");
+        assert_eq!(v["zoom"].as_f64(), Some(direct.zoom), "{v:?}");
+
+        let unknown = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_fit_district","params":{"purpose":"no-such-district"}}"#,
+        );
+        assert!(unknown.get("error").is_some(), "{unknown:?}");
     }
 
     /// `map_build`/`map_frame` before any `graph_load` are error replies, never a panic on a

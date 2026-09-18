@@ -258,7 +258,7 @@ fn console_call_wires_map_build_and_map_frame_through_the_public_abi() {
     let frame = unsafe { call("map_frame", r#"{"zoom":0}"#) };
 
     let model = map::build(&graph);
-    let direct = map::frame(&model, 800.0, 600.0, 0.0);
+    let direct = map::frame(&model, 800.0, 600.0, &map::Camera::default(), None);
     let expected_len = serde_json::to_vec(&direct).unwrap().len();
 
     assert_eq!(
@@ -415,12 +415,153 @@ fn console_call_map_frame_errors_again_after_a_graph_reload_through_the_public_a
     let fresh_frame = unsafe { call("map_frame", r#"{"zoom":0}"#) };
 
     let model = map::build(&second);
-    let direct = map::frame(&model, 800.0, 600.0, 0.0);
+    let direct = map::frame(&model, 800.0, 600.0, &map::Camera::default(), None);
     let expected_len = serde_json::to_vec(&direct).unwrap().len();
     assert_eq!(
         reply_len(fresh_frame),
         expected_len,
         "map_frame after the post-reload map_build must answer real data from the NEW graph \
          through the exported ABI, matching console::map's own frame() output for it"
+    );
+}
+
+/// `map_hit` wires through the exported ABI to the SAME `console::map::hit` engine (spec 84
+/// criterion 2's own) - proven the same way this file's own `map_build`/`map_frame` test above
+/// does: a real `console_call` at the exact screen point `console::map::frame` itself placed an
+/// entity's dot, its reply length compared against `console::map::hit`'s own direct answer for
+/// the identical camera/point.
+#[test]
+fn console_call_wires_map_hit_through_the_public_abi() {
+    use rigger::console::map;
+    use rigger::contextgraph::{
+        Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
+    };
+    use rigger::eventstore::Position;
+
+    let graph = Graph {
+        nodes: vec![Node {
+            id: "src/a.rs::f".to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: [
+                ("name".to_string(), "f".to_string()),
+                ("kind".to_string(), "function".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        }],
+        edges: vec![Edge {
+            from: "src/a.rs::f".to_string(),
+            to: "community/1/0".to_string(),
+            rel: REL_IN_COMMUNITY.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: Position::default(),
+            tier: TIER_EXTRACTED.to_string(),
+        }],
+    };
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":800,"h":600}"#);
+    }
+
+    let model = map::build(&graph);
+    let target = map::frame(&model, 800.0, 600.0, &map::Camera::default(), None)
+        .entities
+        .into_iter()
+        .next()
+        .expect("the one fixture entity must be drawn at full extent");
+
+    let hit = unsafe {
+        call(
+            "map_hit",
+            &format!(r#"{{"zoom":0,"x":{},"y":{}}}"#, target.x, target.y),
+        )
+    };
+
+    let direct = map::hit(
+        &model,
+        800.0,
+        600.0,
+        &map::Camera::default(),
+        None,
+        target.x,
+        target.y,
+    );
+    let id = match direct {
+        Some(map::Hit::Entity(id)) => id,
+        other => panic!("the exact projected dot of a real entity must hit that entity: {other:?}"),
+    };
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "hit": "entity", "id": id }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(hit),
+        expected_len,
+        "map_hit's reply through the exported ABI must be the same length as the reply shape \
+         built from console::map::hit's own direct answer for the identical point"
+    );
+}
+
+/// `graph_query`'s `map_landmarks` kind wires through the exported ABI - spec 84 criterion 2's
+/// own Explore rail candidate lists, proven crossing the SAME real FFI boundary the map_build/
+/// map_frame/map_hit tests above already do, not merely through the crate's own private
+/// `dispatch_tests` (already covered in `src/lib.rs`).
+#[test]
+fn console_call_wires_graph_query_map_landmarks_through_the_public_abi() {
+    use rigger::console::map;
+    use rigger::contextgraph::{
+        Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
+    };
+    use rigger::eventstore::Position;
+
+    let graph = Graph {
+        nodes: vec![Node {
+            id: "src/a.rs::f".to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: [
+                ("name".to_string(), "f".to_string()),
+                ("kind".to_string(), "function".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        }],
+        edges: vec![Edge {
+            from: "src/a.rs::f".to_string(),
+            to: "community/1/0".to_string(),
+            rel: REL_IN_COMMUNITY.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: Position::default(),
+            tier: TIER_EXTRACTED.to_string(),
+        }],
+    };
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":800,"h":600}"#);
+    }
+
+    let queried = unsafe {
+        call(
+            "graph_query",
+            r#"{"kind":"map_landmarks","params":{"limit":5}}"#,
+        )
+    };
+
+    let model = map::build(&graph);
+    let direct = map::landmarks(&model, 5);
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "candidates": direct }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_landmarks reply through the exported ABI must be the same length as \
+         console::map::landmarks's own direct answer for the identical graph"
     );
 }

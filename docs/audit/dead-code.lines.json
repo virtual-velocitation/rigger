@@ -65,56 +65,236 @@
   },
   {
     "file": "src/console/map.rs",
-    "name": "frame",
-    "line": 460,
+    "name": "hit",
+    "line": 777,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 942
+        "line": 1811
       },
       {
         "file": "src/console/map.rs",
-        "line": 968
+        "line": 1826
       },
       {
         "file": "src/console/map.rs",
-        "line": 980
+        "line": 1855
       },
       {
         "file": "src/console/map.rs",
-        "line": 989
+        "line": 1866
       },
       {
-        "file": "src/console/map.rs",
-        "line": 990
+        "file": "src/failure.rs",
+        "line": 413
       },
       {
-        "file": "tests/code_lens_map_real_store_periphery.rs",
-        "line": 112
+        "file": "src/failure.rs",
+        "line": 416
       },
       {
-        "file": "tests/code_lens_map_real_store_periphery.rs",
-        "line": 153
+        "file": "src/failure.rs",
+        "line": 417
       },
       {
-        "file": "tests/code_lens_map_real_store_periphery.rs",
-        "line": 194
+        "file": "src/spec.rs",
+        "line": 1020
       },
       {
-        "file": "tests/console_map_frame_wire_shape_periphery.rs",
-        "line": 83
+        "file": "src/spec.rs",
+        "line": 1024
       },
       {
-        "file": "tests/console_map_frame_wire_shape_periphery.rs",
-        "line": 142
+        "file": "src/spec.rs",
+        "line": 1026
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 1027
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 1063
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 1067
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 1069
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 1071
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 1132
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 1136
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 1281
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 1285
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 2097
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 2101
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 2135
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 2139
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 2150
+      },
+      {
+        "file": "src/spec.rs",
+        "line": 2154
+      },
+      {
+        "file": "tests/canary_progress_hook_periphery.rs",
+        "line": 201
+      },
+      {
+        "file": "tests/canary_progress_hook_periphery.rs",
+        "line": 203
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 583
+        "line": 3474
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 584
+        "line": 3479
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "landmarks",
+    "line": 830,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 1902
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 1912
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 1913
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "bridges_between_districts",
+    "line": 840,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 1919
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "changing_right_now",
+    "line": 871,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 1936
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 1944
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "argued_about_in_review",
+    "line": 891,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 1979
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 1988
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "search",
+    "line": 936,
+    "ambiguous_with": [
+      "src/contextgraph/query.rs:1642"
+    ],
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 1999
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2006
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2014
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2020
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "fit_whole_map",
+    "line": 974,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 2033
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "fit_district",
+    "line": 994,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 2044
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2056
       }
     ]
   },
@@ -813,7 +993,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 9828
+        "line": 9897
       }
     ]
   },

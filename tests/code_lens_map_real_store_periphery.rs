@@ -109,7 +109,7 @@ fn the_map_lands_labelled_against_this_repositorys_real_store() {
         "this repository's real store must yield at least one map entity"
     );
 
-    let full_extent = map::frame(&model, 1400.0, 900.0, 0.0);
+    let full_extent = map::frame(&model, 1400.0, 900.0, &map::Camera::default(), None);
 
     // "every district carries its purpose label" - present at every zoom, never blank, never a
     // file name.
@@ -150,7 +150,16 @@ fn the_map_lands_labelled_against_this_repositorys_real_store() {
     // "zooming in strictly increases the labelled-entity count without ever drawing an
     // unlabelled node" - reasserted directly against the real graph, not just the synthetic
     // fixtures `console::map`'s own unit tests use.
-    let zoomed_in = map::frame(&model, 1400.0, 900.0, 6.0);
+    let zoomed_in = map::frame(
+        &model,
+        1400.0,
+        900.0,
+        &map::Camera {
+            zoom: 6.0,
+            ..Default::default()
+        },
+        None,
+    );
     assert!(
         zoomed_in.entities.len() > full_extent.entities.len(),
         "zooming in against the real store must strictly increase the labelled-entity count: \
@@ -191,7 +200,7 @@ fn frame_at_full_extent_completes_under_8ms_of_core_time_against_the_real_store(
     let model = map::build(&graph);
 
     let start = std::time::Instant::now();
-    let full_extent = map::frame(&model, 1400.0, 900.0, 0.0);
+    let full_extent = map::frame(&model, 1400.0, 900.0, &map::Camera::default(), None);
     let elapsed = start.elapsed();
 
     assert!(

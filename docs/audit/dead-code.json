@@ -80,63 +80,271 @@
     "reason": "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not a false positive: spawn_sdet_author (conductor.rs:3980) gates the always-on SDET periphery-test author ONLY on whether an sdet-author agent is configured (self.cfg.agents.get(ROLE_SDET_AUTHOR)) and never consults self.cfg.defaults.sdet_author_enabled() at all, so today an explicit sdet_author: false in a workflow's defaults: block does nothing - the on-by-default opt-out spec 32 documents and this very method's own doc comment claims ('the conductor's build-seam reads through here') is not actually true of the shipped code. keep-pending, citing spec 32 (the sdet-author feature this toggle governs, already landed): deleting the method would delete the documented resolution authority for an already-shipped, still-referenced config field (Defaults::sdet_author) before a follow-up wires spawn_sdet_author to call it - the correct fix is wiring the call site, out of scope here (no production code changes this criterion)."
   },
   {
-    "name": "frame",
+    "name": "hit",
     "file": "src/console/map.rs",
-    "content_hash": "13f6aa9b6dd760f7",
+    "content_hash": "901840737d54ec3f",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "content_hash": "592ebcbb91b94ec5"
+        "content_hash": "08d6cb57d08fc235"
       },
       {
         "file": "src/console/map.rs",
-        "content_hash": "592ebcbb91b94ec5"
+        "content_hash": "08d6cb57d08fc235"
       },
       {
         "file": "src/console/map.rs",
-        "content_hash": "c27da7023c10813a"
+        "content_hash": "86f3c5023c4fa468"
       },
       {
         "file": "src/console/map.rs",
-        "content_hash": "c27da7023c10813a"
+        "content_hash": "08d6cb57d08fc235"
       },
       {
-        "file": "src/console/map.rs",
-        "content_hash": "c27da7023c10813a"
+        "file": "src/failure.rs",
+        "content_hash": "be879a6eee2fb0a4"
       },
       {
-        "file": "tests/code_lens_map_real_store_periphery.rs",
-        "content_hash": "1cfcb7a21ddaa64d"
+        "file": "src/failure.rs",
+        "content_hash": "4aebf96bc8782676"
       },
       {
-        "file": "tests/code_lens_map_real_store_periphery.rs",
-        "content_hash": "1cfcb7a21ddaa64d"
+        "file": "src/failure.rs",
+        "content_hash": "539387380f72a618"
       },
       {
-        "file": "tests/code_lens_map_real_store_periphery.rs",
-        "content_hash": "1cfcb7a21ddaa64d"
+        "file": "src/spec.rs",
+        "content_hash": "be879a6eee2fb0a4"
       },
       {
-        "file": "tests/console_map_frame_wire_shape_periphery.rs",
-        "content_hash": "1cfcb7a21ddaa64d"
+        "file": "src/spec.rs",
+        "content_hash": "0aaba61a39c47159"
       },
       {
-        "file": "tests/console_map_frame_wire_shape_periphery.rs",
-        "content_hash": "1cfcb7a21ddaa64d"
+        "file": "src/spec.rs",
+        "content_hash": "8ca3965b356ea9f9"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "aaa6e48647f435da"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "be879a6eee2fb0a4"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "0aaba61a39c47159"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "1623d0eaed1aeeff"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "dc8616be4e275045"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "be879a6eee2fb0a4"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "0aaba61a39c47159"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "be879a6eee2fb0a4"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "14d188a7bc7b87fd"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "be879a6eee2fb0a4"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "af4294447f3eaf44"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "be879a6eee2fb0a4"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "bb859806a1b18fcf"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "be879a6eee2fb0a4"
+      },
+      {
+        "file": "src/spec.rs",
+        "content_hash": "af4294447f3eaf44"
+      },
+      {
+        "file": "tests/canary_progress_hook_periphery.rs",
+        "content_hash": "d4f31333304f52cb"
+      },
+      {
+        "file": "tests/canary_progress_hook_periphery.rs",
+        "content_hash": "58a9de1682cb7e2f"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "content_hash": "228e9b4098e52be3"
+        "content_hash": "8536774a0a928711"
       },
       {
         "file": "tests/simplification_audit.rs",
-        "content_hash": "bf123c25b3546205"
+        "content_hash": "5f5cdf6505e52a15"
       }
     ],
     "disposition": "keep-public-surface",
-    "reason": "frame (the map engine's per-zoom render pass, spec 84 criterion 1) has no production caller within src/ - the scanner's own scope is this crate's src/ tree, and frame's one real caller, console-core's op_map_frame (crates/console-core/src/lib.rs), lives in a SEPARATE workspace-member crate (`rigger` compiled with `default-features = false, features = [\"core\"]`), invisible to a same-crate reference sweep by construction - the identical cross-crate shape the contextgraph::query.rs graph_load/graph_query entries above already carry, except THIS caller is already landed and wired (spec 93 criterion 2 shipped before spec 84 began), not a future one: console_call's real 'map_frame' op dispatches to this exact function today (see crates/console-core/src/lib.rs's dispatch, and its own map_frame_zooming_in_answers_more_entities_through_the_wire periphery test). Keep-public-surface: a real, non-test, ALREADY-WIRED consumer across the workspace's own crate boundary."
+    "reason": "hit (spec 84 criterion 2's own hit-testing engine) has no production caller within src/ - the scanner's own scope is this crate's src/ tree, and hit's one real caller, console-core's op_map_hit (crates/console-core/src/lib.rs), lives in a SEPARATE workspace-member crate (`rigger` compiled with `default-features = false, features = [\"core\"]`), invisible to a same-crate reference sweep by construction - the identical cross-crate shape frame carried before this same diff removed it as a candidate (see the comment above). Already landed and wired, not a future consumer: console_call's real 'map_hit' op dispatches to this exact function today (see dispatch's own match arm and console_call_wires_map_hit_through_the_public_abi, the periphery test proving it crosses the real exported ABI). Keep-public-surface: a real, non-test, ALREADY-WIRED consumer across the workspace's own crate boundary."
+  },
+  {
+    "name": "landmarks",
+    "file": "src/console/map.rs",
+    "content_hash": "b462407827e20818",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "3bb526a630811942"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "ffb0142e6c8dafc5"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "4638859df2c657f5"
+      }
+    ],
+    "disposition": "keep-public-surface",
+    "reason": "spec 84 criterion 2's own Explore rail candidate lists (landmarks/bridges_between_districts/changing_right_now/argued_about_in_review), search, and the two camera-reset functions (fit_whole_map/fit_district) each have no production caller within src/ for the SAME cross-crate reason hit above does not: every one is called ONLY from console-core's op_map_query (the five map_* graph_query kinds: map_landmarks/map_bridges/map_changing/map_argued_about/map_search) or its two sibling arms (map_fit_whole/map_fit_district), all in crates/console-core/src/lib.rs - a separate workspace-member crate invisible to this scanner's same-crate sweep. Already landed and wired, not a future consumer: each has its own dispatch_tests coverage (graph_query_map_landmarks_matches_the_librarys_own_result and its six siblings) proving the real op_graph_query wiring reaches the exact same function, plus console_call_wires_graph_query_map_landmarks_through_the_public_abi proving the representative case crosses the real exported ABI. Keep-public-surface, identical shape to hit."
+  },
+  {
+    "name": "bridges_between_districts",
+    "file": "src/console/map.rs",
+    "content_hash": "b721b951d0ef17dd",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "3bb526a630811942"
+      }
+    ],
+    "disposition": "keep-public-surface",
+    "reason": "spec 84 criterion 2's own Explore rail candidate lists (landmarks/bridges_between_districts/changing_right_now/argued_about_in_review), search, and the two camera-reset functions (fit_whole_map/fit_district) each have no production caller within src/ for the SAME cross-crate reason hit above does not: every one is called ONLY from console-core's op_map_query (the five map_* graph_query kinds: map_landmarks/map_bridges/map_changing/map_argued_about/map_search) or its two sibling arms (map_fit_whole/map_fit_district), all in crates/console-core/src/lib.rs - a separate workspace-member crate invisible to this scanner's same-crate sweep. Already landed and wired, not a future consumer: each has its own dispatch_tests coverage (graph_query_map_landmarks_matches_the_librarys_own_result and its six siblings) proving the real op_graph_query wiring reaches the exact same function, plus console_call_wires_graph_query_map_landmarks_through_the_public_abi proving the representative case crosses the real exported ABI. Keep-public-surface, identical shape to hit."
+  },
+  {
+    "name": "changing_right_now",
+    "file": "src/console/map.rs",
+    "content_hash": "6396b16f612d728d",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "c23f427317baf0f7"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "a781d5cbc6143be1"
+      }
+    ],
+    "disposition": "keep-public-surface",
+    "reason": "spec 84 criterion 2's own Explore rail candidate lists (landmarks/bridges_between_districts/changing_right_now/argued_about_in_review), search, and the two camera-reset functions (fit_whole_map/fit_district) each have no production caller within src/ for the SAME cross-crate reason hit above does not: every one is called ONLY from console-core's op_map_query (the five map_* graph_query kinds: map_landmarks/map_bridges/map_changing/map_argued_about/map_search) or its two sibling arms (map_fit_whole/map_fit_district), all in crates/console-core/src/lib.rs - a separate workspace-member crate invisible to this scanner's same-crate sweep. Already landed and wired, not a future consumer: each has its own dispatch_tests coverage (graph_query_map_landmarks_matches_the_librarys_own_result and its six siblings) proving the real op_graph_query wiring reaches the exact same function, plus console_call_wires_graph_query_map_landmarks_through_the_public_abi proving the representative case crosses the real exported ABI. Keep-public-surface, identical shape to hit."
+  },
+  {
+    "name": "argued_about_in_review",
+    "file": "src/console/map.rs",
+    "content_hash": "07b1c365f9a7e4c3",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "c23f427317baf0f7"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "f6c38d5865890201"
+      }
+    ],
+    "disposition": "keep-public-surface",
+    "reason": "spec 84 criterion 2's own Explore rail candidate lists (landmarks/bridges_between_districts/changing_right_now/argued_about_in_review), search, and the two camera-reset functions (fit_whole_map/fit_district) each have no production caller within src/ for the SAME cross-crate reason hit above does not: every one is called ONLY from console-core's op_map_query (the five map_* graph_query kinds: map_landmarks/map_bridges/map_changing/map_argued_about/map_search) or its two sibling arms (map_fit_whole/map_fit_district), all in crates/console-core/src/lib.rs - a separate workspace-member crate invisible to this scanner's same-crate sweep. Already landed and wired, not a future consumer: each has its own dispatch_tests coverage (graph_query_map_landmarks_matches_the_librarys_own_result and its six siblings) proving the real op_graph_query wiring reaches the exact same function, plus console_call_wires_graph_query_map_landmarks_through_the_public_abi proving the representative case crosses the real exported ABI. Keep-public-surface, identical shape to hit."
+  },
+  {
+    "name": "search",
+    "file": "src/console/map.rs",
+    "content_hash": "a9f5cd555be90340",
+    "visibility": "pub",
+    "ambiguous": true,
+    "ambiguous_with": [
+      "src/contextgraph/query.rs#6aaf9d8e609d39f0"
+    ],
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "41aa7f33c1b0e2d3"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "41aa7f33c1b0e2d3"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "352837a34a70c241"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "41aa7f33c1b0e2d3"
+      }
+    ],
+    "disposition": "keep-public-surface",
+    "reason": "spec 84 criterion 2's own Explore rail candidate lists (landmarks/bridges_between_districts/changing_right_now/argued_about_in_review), search, and the two camera-reset functions (fit_whole_map/fit_district) each have no production caller within src/ for the SAME cross-crate reason hit above does not: every one is called ONLY from console-core's op_map_query (the five map_* graph_query kinds: map_landmarks/map_bridges/map_changing/map_argued_about/map_search) or its two sibling arms (map_fit_whole/map_fit_district), all in crates/console-core/src/lib.rs - a separate workspace-member crate invisible to this scanner's same-crate sweep. Already landed and wired, not a future consumer: each has its own dispatch_tests coverage (graph_query_map_landmarks_matches_the_librarys_own_result and its six siblings) proving the real op_graph_query wiring reaches the exact same function, plus console_call_wires_graph_query_map_landmarks_through_the_public_abi proving the representative case crosses the real exported ABI. Keep-public-surface, identical shape to hit."
+  },
+  {
+    "name": "fit_whole_map",
+    "file": "src/console/map.rs",
+    "content_hash": "7e05845ba91ef670",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "99d81069c44251eb"
+      }
+    ],
+    "disposition": "keep-public-surface",
+    "reason": "spec 84 criterion 2's own Explore rail candidate lists (landmarks/bridges_between_districts/changing_right_now/argued_about_in_review), search, and the two camera-reset functions (fit_whole_map/fit_district) each have no production caller within src/ for the SAME cross-crate reason hit above does not: every one is called ONLY from console-core's op_map_query (the five map_* graph_query kinds: map_landmarks/map_bridges/map_changing/map_argued_about/map_search) or its two sibling arms (map_fit_whole/map_fit_district), all in crates/console-core/src/lib.rs - a separate workspace-member crate invisible to this scanner's same-crate sweep. Already landed and wired, not a future consumer: each has its own dispatch_tests coverage (graph_query_map_landmarks_matches_the_librarys_own_result and its six siblings) proving the real op_graph_query wiring reaches the exact same function, plus console_call_wires_graph_query_map_landmarks_through_the_public_abi proving the representative case crosses the real exported ABI. Keep-public-surface, identical shape to hit."
+  },
+  {
+    "name": "fit_district",
+    "file": "src/console/map.rs",
+    "content_hash": "8418134c507614ee",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "8dc9e91952cd2e71"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "158955feb9b70439"
+      }
+    ],
+    "disposition": "keep-public-surface",
+    "reason": "spec 84 criterion 2's own Explore rail candidate lists (landmarks/bridges_between_districts/changing_right_now/argued_about_in_review), search, and the two camera-reset functions (fit_whole_map/fit_district) each have no production caller within src/ for the SAME cross-crate reason hit above does not: every one is called ONLY from console-core's op_map_query (the five map_* graph_query kinds: map_landmarks/map_bridges/map_changing/map_argued_about/map_search) or its two sibling arms (map_fit_whole/map_fit_district), all in crates/console-core/src/lib.rs - a separate workspace-member crate invisible to this scanner's same-crate sweep. Already landed and wired, not a future consumer: each has its own dispatch_tests coverage (graph_query_map_landmarks_matches_the_librarys_own_result and its six siblings) proving the real op_graph_query wiring reaches the exact same function, plus console_call_wires_graph_query_map_landmarks_through_the_public_abi proving the representative case crosses the real exported ABI. Keep-public-surface, identical shape to hit."
   },
   {
     "name": "graph_load",

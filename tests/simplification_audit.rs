@@ -3854,18 +3854,58 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // makes exactly ONE outgoing call - `path_is_dirty` in place of `git` - so the edge count
         // is unchanged at 5.
         ("src/worktree.rs", "is_dirty") => 5,
-        // frame is a brand-new file (src/console/map.rs, spec 84 criterion 1); `rigger graph
-        // --show` reflects `.`'s own checked-out base branch, which has never seen this unmerged
-        // unit branch's new file at all - hand-derived the same two-part way the entries above
-        // are, for the same reason: 5 test-only call sites within this file's own `#[cfg(test)]
-        // mod tests` (frame_never_draws_an_entity_without_a_placed_label,
-        // frame_always_carries_every_districts_pill_at_every_zoom,
-        // frame_district_pill_is_never_a_file_name (1 call),
-        // frame_zooming_in_strictly_increases_the_labelled_entity_count (2 calls)) plus 2 local
-        // outgoing calls its own body makes to other entities this file defines (budget, and
-        // place_label) - the closure `project` it also calls is a local binding, not a graph
-        // entity, so it contributes no edge.
-        ("src/console/map.rs", "frame") => 7,
+        // frame (src/console/map.rs, spec 84 criterion 1) is NO LONGER a real candidate as of
+        // criterion 2's own diff - see disposition_for's own comment on this same removal - so
+        // it carries no degree entry here any more either; a stale entry for a name that can
+        // never reach this match would itself be exactly the kind of unverifiable residue this
+        // file's own discipline rejects.
+        //
+        // spec 84 criterion 2's own new functions, hand-derived the same two-part way (test-
+        // only call sites within THIS file's own `#[cfg(test)] mod tests`, syntactic call
+        // expressions - not runtime call count, matching frame's own methodology above - plus
+        // each fn's own body's local outgoing calls to another same-file fn; a struct
+        // construction or enum-variant build is not counted as a call edge, matching frame's own
+        // "project is a local closure, not a graph entity" exclusion).
+        //
+        // hit: 4 test-only call sites (hit_finds_the_nearest_entity_within_radius,
+        // hit_returns_none_far_from_everything,
+        // hit_falls_back_to_a_district_when_no_entity_is_near_but_the_click_is_inside_its_hull,
+        // hit_prefers_an_entity_dot_over_the_district_hull_beneath_it) plus 1 local outgoing call
+        // (frame) = 5.
+        ("src/console/map.rs", "hit") => 5,
+        // landmarks: 3 test-only call sites (landmarks_ranks_by_whole_map_degree_descending (1
+        // call), landmarks_respects_the_limit (2 calls)) plus 1 local outgoing call
+        // (as_candidate) = 4.
+        ("src/console/map.rs", "landmarks") => 4,
+        // bridges_between_districts: 1 test-only call site
+        // (bridges_between_districts_only_includes_entities_with_a_cross_district_edge) plus 1
+        // local outgoing call (as_candidate) = 2.
+        ("src/console/map.rs", "bridges_between_districts") => 2,
+        // changing_right_now: 2 test-only call sites
+        // (changing_right_now_filters_to_the_touched_set,
+        // changing_right_now_is_empty_when_nothing_is_touched) plus 1 local outgoing call
+        // (as_candidate) = 3.
+        ("src/console/map.rs", "changing_right_now") => 3,
+        // argued_about_in_review: 2 test-only call sites
+        // (argued_about_in_review_ranks_entities_by_pinned_finding_count (1 call),
+        // argued_about_in_review_is_empty_when_no_findings_are_pinned (1 call)) plus 1 local
+        // outgoing call (as_candidate) = 3.
+        ("src/console/map.rs", "argued_about_in_review") => 3,
+        // search: 4 test-only call sites (search_ranks_prefix_hits_above_substring_only_hits,
+        // search_is_case_insensitive, search_of_an_empty_query_answers_no_hits,
+        // search_hit_carries_kind_and_degree_beside_the_name) plus 0 local outgoing calls (its
+        // body builds a SearchHit struct literal, not a call to another same-file fn) = 4.
+        ("src/console/map.rs", "search") => 4,
+        // fit_whole_map: 1 test-only call site
+        // (fit_whole_map_is_the_full_extent_sentinel_centered_on_the_bounds) plus 0 local
+        // outgoing calls (its body builds a Camera struct literal) = 1.
+        ("src/console/map.rs", "fit_whole_map") => 1,
+        // fit_district: 2 test-only call sites
+        // (fit_district_centers_on_the_named_district_at_a_positive_zoom (1 call),
+        // fit_district_of_an_unknown_purpose_is_none (1 call)) plus 0 local outgoing calls (its
+        // body is arithmetic over `model.districts`/`model.bounds` and a Camera struct literal)
+        // = 2.
+        ("src/console/map.rs", "fit_district") => 2,
         (other_file, other_name) => panic!(
             "dead-code candidate {other_file}::{other_name} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
@@ -4701,7 +4741,7 @@ fn render_section_6() -> String {
         together, rather than as two separately-tracked fixes.\n\n",
     );
     out.push_str(
-        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0162` + `dup-0163`)\n\n",
+        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0167` + `dup-0168`)\n\n",
     );
     out.push_str(
         "- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
@@ -4709,19 +4749,19 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0163`, 15 sites: `src/dash.rs`, `src/main.rs`, \
+        capstone previously caught (`dup-0168`, 15 sites: `src/dash.rs`, `src/main.rs`, \
         `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \
         91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \
         reason `dash.rs::process_state` does, growing this already-known cluster by one site \
         rather than opening a new one), plus 60 raw `/proc`-path string literals scattered \
         across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no \
-        shared composer (`dup-0162`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
+        shared composer (`dup-0167`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
         re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
         production server, so it is the actual active-correctness risk this tier-1 placement \
         is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) \
         and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
-        rides in this same item only because it shares `dup-0162`/`dup-0163`'s one root cause \
+        rides in this same item only because it shares `dup-0167`/`dup-0168`'s one root cause \
         and one proposed fix with `process_state`, not because retiring it retires any live \
         risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
@@ -5060,7 +5100,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
         above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0056`, `dup-0110`, \
-        `dup-0162`, `dup-0163`, `dup-0208`, `dup-0217`); the remaining 327 clusters touching \
+        `dup-0167`, `dup-0168`, `dup-0208`, `dup-0217`); the remaining 327 clusters touching \
         `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
         section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
         exact-duplicate clusters first, consumed directly from \
@@ -6377,21 +6417,50 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              production dead-code candidate by this scanner's own definition, closing the \
              finding at its root rather than re-dispositioning it in place.",
         ),
-        ("src/console/map.rs", "frame") => (
+        // frame (spec 84 criterion 1) is NO LONGER a candidate at all as of criterion 2's own
+        // diff - not moved, gone outright, the SAME "relocated/now-called fn drops out entirely"
+        // shape the neighborhood entry above documents. Criterion 2's hit (immediately below)
+        // calls frame directly (`hit` reuses `frame`'s own projection so hit-testing can never
+        // drift from what a page actually draws - see hit's own doc), a genuine SAME-FILE,
+        // same-crate production call the scanner's in-src/ reference sweep now sees; frame's
+        // prior keep-public-surface entry (cited only its cross-crate console-core caller) is
+        // therefore removed, not re-dispositioned in place.
+        ("src/console/map.rs", "hit") => (
             KeepPublicSurface,
-            "frame (the map engine's per-zoom render pass, spec 84 criterion 1) has no production \
-             caller within src/ - the scanner's own scope is this crate's src/ tree, and frame's \
-             one real caller, console-core's op_map_frame (crates/console-core/src/lib.rs), lives \
-             in a SEPARATE workspace-member crate (`rigger` compiled with `default-features = \
-             false, features = [\"core\"]`), invisible to a same-crate reference sweep by \
-             construction - the identical cross-crate shape the contextgraph::query.rs \
-             graph_load/graph_query entries above already carry, except THIS caller is already \
-             landed and wired (spec 93 criterion 2 shipped before spec 84 began), not a future \
-             one: console_call's real 'map_frame' op dispatches to this exact function today (see \
-             crates/console-core/src/lib.rs's dispatch, and its own \
-             map_frame_zooming_in_answers_more_entities_through_the_wire periphery test). \
-             Keep-public-surface: a real, non-test, ALREADY-WIRED consumer across the workspace's \
-             own crate boundary.",
+            "hit (spec 84 criterion 2's own hit-testing engine) has no production caller within \
+             src/ - the scanner's own scope is this crate's src/ tree, and hit's one real caller, \
+             console-core's op_map_hit (crates/console-core/src/lib.rs), lives in a SEPARATE \
+             workspace-member crate (`rigger` compiled with `default-features = false, features = \
+             [\"core\"]`), invisible to a same-crate reference sweep by construction - the \
+             identical cross-crate shape frame carried before this same diff removed it as a \
+             candidate (see the comment above). Already landed and wired, not a future consumer: \
+             console_call's real 'map_hit' op dispatches to this exact function today (see \
+             dispatch's own match arm and console_call_wires_map_hit_through_the_public_abi, the \
+             periphery test proving it crosses the real exported ABI). Keep-public-surface: a \
+             real, non-test, ALREADY-WIRED consumer across the workspace's own crate boundary.",
+        ),
+        ("src/console/map.rs", "landmarks")
+        | ("src/console/map.rs", "bridges_between_districts")
+        | ("src/console/map.rs", "changing_right_now")
+        | ("src/console/map.rs", "argued_about_in_review")
+        | ("src/console/map.rs", "search")
+        | ("src/console/map.rs", "fit_whole_map")
+        | ("src/console/map.rs", "fit_district") => (
+            KeepPublicSurface,
+            "spec 84 criterion 2's own Explore rail candidate lists (landmarks/\
+             bridges_between_districts/changing_right_now/argued_about_in_review), search, and \
+             the two camera-reset functions (fit_whole_map/fit_district) each have no production \
+             caller within src/ for the SAME cross-crate reason hit above does not: every one \
+             is called ONLY from console-core's op_map_query (the five map_* graph_query kinds: \
+             map_landmarks/map_bridges/map_changing/map_argued_about/map_search) or its two \
+             sibling arms (map_fit_whole/map_fit_district), all in \
+             crates/console-core/src/lib.rs - a separate workspace-member crate invisible to this \
+             scanner's same-crate sweep. Already landed and wired, not a future consumer: each has \
+             its own dispatch_tests coverage (graph_query_map_landmarks_matches_the_librarys_own_\
+             result and its six siblings) proving the real op_graph_query wiring reaches the exact \
+             same function, plus console_call_wires_graph_query_map_landmarks_through_the_public_\
+             abi proving the representative case crosses the real exported ABI. \
+             Keep-public-surface, identical shape to hit.",
         ),
         (other_file, other_name) => panic!(
             "dead-code candidate {other_file}::{other_name} has no assigned disposition - this is \
@@ -9507,8 +9576,8 @@ mod tests {
         assert!(rendered.contains("dup-0006"));
         assert!(rendered.contains("dup-0056"));
         assert!(rendered.contains("dup-0110"));
-        assert!(rendered.contains("dup-0162"));
-        assert!(rendered.contains("dup-0163"));
+        assert!(rendered.contains("dup-0167"));
+        assert!(rendered.contains("dup-0168"));
         assert!(rendered.contains("dup-0217"));
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("src/conductor.rs"));
@@ -10918,9 +10987,26 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (31, 21, 5, 5),
+            (38, 21, 12, 5),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}\n\n\
+             Was (31, 21, 5, 5) before spec 84 criterion 2's Explore rail, search, selection, \
+             hit-testing and camera-reset engine. EIGHT fresh keep-public-surface candidates \
+             land in src/console/map.rs, each for the SAME cross-crate reason frame carried \
+             before this diff (its one real caller lives in the separate console-core \
+             workspace-member crate, invisible to this same-crate scan): hit (console-core's \
+             real 'map_hit' op), and landmarks/bridges_between_districts/changing_right_now/\
+             argued_about_in_review/search/fit_whole_map/fit_district (the seven map_* \
+             graph_query kinds) - candidates: +8, keep_public: 5 -> 13. But frame ITSELF drops \
+             out as a candidate entirely in this same diff (not moved, gone outright - the SAME \
+             shape the neighborhood entry elsewhere in this file documents): hit's own body \
+             calls frame directly (hit reuses frame's own projection so hit-testing can never \
+             drift from what a page actually draws), a genuine SAME-FILE, same-crate production \
+             call this scanner's in-src/ reference sweep now sees - frame's prior \
+             keep-public-surface entry, which cited only its CROSS-crate console-core caller, no \
+             longer applies once a same-crate one exists - candidates: -1, keep_public: 13 -> 12. \
+             Net: 31 + 8 - 1 = 38 candidates; 21 delete unchanged; 5 + 8 - 1 = 12 \
+             keep-public-surface; 5 keep-pending unchanged.\n\n\
              Was (30, 21, 4, 5) before spec 84 criterion 1's map engine. console::map::frame \
              (src/console/map.rs) is a fresh keep-public-surface candidate: it has no in-src/ \
              production caller (console-core's op_map_frame, its one real caller, lives in a \
