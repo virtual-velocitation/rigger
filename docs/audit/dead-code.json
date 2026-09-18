@@ -386,6 +386,10 @@
         "content_hash": "3e86e887db746d43"
       },
       {
+        "file": "tests/console_map_kind_colour_periphery.rs",
+        "content_hash": "cc083acfcab1a4c8"
+      },
+      {
         "file": "tests/console_map_legend_wire_shape_periphery.rs",
         "content_hash": "14fd75284a93994e"
       },
