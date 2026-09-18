@@ -1083,3 +1083,93 @@ fn console_call_graph_query_map_fit_district_of_unknown_purpose_answers_an_error
          length as op_map_query's own documented error-message shape for an unknown purpose"
     );
 }
+
+/// `graph_query`'s `map_fit_entity` kind (round 2, closing the rail/search fly-to-entity gap)
+/// wires through the exported ABI on its SUCCESS path - the same bare
+/// `{"cx":...,"cy":...,"zoom":...}` shape `map_fit_district` answers, reached through its own
+/// `id` params struct.
+#[test]
+fn console_call_wires_graph_query_map_fit_entity_through_the_public_abi() {
+    use rigger::console::map;
+
+    let graph = cross_district_fixture();
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let model = map::build(&graph);
+    let id = model
+        .entities
+        .first()
+        .expect("the fixture's own entities")
+        .id
+        .clone();
+    let params = serde_json::json!({ "kind": "map_fit_entity", "params": { "id": id } });
+
+    let queried = unsafe { call("graph_query", &params.to_string()) };
+
+    let direct = map::fit_entity(&model, 900.0, 700.0, &id)
+        .expect("the fixture's own entity, read back from the built model, must fit");
+    let expected_len = serde_json::to_vec(&serde_json::json!({
+        "cx": direct.cx,
+        "cy": direct.cy,
+        "zoom": direct.zoom
+    }))
+    .unwrap()
+    .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_fit_entity reply through the exported ABI must be the same length as \
+         console::map::fit_entity's own direct answer for the identical entity"
+    );
+}
+
+/// `graph_query`'s `map_fit_entity` kind's ERROR path (an unknown entity id) wires through the
+/// exported ABI to the same `{"error": ...}` reply every other malformed/unresolved op call
+/// answers - the same proof `map_fit_district`'s own unknown-purpose test gives its sibling kind.
+#[test]
+fn console_call_graph_query_map_fit_entity_of_unknown_id_answers_an_error_through_the_public_abi() {
+    use rigger::console::map;
+
+    let graph = cross_district_fixture();
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let queried = unsafe {
+        call(
+            "graph_query",
+            r#"{"kind":"map_fit_entity","params":{"id":"does-not-exist"}}"#,
+        )
+    };
+
+    let model = map::build(&graph);
+    assert_eq!(
+        map::fit_entity(&model, 900.0, 700.0, "does-not-exist"),
+        None,
+        "the fixture's own entities must never carry this made-up id"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({
+        "error": format!(
+            "graph_query: map_fit_entity: unknown entity {:?}",
+            "does-not-exist"
+        )
+    }))
+    .unwrap()
+    .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_fit_entity error reply through the exported ABI must be the same \
+         length as op_map_query's own documented error-message shape for an unknown id"
+    );
+}

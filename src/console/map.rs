@@ -488,11 +488,17 @@ pub(crate) fn budget(zoom: f64) -> usize {
 /// in that case ALONE, `cx`/`cy` are ignored in favour of the model's own bounds centroid - so a
 /// default `Camera` (`zoom: 0.0`) renders EXACTLY what c1's zoom-only `frame` always rendered.
 /// At `zoom > 0.0`, `(cx, cy)` is the WORLD-SPACE point the viewport centres on (the pan this
-/// criterion adds); the base fit-to-viewport SCALE is always computed from the model's own world
-/// bounds regardless of pan - panning only moves the visible window, never changes how big
-/// things are, ordinary map-camera semantics. A page never hand-assembles a `Camera` other than
-/// forwarding its own scroll/drag deltas - [`fit_whole_map`] and [`fit_district`] are the only
-/// two ways this module RESETS one (Design, CAMERA: "the camera never resets except through
+/// criterion adds), and `zoom` is a DIRECT multiplier of the model's own world-bounds fit-to-
+/// viewport scale (see [`base_fit_scale`]) - `zoom: 1.0` renders at exactly that base fit
+/// scale (panned, never bigger or smaller than the full extent), `zoom` above `1.0` zooms in
+/// past it, and `zoom` between `0.0` (exclusive) and `1.0` zooms OUT below it, so a positive
+/// zoom can represent ANY scale, not only ones at or above the full-extent fit (round 2: a
+/// district whose own hull already spans the whole map still needs a scale BELOW the full-
+/// extent fit to leave [`DISTRICT_FIT_FRACTION`]'s own margin around it - see [`fit_district`]).
+/// Panning alone (holding `zoom` fixed) never changes scale, only the visible window - ordinary
+/// map-camera semantics. A page never hand-assembles a `Camera` other than forwarding its own
+/// scroll/drag deltas - [`fit_whole_map`], [`fit_district`] and [`fit_entity`] are the only
+/// ways this module RESETS one (Design, CAMERA: "the camera never resets except through
 /// fit-whole-map or a district double-click").
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Camera {
@@ -586,6 +592,25 @@ fn selection_card_and_neighbors<'a>(
     Some((card, neighbor_ids))
 }
 
+/// How much margin the world bounding box leaves around itself when scaled to fill a viewport -
+/// shared by every "fit the whole world (or a piece of it) to the viewport" computation
+/// ([`frame`]'s own full-extent/base scale and [`fit_district`]'s target scale) so the two can
+/// never independently drift (round 2 fix: this used to be a second, hand-copied `0.9` constant
+/// inside `fit_district` alone).
+const FIT_MARGIN: f64 = 0.9;
+
+/// THE ONE fit-to-viewport BASE SCALE authority (round 2 fix for
+/// `arch-u84c2-fit-district-duplicates-frame-scale`): given `bounds`, how much a `viewport_w` x
+/// `viewport_h` canvas must scale the world to make the whole bounding box fit inside it (with
+/// [`FIT_MARGIN`]'s own margin) - [`frame`]'s own full-extent scale AND the ONE formula
+/// [`fit_district`] solves for its own target zoom, never two independently-maintained copies.
+fn base_fit_scale(bounds: (f64, f64, f64, f64), viewport_w: f64, viewport_h: f64) -> f64 {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let world_w = (max_x - min_x).max(1.0);
+    let world_h = (max_y - min_y).max(1.0);
+    (viewport_w / world_w).min(viewport_h / world_h) * FIT_MARGIN
+}
+
 /// Render one frame of `model` at `camera` for a `viewport_w` x `viewport_h` canvas, highlighting
 /// `selection` (an entity id, or `None`). `camera.zoom <= 0.0` is the FULL EXTENT (Design, SEED:
 /// "the initial camera is the full extent"): the whole world bounding box scaled to fit the
@@ -610,8 +635,6 @@ pub fn frame(
     selection: Option<&str>,
 ) -> DrawList {
     let (min_x, min_y, max_x, max_y) = model.bounds;
-    let world_w = (max_x - min_x).max(1.0);
-    let world_h = (max_y - min_y).max(1.0);
     let zoom = camera.zoom;
     let (world_cx, world_cy) = if zoom > 0.0 {
         (camera.cx, camera.cy)
@@ -619,9 +642,13 @@ pub fn frame(
         ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
     };
 
-    const MARGIN: f64 = 0.9;
-    let fit = (viewport_w / world_w).min(viewport_h / world_h) * MARGIN;
-    let scale = fit * (1.0 + zoom.max(0.0) * 0.5);
+    let fit = base_fit_scale(model.bounds, viewport_w, viewport_h);
+    // `zoom` is a DIRECT multiplier of `fit` (see [`Camera`]'s own doc) - `zoom <= 0.0` (the
+    // full-extent sentinel branch above) always renders at exactly `fit`; a positive `zoom`
+    // scales `fit` up OR down, so this - unlike a `zoom.max(0.0) * step` offset - can represent
+    // a scale BELOW `fit` too (needed by [`fit_district`] for a district whose hull already
+    // spans the whole map).
+    let scale = if zoom > 0.0 { fit * zoom } else { fit };
 
     let project = |x: f64, y: f64| -> (f64, f64) {
         (
@@ -988,9 +1015,15 @@ const DISTRICT_FIT_FRACTION: f64 = 0.35;
 /// Fit district (Design, CAMERA: "double-click a district fits it") - a camera centred on the
 /// named district whose zoom makes its own hull occupy [`DISTRICT_FIT_FRACTION`] of the smaller
 /// viewport dimension, using the SAME fit-to-viewport scale formula [`frame`] itself computes
-/// (never a second one), solved for the zoom that hits the target radius. `None` for an unknown
-/// purpose - the caller's own double-click already named a real district (via [`hit`]'s own
-/// `Hit::District`), so this is a defensive contract, not a documented UI path.
+/// ([`base_fit_scale`], never a second one), solved for the zoom that hits the target radius -
+/// ABOVE `base_fit_scale`'s own scale for a district small relative to the whole map, but just as
+/// validly BELOW it for a district whose own hull already spans (or exceeds) the whole map (round
+/// 2 fix: `Camera::zoom` being a direct scale multiplier, per that type's own doc, is what makes a
+/// sub-base-fit target representable at all - the old `1 + zoom*0.5` encoding could only ever grow
+/// past `base_fit_scale`, never shrink below it, so this case used to silently clamp at the
+/// full-extent floor instead). `None` for an unknown purpose - the caller's own double-click
+/// already named a real district (via [`hit`]'s own `Hit::District`), so this is a defensive
+/// contract, not a documented UI path.
 pub fn fit_district(
     model: &MapModel,
     viewport_w: f64,
@@ -998,25 +1031,44 @@ pub fn fit_district(
     purpose: &str,
 ) -> Option<Camera> {
     let d = model.districts.iter().find(|d| d.purpose == purpose)?;
-    let (min_x, min_y, max_x, max_y) = model.bounds;
-    let world_w = (max_x - min_x).max(1.0);
-    let world_h = (max_y - min_y).max(1.0);
-    const MARGIN: f64 = 0.9;
-    let base_fit = (viewport_w / world_w).min(viewport_h / world_h) * MARGIN;
+    let base_fit = base_fit_scale(model.bounds, viewport_w, viewport_h);
     let target_radius_px = DISTRICT_FIT_FRACTION * viewport_w.min(viewport_h) / 2.0;
     let scale_needed = if d.radius > 0.0 {
         target_radius_px / d.radius
     } else {
         base_fit
     };
-    // `frame`'s own `scale = fit * (1 + zoom.max(0) * 0.5)`, solved for `zoom`; floored just
-    // above zero so this NEVER answers the full-extent sentinel `frame` would otherwise
-    // reinterpret as "ignore cx/cy" (see `Camera`'s own doc) - a district fit must always pan.
-    let zoom = ((scale_needed / base_fit - 1.0) / 0.5).max(0.0001);
+    // `frame`'s own `scale = fit * zoom` for a positive zoom (see `Camera`'s own doc), solved
+    // directly for zoom; floored just above zero so this NEVER answers the full-extent sentinel
+    // `frame` would otherwise reinterpret as "ignore cx/cy" - a district fit must always pan, at
+    // whatever scale (above OR below `base_fit`) actually hits the target radius.
+    let zoom = (scale_needed / base_fit).max(0.0001);
     Some(Camera {
         cx: d.x,
         cy: d.y,
         zoom,
+    })
+}
+
+/// Fit entity (Design, EXPLORE RAIL: "each chip flies the camera to that entity and selects it";
+/// round 2 fix for `sdet-u84c2-rail-candidates-carry-no-camera-target`) - a camera centred on the
+/// named entity's own world coordinates, at the SAME zoom [`fit_district`] would compute for that
+/// entity's own district (never a second zoom formula): flying to an entity means flying into its
+/// neighbourhood at reading distance, exactly the scale a district double-click already gives
+/// that neighbourhood, just re-centred on the entity's own point rather than its district's
+/// centroid. `None` for an unknown id (a stale rail chip or search hit id, never a documented UI
+/// path once a page only ever forwards ids [`landmarks`]/[`bridges_between_districts`]/
+/// [`changing_right_now`]/[`argued_about_in_review`]/[`search`] themselves just returned) or - a
+/// purely defensive contract, unreachable from [`build`]'s own output, which always assigns every
+/// entity a district that exists - one whose own `district` names no district in
+/// [`MapModel::districts`].
+pub fn fit_entity(model: &MapModel, viewport_w: f64, viewport_h: f64, id: &str) -> Option<Camera> {
+    let e = model.entities.iter().find(|e| e.id == id)?;
+    let district_cam = fit_district(model, viewport_w, viewport_h, &e.district)?;
+    Some(Camera {
+        cx: e.x,
+        cy: e.y,
+        zoom: district_cam.zoom,
     })
 }
 
@@ -2054,5 +2106,77 @@ mod tests {
     fn fit_district_of_an_unknown_purpose_is_none() {
         let model = build(&populous_graph(2, 1, 4));
         assert_eq!(fit_district(&model, 900.0, 700.0, "no-such-district"), None);
+    }
+
+    /// adv-u84c2-fit-district-cannot-zoom-out-past-full-extent's own repro, now a permanent
+    /// regression test: a LONE district's own world hull already spans the whole map
+    /// (`world_w == world_h == 2*d.radius`), so `fit_district`'s target scale is BELOW the
+    /// full-extent fit scale - the camera must actually shrink to it, never clamp at the
+    /// full-extent floor and silently over-fill the viewport.
+    #[test]
+    fn fit_district_of_a_lone_district_shrinks_to_the_district_fit_fraction() {
+        let model = build(&populous_graph(1, 1, 6));
+        assert_eq!(
+            model.districts.len(),
+            1,
+            "the fixture must build exactly one district"
+        );
+        let purpose = model.districts[0].purpose.clone();
+        let (viewport_w, viewport_h) = (1000.0, 800.0);
+
+        let (min_x, min_y, max_x, max_y) = model.bounds;
+        assert_eq!(
+            max_x - min_x,
+            2.0 * model.districts[0].radius,
+            "the lone district's hull must equal the whole world bounds"
+        );
+        assert_eq!(max_y - min_y, 2.0 * model.districts[0].radius);
+
+        let cam = fit_district(&model, viewport_w, viewport_h, &purpose).expect("a real district");
+        let dl = frame(&model, viewport_w, viewport_h, &cam, None);
+        let drawn = dl
+            .districts
+            .iter()
+            .find(|d| d.purpose == purpose)
+            .expect("the fit district's own pill must still be drawn");
+
+        let target_radius_px = DISTRICT_FIT_FRACTION * viewport_w.min(viewport_h) / 2.0;
+        assert!(
+            (drawn.radius - target_radius_px).abs() < 1e-6,
+            "a lone district's fit must shrink to the DISTRICT_FIT_FRACTION target ({target_radius_px}px), \
+             not render at full-extent scale: got {}px",
+            drawn.radius
+        );
+    }
+
+    // ---- fit_entity ---------------------------------------------------------------------------
+
+    #[test]
+    fn fit_entity_centers_on_the_named_entitys_own_coordinates_at_its_districts_fit_zoom() {
+        let model = build(&populous_graph(3, 1, 5));
+        let e = model.entities[0].clone();
+        let cam = fit_entity(&model, 1000.0, 800.0, &e.id).expect("a real entity");
+        assert_eq!(
+            cam.cx, e.x,
+            "fit_entity must center on the entity's OWN x, not its district's"
+        );
+        assert_eq!(
+            cam.cy, e.y,
+            "fit_entity must center on the entity's OWN y, not its district's"
+        );
+        let district_zoom = fit_district(&model, 1000.0, 800.0, &e.district)
+            .expect("the entity's own district")
+            .zoom;
+        assert_eq!(
+            cam.zoom, district_zoom,
+            "fit_entity must reuse fit_district's own zoom formula for the entity's district - \
+             never a second one"
+        );
+    }
+
+    #[test]
+    fn fit_entity_of_an_unknown_id_is_none() {
+        let model = build(&populous_graph(2, 1, 4));
+        assert_eq!(fit_entity(&model, 900.0, 700.0, "no-such-entity"), None);
     }
 }

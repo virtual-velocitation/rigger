@@ -66,23 +66,23 @@
   {
     "file": "src/console/map.rs",
     "name": "hit",
-    "line": 777,
+    "line": 804,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 1811
+        "line": 1863
       },
       {
         "file": "src/console/map.rs",
-        "line": 1826
+        "line": 1878
       },
       {
         "file": "src/console/map.rs",
-        "line": 1855
+        "line": 1907
       },
       {
         "file": "src/console/map.rs",
-        "line": 1866
+        "line": 1918
       },
       {
         "file": "src/failure.rs",
@@ -189,19 +189,19 @@
   {
     "file": "src/console/map.rs",
     "name": "landmarks",
-    "line": 830,
+    "line": 857,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 1902
+        "line": 1954
       },
       {
         "file": "src/console/map.rs",
-        "line": 1912
+        "line": 1964
       },
       {
         "file": "src/console/map.rs",
-        "line": 1913
+        "line": 1965
       },
       {
         "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
@@ -212,67 +212,67 @@
   {
     "file": "src/console/map.rs",
     "name": "bridges_between_districts",
-    "line": 840,
+    "line": 867,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 1919
+        "line": 1971
       }
     ]
   },
   {
     "file": "src/console/map.rs",
     "name": "changing_right_now",
-    "line": 871,
+    "line": 898,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 1936
+        "line": 1988
       },
       {
         "file": "src/console/map.rs",
-        "line": 1944
+        "line": 1996
       }
     ]
   },
   {
     "file": "src/console/map.rs",
     "name": "argued_about_in_review",
-    "line": 891,
+    "line": 918,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 1979
+        "line": 2031
       },
       {
         "file": "src/console/map.rs",
-        "line": 1988
+        "line": 2040
       }
     ]
   },
   {
     "file": "src/console/map.rs",
     "name": "search",
-    "line": 936,
+    "line": 963,
     "ambiguous_with": [
       "src/contextgraph/query.rs:1642"
     ],
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 1999
+        "line": 2051
       },
       {
         "file": "src/console/map.rs",
-        "line": 2006
+        "line": 2058
       },
       {
         "file": "src/console/map.rs",
-        "line": 2014
+        "line": 2066
       },
       {
         "file": "src/console/map.rs",
-        "line": 2020
+        "line": 2072
       },
       {
         "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
@@ -283,26 +283,26 @@
   {
     "file": "src/console/map.rs",
     "name": "fit_whole_map",
-    "line": 974,
+    "line": 1001,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2033
+        "line": 2085
       }
     ]
   },
   {
     "file": "src/console/map.rs",
-    "name": "fit_district",
-    "line": 994,
+    "name": "fit_entity",
+    "line": 1065,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2044
+        "line": 2158
       },
       {
         "file": "src/console/map.rs",
-        "line": 2056
+        "line": 2180
       }
     ]
   },
@@ -1001,7 +1001,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 9897
+        "line": 9909
       }
     ]
   },

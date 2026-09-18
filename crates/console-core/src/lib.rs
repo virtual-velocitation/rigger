@@ -255,12 +255,13 @@ fn op_graph_load(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
     }
 }
 
-/// The seven `map_*` kinds spec 84 criterion 2 adds to `graph_query` (the Explore rail's own
-/// four candidate lists, search, and the two camera RESETS - `fit_whole_map`/`fit_district`):
-/// routed here rather than to the library's own `contextgraph::query::graph_query` (which knows
-/// nothing of a built map, only a `Graph`), because `graph_query` is this crate's ONE extensible
-/// multi-kind query op - THE MODULE AND ITS ABI's own twelve-op budget has no room for seven more
-/// named ops, and `graph_query` already exists precisely to carry a `kind` + arbitrary `params`
+/// The eight `map_*` kinds spec 84 criterion 2 adds to `graph_query` (the Explore rail's own
+/// four candidate lists, search, and the three camera RESETS - `fit_whole_map`/`fit_district`/
+/// `fit_entity`, the last added round 2 to close the rail/search fly-to-entity gap): routed here
+/// rather than to the library's own `contextgraph::query::graph_query` (which knows nothing of a
+/// built map, only a `Graph`), because `graph_query` is this crate's ONE extensible multi-kind
+/// query op - THE MODULE AND ITS ABI's own twelve-op budget has no room for eight more named
+/// ops, and `graph_query` already exists precisely to carry a `kind` + arbitrary `params`
 /// payload. Every kind here needs `session.map` (`map_build` fills it); `map_argued_about`
 /// additionally reads `session.graph` directly, always `Some` whenever `session.map` is
 /// (`map_build` itself requires a loaded graph, and a reload clears both together - see
@@ -273,6 +274,7 @@ const MAP_QUERY_KINDS: &[&str] = &[
     "map_search",
     "map_fit_whole",
     "map_fit_district",
+    "map_fit_entity",
 ];
 
 /// A rail chip's own reasonable working set when a caller omits `limit` entirely - unlike
@@ -353,6 +355,17 @@ struct FitDistrictParams {
     purpose: String,
 }
 
+/// `map_fit_entity`'s own param (round 2): the entity `id` - a rail chip's or search hit's own
+/// `id` field, echoed straight back - to fly the camera to. An empty/omitted `id` simply matches
+/// no real entity - [`console::map::fit_entity`]'s own documented `None` contract, answered as
+/// an error reply here rather than a crash, the SAME discipline [`FitDistrictParams`] already
+/// keeps for its own `purpose` field.
+#[derive(serde::Deserialize, Default)]
+struct FitEntityParams {
+    #[serde(default)]
+    id: String,
+}
+
 fn op_map_query(session: &ConsoleSession, kind: &str, params: &serde_json::Value) -> Vec<u8> {
     let Some(model) = session.map.as_ref() else {
         return error_reply(format!(
@@ -406,6 +419,19 @@ fn op_map_query(session: &ConsoleSession, kind: &str, params: &serde_json::Value
                 None => error_reply(format!(
                     "graph_query: map_fit_district: unknown district {:?}",
                     p.purpose
+                )),
+            }
+        }
+        "map_fit_entity" => {
+            let p: FitEntityParams = serde_json::from_value(params.clone()).unwrap_or_default();
+            let (w, h) = session.map_viewport;
+            match console::map::fit_entity(model, w, h, &p.id) {
+                Some(cam) => {
+                    ok_json(serde_json::json!({ "cx": cam.cx, "cy": cam.cy, "zoom": cam.zoom }))
+                }
+                None => error_reply(format!(
+                    "graph_query: map_fit_entity: unknown entity {:?}",
+                    p.id
                 )),
             }
         }
@@ -977,7 +1003,7 @@ mod dispatch_tests {
     }
 
     /// Every `map_*` `graph_query` kind before `map_build` is the same "call map_build first"
-    /// error reply - proven once across all seven, mirroring
+    /// error reply - proven once across all eight, mirroring
     /// `malformed_input_answers_with_an_error_reply_for_every_parsing_op`'s own uniform-property
     /// pattern.
     #[test]
@@ -990,6 +1016,7 @@ mod dispatch_tests {
             "map_search",
             "map_fit_whole",
             "map_fit_district",
+            "map_fit_entity",
         ] {
             let mut s = ConsoleSession::new();
             let v = call(
@@ -1188,6 +1215,32 @@ mod dispatch_tests {
             &mut s,
             "graph_query",
             r#"{"kind":"map_fit_district","params":{"purpose":"no-such-district"}}"#,
+        );
+        assert!(unknown.get("error").is_some(), "{unknown:?}");
+    }
+
+    /// `graph_query`'s `map_fit_entity` kind (round 2) answers the SAME camera
+    /// `console::map::fit_entity` itself returns for the fixture's own entity, using the
+    /// session's own `map_build`-fixed viewport - and an unknown id is an error reply, never a
+    /// panic, mirroring `map_fit_district`'s own success/error shape exactly.
+    #[test]
+    fn graph_query_map_fit_entity_matches_the_librarys_own_result() {
+        let mut s = built_map_session();
+        let id = s.map.as_ref().unwrap().entities[0].id.clone();
+        let v = call(
+            &mut s,
+            "graph_query",
+            &format!(r#"{{"kind":"map_fit_entity","params":{{"id":"{id}"}}}}"#),
+        );
+        let direct = console::map::fit_entity(s.map.as_ref().unwrap(), 800.0, 600.0, &id).unwrap();
+        assert_eq!(v["cx"].as_f64(), Some(direct.cx), "{v:?}");
+        assert_eq!(v["cy"].as_f64(), Some(direct.cy), "{v:?}");
+        assert_eq!(v["zoom"].as_f64(), Some(direct.zoom), "{v:?}");
+
+        let unknown = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_fit_entity","params":{"id":"no-such-entity"}}"#,
         );
         assert!(unknown.get("error").is_some(), "{unknown:?}");
     }
