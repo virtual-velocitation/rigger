@@ -198,3 +198,132 @@ fn console_call_wires_graph_load_and_graph_query_through_the_public_abi() {
          library's own graph_query answer for the identical graph and kind"
     );
 }
+
+/// `map_build` then `map_frame` wire through the exported ABI to the SAME `console::map` engine
+/// spec 84 criterion 1 built (this crate's own dispatch doc: "`map_build`/`map_frame` are spec
+/// 84 criterion 1's own engine ... real data now, not the stub spec 93 left them as") - proven
+/// through two real `console_call` invocations, not through `dispatch` directly. This is exactly
+/// the layer the implementer's own same-crate `dispatch_tests` (e.g.
+/// `map_build_answers_real_district_and_entity_counts_from_the_loaded_graph`) are structurally
+/// blind to: a regression that broke ONLY the FFI marshaling of this new cross-crate call (a
+/// truncated pointer, a dropped byte, a mis-packed length) would still pass every internal
+/// `dispatch()` call, which never crosses the exported boundary at all. Reply content is
+/// unreadable natively (see module doc), so this compares the reply's LENGTH against the length
+/// of the exact answer `console::map::build`/`console::map::frame` themselves return for the
+/// identical graph and viewport - an expected value computed from the same authority the ABI
+/// wires to, never a hardcoded number.
+#[test]
+fn console_call_wires_map_build_and_map_frame_through_the_public_abi() {
+    use rigger::console::map;
+    use rigger::contextgraph::{
+        Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
+    };
+    use rigger::eventstore::Position;
+
+    let graph = Graph {
+        nodes: vec![Node {
+            id: "src/a.rs::f".to_string(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: [
+                ("name".to_string(), "f".to_string()),
+                ("kind".to_string(), "function".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        }],
+        edges: vec![Edge {
+            from: "src/a.rs::f".to_string(),
+            to: "community/1/0".to_string(),
+            rel: REL_IN_COMMUNITY.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: Position::default(),
+            tier: TIER_EXTRACTED.to_string(),
+        }],
+    };
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    let loaded = unsafe { call("graph_load", std::str::from_utf8(&payload).unwrap()) };
+    assert!(
+        reply_len(loaded) > 0,
+        "graph_load must answer a non-empty reply through the exported ABI"
+    );
+
+    let build = unsafe { call("map_build", r#"{"w":800,"h":600}"#) };
+    assert!(
+        reply_len(build) > 0,
+        "map_build must answer a non-empty reply through the exported ABI"
+    );
+
+    let frame = unsafe { call("map_frame", r#"{"zoom":0}"#) };
+
+    let model = map::build(&graph);
+    let direct = map::frame(&model, 800.0, 600.0, 0.0);
+    let expected_len = serde_json::to_vec(&direct).unwrap().len();
+
+    assert_eq!(
+        reply_len(frame),
+        expected_len,
+        "map_frame's reply through the exported ABI must be the same length as console::map's \
+         own frame() answer for the identical graph and viewport"
+    );
+}
+
+/// `map_frame` at a higher zoom answers a strictly LONGER reply than the full-extent (zoom 0)
+/// frame of the same built model, proven through the real exported ABI - the semantic-zoom
+/// monotonic-eligibility property the implementer's own `dispatch_tests::
+/// map_frame_zooming_in_answers_more_entities_through_the_wire` already pins, but only against
+/// the private `dispatch()` backdoor; reproven here across the actual FFI boundary these
+/// periphery tests exist to guard.
+#[test]
+fn console_call_map_frame_zooming_in_answers_a_longer_reply_through_the_public_abi() {
+    use rigger::contextgraph::{
+        Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED,
+    };
+    use rigger::eventstore::Position;
+
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for d in 0..6 {
+        for m in 0..14 {
+            let id = format!("src/worktree.rs::g_{d}_{m}");
+            nodes.push(Node {
+                id: id.clone(),
+                kind: KIND_CODE_ENTITY.to_string(),
+                attrs: [
+                    ("name".to_string(), format!("g_{d}_{m}")),
+                    ("kind".to_string(), "function".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            });
+            edges.push(Edge {
+                from: id,
+                to: format!("community/1/{d}"),
+                rel: REL_IN_COMMUNITY.to_string(),
+                valid_from: 0,
+                valid_to: None,
+                source: Position::default(),
+                tier: TIER_EXTRACTED.to_string(),
+            });
+        }
+    }
+    let graph = Graph { nodes, edges };
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":1200,"h":800}"#);
+    }
+
+    let full_extent = unsafe { call("map_frame", r#"{"zoom":0}"#) };
+    let zoomed_in = unsafe { call("map_frame", r#"{"zoom":6}"#) };
+
+    assert!(
+        reply_len(zoomed_in) > reply_len(full_extent),
+        "zooming in through the real exported ABI must answer a strictly longer reply: \
+         full extent {} vs zoomed in {}",
+        reply_len(full_extent),
+        reply_len(zoomed_in)
+    );
+}

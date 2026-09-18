@@ -115,6 +115,14 @@
         "content_hash": "1cfcb7a21ddaa64d"
       },
       {
+        "file": "tests/console_map_frame_wire_shape_periphery.rs",
+        "content_hash": "1cfcb7a21ddaa64d"
+      },
+      {
+        "file": "tests/console_map_frame_wire_shape_periphery.rs",
+        "content_hash": "1cfcb7a21ddaa64d"
+      },
+      {
         "file": "tests/simplification_audit.rs",
         "content_hash": "228e9b4098e52be3"
       },

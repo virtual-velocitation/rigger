@@ -97,6 +97,14 @@
         "line": 153
       },
       {
+        "file": "tests/console_map_frame_wire_shape_periphery.rs",
+        "line": 83
+      },
+      {
+        "file": "tests/console_map_frame_wire_shape_periphery.rs",
+        "line": 142
+      },
+      {
         "file": "tests/simplification_audit.rs",
         "line": 583
       },
