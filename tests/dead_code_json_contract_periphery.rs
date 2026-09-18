@@ -800,9 +800,14 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// its prior `delete` entry is gone outright rather than moved (candidates -1, delete -1); the
 /// criterion's two new op-level entry points, `graph_load` and `graph_query`
 /// (src/contextgraph/query.rs), land as fresh `keep-pending` candidates awaiting their
-/// console/Mission-Control ABI caller, a later criterion (candidates +2, keep-pending +2).
+/// console/Mission-Control ABI caller, a later criterion (candidates +2, keep-pending +2). Now
+/// 31/21/5/5 (was 30/21/4/5) after spec 84 criterion 1's map engine: `console::map::frame`
+/// (src/console/map.rs) lands as a fresh `keep-public-surface` candidate - its one real caller,
+/// console-core's `op_map_frame`, lives in a separate workspace-member crate outside `src/` (this
+/// scanner's own scope), invisible by construction, but is already landed and wired today, not a
+/// future one (candidates +1, keep-public-surface +1).
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_4_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_5_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -819,7 +824,7 @@ fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_4_
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (30, 21, 4, 5),
+        (31, 21, 5, 5),
         "the committed disposition split has changed since this criterion's research"
     );
 }

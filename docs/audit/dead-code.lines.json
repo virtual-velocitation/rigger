@@ -64,6 +64,49 @@
     ]
   },
   {
+    "file": "src/console/map.rs",
+    "name": "frame",
+    "line": 468,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 857
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 883
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 895
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 904
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 905
+      },
+      {
+        "file": "tests/code_lens_map_real_store_periphery.rs",
+        "line": 112
+      },
+      {
+        "file": "tests/code_lens_map_real_store_periphery.rs",
+        "line": 153
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "line": 583
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "line": 584
+      }
+    ]
+  },
+  {
     "file": "src/contextgraph/query.rs",
     "name": "graph_load",
     "line": 1732,
@@ -758,7 +801,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 9800
+        "line": 9828
       }
     ]
   },

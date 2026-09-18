@@ -3854,6 +3854,18 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // makes exactly ONE outgoing call - `path_is_dirty` in place of `git` - so the edge count
         // is unchanged at 5.
         ("src/worktree.rs", "is_dirty") => 5,
+        // frame is a brand-new file (src/console/map.rs, spec 84 criterion 1); `rigger graph
+        // --show` reflects `.`'s own checked-out base branch, which has never seen this unmerged
+        // unit branch's new file at all - hand-derived the same two-part way the entries above
+        // are, for the same reason: 5 test-only call sites within this file's own `#[cfg(test)]
+        // mod tests` (frame_never_draws_an_entity_without_a_placed_label,
+        // frame_always_carries_every_districts_pill_at_every_zoom,
+        // frame_district_pill_is_never_a_file_name (1 call),
+        // frame_zooming_in_strictly_increases_the_labelled_entity_count (2 calls)) plus 2 local
+        // outgoing calls its own body makes to other entities this file defines (budget, and
+        // place_label) - the closure `project` it also calls is a local binding, not a graph
+        // entity, so it contributes no edge.
+        ("src/console/map.rs", "frame") => 7,
         (other_file, other_name) => panic!(
             "dead-code candidate {other_file}::{other_name} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
@@ -4689,7 +4701,7 @@ fn render_section_6() -> String {
         together, rather than as two separately-tracked fixes.\n\n",
     );
     out.push_str(
-        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0158` + `dup-0159`)\n\n",
+        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0162` + `dup-0163`)\n\n",
     );
     out.push_str(
         "- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
@@ -4697,19 +4709,19 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0159`, 15 sites: `src/dash.rs`, `src/main.rs`, \
+        capstone previously caught (`dup-0163`, 15 sites: `src/dash.rs`, `src/main.rs`, \
         `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \
         91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \
         reason `dash.rs::process_state` does, growing this already-known cluster by one site \
         rather than opening a new one), plus 60 raw `/proc`-path string literals scattered \
         across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no \
-        shared composer (`dup-0158`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
+        shared composer (`dup-0162`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
         re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
         production server, so it is the actual active-correctness risk this tier-1 placement \
         is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) \
         and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
-        rides in this same item only because it shares `dup-0158`/`dup-0159`'s one root cause \
+        rides in this same item only because it shares `dup-0162`/`dup-0163`'s one root cause \
         and one proposed fix with `process_state`, not because retiring it retires any live \
         risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
@@ -5048,7 +5060,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
         above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0056`, `dup-0110`, \
-        `dup-0158`, `dup-0159`, `dup-0208`, `dup-0217`); the remaining 327 clusters touching \
+        `dup-0162`, `dup-0163`, `dup-0208`, `dup-0217`); the remaining 327 clusters touching \
         `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
         section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
         exact-duplicate clusters first, consumed directly from \
@@ -6364,6 +6376,22 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              and has no caller left for the combined form) - a test-scoped item is not a \
              production dead-code candidate by this scanner's own definition, closing the \
              finding at its root rather than re-dispositioning it in place.",
+        ),
+        ("src/console/map.rs", "frame") => (
+            KeepPublicSurface,
+            "frame (the map engine's per-zoom render pass, spec 84 criterion 1) has no production \
+             caller within src/ - the scanner's own scope is this crate's src/ tree, and frame's \
+             one real caller, console-core's op_map_frame (crates/console-core/src/lib.rs), lives \
+             in a SEPARATE workspace-member crate (`rigger` compiled with `default-features = \
+             false, features = [\"core\"]`), invisible to a same-crate reference sweep by \
+             construction - the identical cross-crate shape the contextgraph::query.rs \
+             graph_load/graph_query entries above already carry, except THIS caller is already \
+             landed and wired (spec 93 criterion 2 shipped before spec 84 began), not a future \
+             one: console_call's real 'map_frame' op dispatches to this exact function today (see \
+             crates/console-core/src/lib.rs's dispatch, and its own \
+             map_frame_zooming_in_answers_more_entities_through_the_wire periphery test). \
+             Keep-public-surface: a real, non-test, ALREADY-WIRED consumer across the workspace's \
+             own crate boundary.",
         ),
         (other_file, other_name) => panic!(
             "dead-code candidate {other_file}::{other_name} has no assigned disposition - this is \
@@ -9479,8 +9507,8 @@ mod tests {
         assert!(rendered.contains("dup-0006"));
         assert!(rendered.contains("dup-0056"));
         assert!(rendered.contains("dup-0110"));
-        assert!(rendered.contains("dup-0158"));
-        assert!(rendered.contains("dup-0159"));
+        assert!(rendered.contains("dup-0162"));
+        assert!(rendered.contains("dup-0163"));
         assert!(rendered.contains("dup-0217"));
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("src/conductor.rs"));
@@ -10890,9 +10918,16 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (30, 21, 4, 5),
+            (31, 21, 5, 5),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}\n\n\
+             Was (30, 21, 4, 5) before spec 84 criterion 1's map engine. console::map::frame \
+             (src/console/map.rs) is a fresh keep-public-surface candidate: it has no in-src/ \
+             production caller (console-core's op_map_frame, its one real caller, lives in a \
+             separate workspace-member crate outside src/, invisible to this same-crate scan by \
+             construction) but IS already wired to a real, landed, non-test consumer today - \
+             candidates: +1, keep_public: 4 -> 5. Net: 30 + 1 = 31 candidates; 21 delete \
+             unchanged; 4 + 1 = 5 keep-public-surface; 5 keep-pending unchanged.\n\n\
              Was (29, 22, 4, 3) before spec 93 criterion 5's dashboard query-engine relocation. \
              That criterion moved `neighborhood` (and its siblings) out of src/dash.rs into the \
              new src/contextgraph/query.rs, where a new `graph_query` op dispatcher calls \

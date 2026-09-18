@@ -80,6 +80,53 @@
     "reason": "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not a false positive: spawn_sdet_author (conductor.rs:3980) gates the always-on SDET periphery-test author ONLY on whether an sdet-author agent is configured (self.cfg.agents.get(ROLE_SDET_AUTHOR)) and never consults self.cfg.defaults.sdet_author_enabled() at all, so today an explicit sdet_author: false in a workflow's defaults: block does nothing - the on-by-default opt-out spec 32 documents and this very method's own doc comment claims ('the conductor's build-seam reads through here') is not actually true of the shipped code. keep-pending, citing spec 32 (the sdet-author feature this toggle governs, already landed): deleting the method would delete the documented resolution authority for an already-shipped, still-referenced config field (Defaults::sdet_author) before a follow-up wires spawn_sdet_author to call it - the correct fix is wiring the call site, out of scope here (no production code changes this criterion)."
   },
   {
+    "name": "frame",
+    "file": "src/console/map.rs",
+    "content_hash": "13f6aa9b6dd760f7",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "592ebcbb91b94ec5"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "592ebcbb91b94ec5"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "c27da7023c10813a"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "c27da7023c10813a"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "c27da7023c10813a"
+      },
+      {
+        "file": "tests/code_lens_map_real_store_periphery.rs",
+        "content_hash": "1cfcb7a21ddaa64d"
+      },
+      {
+        "file": "tests/code_lens_map_real_store_periphery.rs",
+        "content_hash": "1cfcb7a21ddaa64d"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "content_hash": "228e9b4098e52be3"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "content_hash": "bf123c25b3546205"
+      }
+    ],
+    "disposition": "keep-public-surface",
+    "reason": "frame (the map engine's per-zoom render pass, spec 84 criterion 1) has no production caller within src/ - the scanner's own scope is this crate's src/ tree, and frame's one real caller, console-core's op_map_frame (crates/console-core/src/lib.rs), lives in a SEPARATE workspace-member crate (`rigger` compiled with `default-features = false, features = [\"core\"]`), invisible to a same-crate reference sweep by construction - the identical cross-crate shape the contextgraph::query.rs graph_load/graph_query entries above already carry, except THIS caller is already landed and wired (spec 93 criterion 2 shipped before spec 84 began), not a future one: console_call's real 'map_frame' op dispatches to this exact function today (see crates/console-core/src/lib.rs's dispatch, and its own map_frame_zooming_in_answers_more_entities_through_the_wire periphery test). Keep-public-surface: a real, non-test, ALREADY-WIRED consumer across the workspace's own crate boundary."
+  },
+  {
     "name": "graph_load",
     "file": "src/contextgraph/query.rs",
     "content_hash": "975407e238123fea",
