@@ -194,17 +194,62 @@ fn grep_only_lane_runs_the_full_gate_battery() {
         None,
         "cargo clippy --no-default-features --all-targets -- -D warnings on the grep-only build",
     );
+    // Forbid `--features core`: that flag alone would let the core lane's own `--lib
+    // --no-default-features --features core` build/test lines (added below by
+    // core_lane_runs_its_gate_battery) vacuously satisfy this assertion too, since both
+    // start with `cargo build`/`cargo test ... --no-default-features`. Anchoring keeps this
+    // test tied to the grep-only lane specifically, so deleting IT while the core lane
+    // survives still fails here.
     assert_lane_command(
         &script,
         &["cargo build", NO_DEFAULTS],
-        None,
+        Some("--features core"),
         "cargo build --no-default-features on the grep-only build",
     );
     assert_lane_command(
         &script,
         &["cargo test", NO_DEFAULTS],
-        None,
+        Some("--features core"),
         "cargo test --no-default-features on the grep-only build",
+    );
+}
+
+/// Spec 93 criterion 6, the terminal gate: the pure `core` lane (`--no-default-features
+/// --features core`) must run the same clippy-then-build-then-test battery as the other two
+/// lanes, so a lint or a test regression that only surfaces under the `core` cfg universe
+/// fails CI instead of only being caught by a hand-run `RIGGER_CORE_LANE_VERIFY=1`
+/// (`tests/core_lane_purity_audit.rs`, which stays the deliberately opt-in check for the
+/// expensive wasm32-unknown-unknown cross-compile - this test guards the native side that
+/// runs on every push). Every assertion requires `--features core` and `--lib` together:
+/// `--features core` alone already discriminates this lane from the other two (neither ever
+/// passes it), and `--lib` is asserted because `main.rs` does not compile under `core` alone
+/// (THE FEATURE SPLIT names "the binary" as one of the things `store` gates) - `--lib` is the
+/// correct scope here, not a narrowed one, so a future edit that widens these commands to the
+/// whole package (reintroducing a build break) fails here too.
+#[test]
+fn core_lane_runs_its_gate_battery() {
+    let wf = workflow_yaml();
+    let script = job_run_scripts(&wf, "build-test");
+    const NO_DEFAULTS: &str = "--no-default-features";
+    const CORE: &str = "--features core";
+
+    assert_lane_command(
+        &script,
+        &["cargo clippy", "--lib", NO_DEFAULTS, CORE, "-D warnings"],
+        None,
+        "cargo clippy --lib --no-default-features --features core -- -D warnings on the core lane",
+    );
+    assert_lane_command(
+        &script,
+        &["cargo build", "--lib", NO_DEFAULTS, CORE],
+        None,
+        "cargo build --lib --no-default-features --features core on the core lane",
+    );
+    assert_lane_command(
+        &script,
+        &["cargo test", "--lib", NO_DEFAULTS, CORE],
+        None,
+        "cargo test --lib --no-default-features --features core on the core lane",
     );
 }
 

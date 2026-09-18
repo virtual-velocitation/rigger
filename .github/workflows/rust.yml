@@ -120,6 +120,23 @@ jobs:
         run: |
           cargo build --no-default-features --verbose
           cargo test --no-default-features --verbose
+      # Spec 93 criterion 6, the terminal gate: the pure `core` lane (`--no-default-features
+      # --features core`) gets the same battery too - clippy then build + test - so a lint or
+      # a regression that only surfaces under the `core` cfg universe fails CI instead of
+      # rotting until the next hand-run `RIGGER_CORE_LANE_VERIFY=1`. Scoped to `--lib`
+      # throughout: THE FEATURE SPLIT (spec 93 Design) names "the binary" as one of the
+      # things `store` gates, so `main.rs` does not compile under `core` alone - `--lib` is
+      # the correct scope here, not a narrowed one (mirrors
+      # tests/core_lane_purity_audit.rs's own expensive check). The wasm32-unknown-unknown
+      # cross-compile of the pure subset stays the deliberately opt-in expensive check that
+      # test already gates behind `RIGGER_CORE_LANE_VERIFY=1`; this lane proves the native
+      # side of the same lane on every run instead.
+      - name: clippy (core lane, --no-default-features --features core)
+        run: cargo clippy --lib --no-default-features --features core -- -D warnings
+      - name: build + test (core lane, --no-default-features --features core)
+        run: |
+          cargo build --lib --no-default-features --features core --verbose
+          cargo test --lib --no-default-features --features core --verbose
 
   # Regression guard for dependency skew on a FRESH resolve. `cargo install` without
   # `--locked` ignores the committed Cargo.lock and re-resolves every dependency to the
