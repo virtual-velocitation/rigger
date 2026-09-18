@@ -64,6 +64,32 @@ fn job_run_scripts(workflow: &serde_yaml::Value, job: &str) -> String {
         .join("\n")
 }
 
+/// The `with.targets` value of the named job's `dtolnay/rust-toolchain@*` step, or an empty
+/// string if the job has no such step or that step declares no extra targets. Toolchain
+/// targets are a step INPUT, not a `run:` script, so this reads `uses`/`with` rather than
+/// `job_run_scripts`'s `run:` text.
+fn job_toolchain_targets(workflow: &serde_yaml::Value, job: &str) -> String {
+    let steps = workflow
+        .get("jobs")
+        .and_then(|j| j.get(job))
+        .and_then(|j| j.get("steps"))
+        .and_then(|s| s.as_sequence())
+        .unwrap_or_else(|| panic!("workflow has no `jobs.{job}.steps` sequence"));
+
+    steps
+        .iter()
+        .find(|step| {
+            step.get("uses")
+                .and_then(|u| u.as_str())
+                .is_some_and(|u| u.starts_with("dtolnay/rust-toolchain"))
+        })
+        .and_then(|step| step.get("with"))
+        .and_then(|w| w.get("targets"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Does `line` contain every fragment of `needles` in order? (An ordered-subsequence
 /// substring match on ONE physical line, so the tokens belong to the SAME command -
 /// order-tolerant matching across the whole script is too weak: `clippy` and a flag
@@ -247,4 +273,28 @@ fn kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_tes
          against a real KurrentDB - the container-backed proxy-fidelity check the job exists for.\n\
          Script was:\n{script}"
     );
+}
+
+/// Spec 93 criterion 3, THE BUILD EMBEDS IT: "a workflow-level install in
+/// `.github/workflows/rust.yml`; no unit installs it". `build.rs`'s nested cross-compile of
+/// `crates/console-core` for `wasm32-unknown-unknown` runs whenever the outer build compiles
+/// `src/dash.rs` - which is every cargo invocation in THIS workflow (none of them build the
+/// pure `--features core` lane exclusively): `build-test`'s default AND
+/// `--no-default-features` lanes, `install-nolock`'s default-feature install, and
+/// `kurrentdb`'s `--no-default-features` clippy/test. Each of those three jobs' own
+/// `dtolnay/rust-toolchain@*` step must therefore declare the target - a job whose toolchain
+/// step lacks it would fail on a runner with no target preinstalled.
+#[test]
+fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
+    let wf = workflow_yaml();
+    for job in ["build-test", "install-nolock", "kurrentdb"] {
+        let targets = job_toolchain_targets(&wf, job);
+        assert!(
+            targets.contains("wasm32-unknown-unknown"),
+            "job `{job}`'s rust-toolchain step must declare `targets: wasm32-unknown-unknown` \
+             (spec 93 criterion 3: build.rs's nested cross-compile of crates/console-core \
+             needs it whenever this job's cargo invocations compile src/dash.rs, which none \
+             of `{job}`'s commands avoid). Found targets: {targets:?}"
+        );
+    }
 }

@@ -216,15 +216,15 @@
   {
     "file": "src/dash.rs",
     "name": "pid_is_alive",
-    "line": 448,
+    "line": 459,
     "test_only_references": [
       {
         "file": "src/dash.rs",
-        "line": 7585
+        "line": 7706
       },
       {
         "file": "src/dash.rs",
-        "line": 7589
+        "line": 7710
       },
       {
         "file": "src/main.rs",
@@ -251,7 +251,7 @@
   {
     "file": "src/dash.rs",
     "name": "serve",
-    "line": 2939,
+    "line": 2966,
     "test_only_references": [
       {
         "file": "src/mcpserver.rs",
@@ -959,7 +959,7 @@
     "ambiguous_with": [
       "src/budget.rs:57",
       "src/contextgraph/query.rs:306",
-      "src/dash.rs:3191",
+      "src/dash.rs:3218",
       "src/driver/replay.rs:237",
       "src/driver/workflow.rs:83",
       "src/eventstore/mod.rs:109",
@@ -1006,35 +1006,35 @@
       },
       {
         "file": "src/dash.rs",
-        "line": 4402
+        "line": 4523
       },
       {
         "file": "src/dash.rs",
-        "line": 4468
+        "line": 4589
       },
       {
         "file": "src/dash.rs",
-        "line": 4553
+        "line": 4674
       },
       {
         "file": "src/dash.rs",
-        "line": 4554
+        "line": 4675
       },
       {
         "file": "src/dash.rs",
-        "line": 4555
+        "line": 4676
       },
       {
         "file": "src/dash.rs",
-        "line": 4556
+        "line": 4677
       },
       {
         "file": "src/dash.rs",
-        "line": 4557
+        "line": 4678
       },
       {
         "file": "src/dash.rs",
-        "line": 4559
+        "line": 4680
       },
       {
         "file": "src/driver/replay.rs",

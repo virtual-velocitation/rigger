@@ -68,6 +68,17 @@ const PAGE_TEMPLATE: &str = include_str!("dash.html");
 /// both yield valid JavaScript.
 const STATE_PLACEHOLDER: &str = "__RIGGER_STATE__";
 
+/// The console core's compiled WebAssembly module (spec 93 criterion 3, THE BUILD EMBEDS
+/// IT): `build.rs` cross-compiles `crates/console-core` for `wasm32-unknown-unknown` and
+/// writes the artifact into `OUT_DIR`; this embeds it at compile time, never fetched,
+/// generated, or read from disk at runtime. Served as-is by the `/console/core.wasm` route
+/// below. Deliberately private (never a `pub` accessor): its one out-of-crate verification
+/// need - comparing it against an independently reproduced build - is proven from THIS
+/// file's own `#[cfg(test)] mod tests` instead, which already has direct access; adding a
+/// `pub fn` whose only real consumer is a test would itself be a dead-code candidate spec
+/// 87's audit must disposition; see that test's own doc comment.
+const CONSOLE_CORE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/console_core.wasm"));
+
 /// The default loopback port for `rigger dash` when `--port` is not given.
 pub const DEFAULT_PORT: u16 = 7420;
 
@@ -2663,6 +2674,18 @@ impl Response {
             body: body.as_bytes().to_vec(),
         }
     }
+    /// A binary asset served verbatim (spec 93 criterion 3: `/console/core.wasm` as
+    /// `application/wasm`). Takes a `&'static [u8]` (an embedded artifact, never a runtime-
+    /// generated buffer) so the single `.to_vec()` copy this hand-rolled responder needs is
+    /// visibly the embed's own bytes, not a hidden allocation of something computed per
+    /// request.
+    fn binary(status: u16, content_type: &'static str, body: &'static [u8]) -> Self {
+        Response {
+            status,
+            content_type,
+            body: body.to_vec(),
+        }
+    }
 
     fn reason(&self) -> &'static str {
         match self.status {
@@ -2735,6 +2758,10 @@ pub fn route(
         // provider. A registry projection, independent of any single instance's store - so it
         // serves even before this dash's own run has created a store.
         "/api/instances" => Response::json(200, instances_json(instances)),
+        // THE ROUTE (spec 93 criterion 3): the console core's compiled WebAssembly module,
+        // embedded at compile time by `build.rs`'s nested cross-compile - served verbatim,
+        // never generated or read from disk per request.
+        "/console/core.wasm" => Response::binary(200, "application/wasm", CONSOLE_CORE_WASM),
         "/api/state" => {
             match state_json(
                 events,
@@ -3302,6 +3329,20 @@ mod supervised_lifecycle {
     }
 }
 
+// `build/console_wasm.rs` is `#[path]`-included here too (alongside `build.rs` and
+// `tests/console_wasm_build_periphery.rs`), gated to `#[cfg(test)]` so the nested-cargo-
+// invocation logic never compiles into the shipped binary - only `mod tests` below needs
+// it, to reproduce `build.rs`'s own nested build independently. Declared at THIS nesting
+// level (a sibling of `mod tests`, not nested inside it) because `#[path]` on an item
+// nested inside an INLINE module (one with no file of its own, like `mod tests { .. }`)
+// resolves against a synthetic `<dir>/<mod-name>/` segment for every enclosing inline
+// module - real only when that module loaded from its own file, fictional here, so the
+// OS's own directory traversal cannot walk through it no matter how many `../` follow.
+#[cfg(test)]
+#[path = "../build/console_wasm.rs"]
+#[allow(dead_code)]
+mod console_wasm;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3460,6 +3501,86 @@ mod tests {
         assert!(
             body.contains(&views[0].id),
             "carries the attach selector id: {body}"
+        );
+    }
+
+    /// Spec 93 criterion 3, THE BUILD EMBEDS IT ("the bytes served at `/console/core.wasm`
+    /// equal the artifact the nested build produced for this tree"): the route serves the
+    /// SAME bytes `build.rs` embedded, as `application/wasm`, and never touches the run/
+    /// graph inputs (empty here, like the other static routes above).
+    #[test]
+    fn console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm() {
+        let r = route(
+            "GET",
+            "/console/core.wasm",
+            &[],
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(r.status, 200);
+        assert_eq!(r.content_type, "application/wasm");
+        assert_eq!(r.body, CONSOLE_CORE_WASM);
+    }
+
+    /// Spec 93 criterion 3: "the artifact is under 3 MB". Cheap - inspects the already-
+    /// embedded constant, no cross-compile.
+    #[test]
+    fn console_core_wasm_artifact_is_under_the_three_megabyte_budget() {
+        const THREE_MB: usize = 3 * 1024 * 1024;
+        assert!(
+            !CONSOLE_CORE_WASM.is_empty(),
+            "the embedded console-core wasm module must not be empty"
+        );
+        assert!(
+            CONSOLE_CORE_WASM.len() < THREE_MB,
+            "console-core's wasm artifact is {} bytes, over the 3 MB budget (spec 93 \
+             criterion 3)",
+            CONSOLE_CORE_WASM.len()
+        );
+    }
+
+    /// Spec 93 criterion 3: "the bytes served at `/console/core.wasm` equal the artifact
+    /// the nested build produced for this tree" - proven for real, not by construction:
+    /// independently re-cross-compiles `console-core` for `wasm32-unknown-unknown` a
+    /// SECOND time (never `build.rs`'s own already-embedded copy) and compares the two
+    /// byte-for-byte. A real, permanent per-`cargo test` cost (a second wasm cross-
+    /// compile), so - matching this codebase's own established shape for exactly this
+    /// tradeoff (`tests/core_lane_purity_audit.rs`'s `RIGGER_CORE_LANE_VERIFY=1`,
+    /// `crates/console-core/tests/exports.rs`'s `RIGGER_CONSOLE_CORE_ABI_VERIFY=1`) - it is
+    /// skipped, not failed, unless `RIGGER_CONSOLE_WASM_EMBED_VERIFY=1` is set.
+    #[test]
+    fn embedded_artifact_matches_a_fresh_independent_nested_build() {
+        if std::env::var("RIGGER_CONSOLE_WASM_EMBED_VERIFY").as_deref() != Ok("1") {
+            eprintln!(
+                "skipping embedded_artifact_matches_a_fresh_independent_nested_build: set \
+                 RIGGER_CONSOLE_WASM_EMBED_VERIFY=1 to actually re-cross-compile console-core \
+                 for wasm32-unknown-unknown a second time and compare it byte-for-byte \
+                 against the artifact this crate's own build.rs already embedded (see this \
+                 test's own doc comment for why it is opt-in)"
+            );
+            return;
+        }
+        let project_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let artifact = console_wasm::build_wasm_artifact(
+            &project_root,
+            &cargo,
+            "wasm32-unknown-unknown",
+            scratch.path(),
+        )
+        .unwrap_or_else(|e| panic!("independent nested build failed: {e}"));
+        let fresh_bytes = std::fs::read(&artifact)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", artifact.display()));
+        assert_eq!(
+            fresh_bytes, CONSOLE_CORE_WASM,
+            "the artifact embedded at /console/core.wasm must equal what an independent \
+             nested build produces for this exact tree"
         );
     }
 

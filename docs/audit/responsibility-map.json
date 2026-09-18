@@ -11761,6 +11761,14 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "binary",
+    "is_test": false,
+    "proposed_module": "dash::response",
+    "reason": "method inside `impl Response`; grouped with its other `Response` methods.",
+    "content_hash": "49eb28ddcb3dedb8"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "reason",
     "is_test": false,
     "proposed_module": "dash::response",
@@ -11781,7 +11789,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"route\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "aab3ba526e42e117"
+    "content_hash": "e033b5326c7ceb33"
   },
   {
     "file": "src/dash.rs",
@@ -11942,6 +11950,30 @@
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "b1f257b7c34a0c49"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b2cd17761089d176"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_core_wasm_artifact_is_under_the_three_megabyte_budget",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "083b7133969cf209"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "embedded_artifact_matches_a_fresh_independent_nested_build",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "d8e5ebdfc87b8ee6"
   },
   {
     "file": "src/dash.rs",

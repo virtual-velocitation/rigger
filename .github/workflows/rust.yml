@@ -57,6 +57,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+          # Spec 93 criterion 3: build.rs nested-cross-compiles crates/console-core for
+          # wasm32-unknown-unknown whenever a cargo invocation compiles src/dash.rs -
+          # both the default and --no-default-features lanes in this job do - so the
+          # target must be present before either runs. A workflow-level install, never
+          # a per-unit one.
+          targets: wasm32-unknown-unknown
       # The version-derivation periphery tests assert this binary's embedded version is
       # genuinely derived (not +unversioned), which requires go-gitsemver on PATH when the
       # test binary is BUILT (spec 74: derivation is delegated, go-gitsemver.yml is the
@@ -136,6 +142,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Spec 93 criterion 3: this job's `cargo install` uses the default features
+          # (dash.rs included), so build.rs's nested wasm32-unknown-unknown cross-compile
+          # of crates/console-core runs here too.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: "v1-rust-ort"
@@ -167,6 +178,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          # Spec 93 criterion 3: this job's clippy/test both run --no-default-features
+          # (still includes dash.rs, since `core` is off), so build.rs's nested
+          # wasm32-unknown-unknown cross-compile of crates/console-core runs here too.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       # Drop the default features so this DB-adapter job does not pull turbovec's
       # ONNX runtime (and OpenBLAS) just to exercise the KurrentDB contract test;
