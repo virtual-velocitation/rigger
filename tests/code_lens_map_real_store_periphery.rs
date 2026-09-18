@@ -212,3 +212,59 @@ fn frame_at_full_extent_completes_under_8ms_of_core_time_against_the_real_store(
         "map::frame at full extent took {elapsed:?}, over the 8ms budget"
     );
 }
+
+/// Design's LEGEND paragraph names exactly four entity-dot kind colours plus one neutral default
+/// for everything else (`KIND_COLOUR_DEFAULT`, [`map::kind_colour`]'s own doc). The existing
+/// `kind_colour_paints_every_real_draw_entity_kind_a_built_graph_produces`
+/// (`tests/console_map_kind_colour_periphery.rs`) already drives this through a real
+/// `build`/`frame` pipeline, but over a small HAND-BUILT six-kind fixture - its two out-of-palette
+/// kinds (`method`, `module`) are the test author's own educated guess at what a real extractor
+/// emits, never verified against the extractor itself. This repository's own real store is the
+/// one place that guess is actually checked: every kind THIS repository's own extraction pass
+/// (`src/grounder/symbols/extract.rs::kind_of` / `events.rs::kind_str`) really assigns to a drawn
+/// entity must resolve through `kind_colour` without panicking, named or default - proving the
+/// documented four-plus-default palette is exhaustive against the real extractor's real output,
+/// not just the fixture author's guess of what that output would be. (`legend`'s own wire colour
+/// values against `kind_colour`/`BLAST_RADIUS_COLOUR` are already independently proven, and
+/// exhaustively so across every row including the null-colour ones, by
+/// `legend_json_colour_values_match_their_independent_public_authorities` in that same file -
+/// `legend` itself takes no graph, so a real-store variant of that check would add nothing.)
+#[cfg(feature = "symbols")]
+#[test]
+fn kind_colour_covers_every_kind_this_repositorys_real_store_actually_draws() {
+    let graph = real_graph();
+    let model = map::build(&graph);
+    let full_extent = map::frame(&model, 1400.0, 900.0, &map::Camera::default(), None);
+
+    let named_kinds: std::collections::BTreeSet<&str> =
+        map::KIND_COLOURS.iter().map(|(k, _, _)| *k).collect();
+    let mut saw_named_kind = false;
+    let mut saw_default_kind = false;
+    for e in &full_extent.entities {
+        let colour = map::kind_colour(&e.kind);
+        if named_kinds.contains(e.kind.as_str()) {
+            saw_named_kind = true;
+        } else {
+            saw_default_kind = true;
+            assert_eq!(
+                colour,
+                map::KIND_COLOUR_DEFAULT,
+                "real entity {:?} has kind {:?}, outside KIND_COLOURS - it must paint with the \
+                 documented neutral default, never a silently-absent lookup",
+                e.id,
+                e.kind
+            );
+        }
+    }
+    assert!(
+        saw_named_kind,
+        "this repository's real store must draw at least one entity of a named KIND_COLOURS \
+         kind (e.g. a function) - otherwise this test cannot prove the named-colour branch at all"
+    );
+    assert!(
+        saw_default_kind,
+        "this repository's real store must draw at least one entity OUTSIDE the four named \
+         kinds (e.g. a method or a module-level item) - otherwise this test cannot prove the \
+         default-colour branch at all, the exact gap a hand-picked fixture would hide"
+    );
+}
