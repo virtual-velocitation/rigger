@@ -202,6 +202,10 @@
       {
         "file": "src/console/map.rs",
         "line": 1913
+      },
+      {
+        "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
+        "line": 86
       }
     ]
   },
@@ -269,6 +273,10 @@
       {
         "file": "src/console/map.rs",
         "line": 2020
+      },
+      {
+        "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
+        "line": 101
       }
     ]
   },

@@ -224,6 +224,10 @@
       {
         "file": "src/console/map.rs",
         "content_hash": "4638859df2c657f5"
+      },
+      {
+        "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
+        "content_hash": "1313ce518aa40ae5"
       }
     ],
     "disposition": "keep-public-surface",
@@ -307,6 +311,10 @@
       {
         "file": "src/console/map.rs",
         "content_hash": "41aa7f33c1b0e2d3"
+      },
+      {
+        "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
+        "content_hash": "5e3a959935126550"
       }
     ],
     "disposition": "keep-public-surface",

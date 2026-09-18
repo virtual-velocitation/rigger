@@ -565,3 +565,521 @@ fn console_call_wires_graph_query_map_landmarks_through_the_public_abi() {
          console::map::landmarks's own direct answer for the identical graph"
     );
 }
+
+/// The SAME two-district fixture `console::map`'s own `cross_district_graph` unit-test helper
+/// builds (hub/leaf in one district, bridge/quiet in another, bridge -> hub the one cross-
+/// district edge) - shared by every `map_bridges`/`map_argued_about`/`map_changing`/`map_search`/
+/// `map_fit_*` periphery test below, so each test's own body stays about the OP's ABI wiring,
+/// never about re-deriving a fixture graph (the same discipline `built_map_session` in
+/// `src/lib.rs`'s own `dispatch_tests` already keeps).
+fn cross_district_fixture() -> rigger::contextgraph::Graph {
+    use rigger::contextgraph::{
+        Edge, Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED,
+    };
+    use rigger::eventstore::Position;
+
+    let code = |id: &str, name: &str| Node {
+        id: id.to_string(),
+        kind: KIND_CODE_ENTITY.to_string(),
+        attrs: [
+            ("name".to_string(), name.to_string()),
+            ("kind".to_string(), "function".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let edge = |from: &str, to: &str, rel: &str| Edge {
+        from: from.to_string(),
+        to: to.to_string(),
+        rel: rel.to_string(),
+        valid_from: 0,
+        valid_to: None,
+        source: Position::default(),
+        tier: TIER_EXTRACTED.to_string(),
+    };
+
+    Graph {
+        nodes: vec![
+            code("src/worktree.rs::hub", "hub"),
+            code("src/worktree.rs::leaf", "leaf"),
+            code("src/dash.rs::bridge", "bridge"),
+            code("src/dash.rs::quiet", "quiet"),
+        ],
+        edges: vec![
+            edge("src/worktree.rs::hub", "community/1/0", REL_IN_COMMUNITY),
+            edge("src/worktree.rs::leaf", "community/1/0", REL_IN_COMMUNITY),
+            edge("src/dash.rs::bridge", "community/1/1", REL_IN_COMMUNITY),
+            edge("src/dash.rs::quiet", "community/1/1", REL_IN_COMMUNITY),
+            edge("src/worktree.rs::hub", "src/worktree.rs::leaf", REL_CALLS),
+            // The only cross-district edge: dash::bridge calls worktree::hub.
+            edge("src/dash.rs::bridge", "src/worktree.rs::hub", REL_CALLS),
+        ],
+    }
+}
+
+/// A single district with a real hull (one community, six members) - the SAME shape
+/// `console::map`'s own `hit_falls_back_to_a_district_when_no_entity_is_near_but_the_click_is_\
+/// inside_its_hull` unit test builds via `populous_graph(1, 1, 6)`, reproduced here since that
+/// helper is `#[cfg(test)]`-private to `src/console/map.rs` and unreachable from this external
+/// periphery crate. `cross_district_fixture`'s own two-member districts are too small to carry a
+/// hull radius any probe point can land inside without also landing within `map_hit`'s own hit
+/// radius of a dot - this fixture exists ONLY for the district-hit and no-hit periphery tests
+/// below, which need a real gap between "inside the hull" and "near a dot".
+fn six_member_district_graph() -> rigger::contextgraph::Graph {
+    use rigger::contextgraph::{
+        Edge, Graph, Node, KIND_CODE_ENTITY, REL_CALLS, REL_IN_COMMUNITY, TIER_EXTRACTED,
+    };
+    use rigger::eventstore::Position;
+
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for i in 0..6 {
+        let id = format!("src/worktree.rs::f_{i}");
+        nodes.push(Node {
+            id: id.clone(),
+            kind: KIND_CODE_ENTITY.to_string(),
+            attrs: [
+                ("name".to_string(), format!("f_{i}")),
+                ("kind".to_string(), "function".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        });
+        edges.push(Edge {
+            from: id,
+            to: "community/1/0".to_string(),
+            rel: REL_IN_COMMUNITY.to_string(),
+            valid_from: 0,
+            valid_to: None,
+            source: Position::default(),
+            tier: TIER_EXTRACTED.to_string(),
+        });
+    }
+    edges.push(Edge {
+        from: "src/worktree.rs::f_0".to_string(),
+        to: "src/worktree.rs::f_1".to_string(),
+        rel: REL_CALLS.to_string(),
+        valid_from: 0,
+        valid_to: None,
+        source: Position::default(),
+        tier: TIER_EXTRACTED.to_string(),
+    });
+    Graph { nodes, edges }
+}
+
+/// `map_hit`'s DISTRICT branch (a click inside a district's hull, near no entity dot) wires
+/// through the exported ABI to the same tagged `{"hit":"district","purpose":...}` shape
+/// `console::map::hit`'s own `Hit::District` answers directly - the map_hit ABI test above this
+/// one only ever proves the ENTITY branch; this is a genuinely different wire shape (a `purpose`
+/// field, not an `id`), never exercised by that test.
+#[test]
+fn console_call_wires_map_hit_through_the_public_abi_to_a_district() {
+    use rigger::console::map;
+
+    let graph = six_member_district_graph();
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let model = map::build(&graph);
+    let dl = map::frame(&model, 900.0, 700.0, &map::Camera::default(), None);
+    let d = dl.districts.first().expect("one district in this fixture");
+    let x = d.x + d.radius * 0.99;
+    let y = d.y;
+    // The probe must not accidentally land on an entity dot - the same guard
+    // console::map's own district-fallback unit test asserts before trusting its result.
+    let too_far_from_any_dot = dl
+        .entities
+        .iter()
+        .all(|e| ((e.x - x).powi(2) + (e.y - y).powi(2)).sqrt() > 10.0);
+    assert!(
+        too_far_from_any_dot,
+        "the probe point must not land on an entity dot for this test to prove the district \
+         fallback: {dl:?}"
+    );
+
+    let hit = unsafe { call("map_hit", &format!(r#"{{"zoom":0,"x":{x},"y":{y}}}"#)) };
+
+    let direct = map::hit(&model, 900.0, 700.0, &map::Camera::default(), None, x, y);
+    let purpose = match direct {
+        Some(map::Hit::District(purpose)) => purpose,
+        other => panic!(
+            "the probe point inside the hull, away from every dot, must hit the district: \
+             {other:?}"
+        ),
+    };
+    let expected_len =
+        serde_json::to_vec(&serde_json::json!({ "hit": "district", "purpose": purpose }))
+            .unwrap()
+            .len();
+
+    assert_eq!(
+        reply_len(hit),
+        expected_len,
+        "map_hit's district-hit reply through the exported ABI must be the same length as the \
+         reply shape built from console::map::hit's own direct answer for the identical point"
+    );
+}
+
+/// `map_hit`'s NONE branch (a click far from every entity and every district hull) wires through
+/// the exported ABI to the same tagged `{"hit":"none"}` shape `console::map::hit`'s own `None`
+/// answers directly - the third and last of `map_hit`'s three tagged reply shapes, so a
+/// regression that left this branch answering the wrong tag (or panicking) would compile clean
+/// but never be caught by either of the other two map_hit periphery tests.
+#[test]
+fn console_call_wires_map_hit_through_the_public_abi_to_none() {
+    use rigger::console::map;
+
+    let graph = six_member_district_graph();
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let hit = unsafe { call("map_hit", r#"{"zoom":0,"x":-1.0e9,"y":-1.0e9}"#) };
+
+    let model = map::build(&graph);
+    let direct = map::hit(
+        &model,
+        900.0,
+        700.0,
+        &map::Camera::default(),
+        None,
+        -1.0e9,
+        -1.0e9,
+    );
+    assert_eq!(
+        direct, None,
+        "a point this far from everything must hit nothing directly"
+    );
+
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "hit": "none" }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(hit),
+        expected_len,
+        "map_hit's no-hit reply through the exported ABI must be the same length as the \
+         documented {{\"hit\":\"none\"}} shape"
+    );
+}
+
+/// `graph_query`'s `map_bridges` kind wires through the exported ABI - the SAME real FFI
+/// boundary the `map_landmarks` test above proves, but a genuinely different match arm in
+/// `op_map_query` (a copy-paste swap between the two would compile clean and pass every
+/// `dispatch_tests` case that only ever calls each kind by its own name).
+#[test]
+fn console_call_wires_graph_query_map_bridges_through_the_public_abi() {
+    use rigger::console::map;
+
+    let graph = cross_district_fixture();
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let queried = unsafe {
+        call(
+            "graph_query",
+            r#"{"kind":"map_bridges","params":{"limit":5}}"#,
+        )
+    };
+
+    let model = map::build(&graph);
+    let direct = map::bridges_between_districts(&model, 5);
+    assert!(
+        !direct.is_empty(),
+        "the fixture's own cross-district edge must produce at least one bridge candidate"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "candidates": direct }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_bridges reply through the exported ABI must be the same length as \
+         console::map::bridges_between_districts's own direct answer for the identical graph"
+    );
+}
+
+/// `graph_query`'s `map_argued_about` kind wires through the exported ABI - the one `map_*` kind
+/// whose `op_map_query` arm reads `session.graph` directly (not just `session.map`), so this is
+/// the one test proving that second piece of session state actually crosses the real ABI too.
+#[test]
+fn console_call_wires_graph_query_map_argued_about_through_the_public_abi() {
+    use rigger::console::map;
+    use rigger::contextgraph::{Edge, Node, KIND_FINDING, REL_ABOUT, TIER_EXTRACTED};
+    use rigger::eventstore::Position;
+
+    let mut graph = cross_district_fixture();
+    graph.nodes.push(Node {
+        id: "finding/1".to_string(),
+        kind: KIND_FINDING.to_string(),
+        attrs: Default::default(),
+    });
+    graph.edges.push(Edge {
+        from: "finding/1".to_string(),
+        to: "src/worktree.rs::hub".to_string(),
+        rel: REL_ABOUT.to_string(),
+        valid_from: 0,
+        valid_to: None,
+        source: Position::default(),
+        tier: TIER_EXTRACTED.to_string(),
+    });
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let queried = unsafe {
+        call(
+            "graph_query",
+            r#"{"kind":"map_argued_about","params":{"limit":5}}"#,
+        )
+    };
+
+    let model = map::build(&graph);
+    let direct = map::argued_about_in_review(&model, &graph, 5);
+    assert!(
+        !direct.is_empty(),
+        "the fixture's own pinned finding must produce at least one argued-about candidate"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "candidates": direct }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_argued_about reply through the exported ABI must be the same length \
+         as console::map::argued_about_in_review's own direct answer for the identical graph"
+    );
+}
+
+/// `graph_query`'s `map_changing` kind wires through the exported ABI - the one `map_*` kind
+/// whose own params carry a field (`touched`) none of the others do, so this is the one test
+/// proving THAT field actually deserializes across the real ABI boundary, not merely within
+/// `ChangingParams`'s own crate-internal `dispatch_tests`.
+#[test]
+fn console_call_wires_graph_query_map_changing_through_the_public_abi() {
+    use rigger::console::map;
+
+    let graph = cross_district_fixture();
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let queried = unsafe {
+        call(
+            "graph_query",
+            r#"{"kind":"map_changing","params":{"limit":5,"touched":["src/worktree.rs::leaf"]}}"#,
+        )
+    };
+
+    let model = map::build(&graph);
+    let touched: std::collections::BTreeSet<String> =
+        ["src/worktree.rs::leaf".to_string()].into_iter().collect();
+    let direct = map::changing_right_now(&model, &touched, 5);
+    assert_eq!(
+        direct.len(),
+        1,
+        "the fixture's own single touched id must produce exactly one candidate: {direct:?}"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "candidates": direct }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_changing reply through the exported ABI must be the same length as \
+         console::map::changing_right_now's own direct answer for the identical touched set"
+    );
+}
+
+/// `graph_query`'s `map_search` kind wires through the exported ABI - the one `map_*` kind whose
+/// reply wraps its rows in `"hits"`, never `"candidates"` (the shape every other kind above and
+/// below this test answers), so this is the one test proving that DIFFERENT top-level wire key
+/// actually crosses the real ABI, not merely `op_map_query`'s own in-crate call.
+#[test]
+fn console_call_wires_graph_query_map_search_through_the_public_abi() {
+    use rigger::console::map;
+
+    let graph = cross_district_fixture();
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let queried = unsafe {
+        call(
+            "graph_query",
+            r#"{"kind":"map_search","params":{"query":"HUB","limit":5}}"#,
+        )
+    };
+
+    let model = map::build(&graph);
+    let direct = map::search(&model, "HUB", 5);
+    assert_eq!(
+        direct.len(),
+        1,
+        "the fixture's own case-insensitive 'HUB' query must find exactly hub: {direct:?}"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "hits": direct }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_search reply through the exported ABI must be the same length as \
+         console::map::search's own direct answer for the identical query"
+    );
+}
+
+/// `graph_query`'s `map_fit_whole` kind wires through the exported ABI - the one `map_*` kind
+/// with NO params at all and a bare `{"cx":...,"cy":...,"zoom":...}` reply (never the
+/// `"candidates"`/`"hits"` wrapper every ranked-list kind above answers).
+#[test]
+fn console_call_wires_graph_query_map_fit_whole_through_the_public_abi() {
+    use rigger::console::map;
+
+    let graph = cross_district_fixture();
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let queried = unsafe { call("graph_query", r#"{"kind":"map_fit_whole","params":{}}"#) };
+
+    let model = map::build(&graph);
+    let direct = map::fit_whole_map(&model);
+    let expected_len = serde_json::to_vec(&serde_json::json!({
+        "cx": direct.cx,
+        "cy": direct.cy,
+        "zoom": direct.zoom
+    }))
+    .unwrap()
+    .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_fit_whole reply through the exported ABI must be the same length as \
+         console::map::fit_whole_map's own direct answer for the identical graph"
+    );
+}
+
+/// `graph_query`'s `map_fit_district` kind wires through the exported ABI on its SUCCESS path -
+/// the same bare `{"cx":...,"cy":...,"zoom":...}` shape `map_fit_whole` answers, but reached
+/// through a distinct params struct (`purpose`, a real district name from the built model) and a
+/// distinct source of the viewport (`session.map_viewport`, set by the prior `map_build` call -
+/// never resent on this op's own params, unlike `map_build`/`map_hit` above).
+#[test]
+fn console_call_wires_graph_query_map_fit_district_through_the_public_abi() {
+    use rigger::console::map;
+
+    let graph = cross_district_fixture();
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let model = map::build(&graph);
+    let purpose = model
+        .districts
+        .first()
+        .expect("the fixture's own two districts")
+        .purpose
+        .clone();
+    let params =
+        serde_json::json!({ "kind": "map_fit_district", "params": { "purpose": purpose } });
+
+    let queried = unsafe { call("graph_query", &params.to_string()) };
+
+    let direct = map::fit_district(&model, 900.0, 700.0, &purpose)
+        .expect("the fixture's own district, read back from the built model, must fit");
+    let expected_len = serde_json::to_vec(&serde_json::json!({
+        "cx": direct.cx,
+        "cy": direct.cy,
+        "zoom": direct.zoom
+    }))
+    .unwrap()
+    .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_fit_district reply through the exported ABI must be the same length \
+         as console::map::fit_district's own direct answer for the identical district"
+    );
+}
+
+/// `graph_query`'s `map_fit_district` kind's ERROR path (an unknown district purpose) wires
+/// through the exported ABI to the same `{"error": ...}` reply every other malformed/unresolved
+/// op call answers - `map_fit_district` is the only `map_*` kind with a real error branch of its
+/// own (every ranked-list kind above always answers a - possibly empty - list), so this is the
+/// one test proving that branch reaches the real exported ABI, not merely `op_map_query`'s own
+/// in-crate call.
+#[test]
+fn console_call_graph_query_map_fit_district_of_unknown_purpose_answers_an_error_through_the_public_abi(
+) {
+    use rigger::console::map;
+
+    let graph = cross_district_fixture();
+    let payload = serde_json::to_vec(&graph).expect("serializing the fixture graph");
+
+    unsafe {
+        call("graph_load", std::str::from_utf8(&payload).unwrap());
+        call("map_build", r#"{"w":900,"h":700}"#);
+    }
+
+    let queried = unsafe {
+        call(
+            "graph_query",
+            r#"{"kind":"map_fit_district","params":{"purpose":"does-not-exist"}}"#,
+        )
+    };
+
+    let model = map::build(&graph);
+    assert_eq!(
+        map::fit_district(&model, 900.0, 700.0, "does-not-exist"),
+        None,
+        "the fixture's own two districts must never carry this made-up purpose"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({
+        "error": format!(
+            "graph_query: map_fit_district: unknown district {:?}",
+            "does-not-exist"
+        )
+    }))
+    .unwrap()
+    .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_fit_district error reply through the exported ABI must be the same \
+         length as op_map_query's own documented error-message shape for an unknown purpose"
+    );
+}
