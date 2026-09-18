@@ -4705,7 +4705,7 @@ Proposed home: `a new shared module (sites span 2 files: src/console/map.rs, tes
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/console/map.rs:610-612` `in_community`
+- `src/console/map.rs:602-604` `in_community`
 - `tests/files_lens_view_periphery.rs:113-115` `refs`
 
 #### `dup-0123` (near, 9 sites)
@@ -4714,8 +4714,8 @@ Proposed home: `a new shared module (sites span 3 files: src/console/map.rs, src
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/console/map.rs:617-620` `module_of_a_leaf_src_file_is_its_stem_never_the_file_name`
-- `src/console/map.rs:650-654` `district_purpose_uses_the_curated_table_when_present`
+- `src/console/map.rs:609-612` `module_of_a_leaf_src_file_is_its_stem_never_the_file_name`
+- `src/console/map.rs:642-646` `district_purpose_uses_the_curated_table_when_present`
 - `src/ledger.rs:957-964` `short_run_id_truncates_to_twelve_chars_and_passes_shorter_ids_through`
 - `src/ledger.rs:967-982` `spec_stem_extracts_and_sanitizes_the_file_stem`
 - `tests/simplification_audit.rs:7101-7112` `impl_self_type_strips_a_trailing_where_clause_on_a_non_generic_self_type`
@@ -4730,9 +4730,9 @@ Proposed home: `a new shared module (sites span 5 files: src/console/map.rs, src
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/console/map.rs:623-625` `module_of_a_directory_module_is_the_directory_not_the_file_within_it`
-- `src/console/map.rs:628-630` `module_of_a_crate_member_is_its_crate_name`
-- `src/console/map.rs:657-659` `district_purpose_falls_back_to_the_bare_module_name_when_uncurated`
+- `src/console/map.rs:615-617` `module_of_a_directory_module_is_the_directory_not_the_file_within_it`
+- `src/console/map.rs:620-622` `module_of_a_crate_member_is_its_crate_name`
+- `src/console/map.rs:649-651` `district_purpose_falls_back_to_the_bare_module_name_when_uncurated`
 - `src/eventstore/mod.rs:852-857` `strips_a_bare_user_with_no_password`
 - `src/eventstore/mod.rs:860-865` `an_already_credential_free_endpoint_is_unchanged`
 - `src/eventstore/mod.rs:937-942` `strips_a_userinfo_with_no_password`
@@ -4751,7 +4751,7 @@ Proposed home: `a new shared module (sites span 2 files: src/console/map.rs, src
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/console/map.rs:633-647` `module_of_never_returns_a_string_carrying_a_dot_or_a_slash`
+- `src/console/map.rs:625-639` `module_of_never_returns_a_string_carrying_a_dot_or_a_slash`
 - `src/eventstore/mod.rs:903-916` `no_credential_fragment_ever_survives`
 
 #### `dup-0126` (near, 3 sites)
@@ -12096,23 +12096,23 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (
 - `src/conductor.rs:5356-5363` `speculates` - no duplicate found by reading
 - `src/config.rs:1379-1394` `whole_word_positions` - no duplicate found by reading
 - `src/config.rs:1397-1399` `contains_word` - no duplicate found by reading
-- `src/contextgraph/query.rs:611-688` `fold_buckets` - no duplicate found by reading
-- `src/contextgraph/sqlite.rs:1932-1937` `file_prefix` - no duplicate found by reading
-- `src/eventstore/sqlite.rs:300-317` `ensure_content_key_index` - no duplicate found by reading
-- `src/gate.rs:2062-2081` `resolve_build_layer_named_wrapper_with_a_preexisting_unwritable_dir_errors_naming_dir_and_key` - caught: `dup-0229`
-- `src/grounder/symbols/grounder.rs:222-224` `entity` - no duplicate found by reading
-- `src/grounder/symbols/grounder.rs:1448-1465` `ground_ranked_keeps_two_definitions_of_the_same_name_as_separate_rows` - no duplicate found by reading
-- `src/grounder/symbols/store.rs:255-259` `load_is_none_on_a_cold_start` - caught: `dup-0253`
-- `src/grounder/workflowdef.rs:245-252` `project_batches` - caught: `dup-0232`
-- `src/main.rs:3319-3332` `result_of_at` - no duplicate found by reading
-- `src/main.rs:10843-10904` `scan_residue` - no duplicate found by reading
-- `src/main.rs:18652-18658` `git_init_quiet` - no duplicate found by reading
-- `src/main.rs:22619-22710` `the_driver_relays_each_attention_entry_as_a_narrator_log_line` - no duplicate found by reading
-- `src/main.rs:23681-23696` `format_stats_spawn_timing_all_unpaired_is_not_reported_as_no_spawns` - no duplicate found by reading
-- `src/reap.rs:877-906` `reap_kills_a_process_whose_base_dir_was_already_removed_before_the_reap_call` - no duplicate found by reading
-- `tests/canary_tolerant_attribution_periphery.rs:40-86` `spawn` - no duplicate found by reading
-- `tests/cli.rs:18900-18945` `docs_renders_the_skill_and_handbook_with_code_facts_verbatim` - no duplicate found by reading
-- `tests/cli.rs:19672-19731` `validate_docs_drift_gate_covers_each_per_operation_skill` - caught: `dup-0514`
+- `src/contextgraph/query.rs:706-839` `cluster_detail` - no duplicate found by reading
+- `src/contextgraph/sqlite.rs:1942-1952` `one_hop_degree` - no duplicate found by reading
+- `src/eventstore/sqlite.rs:351-375` `build_content_key_index` - no duplicate found by reading
+- `src/gate.rs:2085-2100` `resolve_build_layer_auto_with_a_preexisting_unwritable_dir_skips_the_whole_layer` - caught: `dup-0230`
+- `src/grounder/symbols/grounder.rs:235-327` `scored_hits` - no duplicate found by reading
+- `src/grounder/symbols/grounder.rs:1481-1531` `ground_ranked_gives_ambiguous_definitions_zero_degree_and_pools_the_real_count_on_the_standalone_row` - no duplicate found by reading
+- `src/grounder/symbols/store.rs:262-264` `content_hash_is_line_ending_normalized` - no duplicate found by reading
+- `src/grounder/workflowdef.rs:265-338` `fixture` - no duplicate found by reading
+- `src/main.rs:3362-3405` `parse_step_args` - no duplicate found by reading
+- `src/main.rs:10916-10934` `worktree_belongs_to_live` - no duplicate found by reading
+- `src/main.rs:18661-18698` `find_store_dir_from_never_escapes_the_repo_into_a_parent_store` - no duplicate found by reading
+- `src/main.rs:22717-22730` `merge_hung_attention_does_nothing_when_not_newly_hung` - no duplicate found by reading
+- `src/main.rs:23704-23731` `parallelism_retention_line_is_single_sourced_and_warns_below_the_floor` - no duplicate found by reading
+- `src/reap.rs:909-923` `reap_is_a_graceful_no_op_when_nothing_is_rooted_inside` - no duplicate found by reading
+- `tests/canary_tolerant_attribution_periphery.rs:89-94` `agent` - caught: `dup-0008`
+- `tests/cli.rs:18960-19002` `docs_renders_every_registry_skill_including_planning_a_spec` - no duplicate found by reading
+- `tests/cli.rs:19745-19806` `setup_installs_every_per_operation_skill_into_the_consumer_project` - caught: `dup-0515`
 - `tests/migration_is_deliberate_periphery.rs:611-640` `validate_never_fabricates_a_graph_db_and_draws_no_retired_advisory_on_a_fresh_project` - no duplicate found by reading
 - `tests/plan_stage_commit_landing_periphery.rs:2205-2271` `a_plan_landing_store_failure_halts_the_run_loudly_with_no_per_unit_lesson_or_charged_attempt_at_the_periphery` - no duplicate found by reading
 - `tests/proof_lands_on_the_card_periphery.rs:716-762` `a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_no_residue` - caught: `dup-0701`
@@ -12213,7 +12213,7 @@ METHODOLOGY: every one of the 26 was independently re-verified by hand (NOT take
 
 **`src/console/map.rs`**
 
-- **frame** (`src/console/map.rs:468`, `pub`, KG degree 7): `keep-public-surface`. frame (the map engine's per-zoom render pass, spec 84 criterion 1) has no production caller within src/ - the scanner's own scope is this crate's src/ tree, and frame's one real caller, console-core's op_map_frame (crates/console-core/src/lib.rs), lives in a SEPARATE workspace-member crate (`rigger` compiled with `default-features = false, features = ["core"]`), invisible to a same-crate reference sweep by construction - the identical cross-crate shape the contextgraph::query.rs graph_load/graph_query entries above already carry, except THIS caller is already landed and wired (spec 93 criterion 2 shipped before spec 84 began), not a future one: console_call's real 'map_frame' op dispatches to this exact function today (see crates/console-core/src/lib.rs's dispatch, and its own map_frame_zooming_in_answers_more_entities_through_the_wire periphery test). Keep-public-surface: a real, non-test, ALREADY-WIRED consumer across the workspace's own crate boundary.
+- **frame** (`src/console/map.rs:460`, `pub`, KG degree 7): `keep-public-surface`. frame (the map engine's per-zoom render pass, spec 84 criterion 1) has no production caller within src/ - the scanner's own scope is this crate's src/ tree, and frame's one real caller, console-core's op_map_frame (crates/console-core/src/lib.rs), lives in a SEPARATE workspace-member crate (`rigger` compiled with `default-features = false, features = ["core"]`), invisible to a same-crate reference sweep by construction - the identical cross-crate shape the contextgraph::query.rs graph_load/graph_query entries above already carry, except THIS caller is already landed and wired (spec 93 criterion 2 shipped before spec 84 began), not a future one: console_call's real 'map_frame' op dispatches to this exact function today (see crates/console-core/src/lib.rs's dispatch, and its own map_frame_zooming_in_answers_more_entities_through_the_wire periphery test). Keep-public-surface: a real, non-test, ALREADY-WIRED consumer across the workspace's own crate boundary.
 
 **`src/contextgraph/query.rs`**
 

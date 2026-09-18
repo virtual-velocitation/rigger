@@ -66,27 +66,27 @@
   {
     "file": "src/console/map.rs",
     "name": "frame",
-    "line": 468,
+    "line": 460,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 950
+        "line": 942
       },
       {
         "file": "src/console/map.rs",
-        "line": 976
+        "line": 968
       },
       {
         "file": "src/console/map.rs",
-        "line": 988
+        "line": 980
       },
       {
         "file": "src/console/map.rs",
-        "line": 997
+        "line": 989
       },
       {
         "file": "src/console/map.rs",
-        "line": 998
+        "line": 990
       },
       {
         "file": "tests/code_lens_map_real_store_periphery.rs",
@@ -95,6 +95,10 @@
       {
         "file": "tests/code_lens_map_real_store_periphery.rs",
         "line": 153
+      },
+      {
+        "file": "tests/code_lens_map_real_store_periphery.rs",
+        "line": 194
       },
       {
         "file": "tests/console_map_frame_wire_shape_periphery.rs",

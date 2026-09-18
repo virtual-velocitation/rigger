@@ -171,3 +171,35 @@ fn the_map_lands_labelled_against_this_repositorys_real_store() {
         );
     }
 }
+
+/// THE BUDGET ITSELF (BUDGETS, `docs/architecture-addendum-mission-control.md:250`): "A frame
+/// of the map at full extent stays under 8 ms of core time." Timed against this repository's
+/// own real store (the same graph `the_map_lands_labelled_against_this_repositorys_real_store`
+/// proves correctness against), full extent (`zoom: 0.0`), the same scale spec 84 c1's own
+/// Done-when claim renders at. Release mode only (`cfg(not(debug_assertions))` is rustc's own
+/// release-mode signal, matching `console-core`'s own `fold_reset`/`fold_push` budget tests at
+/// `crates/console-core/src/lib.rs` - a debug build's unoptimized layout pass is legitimately
+/// much slower and asserting the bound there would be a flaky, meaningless test). Only
+/// `map::frame` itself is timed - `real_graph()`'s ingest and `map::build`'s district/layout
+/// pass are a one-time-per-session cost, not part of the per-frame budget the Design text
+/// scopes this bound to.
+#[cfg(feature = "symbols")]
+#[test]
+#[cfg(not(debug_assertions))]
+fn frame_at_full_extent_completes_under_8ms_of_core_time_against_the_real_store() {
+    let graph = real_graph();
+    let model = map::build(&graph);
+
+    let start = std::time::Instant::now();
+    let full_extent = map::frame(&model, 1400.0, 900.0, 0.0);
+    let elapsed = start.elapsed();
+
+    assert!(
+        !full_extent.entities.is_empty(),
+        "a vacuous (empty) frame would make the timing assertion below meaningless"
+    );
+    assert!(
+        elapsed.as_millis() < 8,
+        "map::frame at full extent took {elapsed:?}, over the 8ms budget"
+    );
+}

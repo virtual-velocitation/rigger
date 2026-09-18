@@ -8304,8 +8304,8 @@
     "sites": [
       {
         "file": "src/console/map.rs",
-        "start_line": 610,
-        "end_line": 612
+        "start_line": 602,
+        "end_line": 604
       },
       {
         "file": "tests/files_lens_view_periphery.rs",
@@ -8319,13 +8319,13 @@
     "sites": [
       {
         "file": "src/console/map.rs",
-        "start_line": 617,
-        "end_line": 620
+        "start_line": 609,
+        "end_line": 612
       },
       {
         "file": "src/console/map.rs",
-        "start_line": 650,
-        "end_line": 654
+        "start_line": 642,
+        "end_line": 646
       },
       {
         "file": "src/ledger.rs",
@@ -8369,18 +8369,18 @@
     "sites": [
       {
         "file": "src/console/map.rs",
-        "start_line": 623,
-        "end_line": 625
+        "start_line": 615,
+        "end_line": 617
       },
       {
         "file": "src/console/map.rs",
-        "start_line": 628,
-        "end_line": 630
+        "start_line": 620,
+        "end_line": 622
       },
       {
         "file": "src/console/map.rs",
-        "start_line": 657,
-        "end_line": 659
+        "start_line": 649,
+        "end_line": 651
       },
       {
         "file": "src/eventstore/mod.rs",
@@ -8444,8 +8444,8 @@
     "sites": [
       {
         "file": "src/console/map.rs",
-        "start_line": 633,
-        "end_line": 647
+        "start_line": 625,
+        "end_line": 639
       },
       {
         "file": "src/eventstore/mod.rs",
