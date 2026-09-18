@@ -66,23 +66,23 @@
   {
     "file": "src/console/map.rs",
     "name": "hit",
-    "line": 804,
+    "line": 805,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 1863
+        "line": 1971
       },
       {
         "file": "src/console/map.rs",
-        "line": 1878
+        "line": 1986
       },
       {
         "file": "src/console/map.rs",
-        "line": 1907
+        "line": 2015
       },
       {
         "file": "src/console/map.rs",
-        "line": 1918
+        "line": 2026
       },
       {
         "file": "src/failure.rs",
@@ -189,120 +189,159 @@
   {
     "file": "src/console/map.rs",
     "name": "landmarks",
-    "line": 857,
+    "line": 858,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 1954
-      },
-      {
-        "file": "src/console/map.rs",
-        "line": 1964
-      },
-      {
-        "file": "src/console/map.rs",
-        "line": 1965
-      },
-      {
-        "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
-        "line": 86
-      }
-    ]
-  },
-  {
-    "file": "src/console/map.rs",
-    "name": "bridges_between_districts",
-    "line": 867,
-    "test_only_references": [
-      {
-        "file": "src/console/map.rs",
-        "line": 1971
-      }
-    ]
-  },
-  {
-    "file": "src/console/map.rs",
-    "name": "changing_right_now",
-    "line": 898,
-    "test_only_references": [
-      {
-        "file": "src/console/map.rs",
-        "line": 1988
-      },
-      {
-        "file": "src/console/map.rs",
-        "line": 1996
-      }
-    ]
-  },
-  {
-    "file": "src/console/map.rs",
-    "name": "argued_about_in_review",
-    "line": 918,
-    "test_only_references": [
-      {
-        "file": "src/console/map.rs",
-        "line": 2031
-      },
-      {
-        "file": "src/console/map.rs",
-        "line": 2040
-      }
-    ]
-  },
-  {
-    "file": "src/console/map.rs",
-    "name": "search",
-    "line": 963,
-    "ambiguous_with": [
-      "src/contextgraph/query.rs:1642"
-    ],
-    "test_only_references": [
-      {
-        "file": "src/console/map.rs",
-        "line": 2051
-      },
-      {
-        "file": "src/console/map.rs",
-        "line": 2058
-      },
-      {
-        "file": "src/console/map.rs",
-        "line": 2066
+        "line": 2062
       },
       {
         "file": "src/console/map.rs",
         "line": 2072
       },
       {
+        "file": "src/console/map.rs",
+        "line": 2073
+      },
+      {
         "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
-        "line": 101
+        "line": 81
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "bridges_between_districts",
+    "line": 868,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 2079
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "changing_right_now",
+    "line": 899,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 2096
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2104
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "argued_about_in_review",
+    "line": 919,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 2139
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2148
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "search",
+    "line": 964,
+    "ambiguous_with": [
+      "src/contextgraph/query.rs:1642"
+    ],
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 2159
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2166
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2174
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2180
+      },
+      {
+        "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
+        "line": 96
       }
     ]
   },
   {
     "file": "src/console/map.rs",
     "name": "fit_whole_map",
-    "line": 1001,
+    "line": 1002,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2085
+        "line": 2193
       }
     ]
   },
   {
     "file": "src/console/map.rs",
     "name": "fit_entity",
-    "line": 1065,
+    "line": 1066,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2158
+        "line": 2266
       },
       {
         "file": "src/console/map.rs",
-        "line": 2180
+        "line": 2288
+      }
+    ]
+  },
+  {
+    "file": "src/console/map.rs",
+    "name": "legend",
+    "line": 1140,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "line": 2323
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2345
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2359
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2370
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2384
+      },
+      {
+        "file": "src/console/map.rs",
+        "line": 2394
+      },
+      {
+        "file": "tests/console_map_legend_wire_shape_periphery.rs",
+        "line": 30
+      },
+      {
+        "file": "tests/console_map_legend_wire_shape_periphery.rs",
+        "line": 49
       }
     ]
   },
@@ -1001,7 +1040,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 9909
+        "line": 9939
       }
     ]
   },

@@ -344,3 +344,20 @@ impl Drop for RestoreEnvVars {
         }
     }
 }
+
+/// A JSON object's own key set, sorted - the one comparison every wire-shape periphery test
+/// (`console_map_frame_wire_shape_periphery.rs`, `console_map_explore_rail_wire_shape_periphery.rs`,
+/// `console_map_legend_wire_shape_periphery.rs`, ...) needs to pin a serde type's field names
+/// exactly, never more or fewer. Shared here rather than each file defining its own identical
+/// copy (spec 85's own mandatory duplication sweep: a same-named helper independently defined in
+/// 2+ files is a candidate regardless of the Jaccard pass).
+pub fn json_object_keys(v: &serde_json::Value) -> Vec<String> {
+    let mut keys: Vec<String> = v
+        .as_object()
+        .unwrap_or_else(|| panic!("expected a JSON object, got {v:?}"))
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort_unstable();
+    keys
+}

@@ -15,8 +15,14 @@
 //! shift both sides of that comparison identically and the test would still pass. This file is
 //! the one place that hardcodes the actual field names as string literals - the same technique
 //! `console_map_frame_wire_shape_periphery.rs` already uses for `DrawList` - so a rename becomes
-//! a test failure here instead of a silent JS-side break.
+//! a test failure here instead of a silent JS-side break. The key-set comparison itself is
+//! `tests/common`'s shared `json_object_keys` (spec 84 criterion 3 moved it there once a second
+//! wire-shape suite, `console_map_legend_wire_shape_periphery.rs`, needed the identical helper -
+//! spec 85's own mandatory duplication sweep), never a copy local to this file.
 
+mod common;
+
+use common::json_object_keys;
 use rigger::console::map;
 use rigger::contextgraph::{Edge, Graph, Node, KIND_CODE_ENTITY, REL_IN_COMMUNITY, TIER_EXTRACTED};
 use rigger::eventstore::Position;
@@ -46,17 +52,6 @@ fn one_entity_graph() -> Graph {
             tier: TIER_EXTRACTED.to_string(),
         }],
     }
-}
-
-fn json_object_keys(v: &serde_json::Value) -> Vec<String> {
-    let mut keys: Vec<String> = v
-        .as_object()
-        .unwrap_or_else(|| panic!("expected a JSON object, got {v:?}"))
-        .keys()
-        .cloned()
-        .collect();
-    keys.sort_unstable();
-    keys
 }
 
 /// Serialize the sole row `rows` must carry (a field-name test's own setup gate: exactly one

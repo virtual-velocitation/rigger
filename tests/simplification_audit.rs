@@ -3913,6 +3913,18 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // call), fit_entity_of_an_unknown_id_is_none (1 call)) plus 1 local outgoing call
         // (fit_district, reused for its own zoom rather than a second formula) = 3.
         ("src/console/map.rs", "fit_entity") => 3,
+        // legend (spec 84 criterion 3, new): 6 test-only call sites
+        // (legend_has_exactly_the_documented_rows_in_design_order,
+        // legend_kind_rows_carry_the_same_colour_kind_colour_answers,
+        // legend_blast_radius_row_is_amber_and_named,
+        // legend_district_pill_row_is_small_caps_with_no_fixed_colour,
+        // legend_selection_row_names_underline_and_italic_relation_treatment,
+        // legend_edge_row_names_the_real_relation_types_frame_actually_draws - 1 call each) plus
+        // 1 local outgoing call (kind_colour, read through it for every kind row rather than a
+        // second copy of the colour literal - see legend's own doc) = 7. kind_colour itself
+        // carries no degree entry here: it is not a candidate at all (see disposition_for's own
+        // comment on this same fn), matching frame/hit's own precedent above.
+        ("src/console/map.rs", "legend") => 7,
         (other_file, other_name) => panic!(
             "dead-code candidate {other_file}::{other_name} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
@@ -6473,6 +6485,24 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              own console_call_wires_graph_query_map_fit_entity_through_the_public_abi proving the \
              representative cases cross the real exported ABI. Keep-public-surface, identical \
              shape to hit.",
+        ),
+        ("src/console/map.rs", "legend") => (
+            KeepPublicSurface,
+            "spec 84 criterion 3's own THE LEGEND has no production caller within src/ for the \
+             SAME cross-crate reason hit and the Explore rail functions above do not: its one \
+             real caller is console-core's op_graph_query (crates/console-core/src/lib.rs, the \
+             map_legend kind), a separate workspace-member crate invisible to this scanner's \
+             same-crate sweep. Already landed and wired, not a future consumer: \
+             graph_query_map_legend_matches_the_librarys_own_result_on_a_fresh_session (this \
+             crate's own dispatch_tests) proves the real op_graph_query wiring reaches this exact \
+             function, plus \
+             console_call_wires_graph_query_map_legend_through_the_public_abi_before_any_map_is_built \
+             (exported_abi_periphery.rs) proves it crosses the real exported ABI - and, unlike \
+             every other map_* kind, needs neither graph_load nor map_build first, since the \
+             legend is static content. Keep-public-surface, identical shape to hit; kind_colour \
+             (this same criterion's other new pub fn) is NOT a candidate at all - legend's own \
+             kind-colour rows call it directly, a genuine same-file production call the scanner's \
+             in-src/ sweep already sees.",
         ),
         (other_file, other_name) => panic!(
             "dead-code candidate {other_file}::{other_name} has no assigned disposition - this is \
@@ -10999,9 +11029,19 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (38, 21, 12, 5),
+            (39, 21, 13, 5),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}\n\n\
+             Was (38, 21, 12, 5) before spec 84 criterion 3's own THE LEGEND. ONE fresh \
+             keep-public-surface candidate lands in src/console/map.rs, the SAME cross-crate \
+             shape hit and the Explore rail functions already carry: legend (console-core's real \
+             'map_legend' graph_query kind, needing neither graph_load nor map_build first since \
+             the legend is static content) - candidates: +1, keep_public: 12 -> 13. \
+             kind_colour, this same criterion's other new pub fn, is NOT a fresh candidate at \
+             all: legend's own kind-colour rows call it directly, a genuine same-file production \
+             call this scanner's in-src/ sweep already sees (the SAME reason frame is not a \
+             candidate once hit calls it). Net: 38 + 1 = 39 candidates; 21 delete unchanged; \
+             12 + 1 = 13 keep-public-surface; 5 keep-pending unchanged.\n\n\
              Was (31, 21, 5, 5) before spec 84 criterion 2's Explore rail, search, selection, \
              hit-testing and camera-reset engine. EIGHT fresh keep-public-surface candidates \
              land in src/console/map.rs, each for the SAME cross-crate reason frame carried \

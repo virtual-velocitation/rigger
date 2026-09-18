@@ -31,8 +31,9 @@
 //! [`argued_about_in_review`] are the rail's four candidate lists; [`search`] the search box;
 //! [`hit`] hit-testing a click; [`frame`]'s own `camera`/`selection` params the pan/zoom/lit-
 //! selection [`fit_whole_map`] and [`fit_district`] are the only two ways a camera resets); the
-//! legend and the text TREATMENTS (underline/italic styling) are criterion 3's, rendered by the
-//! page from this module's plain draw list.
+//! legend and the text TREATMENTS (underline/italic styling) are criterion 3's ([`legend`] and
+//! [`kind_colour`] - the entity-dot palette and the named row for every other visual class),
+//! rendered by the page from this module's plain draw list.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1070,6 +1071,113 @@ pub fn fit_entity(model: &MapModel, viewport_w: f64, viewport_h: f64, id: &str) 
         cy: e.y,
         zoom: district_cam.zoom,
     })
+}
+
+// ---- legend / text treatments (spec 84 criterion 3) --------------------------------------------
+//
+// "OWNS the legend and the text treatments; introduces no new render data" (Done-when c3): every
+// row below reads a fact `build`/`frame` already compute (`DrawEntity::kind`, `DrawDistrict`,
+// `DrawEdge::rel`/`lit`) or a constant declared right here - no new field on any `Draw*` wire
+// type. `kind_colour` is the ONE palette both the legend's own kind rows AND, once a page exists,
+// its canvas paint read (Design, SEMANTIC ZOOM: "Landmark names ... take their kind's colour"),
+// so the two can never drift into two different palettes.
+
+/// THE MAP's four KIND COLOURS (Design, LEGEND: "the entity dot and its four kind colours") - the
+/// only definition kinds a reader reasons about by sight: a function, a type (struct/enum/class/
+/// interface all fold to `type` - see `src/grounder/symbols/extract.rs::kind_of`), a trait, a
+/// constant. `(kind, label, colour)` triples, in the legend's own display order.
+pub const KIND_COLOURS: &[(&str, &str, &str)] = &[
+    ("function", "Function", "#6ea8fe"),
+    ("type", "Type", "#4ade80"),
+    ("trait", "Trait", "#a78bfa"),
+    ("constant", "Constant", "#f472b6"),
+];
+
+/// The neutral colour a [`DrawEntity::kind`] outside [`KIND_COLOURS`] paints with (`method`,
+/// `impl`, `module`, `other` - see `src/grounder/symbols/events.rs::kind_str` - or an empty/
+/// unknown kind): these are structural definition kinds, not vocabulary Design's own "four kind
+/// colours" distinguishes on sight, so they share ONE default rather than growing a fifth
+/// hand-picked colour.
+pub const KIND_COLOUR_DEFAULT: &str = "#94a3b8";
+
+/// The amber blast-radius ring's own colour (Design, LEGEND: "the amber ring for a live unit's
+/// blast radius"). The run-activity overlay that lights an in-flight unit's touched entities
+/// (docs/architecture-addendum-mission-control.md section 6.4) is a later spec's own render - this
+/// module computes no per-entity blast-radius flag ([`changing_right_now`] already answers WHICH
+/// entities a caller says are touched) - but the legend names the ring's colour here, the one
+/// place every other swatch is named too, so a reader checks a single legend, never two.
+pub const BLAST_RADIUS_COLOUR: &str = "#fbbf24";
+
+/// The colour a [`DrawEntity`]'s dot, and its name label once a page paints one, take - keyed by
+/// the entity's own `kind` string. The single authority [`legend`]'s own kind rows read; a page's
+/// canvas paint reads the SAME function, never a second lookup table.
+pub fn kind_colour(kind: &str) -> &'static str {
+    KIND_COLOURS
+        .iter()
+        .find(|(k, _, _)| *k == kind)
+        .map(|(_, _, c)| *c)
+        .unwrap_or(KIND_COLOUR_DEFAULT)
+}
+
+/// One row of THE LEGEND (Design, LEGEND: "a persistent legend on the canvas names every visual
+/// class ... so a reader never has to infer what a mark belongs to"). `id` is the row's stable
+/// key (a page's CSS class name); `colour` is `None` for a row whose treatment carries no fixed
+/// swatch of its own (a district pill's ink is not kind-specific; the lit selection is a stroke
+/// treatment, not a colour).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct LegendEntry {
+    pub id: String,
+    pub label: String,
+    pub colour: Option<String>,
+    pub treatment: String,
+}
+
+/// THE LEGEND itself: one row per visual class Design's own LEGEND paragraph names, in that
+/// paragraph's order - the district pill, the entity dot for each of [`KIND_COLOURS`]' four
+/// kinds, the typed directed edge, the lit selection (and its neighbours), and the blast-radius
+/// ring. A page's CSS class names key off `id`/`treatment` here - one source for both the legend
+/// text and the canvas paint, never a second hand-copied list.
+pub fn legend() -> Vec<LegendEntry> {
+    let mut entries = vec![LegendEntry {
+        id: "district-pill".to_string(),
+        label: "District (purpose, population)".to_string(),
+        colour: None,
+        treatment: "small-caps-pill".to_string(),
+    }];
+    for (kind, label, _) in KIND_COLOURS {
+        entries.push(LegendEntry {
+            id: format!("entity-{kind}"),
+            label: (*label).to_string(),
+            // Read through kind_colour (never the KIND_COLOURS tuple's own third field
+            // directly) so this row is provably the SAME colour a page's canvas paint would
+            // get for this kind - one authority, never two lookups that could drift.
+            colour: Some(kind_colour(kind).to_string()),
+            treatment: "kind-colour-dot".to_string(),
+        });
+    }
+    entries.push(LegendEntry {
+        id: "edge".to_string(),
+        label: format!(
+            "Typed directed edge ({}, {})",
+            REL_CALLS.to_lowercase(),
+            REL_REFERENCES.to_lowercase()
+        ),
+        colour: None,
+        treatment: "arrowhead".to_string(),
+    });
+    entries.push(LegendEntry {
+        id: "selection".to_string(),
+        label: "Selected entity and its lit neighbours".to_string(),
+        colour: None,
+        treatment: "underline-name-italic-relation".to_string(),
+    });
+    entries.push(LegendEntry {
+        id: "blast-radius".to_string(),
+        label: "Live unit's blast radius".to_string(),
+        colour: Some(BLAST_RADIUS_COLOUR.to_string()),
+        treatment: "amber-ring".to_string(),
+    });
+    entries
 }
 
 #[cfg(test)]
@@ -2179,4 +2287,125 @@ mod tests {
         let model = build(&populous_graph(2, 1, 4));
         assert_eq!(fit_entity(&model, 900.0, 700.0, "no-such-entity"), None);
     }
+
+    // ---- legend / kind_colour (criterion 3) ---------------------------------------------------
+
+    #[test]
+    fn kind_colour_of_each_named_kind_is_distinct_and_stable() {
+        let colours: Vec<&str> = ["function", "type", "trait", "constant"]
+            .iter()
+            .map(|k| kind_colour(k))
+            .collect();
+        let unique: BTreeSet<&str> = colours.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            4,
+            "Design's own LEGEND text names FOUR kind colours - they must be pairwise distinct: {colours:?}"
+        );
+        // Stable across calls (a pure lookup, never derived from input order or any mutable state).
+        assert_eq!(kind_colour("function"), kind_colour("function"));
+    }
+
+    #[test]
+    fn kind_colour_of_a_kind_outside_the_four_is_the_neutral_default() {
+        for outside in ["method", "impl", "module", "other", "", "bogus-kind"] {
+            assert_eq!(
+                kind_colour(outside),
+                KIND_COLOUR_DEFAULT,
+                "kind {outside:?} is not one of Design's four named kinds and must share the \
+                 one neutral default, never a fifth hand-picked colour"
+            );
+        }
+    }
+
+    #[test]
+    fn legend_has_exactly_the_documented_rows_in_design_order() {
+        let entries = legend();
+        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "district-pill",
+                "entity-function",
+                "entity-type",
+                "entity-trait",
+                "entity-constant",
+                "edge",
+                "selection",
+                "blast-radius",
+            ],
+            "the legend must name exactly the visual classes Design's own LEGEND paragraph lists, \
+             in that paragraph's own order: district pill, entity dot (per kind), typed directed \
+             edge, lit selection, blast-radius ring"
+        );
+    }
+
+    #[test]
+    fn legend_kind_rows_carry_the_same_colour_kind_colour_answers() {
+        for entry in legend() {
+            if let Some(kind) = entry.id.strip_prefix("entity-") {
+                assert_eq!(
+                    entry.colour.as_deref(),
+                    Some(kind_colour(kind)),
+                    "the legend's own {kind} swatch must be the SAME colour kind_colour(...) \
+                     answers - one authority, never two palettes that could drift"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn legend_blast_radius_row_is_amber_and_named() {
+        let entries = legend();
+        let row = entries
+            .iter()
+            .find(|e| e.id == "blast-radius")
+            .expect("the legend must name the blast-radius ring");
+        assert_eq!(row.colour.as_deref(), Some(BLAST_RADIUS_COLOUR));
+        assert_eq!(row.treatment, "amber-ring");
+    }
+
+    #[test]
+    fn legend_district_pill_row_is_small_caps_with_no_fixed_colour() {
+        let entries = legend();
+        let row = entries
+            .iter()
+            .find(|e| e.id == "district-pill")
+            .expect("the legend must name the district pill");
+        assert_eq!(row.treatment, "small-caps-pill");
+        assert_eq!(
+            row.colour, None,
+            "a district pill's colour is not kind-specific - it carries no fixed swatch"
+        );
+    }
+
+    #[test]
+    fn legend_selection_row_names_underline_and_italic_relation_treatment() {
+        let entries = legend();
+        let row = entries
+            .iter()
+            .find(|e| e.id == "selection")
+            .expect("the legend must name the lit selection");
+        assert_eq!(row.treatment, "underline-name-italic-relation");
+    }
+
+    #[test]
+    fn legend_edge_row_names_the_real_relation_types_frame_actually_draws() {
+        let entries = legend();
+        let row = entries
+            .iter()
+            .find(|e| e.id == "edge")
+            .expect("the legend must name the typed directed edge");
+        // The ONLY two `rel` values `build` ever keeps (see this file's own edge filter, "e.rel !=
+        // REL_CALLS && e.rel != REL_REFERENCES") - read straight off the same constants, never a
+        // second hand-typed list that could silently drift from what the engine actually draws.
+        assert!(row.label.contains(&REL_CALLS.to_lowercase()));
+        assert!(row.label.contains(&REL_REFERENCES.to_lowercase()));
+        assert_eq!(row.treatment, "arrowhead");
+    }
+
+    // `LegendEntry`'s own JSON wire shape (field names, exactly) is proven externally by
+    // tests/console_map_legend_wire_shape_periphery.rs, never here - this module's own tests read
+    // fields directly, matching every other Draw*/RailCandidate/SearchHit type's convention (see
+    // that file's own doc for why).
 }

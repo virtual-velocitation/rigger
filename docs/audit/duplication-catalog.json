@@ -21596,7 +21596,7 @@
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
-        "name": "the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_12_keep_public_surface",
+        "name": "the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_13_keep_public_surface",
         "content_hash": "441391c5b8a82860"
       },
       {

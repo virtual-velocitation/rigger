@@ -439,11 +439,22 @@ fn op_map_query(session: &ConsoleSession, kind: &str, params: &serde_json::Value
     }
 }
 
+/// `graph_query`'s `map_legend` kind (spec 84 criterion 3): answered here, BEFORE either the
+/// [`MAP_QUERY_KINDS`] "no map built" check or the "no graph loaded" check below, because
+/// [`console::map::legend`] is static content - the SAME rows for every session, needing neither
+/// a loaded graph nor a built map. Every other `map_*` kind genuinely reads `session.map`, so it
+/// stays inside [`MAP_QUERY_KINDS`]/[`op_map_query`]; `map_legend` does not, so it is not one of
+/// them - a caller can fetch the legend the instant a page loads, before it ever sees real data.
+const LEGEND_QUERY_KIND: &str = "map_legend";
+
 fn op_graph_query(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
     let q: GraphQueryInput = match serde_json::from_slice(input) {
         Ok(v) => v,
         Err(e) => return error_reply(format!("graph_query: malformed input: {e}")),
     };
+    if q.kind == LEGEND_QUERY_KIND {
+        return ok_json(serde_json::json!({ "entries": console::map::legend() }));
+    }
     if MAP_QUERY_KINDS.contains(&q.kind.as_str()) {
         return op_map_query(session, &q.kind, &q.params);
     }
@@ -1243,6 +1254,26 @@ mod dispatch_tests {
             r#"{"kind":"map_fit_entity","params":{"id":"no-such-entity"}}"#,
         );
         assert!(unknown.get("error").is_some(), "{unknown:?}");
+    }
+
+    /// `graph_query`'s `map_legend` kind (spec 84 criterion 3) answers the SAME rows
+    /// `console::map::legend` itself returns, on a completely FRESH session - no `graph_load`,
+    /// no `map_build` - proving the legend needs neither, unlike every other `map_*` kind above.
+    #[test]
+    fn graph_query_map_legend_matches_the_librarys_own_result_on_a_fresh_session() {
+        let mut s = ConsoleSession::new();
+        let v = call(
+            &mut s,
+            "graph_query",
+            r#"{"kind":"map_legend","params":{}}"#,
+        );
+        let entries = v["entries"].as_array().expect("{v:?}");
+        let direct = console::map::legend();
+        assert_eq!(entries.len(), direct.len(), "{v:?}");
+        for (wired, row) in entries.iter().zip(direct.iter()) {
+            assert_eq!(wired["id"], row.id, "{v:?}");
+            assert_eq!(wired["treatment"], row.treatment, "{v:?}");
+        }
     }
 
     /// `map_build`/`map_frame` before any `graph_load` are error replies, never a panic on a

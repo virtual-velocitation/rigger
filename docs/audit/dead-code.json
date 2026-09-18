@@ -355,6 +355,49 @@
     "reason": "spec 84 criterion 2's own Explore rail candidate lists (landmarks/bridges_between_districts/changing_right_now/argued_about_in_review), search, and the three camera-reset functions (fit_whole_map/fit_district/fit_entity - the last added round 2, closing the rejection's own fly-to-entity gap) each have no production caller within src/ for the SAME cross-crate reason hit above does not: every one is called ONLY from console-core's op_map_query (the five map_* graph_query kinds: map_landmarks/map_bridges/map_changing/map_argued_about/map_search) or its three sibling arms (map_fit_whole/map_fit_district/map_fit_entity), all in crates/console-core/src/lib.rs - a separate workspace-member crate invisible to this scanner's same-crate sweep. Already landed and wired, not a future consumer: each has its own dispatch_tests coverage (graph_query_map_landmarks_matches_the_librarys_own_result and its seven siblings, including round 2's own graph_query_map_fit_entity_matches_the_librarys_own_result) proving the real op_graph_query wiring reaches the exact same function, plus console_call_wires_graph_query_map_landmarks_through_the_public_abi and round 2's own console_call_wires_graph_query_map_fit_entity_through_the_public_abi proving the representative cases cross the real exported ABI. Keep-public-surface, identical shape to hit."
   },
   {
+    "name": "legend",
+    "file": "src/console/map.rs",
+    "content_hash": "e730c078572434bb",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "3e86e887db746d43"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "716cbbba3d44fdfd"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "3e86e887db746d43"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "3e86e887db746d43"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "3e86e887db746d43"
+      },
+      {
+        "file": "src/console/map.rs",
+        "content_hash": "3e86e887db746d43"
+      },
+      {
+        "file": "tests/console_map_legend_wire_shape_periphery.rs",
+        "content_hash": "14fd75284a93994e"
+      },
+      {
+        "file": "tests/console_map_legend_wire_shape_periphery.rs",
+        "content_hash": "cc083acfcab1a4c8"
+      }
+    ],
+    "disposition": "keep-public-surface",
+    "reason": "spec 84 criterion 3's own THE LEGEND has no production caller within src/ for the SAME cross-crate reason hit and the Explore rail functions above do not: its one real caller is console-core's op_graph_query (crates/console-core/src/lib.rs, the map_legend kind), a separate workspace-member crate invisible to this scanner's same-crate sweep. Already landed and wired, not a future consumer: graph_query_map_legend_matches_the_librarys_own_result_on_a_fresh_session (this crate's own dispatch_tests) proves the real op_graph_query wiring reaches this exact function, plus console_call_wires_graph_query_map_legend_through_the_public_abi_before_any_map_is_built (exported_abi_periphery.rs) proves it crosses the real exported ABI - and, unlike every other map_* kind, needs neither graph_load nor map_build first, since the legend is static content. Keep-public-surface, identical shape to hit; kind_colour (this same criterion's other new pub fn) is NOT a candidate at all - legend's own kind-colour rows call it directly, a genuine same-file production call the scanner's in-src/ sweep already sees."
+  },
+  {
     "name": "graph_load",
     "file": "src/contextgraph/query.rs",
     "content_hash": "975407e238123fea",

@@ -1414,3 +1414,27 @@ fn console_call_wires_map_hit_through_the_public_abi_preferring_the_nearer_of_tw
          reply shape built from console::map::hit's own direct (correct) answer"
     );
 }
+
+/// `graph_query`'s `map_legend` kind (spec 84 criterion 3) wires through the exported ABI,
+/// answering the SAME rows `console::map::legend` answers directly - and, unlike every other
+/// `map_*` kind, needs NEITHER a loaded graph NOR a built map first: the legend is static
+/// content (this call makes no `graph_load`/`map_build` call at all, proving the "no map built"
+/// precondition every other map kind carries does not apply here).
+#[test]
+fn console_call_wires_graph_query_map_legend_through_the_public_abi_before_any_map_is_built() {
+    use rigger::console::map;
+
+    let queried = unsafe { call("graph_query", r#"{"kind":"map_legend","params":{}}"#) };
+
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "entries": map::legend() }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "graph_query's map_legend reply through the exported ABI, called with no prior \
+         graph_load/map_build, must be the same length as console::map::legend's own direct \
+         answer"
+    );
+}
