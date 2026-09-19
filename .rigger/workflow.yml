@@ -263,6 +263,12 @@ gates:                      # the project's verification library, referenced by 
   # mutant this sweep did not examine, so a catch recorded three sweeps ago still re-runs when
   # its test changes. `A || B && C` in sh is `(A || B) && C`: the rerun block is braced whole.
   #
+  # THE RERUN EXITS WITH CARGO-MUTANTS' OWN CODE (2026-09-19: the rerun ran under xargs, which
+  # reports 123 for any child exit between 1 and 125, so a rerun with one miss - exit 2 - broke
+  # the chain before the append, the promotion and the survivor lines; spec 84's check-in gates
+  # 2 and 3 both ended that way, each losing its sweep state). The names are loaded into the
+  # shell's positional parameters instead, so the exit test reads cargo-mutants itself.
+  #
   # THE VERDICT NAMES EVERY SURVIVOR (2026-09-18/19: a sweep with 82 misses reached the
   # implementer as three named mutants - gate evidence carries five lines, and the sweep's
   # summary line and last three MISSED lines were what survived - so the remediation round
@@ -303,8 +309,9 @@ gates:                      # the project's verification library, referenced by 
       { grep -E -f "$MUTANTS/rerun.re" "$MUTANTS/rerun.all" | sort -u > "$MUTANTS/rerun.list"; true; } &&
       { { test ! -s "$MUTANTS/rerun.list" && echo "rerun: none of the listed mutants exists in this tree"; } ||
       { sed -E 's/^([^:]+):([0-9]+):.*/\1 \2/' "$MUTANTS/rerun.list" | sort -u | while read -r f l; do printf -- '--- a/%s\n+++ b/%s\n@@ -%s,1 +%s,1 @@\n' "$f" "$f" "$l" "$l"; sed -n "${l}p" "$f" | sed 's/^/-/'; sed -n "${l}p" "$f" | sed 's/^/+/'; done > "$MUTANTS/rerun.diff" &&
-      { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
-      xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --in-diff "$MUTANTS/rerun.diff" --output "$MUTANTS/rerun" --baseline skip --timeout 300 --test-tool nextest --cargo-arg=--target-dir=target -j 3;
+      { set --; while IFS= read -r a; do set -- "$@" "$a"; done < "$MUTANTS/rerun.args";
+      TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
+      cargo mutants "$@" --in-diff "$MUTANTS/rerun.diff" --output "$MUTANTS/rerun" --baseline skip --timeout 300 --test-tool nextest --cargo-arg=--target-dir=target -j 3;
       rc=$?; test "$rc" -eq 0 -o "$rc" -eq 2 -o "$rc" -eq 3; } &&
       test -s "$MUTANTS/rerun/mutants.out/outcomes.json" &&
       { cat "$MUTANTS/rerun/mutants.out/missed.txt" >> mutants.out/missed.txt 2>/dev/null; true; }; }; }; }; } &&
