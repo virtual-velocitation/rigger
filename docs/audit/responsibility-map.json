@@ -7165,7 +7165,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "1b8613617542b533"
+    "content_hash": "857529cf00437ef8"
   },
   {
     "file": "src/main.rs",
@@ -8053,7 +8053,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "7bf9349160268913"
+    "content_hash": "bec5f8c153817516"
   },
   {
     "file": "src/main.rs",
@@ -8062,6 +8062,14 @@
     "proposed_module": "main::setup",
     "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
     "content_hash": "eb8dfeab21f6d8d2"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "install_status_line",
+    "is_test": false,
+    "proposed_module": "main::setup",
+    "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
+    "content_hash": "05090a803e6f745e"
   },
   {
     "file": "src/main.rs",
