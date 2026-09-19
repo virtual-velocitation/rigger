@@ -1674,6 +1674,36 @@ mod tests {
         );
     }
 
+    #[test]
+    fn place_label_touching_exactly_at_the_y0_ry1_boundary_is_not_an_overlap() {
+        // AABB overlap is STRICT on all four sides (`x0 < rx1 && x1 > rx0 && y0 < ry1 && y1 >
+        // ry0`) - two boxes that merely TOUCH along a shared edge must not collide. Pin the `y0 <
+        // ry1` edge exactly: with sx=sy=0.0 the east candidate (tried first) sits at y0=-6.5,
+        // y1=6.5 (`DOT_R+3.0`, `+/- LABEL_H/2.0`) - a reserved box whose bottom (`ry1`) sits
+        // exactly on that `y0`, fully overlapping it in x, must NOT block it.
+        let mut reserved = vec![(0.0, -20.0, 20.0, -6.5)];
+        assert_eq!(
+            place_label(0.0, 0.0, "abcd", &mut reserved),
+            Some((7.0, -6.5)),
+            "a box whose bottom edge exactly touches the candidate's top edge is touching, not \
+             overlapping, so the east candidate (tried first) must still be chosen"
+        );
+    }
+
+    #[test]
+    fn place_label_touching_exactly_at_the_y1_ry0_boundary_is_not_an_overlap() {
+        // Symmetric to the above, pinning the `y1 > ry0` edge instead: a reserved box whose top
+        // (`ry0`) sits exactly on the east candidate's bottom (`y1 == 6.5`), fully overlapping it
+        // in x, must NOT block it either.
+        let mut reserved = vec![(0.0, 6.5, 20.0, 20.0)];
+        assert_eq!(
+            place_label(0.0, 0.0, "abcd", &mut reserved),
+            Some((7.0, -6.5)),
+            "a box whose top edge exactly touches the candidate's bottom edge is touching, not \
+             overlapping, so the east candidate (tried first) must still be chosen"
+        );
+    }
+
     // ---- criterion 2: camera pan, selection lighting, hit-testing, the rail, search ----------
 
     /// A->B, C->A (C calls A, A calls B), all one community/district - the minimum fixture with
@@ -2254,6 +2284,33 @@ mod tests {
             "a lone district's fit must shrink to the DISTRICT_FIT_FRACTION target ({target_radius_px}px), \
              not render at full-extent scale: got {}px",
             drawn.radius
+        );
+    }
+
+    /// `build`'s own `radius = (...).max(70.0)` floor makes a zero-radius district unreachable
+    /// through the real pipeline, but `fit_district`'s `d.radius > 0.0` guard exists precisely to
+    /// keep a hand-built `radius: 0.0` from dividing `target_radius_px` by zero - prove the
+    /// guard's own boundary at exactly `radius == 0.0`, not just its interior.
+    #[test]
+    fn fit_district_of_a_zero_radius_district_falls_back_to_base_fit_scale() {
+        let model = MapModel {
+            entities: Vec::new(),
+            districts: vec![District {
+                purpose: "zero".to_string(),
+                population: 0,
+                x: 0.0,
+                y: 0.0,
+                radius: 0.0,
+            }],
+            edges: Vec::new(),
+            bounds: (-100.0, -100.0, 100.0, 100.0),
+        };
+        let cam = fit_district(&model, 1000.0, 800.0, "zero").expect("a real district");
+        assert_eq!(
+            cam.zoom, 1.0,
+            "a zero-radius district must fall back to the base fit-to-viewport scale \
+             (scale_needed == base_fit, so zoom == scale_needed / base_fit == 1.0) rather than \
+             dividing the target radius by a zero district radius"
         );
     }
 
