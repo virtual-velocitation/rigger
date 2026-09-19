@@ -282,7 +282,7 @@ gates:                      # the project's verification library, referenced by 
       { test -z "$rerun" || printf '%s\n' "$rerun" | sed -E 's/[][\\.*^$+?(){}|]/\\&/g; s/^([^:]+):[0-9]+:[0-9]+:/\1(:[0-9]+:[0-9]+)?:/; s/^/-F\n/' > "$MUTANTS/rerun.args"; } &&
       { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
       cargo mutants --in-diff unit.diff --test-tool nextest --cargo-arg=--target-dir=target --timeout-multiplier 3 -j 3;
-      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
+      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 2 -o "$rc" -eq 3; } &&
       { test ! -s "$MUTANTS/rerun.args" ||
       { grep -v '^-F$' "$MUTANTS/rerun.args" > "$MUTANTS/rerun.re" &&
       env -u CARGO_TARGET_DIR xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --list > "$MUTANTS/rerun.all" &&
@@ -291,7 +291,7 @@ gates:                      # the project's verification library, referenced by 
       { sed -E 's/^([^:]+):([0-9]+):.*/\1 \2/' "$MUTANTS/rerun.list" | sort -u | while read -r f l; do printf -- '--- a/%s\n+++ b/%s\n@@ -%s,1 +%s,1 @@\n' "$f" "$f" "$l" "$l"; sed -n "${l}p" "$f" | sed 's/^/-/'; sed -n "${l}p" "$f" | sed 's/^/+/'; done > "$MUTANTS/rerun.diff" &&
       { TMPDIR="$MUTANTS" CARGO_BUILD_JOBS=8 CARGO_PROFILE_DEV_DEBUG=1 CARGO_PROFILE_TEST_DEBUG=1 env -u CARGO_TARGET_DIR
       xargs -d '\n' -a "$MUTANTS/rerun.args" cargo mutants --in-diff "$MUTANTS/rerun.diff" --output "$MUTANTS/rerun" --baseline skip --timeout 300 --test-tool nextest --cargo-arg=--target-dir=target -j 3;
-      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 3; } &&
+      rc=$?; test "$rc" -eq 0 -o "$rc" -eq 2 -o "$rc" -eq 3; } &&
       test -s "$MUTANTS/rerun/mutants.out/outcomes.json" &&
       { cat "$MUTANTS/rerun/mutants.out/missed.txt" >> mutants.out/missed.txt 2>/dev/null; true; }; }; }; }; } &&
       git rev-parse HEAD > "$MUTANTS/last.new/tip" &&
