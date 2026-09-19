@@ -5289,6 +5289,7 @@ mod tests {
         };
         const BIG: &str = "community/1/0";
         const SMALL: &str = "community/1/1";
+        const EDGE: &str = "community/1/2";
 
         let b = CLUSTER_RENDER_BUDGET;
         // The hub's id sorts AFTER every spoke, so it survives the cap ONLY because its degree ranks
@@ -5296,7 +5297,7 @@ mod tests {
         let big_hub = "src/big/mod.rs::zzz_hub";
         let spoke = |i: usize| format!("src/big/mod.rs::s{i:05}");
 
-        let mut nodes: Vec<Node> = vec![community(BIG), community(SMALL)];
+        let mut nodes: Vec<Node> = vec![community(BIG), community(SMALL), community(EDGE)];
         let mut edges: Vec<Edge> = Vec::new();
 
         // OVER-BUDGET community BIG: a hub wired to b+1 spokes => b+2 members (over the b cap). The
@@ -5333,6 +5334,20 @@ mod tests {
             source: 0,
             tier: TIER_EXTRACTED.to_string(),
         });
+
+        // AT-THRESHOLD community EDGE: a hub + EXACTLY GOD_NODE_DEGREE_THRESHOLD leaves (degree 5,
+        // AT the threshold, never above it) - the boundary the SMALL fixture above (degree 6) skips.
+        // Pins `> GOD_NODE_DEGREE_THRESHOLD`, not `>=`: a hub at exactly the threshold must NOT be
+        // flagged god.
+        let edge_hub = "src/edge/lib.rs::hub";
+        for l in 0..GOD_NODE_DEGREE_THRESHOLD {
+            let leaf = format!("src/edge/lib.rs::l{l}");
+            nodes.push(ce(&leaf));
+            edges.push(member_of(&leaf, EDGE));
+            edges.push(refs(edge_hub, &leaf));
+        }
+        nodes.push(ce(edge_hub));
+        edges.push(member_of(edge_hub, EDGE));
 
         // Two dev-loop decision nodes, carrying NO community membership: under spec 63 c1's already-
         // merged CODE-LENS PURITY they fold to no cluster at all (not even their own kind bucket), so
@@ -5448,6 +5463,19 @@ mod tests {
         assert!(
             sm_hub_view.god,
             "a degree-6 hub is a god-node (above the threshold of 5)"
+        );
+
+        // --- AT-THRESHOLD DRILL: EDGE (hub degree EXACTLY GOD_NODE_DEGREE_THRESHOLD) ---
+        let edge = cluster_detail(&g, EDGE, &lens);
+        let edge_hub_view = edge.nodes.iter().find(|n| n.id == edge_hub).unwrap();
+        assert_eq!(
+            edge_hub_view.degree, GOD_NODE_DEGREE_THRESHOLD,
+            "the edge hub's in-view degree is exactly the god threshold"
+        );
+        assert!(
+            !edge_hub_view.god,
+            "a hub AT the threshold ({}) is NOT a god-node - the flag is strictly above",
+            GOD_NODE_DEGREE_THRESHOLD
         );
 
         // --- PURITY: a dev-loop kind never becomes a bucket under Lens::Code (spec 63 c1, already

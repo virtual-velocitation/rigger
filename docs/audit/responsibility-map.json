@@ -12253,7 +12253,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "61f7300886d8ecb1"
+    "content_hash": "02ca250151089f5f"
   },
   {
     "file": "src/dash.rs",

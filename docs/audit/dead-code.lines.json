@@ -506,11 +506,11 @@
     "test_only_references": [
       {
         "file": "src/dash.rs",
-        "line": 7706
+        "line": 7734
       },
       {
         "file": "src/dash.rs",
-        "line": 7710
+        "line": 7738
       },
       {
         "file": "src/main.rs",
