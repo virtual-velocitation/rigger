@@ -2130,6 +2130,43 @@ mod member_set_tests {
             "only the live, right-rel, right-target edge should count as membership: {ids:?}"
         );
     }
+
+    /// `member_set` of a FILE counts ONLY a currently-valid `CONTAINS` edge whose SOURCE is
+    /// EXACTLY this file - the KIND_FILE arm's mirror of
+    /// `member_set_of_a_community_counts_only_its_own_live_in_community_edges` above, same
+    /// three-conjunct proof: a superseded containment, a live `CONTAINS` edge FROM a
+    /// DIFFERENT file, and a live edge of a DIFFERENT rel FROM this file must every one be
+    /// excluded, while the one edge satisfying all three is the only member.
+    #[test]
+    fn member_set_of_a_file_counts_only_its_own_live_contains_edges() {
+        let file1 = "src/w.rs";
+        let file2 = "src/x.rs";
+        let g = Graph {
+            nodes: vec![
+                node(file1, KIND_FILE),
+                node(file2, KIND_FILE),
+                node("src/w.rs::w", KIND_CODE_ENTITY), // the one genuine live member
+                node("src/x.rs::x", KIND_CODE_ENTITY), // live CONTAINS, wrong file
+                node("src/w.rs::y", KIND_CODE_ENTITY), // right rel+source, but superseded
+                node("src/w.rs::z", KIND_CODE_ENTITY), // right source, wrong rel
+            ],
+            edges: vec![
+                edge(file1, "src/w.rs::w", REL_CONTAINS, None),
+                edge(file2, "src/x.rs::x", REL_CONTAINS, None),
+                edge(file1, "src/w.rs::y", REL_CONTAINS, Some(9)),
+                edge(file1, "src/w.rs::z", REL_ABOUT, None),
+            ],
+        };
+        let ids: Vec<&str> = member_set(&g, file1)
+            .iter()
+            .map(|n| n.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["src/w.rs::w"],
+            "only the live, right-rel, right-source edge should count as membership: {ids:?}"
+        );
+    }
 }
 
 #[cfg(test)]

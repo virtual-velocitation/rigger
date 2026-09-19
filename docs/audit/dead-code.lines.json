@@ -28,11 +28,11 @@
     "test_only_references": [
       {
         "file": "src/canary_store.rs",
-        "line": 1198
+        "line": 1247
       },
       {
         "file": "src/canary_store.rs",
-        "line": 1212
+        "line": 1261
       }
     ]
   },
@@ -70,19 +70,19 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 1971
+        "line": 2001
       },
       {
         "file": "src/console/map.rs",
-        "line": 1986
+        "line": 2016
       },
       {
         "file": "src/console/map.rs",
-        "line": 2015
+        "line": 2045
       },
       {
         "file": "src/console/map.rs",
-        "line": 2026
+        "line": 2056
       },
       {
         "file": "src/failure.rs",
@@ -193,15 +193,15 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2062
+        "line": 2092
       },
       {
         "file": "src/console/map.rs",
-        "line": 2072
+        "line": 2102
       },
       {
         "file": "src/console/map.rs",
-        "line": 2073
+        "line": 2103
       },
       {
         "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
@@ -216,7 +216,7 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2079
+        "line": 2109
       }
     ]
   },
@@ -227,11 +227,11 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2096
+        "line": 2126
       },
       {
         "file": "src/console/map.rs",
-        "line": 2104
+        "line": 2134
       }
     ]
   },
@@ -242,11 +242,11 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2139
+        "line": 2169
       },
       {
         "file": "src/console/map.rs",
-        "line": 2148
+        "line": 2178
       }
     ]
   },
@@ -260,19 +260,19 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2159
+        "line": 2189
       },
       {
         "file": "src/console/map.rs",
-        "line": 2166
+        "line": 2196
       },
       {
         "file": "src/console/map.rs",
-        "line": 2174
+        "line": 2204
       },
       {
         "file": "src/console/map.rs",
-        "line": 2180
+        "line": 2210
       },
       {
         "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
@@ -287,7 +287,7 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2193
+        "line": 2223
       }
     ]
   },
@@ -298,11 +298,11 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2266
+        "line": 2323
       },
       {
         "file": "src/console/map.rs",
-        "line": 2288
+        "line": 2345
       }
     ]
   },
@@ -313,27 +313,27 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2323
+        "line": 2380
       },
       {
         "file": "src/console/map.rs",
-        "line": 2345
+        "line": 2402
       },
       {
         "file": "src/console/map.rs",
-        "line": 2359
+        "line": 2416
       },
       {
         "file": "src/console/map.rs",
-        "line": 2370
+        "line": 2427
       },
       {
         "file": "src/console/map.rs",
-        "line": 2384
+        "line": 2441
       },
       {
         "file": "src/console/map.rs",
-        "line": 2394
+        "line": 2451
       },
       {
         "file": "tests/console_map_kind_colour_periphery.rs",

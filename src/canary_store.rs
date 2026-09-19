@@ -971,6 +971,55 @@ mod tests {
         );
     }
 
+    /// A driver that plays only the adjudicator role and counts how many times it was
+    /// asked. Paired with a panel that has NO lenses and NO adversary (so zero findings
+    /// are ever raised), this is the one observable that distinguishes `ordered.len() <
+    /// 2` from a wrong-direction `> 2`: both compile to "trivially stable" for an empty
+    /// list since the `stable` VALUE (`approved == approved_reversed`) does not change
+    /// when reversing a zero-element list, but the comparison direction alone decides
+    /// whether the reversed probe spawn ("b") runs at all - `<` skips it (1 call), a
+    /// flipped `>` does not (2 calls).
+    #[derive(Default)]
+    struct CountingAdjudicator {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl AgentDriver for CountingAdjudicator {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            _opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(AgentResult {
+                output: "{\"verdict\":\"approve\"}".into(),
+                resolved_model: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn score_item_asks_the_adjudicator_once_when_there_are_no_findings_to_reorder() {
+        let driver = CountingAdjudicator::default();
+        // No lenses, no adversary: TIER 1's loop is empty and TIER 2 is skipped by its
+        // own `is_empty()` guard, so zero findings are ever raised and `ordered` is empty.
+        let panel = ReviewPanel {
+            adjudicator: "adj".into(),
+            ..Default::default()
+        };
+        let it = item("nothing", "none", false, "approve", "");
+        let (outcome, _resolved) = score_item(&driver, &cfg(), &panel, &it, 1).unwrap();
+        assert!(outcome.stable, "zero findings are trivially stable");
+        assert_eq!(
+            driver.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "nothing to reorder - the adjudicator must be asked once, not a second \
+             (reversed) time"
+        );
+    }
+
     /// A driver that blocks every LENS spawn (any agent id that is not the adversary or
     /// the adjudicator) on a shared barrier before delegating to a real `Scripted` driver's
     /// scoring logic. If the lens tier still ran one spawn at a time, the first lens's
