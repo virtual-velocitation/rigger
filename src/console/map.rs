@@ -384,7 +384,12 @@ pub fn build(graph: &Graph) -> MapModel {
         }
     }
 
-    let bounds = if entities.is_empty() && districts.is_empty() {
+    // `districts` is never empty when `entities` is not (every entity's community is always
+    // grouped into some district, unconditionally, even a single-member one) and never
+    // non-empty when `entities` IS (a district only exists for a community `by_community`
+    // actually populated, which only happens via a pushed entity) - the two conditions are
+    // provably tied by construction, so checking one is checking both.
+    let bounds = if entities.is_empty() {
         (0.0, 0.0, 1.0, 1.0)
     } else {
         (min_x, min_y, max_x, max_y)
@@ -612,6 +617,20 @@ fn base_fit_scale(bounds: (f64, f64, f64, f64), viewport_w: f64, viewport_h: f64
     (viewport_w / world_w).min(viewport_h / world_h) * FIT_MARGIN
 }
 
+/// A district pill's half-width/half-height in SCREEN units (the reserved box grows with the
+/// purpose text's own character count; the height is fixed) - pulled out of [`frame`]'s per-
+/// district loop so the arithmetic itself is directly testable, independent of projection.
+fn pill_half_extent(purpose: &str) -> (f64, f64) {
+    ((purpose.chars().count() as f64 * 6.5 + 16.0) / 2.0, 12.0)
+}
+
+/// The AABB a district pill centred at SCREEN `(sx, sy)` reserves, given its own half-width/
+/// half-height ([`pill_half_extent`]) - pulled out of [`frame`]'s per-district loop for the same
+/// reason: the corner arithmetic is directly testable on its own, without a projected district.
+fn reserved_box(sx: f64, sy: f64, half_w: f64, half_h: f64) -> (f64, f64, f64, f64) {
+    (sx - half_w, sy - half_h, sx + half_w, sy + half_h)
+}
+
 /// Render one frame of `model` at `camera` for a `viewport_w` x `viewport_h` canvas, highlighting
 /// `selection` (an entity id, or `None`). `camera.zoom <= 0.0` is the FULL EXTENT (Design, SEED:
 /// "the initial camera is the full extent"): the whole world bounding box scaled to fit the
@@ -662,9 +681,8 @@ pub fn frame(
     let mut districts = Vec::with_capacity(model.districts.len());
     for d in &model.districts {
         let (sx, sy) = project(d.x, d.y);
-        let half_w = (d.purpose.chars().count() as f64 * 6.5 + 16.0) / 2.0;
-        let half_h = 12.0;
-        reserved.push((sx - half_w, sy - half_h, sx + half_w, sy + half_h));
+        let (half_w, half_h) = pill_half_extent(&d.purpose);
+        reserved.push(reserved_box(sx, sy, half_w, half_h));
         districts.push(DrawDistrict {
             purpose: d.purpose.clone(),
             population: d.population,
@@ -735,6 +753,28 @@ pub fn frame(
     }
 }
 
+const DOT_R: f64 = 4.0;
+const CHAR_W: f64 = 6.2;
+const LABEL_H: f64 = 13.0;
+
+/// `name`'s own label box extent (width grows with character count, height fixed) - pulled out
+/// of [`place_label`] so the formula is directly testable without any candidate geometry.
+fn label_extent(name: &str) -> (f64, f64) {
+    (name.chars().count() as f64 * CHAR_W + 6.0, LABEL_H)
+}
+
+/// The four candidate offsets [`place_label`] tries in order - east, west, north, south of the
+/// dot - given a label's own `(w, h)` extent ([`label_extent`]). Pulled out so the offset
+/// arithmetic is directly testable, independent of any screen position or collision state.
+fn label_candidates(w: f64, h: f64) -> [(f64, f64); 4] {
+    [
+        (DOT_R + 3.0, -h / 2.0),
+        (-(w + DOT_R + 3.0), -h / 2.0),
+        (-w / 2.0, -(DOT_R + h + 3.0)),
+        (-w / 2.0, DOT_R + 3.0),
+    ]
+}
+
 /// Try to place `name`'s label at one of four candidate offsets around the dot at screen `(sx,
 /// sy)` (Design, SEMANTIC ZOOM: "Labels dodge each other (four candidate positions)") - the FIRST
 /// candidate (east, west, north, south of the dot, in that fixed preference order) whose bounding
@@ -748,17 +788,8 @@ fn place_label(
     name: &str,
     reserved: &mut Vec<(f64, f64, f64, f64)>,
 ) -> Option<(f64, f64)> {
-    const DOT_R: f64 = 4.0;
-    const CHAR_W: f64 = 6.2;
-    const LABEL_H: f64 = 13.0;
-    let w = name.chars().count() as f64 * CHAR_W + 6.0;
-    let h = LABEL_H;
-    let candidates: [(f64, f64); 4] = [
-        (DOT_R + 3.0, -h / 2.0),
-        (-(w + DOT_R + 3.0), -h / 2.0),
-        (-w / 2.0, -(DOT_R + h + 3.0)),
-        (-w / 2.0, DOT_R + 3.0),
-    ];
+    let (w, h) = label_extent(name);
+    let candidates = label_candidates(w, h);
     for (dx, dy) in candidates {
         let x0 = sx + dx;
         let y0 = sy + dy;
@@ -1426,6 +1457,134 @@ mod tests {
         );
     }
 
+    /// Distinguishes the tie-break rule above from the count it only applies WHEN counts are
+    /// equal: a community with a genuine 3-1 majority for "zzz" over "aaa" must pick "zzz"
+    /// despite "aaa" sorting lexicographically first - the tie-break never overrides a real count.
+    #[test]
+    fn build_dominant_module_is_chosen_by_true_member_count_not_a_frozen_tie() {
+        let nodes = vec![
+            code_node("src/zzz.rs::f1", "f1", "function"),
+            code_node("src/zzz.rs::f2", "f2", "function"),
+            code_node("src/zzz.rs::f3", "f3", "function"),
+            code_node("src/aaa.rs::g1", "g1", "function"),
+        ];
+        let edges = vec![
+            in_community("src/zzz.rs::f1", "community/1/0"),
+            in_community("src/zzz.rs::f2", "community/1/0"),
+            in_community("src/zzz.rs::f3", "community/1/0"),
+            in_community("src/aaa.rs::g1", "community/1/0"),
+        ];
+        let model = build(&Graph { nodes, edges });
+
+        assert_eq!(model.districts.len(), 1, "{:?}", model.districts);
+        assert_eq!(
+            model.districts[0].purpose, "zzz",
+            "the module with the true majority of members (zzz: 3) must dominate over a \
+             lexicographically-earlier minority (aaa: 1)"
+        );
+    }
+
+    /// Pins the grid/ring LAYOUT arithmetic directly: four districts of strictly decreasing
+    /// population (so index order is unambiguous) at `cols = ceil(sqrt(4)) = 2`, and the second
+    /// member (idx 1) of the third-placed district's own golden-angle ring position - computed
+    /// here independently of `build`'s own formula, not by re-deriving it.
+    #[test]
+    fn build_lays_out_districts_on_a_grid_and_ring_members_on_the_golden_angle_spiral() {
+        fn module_members(module: &str, community: &str, n: usize) -> (Vec<Node>, Vec<Edge>) {
+            let mut nodes = Vec::new();
+            let mut edges = Vec::new();
+            for i in 0..n {
+                let id = format!("src/{module}.rs::n{i:02}_fn");
+                nodes.push(code_node(&id, &format!("n{i:02}_fn"), "function"));
+                edges.push(in_community(&id, community));
+            }
+            (nodes, edges)
+        }
+
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        for (module, community, n) in [
+            ("moda", "community/1/0", 5),
+            ("modb", "community/1/1", 4),
+            ("modc", "community/1/2", 2),
+            ("modd", "community/1/3", 1),
+        ] {
+            let (ns, es) = module_members(module, community, n);
+            nodes.extend(ns);
+            edges.extend(es);
+        }
+        let model = build(&Graph { nodes, edges });
+
+        let district = |purpose: &str| {
+            model
+                .districts
+                .iter()
+                .find(|d| d.purpose == purpose)
+                .unwrap_or_else(|| panic!("no district {purpose:?}: {:?}", model.districts))
+        };
+        // Population order (desc): moda(5) i=0, modb(4) i=1, modc(2) i=2, modd(1) i=3 - at
+        // cols=2, i=2 is grid cell (col 0, row 1) and i=3 is (col 1, row 1). i=3's col AND row
+        // are both non-zero, so it alone distinguishes `col * CELL`/`row * CELL` from a
+        // mutated `col / CELL`/`row / CELL` (a zero coordinate cannot).
+        assert_eq!(district("modc").x, 0.0 * CELL);
+        assert_eq!(district("modc").y, 1.0 * CELL);
+        assert_eq!(district("modd").x, 1.0 * CELL);
+        assert_eq!(district("modd").y, 1.0 * CELL);
+
+        let cx = district("modc").x;
+        let cy = district("modc").y;
+        let idx = 1.0_f64; // n01_fn: degree-tied with n00_fn, so id-ascending puts it second.
+        let angle = idx * GOLDEN_ANGLE;
+        let r = INNER_R + RING_STEP * (idx + 1.0).sqrt();
+        let expected_x = cx + r * angle.cos();
+        let expected_y = cy + r * angle.sin();
+        let second = model
+            .entities
+            .iter()
+            .find(|e| e.id == "src/modc.rs::n01_fn")
+            .unwrap_or_else(|| panic!("no entity n01_fn: {:?}", model.entities));
+        assert!(
+            (second.x - expected_x).abs() < 1e-9 && (second.y - expected_y).abs() < 1e-9,
+            "expected ({expected_x}, {expected_y}), got ({}, {})",
+            second.x,
+            second.y
+        );
+    }
+
+    /// Pins BOTH conjuncts of the edge-inclusion filter independently: the rel-kind check (a
+    /// `CALLS` and a `REFERENCES` edge are both kept, an unrelated relation is dropped even
+    /// between two mapped entities) and the membership check (an edge is dropped when EITHER
+    /// endpoint has no community membership, never included on a partial match).
+    #[test]
+    fn build_includes_only_live_calls_or_references_edges_between_two_mapped_entities() {
+        let nodes = vec![
+            code_node("src/a.rs::a_fn", "a_fn", "function"),
+            code_node("src/a.rs::b_fn", "b_fn", "function"),
+            // no community membership below: excluded from the map entirely, so never in `ids`.
+            code_node("src/a.rs::c_fn", "c_fn", "function"),
+        ];
+        let edges = vec![
+            in_community("src/a.rs::a_fn", "community/1/0"),
+            in_community("src/a.rs::b_fn", "community/1/0"),
+            live_edge("src/a.rs::a_fn", "src/a.rs::b_fn", REL_CALLS),
+            live_edge("src/a.rs::b_fn", "src/a.rs::a_fn", REL_REFERENCES),
+            // neither CALLS nor REFERENCES: dropped despite both endpoints being mapped.
+            live_edge("src/a.rs::a_fn", "src/a.rs::b_fn", REL_ABOUT),
+            // a CALLS edge, but c_fn is unmapped: dropped despite the rel-kind matching.
+            live_edge("src/a.rs::a_fn", "src/a.rs::c_fn", REL_CALLS),
+        ];
+        let model = build(&Graph { nodes, edges });
+
+        let rels: Vec<(&str, &str, &str)> = model
+            .edges
+            .iter()
+            .map(|(f, t, r)| (f.as_str(), t.as_str(), r.as_str()))
+            .collect();
+        assert_eq!(rels.len(), 2, "unexpected edge set: {rels:?}");
+        assert!(rels.contains(&("src/a.rs::a_fn", "src/a.rs::b_fn", REL_CALLS)));
+        assert!(rels.contains(&("src/a.rs::b_fn", "src/a.rs::a_fn", REL_REFERENCES)));
+    }
+
     #[test]
     fn build_never_labels_an_entity_with_its_file() {
         let model = build(&two_district_graph());
@@ -1505,6 +1664,94 @@ mod tests {
     }
 
     // ---- frame: the labelled-map invariant, budget, monotonic zoom ---------------------------
+
+    /// Pins `base_fit_scale`'s own arithmetic in the scenario where the WIDTH ratio is the
+    /// smaller (selected) one, so a change to `world_w`'s formula or the width division actually
+    /// reaches the output - `viewport_h` is set huge enough that the height ratio never wins.
+    #[test]
+    fn base_fit_scale_selects_the_width_ratio_when_it_is_the_tighter_fit() {
+        // world_w = 12.0 - 2.0 = 10.0, ratio_w = 50.0 / 10.0 = 5.0 (selected).
+        // world_h = 14.0 - 4.0 = 10.0, ratio_h = 1000.0 / 10.0 = 100.0 (not selected).
+        let got = base_fit_scale((2.0, 4.0, 12.0, 14.0), 50.0, 1000.0);
+        let expected = 5.0_f64 * FIT_MARGIN;
+        assert!(
+            (got - expected).abs() < 1e-9,
+            "expected {expected}, got {got}"
+        );
+    }
+
+    /// Symmetric to the above: the HEIGHT ratio is the smaller (selected) one here, so a change
+    /// to `world_h`'s formula or the height division reaches the output instead.
+    #[test]
+    fn base_fit_scale_selects_the_height_ratio_when_it_is_the_tighter_fit() {
+        // world_w = 6.0 - 0.0 = 6.0, ratio_w = 600.0 / 6.0 = 100.0 (not selected).
+        // world_h = 14.0 - 4.0 = 10.0, ratio_h = 40.0 / 10.0 = 4.0 (selected).
+        let got = base_fit_scale((0.0, 4.0, 6.0, 14.0), 600.0, 40.0);
+        let expected = 4.0_f64 * FIT_MARGIN;
+        assert!(
+            (got - expected).abs() < 1e-9,
+            "expected {expected}, got {got}"
+        );
+    }
+
+    /// Pins the FULL-EXTENT centering (`zoom <= 0.0`) AND the `project` closure's own arithmetic
+    /// in one pass: asymmetric bounds give a non-trivial `world_cx`/`world_cy`, and a district
+    /// planted at the world origin makes its projected screen position depend on both - computed
+    /// here independently of `frame`'s own formula, not by re-deriving it.
+    #[test]
+    fn frame_at_full_extent_projects_a_district_at_the_bounds_midpoint_with_exact_arithmetic() {
+        let bounds = (1.0, 2.0, 9.0, 20.0);
+        let model = MapModel {
+            entities: Vec::new(),
+            districts: vec![District {
+                purpose: String::new(),
+                population: 0,
+                x: 0.0,
+                y: 0.0,
+                radius: 0.0,
+            }],
+            edges: Vec::new(),
+            bounds,
+        };
+        let viewport_w = 800.0;
+        let viewport_h = 1800.0;
+        let camera = Camera {
+            zoom: 0.0,
+            cx: 0.0,
+            cy: 0.0,
+        };
+        let draw = frame(&model, viewport_w, viewport_h, &camera, None);
+
+        let world_cx = (bounds.0 + bounds.2) / 2.0;
+        let world_cy = (bounds.1 + bounds.3) / 2.0;
+        let scale = base_fit_scale(bounds, viewport_w, viewport_h);
+        let expected_x = (0.0_f64 - world_cx) * scale + viewport_w / 2.0;
+        let expected_y = (0.0_f64 - world_cy) * scale + viewport_h / 2.0;
+
+        assert_eq!(draw.districts.len(), 1, "{:?}", draw.districts);
+        assert!(
+            (draw.districts[0].x - expected_x).abs() < 1e-9
+                && (draw.districts[0].y - expected_y).abs() < 1e-9,
+            "expected ({expected_x}, {expected_y}), got ({}, {})",
+            draw.districts[0].x,
+            draw.districts[0].y
+        );
+    }
+
+    /// Pins `pill_half_extent`'s own formula directly.
+    #[test]
+    fn pill_half_extent_scales_with_the_purposes_own_character_count() {
+        assert_eq!(
+            pill_half_extent("abcd"),
+            ((4.0_f64 * 6.5 + 16.0) / 2.0, 12.0)
+        );
+    }
+
+    /// Pins `reserved_box`'s own corner arithmetic directly.
+    #[test]
+    fn reserved_box_builds_the_aabb_around_its_own_center() {
+        assert_eq!(reserved_box(10.0, 20.0, 3.0, 4.0), (7.0, 16.0, 13.0, 24.0));
+    }
 
     /// Many communities across several districts, generously spread out, so [`frame`] has real
     /// label-placement work to do at both a small and a large budget.
@@ -1701,6 +1948,74 @@ mod tests {
             Some((7.0, -6.5)),
             "a box whose top edge exactly touches the candidate's bottom edge is touching, not \
              overlapping, so the east candidate (tried first) must still be chosen"
+        );
+    }
+
+    #[test]
+    fn place_label_touching_exactly_at_the_x0_rx1_boundary_is_not_an_overlap() {
+        // Pins the `x0 < rx1` edge: a reserved box whose right edge (`rx1`) sits exactly on the
+        // east candidate's left edge (`x0 == 7.0`), fully overlapping it in y, must NOT block it.
+        let mut reserved = vec![(-20.0, -20.0, 7.0, 20.0)];
+        assert_eq!(
+            place_label(0.0, 0.0, "abcd", &mut reserved),
+            Some((7.0, -6.5)),
+            "a box whose right edge exactly touches the candidate's left edge is touching, not \
+             overlapping, so the east candidate (tried first) must still be chosen"
+        );
+    }
+
+    #[test]
+    fn place_label_touching_exactly_at_the_x1_rx0_boundary_is_not_an_overlap() {
+        // Pins the `x1 > rx0` edge: a reserved box whose left edge (`rx0`) sits exactly on the
+        // east candidate's own right edge (`x1`), fully overlapping it in y, must NOT block it.
+        // `x1` is computed here via the same formula as `place_label` itself so this pins the
+        // comparison operator alone, never a hand-rounded literal of `w`'s own float arithmetic.
+        let (w, _) = label_extent("abcd");
+        let x1 = 7.0 + w;
+        let mut reserved = vec![(x1, -20.0, x1 + 100.0, 20.0)];
+        assert_eq!(
+            place_label(0.0, 0.0, "abcd", &mut reserved),
+            Some((7.0, -6.5)),
+            "a box whose left edge exactly touches the candidate's right edge is touching, not \
+             overlapping, so the east candidate (tried first) must still be chosen"
+        );
+    }
+
+    #[test]
+    fn place_label_anchors_each_candidate_at_the_dots_own_screen_position_not_the_origin() {
+        // At sx=50.0 the east candidate's box is [57.0, 63.0) in x (dx=7.0, w=6.0 for an empty
+        // name) - a reservation starting at 55.0 overlaps it and must reject it, falling to the
+        // west candidate. A `sx + dx` computed as `sx - dx` (43..49) or `sx * dx` (350..356)
+        // would both miss this reservation entirely and wrongly accept the east candidate.
+        let mut reserved = vec![(55.0, -100.0, 100.0, 100.0)];
+        let (w, h) = label_extent("");
+        assert_eq!(
+            place_label(50.0, 0.0, "", &mut reserved),
+            Some((-(w + DOT_R + 3.0), -h / 2.0)),
+            "the east candidate must be anchored at sx (50.0) plus its own offset, not sx minus \
+             or times it - a collision with a reservation starting at 55.0 must reject it"
+        );
+    }
+
+    /// Pins `label_extent`'s own formula directly.
+    #[test]
+    fn label_extent_scales_with_the_names_own_character_count() {
+        assert_eq!(label_extent("abcd"), (4.0_f64 * CHAR_W + 6.0, LABEL_H));
+    }
+
+    /// Pins `label_candidates`'s own four-offset formula directly, independent of any screen
+    /// position or collision state.
+    #[test]
+    fn label_candidates_places_the_four_offsets_east_west_north_south_of_the_dot() {
+        let (w, h) = label_extent("abcd");
+        assert_eq!(
+            label_candidates(w, h),
+            [
+                (DOT_R + 3.0, -h / 2.0),
+                (-(w + DOT_R + 3.0), -h / 2.0),
+                (-w / 2.0, -(DOT_R + h + 3.0)),
+                (-w / 2.0, DOT_R + 3.0),
+            ]
         );
     }
 

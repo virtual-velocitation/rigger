@@ -66,23 +66,23 @@
   {
     "file": "src/console/map.rs",
     "name": "hit",
-    "line": 805,
+    "line": 836,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2001
+        "line": 2316
       },
       {
         "file": "src/console/map.rs",
-        "line": 2016
+        "line": 2331
       },
       {
         "file": "src/console/map.rs",
-        "line": 2045
+        "line": 2360
       },
       {
         "file": "src/console/map.rs",
-        "line": 2056
+        "line": 2371
       },
       {
         "file": "src/failure.rs",
@@ -189,19 +189,19 @@
   {
     "file": "src/console/map.rs",
     "name": "landmarks",
-    "line": 858,
+    "line": 889,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2092
+        "line": 2407
       },
       {
         "file": "src/console/map.rs",
-        "line": 2102
+        "line": 2417
       },
       {
         "file": "src/console/map.rs",
-        "line": 2103
+        "line": 2418
       },
       {
         "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
@@ -212,67 +212,67 @@
   {
     "file": "src/console/map.rs",
     "name": "bridges_between_districts",
-    "line": 868,
+    "line": 899,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2109
+        "line": 2424
       }
     ]
   },
   {
     "file": "src/console/map.rs",
     "name": "changing_right_now",
-    "line": 899,
+    "line": 930,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2126
+        "line": 2441
       },
       {
         "file": "src/console/map.rs",
-        "line": 2134
+        "line": 2449
       }
     ]
   },
   {
     "file": "src/console/map.rs",
     "name": "argued_about_in_review",
-    "line": 919,
+    "line": 950,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2169
+        "line": 2484
       },
       {
         "file": "src/console/map.rs",
-        "line": 2178
+        "line": 2493
       }
     ]
   },
   {
     "file": "src/console/map.rs",
     "name": "search",
-    "line": 964,
+    "line": 995,
     "ambiguous_with": [
       "src/contextgraph/query.rs:1642"
     ],
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2189
+        "line": 2504
       },
       {
         "file": "src/console/map.rs",
-        "line": 2196
+        "line": 2511
       },
       {
         "file": "src/console/map.rs",
-        "line": 2204
+        "line": 2519
       },
       {
         "file": "src/console/map.rs",
-        "line": 2210
+        "line": 2525
       },
       {
         "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
@@ -283,57 +283,57 @@
   {
     "file": "src/console/map.rs",
     "name": "fit_whole_map",
-    "line": 1002,
+    "line": 1033,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2223
+        "line": 2538
       }
     ]
   },
   {
     "file": "src/console/map.rs",
     "name": "fit_entity",
-    "line": 1066,
+    "line": 1097,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2323
+        "line": 2638
       },
       {
         "file": "src/console/map.rs",
-        "line": 2345
+        "line": 2660
       }
     ]
   },
   {
     "file": "src/console/map.rs",
     "name": "legend",
-    "line": 1140,
+    "line": 1171,
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2380
+        "line": 2695
       },
       {
         "file": "src/console/map.rs",
-        "line": 2402
+        "line": 2717
       },
       {
         "file": "src/console/map.rs",
-        "line": 2416
+        "line": 2731
       },
       {
         "file": "src/console/map.rs",
-        "line": 2427
+        "line": 2742
       },
       {
         "file": "src/console/map.rs",
-        "line": 2441
+        "line": 2756
       },
       {
         "file": "src/console/map.rs",
-        "line": 2451
+        "line": 2766
       },
       {
         "file": "tests/console_map_kind_colour_periphery.rs",
