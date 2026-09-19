@@ -79,6 +79,93 @@ const STATE_PLACEHOLDER: &str = "__RIGGER_STATE__";
 /// 87's audit must disposition; see that test's own doc comment.
 const CONSOLE_CORE_WASM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/console_core.wasm"));
 
+/// The Mission Control shell (spec 94 criterion 1, THE PAGE): a second single-file page,
+/// embedded and served exactly like [`PAGE_TEMPLATE`] but at a different route
+/// (`/console`, not `/` - the old page keeps `/` until spec 98 retires it). Static: no
+/// state placeholder, no substitution. Every view region it carries is a container only;
+/// criteria 2 and 3 give it live data.
+const CONSOLE_PAGE: &str = include_str!("console.html");
+
+/// One embedded console asset (spec 94 criterion 1, THE ASSETS): a
+/// `(route suffix, content type, bytes)` triple served at `/console/fonts/<suffix>`,
+/// matched against a fixed, closed set - no directory listing, no path traversal onto
+/// the real filesystem. The three faces (Sora, Source Sans 3, JetBrains Mono) are
+/// Latin-subset woff2 builds instanced from their upstream variable fonts; each family's
+/// `OFL.txt` sits beside its own faces on disk (`src/console/fonts/<family>/`) and is
+/// served from the same route family, unmodified from the upstream release, so the
+/// license the font ships under travels with the bytes.
+const CONSOLE_FONTS: &[(&str, &str, &[u8])] = &[
+    (
+        "sora/Sora-400.woff2",
+        "font/woff2",
+        include_bytes!("console/fonts/sora/Sora-400.woff2"),
+    ),
+    (
+        "sora/Sora-500.woff2",
+        "font/woff2",
+        include_bytes!("console/fonts/sora/Sora-500.woff2"),
+    ),
+    (
+        "sora/Sora-600.woff2",
+        "font/woff2",
+        include_bytes!("console/fonts/sora/Sora-600.woff2"),
+    ),
+    (
+        "sora/OFL.txt",
+        "text/plain; charset=utf-8",
+        include_bytes!("console/fonts/sora/OFL.txt"),
+    ),
+    (
+        "source-sans-3/SourceSans3-400.woff2",
+        "font/woff2",
+        include_bytes!("console/fonts/source-sans-3/SourceSans3-400.woff2"),
+    ),
+    (
+        "source-sans-3/SourceSans3-600.woff2",
+        "font/woff2",
+        include_bytes!("console/fonts/source-sans-3/SourceSans3-600.woff2"),
+    ),
+    (
+        "source-sans-3/SourceSans3-400italic.woff2",
+        "font/woff2",
+        include_bytes!("console/fonts/source-sans-3/SourceSans3-400italic.woff2"),
+    ),
+    (
+        "source-sans-3/OFL.txt",
+        "text/plain; charset=utf-8",
+        include_bytes!("console/fonts/source-sans-3/OFL.txt"),
+    ),
+    (
+        "jetbrains-mono/JetBrainsMono-400.woff2",
+        "font/woff2",
+        include_bytes!("console/fonts/jetbrains-mono/JetBrainsMono-400.woff2"),
+    ),
+    (
+        "jetbrains-mono/JetBrainsMono-500.woff2",
+        "font/woff2",
+        include_bytes!("console/fonts/jetbrains-mono/JetBrainsMono-500.woff2"),
+    ),
+    (
+        "jetbrains-mono/OFL.txt",
+        "text/plain; charset=utf-8",
+        include_bytes!("console/fonts/jetbrains-mono/OFL.txt"),
+    ),
+];
+
+/// Look up one `/console/fonts/<suffix>` asset in [`CONSOLE_FONTS`] - a plain linear scan
+/// over eleven fixed entries, never a filesystem read, so an unmatched suffix (including
+/// a path-traversal attempt) is a 404 exactly like any other unrouted path.
+fn console_font_response(suffix: &str) -> Response {
+    match CONSOLE_FONTS
+        .iter()
+        .copied()
+        .find(|(name, _, _)| *name == suffix)
+    {
+        Some((_, content_type, bytes)) => Response::binary(200, content_type, bytes),
+        None => Response::text(404, "not found"),
+    }
+}
+
 /// The default loopback port for `rigger dash` when `--port` is not given.
 pub const DEFAULT_PORT: u16 = 7420;
 
@@ -2587,6 +2674,14 @@ pub fn live_page() -> String {
     PAGE_TEMPLATE.replace(STATE_PLACEHOLDER, "null")
 }
 
+/// The Mission Control shell (spec 94 criterion 1): served verbatim, no substitution -
+/// unlike [`live_page`], it carries no state placeholder to resolve. `String` (not
+/// `&'static str`) only to match [`Response::html`]'s signature; the bytes themselves
+/// are the compile-time-embedded [`CONSOLE_PAGE`].
+pub fn console_page() -> String {
+    CONSOLE_PAGE.to_string()
+}
+
 /// The `--export` page: the template with the snapshot (including its event feed) inlined,
 /// yielding a self-contained static file that renders offline and never fetches.
 ///
@@ -2762,6 +2857,16 @@ pub fn route(
         // embedded at compile time by `build.rs`'s nested cross-compile - served verbatim,
         // never generated or read from disk per request.
         "/console/core.wasm" => Response::binary(200, "application/wasm", CONSOLE_CORE_WASM),
+        // THE PAGE (spec 94 criterion 1): the Mission Control shell, served at `/console` -
+        // NOT `/`, which the old dashboard keeps until spec 98 retires it and moves the
+        // console there. Static, like the wasm route above: no run/graph/liveness input.
+        "/console" => Response::html(200, console_page()),
+        // THE ASSETS (spec 94 criterion 1): the embedded fonts and their OFL license
+        // text, matched against the fixed [`CONSOLE_FONTS`] table - never a filesystem
+        // read, so a path-traversal attempt is just an unmatched suffix (a 404).
+        p if p.starts_with("/console/fonts/") => {
+            console_font_response(p.trim_start_matches("/console/fonts/"))
+        }
         "/api/state" => {
             match state_json(
                 events,
@@ -3581,6 +3686,225 @@ mod tests {
             fresh_bytes, CONSOLE_CORE_WASM,
             "the artifact embedded at /console/core.wasm must equal what an independent \
              nested build produces for this exact tree"
+        );
+    }
+
+    /// Spec 94 criterion 1, THE PAGE IS THE MOCK'S SHELL: the served `/console` page
+    /// carries every named region (header, tab bar, health strip, the seven views, dock,
+    /// scrubber, statusline) with the mock's own class names, plus the light-theme tokens
+    /// on bare `:root` and the dark-theme tokens verbatim under BOTH the system media
+    /// query and an explicit `[data-theme="dark"]` override (so a person's own choice
+    /// always wins over the system default, in both directions). The route reads no
+    /// store/graph/liveness input at all - every provider below panics if consulted, the
+    /// same "never touches inputs it does not need" shape `console_core_wasm_route_...`
+    /// already proves for the sibling static route.
+    #[test]
+    fn console_route_serves_the_shell_page_with_mock_regions_and_both_theme_token_blocks() {
+        let r = route(
+            "GET",
+            "/console",
+            &[],
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(r.status, 200);
+        assert_eq!(r.content_type, "text/html; charset=utf-8");
+        let body = String::from_utf8(r.body).unwrap();
+
+        for region in [
+            "id=\"app\"",
+            "header class=\"top\"",
+            "nav class=\"tabs\"",
+            "id=\"health\"",
+            "class=\"view\"",
+            "aside class=\"dock\"",
+            "footer class=\"scrub\"",
+            "class=\"statusline",
+        ] {
+            assert!(
+                body.contains(region),
+                "missing shell region {region:?}: {body}"
+            );
+        }
+        for view in [
+            "fleet", "theater", "agents", "court", "map", "plan", "brief",
+        ] {
+            assert!(
+                body.contains(&format!("data-view=\"{view}\"")),
+                "missing the {view:?} view region: {body}"
+            );
+        }
+
+        // The light tokens live on bare `:root`, unconditionally.
+        assert!(
+            body.contains(":root{")
+                && body.contains("--bg:#F2F5F7")
+                && body.contains("--accent:#B86F2E"),
+            "light-theme tokens must be verbatim on bare :root: {body}"
+        );
+        // The dark tokens are verbatim under BOTH the system preference and the explicit
+        // override, so an explicit choice always beats the system default either way.
+        assert!(
+            body.contains("prefers-color-scheme: dark")
+                && body.contains(":root:not([data-theme=\"light\"])")
+                && body.contains("--bg:#0C141B"),
+            "dark tokens must apply under the system media query: {body}"
+        );
+        assert!(
+            body.contains(":root[data-theme=\"dark\"]")
+                && body.matches("--bg:#0C141B").count() >= 2,
+            "dark tokens must ALSO apply verbatim under an explicit [data-theme=dark]: {body}"
+        );
+    }
+
+    /// Spec 94 criterion 1: "no reference to a URL outside its own origin" - the served
+    /// page loads its fonts from `/console/fonts/...` (this same origin), never from a
+    /// network font host, and carries no other `http(s)://` reference anywhere.
+    #[test]
+    fn console_route_never_references_an_external_url() {
+        let r = route(
+            "GET",
+            "/console",
+            &[],
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        let body = String::from_utf8(r.body).unwrap();
+        assert!(
+            !body.contains("http://") && !body.contains("https://"),
+            "the console shell must reference no URL outside its own origin: {body}"
+        );
+        assert!(
+            body.contains("/console/fonts/sora/Sora-400.woff2"),
+            "fonts must be referenced from this page's own origin: {body}"
+        );
+    }
+
+    /// Spec 94 criterion 1, THE ASSETS: every embedded font and its family's OFL license
+    /// text is served at `/console/fonts/<family>/<asset>`, byte-identical to the
+    /// embedded artifact, with the correct content type - the woff2 files starting with
+    /// the format's own magic, the license text naming the license it is.
+    #[test]
+    fn console_fonts_route_serves_each_embedded_font_and_its_license_text() {
+        let woff2_routes = [
+            "/console/fonts/sora/Sora-400.woff2",
+            "/console/fonts/sora/Sora-500.woff2",
+            "/console/fonts/sora/Sora-600.woff2",
+            "/console/fonts/source-sans-3/SourceSans3-400.woff2",
+            "/console/fonts/source-sans-3/SourceSans3-600.woff2",
+            "/console/fonts/source-sans-3/SourceSans3-400italic.woff2",
+            "/console/fonts/jetbrains-mono/JetBrainsMono-400.woff2",
+            "/console/fonts/jetbrains-mono/JetBrainsMono-500.woff2",
+        ];
+        for target in woff2_routes {
+            let r = route(
+                "GET",
+                target,
+                &[],
+                &Graph::default(),
+                &[],
+                &HashMap::new(),
+                3,
+                "rigger-run",
+                "origin/main",
+                &[],
+            );
+            assert_eq!(r.status, 200, "{target} must serve 200");
+            assert_eq!(r.content_type, "font/woff2", "{target} content type");
+            assert!(
+                r.body.starts_with(b"wOF2"),
+                "{target} must be a real woff2 asset (wOF2 magic): {:x?}",
+                &r.body[..r.body.len().min(8)]
+            );
+        }
+
+        let license_routes = [
+            "/console/fonts/sora/OFL.txt",
+            "/console/fonts/source-sans-3/OFL.txt",
+            "/console/fonts/jetbrains-mono/OFL.txt",
+        ];
+        for target in license_routes {
+            let r = route(
+                "GET",
+                target,
+                &[],
+                &Graph::default(),
+                &[],
+                &HashMap::new(),
+                3,
+                "rigger-run",
+                "origin/main",
+                &[],
+            );
+            assert_eq!(r.status, 200, "{target} must serve 200");
+            let body = String::from_utf8(r.body).unwrap();
+            assert!(
+                body.contains("SIL OPEN FONT LICENSE"),
+                "{target} must carry the OFL license text: {body}"
+            );
+        }
+    }
+
+    /// An asset name the embedded set does not carry is a plain 404, like every other
+    /// unmatched path - no directory listing, no path traversal onto the real filesystem.
+    #[test]
+    fn console_fonts_route_404s_for_an_unknown_asset() {
+        let r = route(
+            "GET",
+            "/console/fonts/sora/../../../etc/passwd",
+            &[],
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(r.status, 404);
+    }
+
+    /// Spec 94 criterion 1 OWNS "the theme toggle's persistence in the browser's
+    /// storage": proven the same way this codebase already proves served-page JS
+    /// contracts (`page.contains("fetch(...")`, elsewhere in this file) - the page's own
+    /// script both READS the stored theme back on load and WRITES it on toggle, under
+    /// the same key, so a choice actually round-trips across a reload.
+    #[test]
+    fn console_page_wires_the_theme_toggles_persistence_round_trip() {
+        let r = route(
+            "GET",
+            "/console",
+            &[],
+            &Graph::default(),
+            &[],
+            &HashMap::new(),
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        let body = String::from_utf8(r.body).unwrap();
+        assert!(
+            body.contains("localStorage.getItem(THEME_KEY)"),
+            "must restore the persisted theme on load: {body}"
+        );
+        assert!(
+            body.contains("localStorage.setItem(THEME_KEY, next)"),
+            "must persist the theme on toggle: {body}"
+        );
+        assert!(
+            body.contains("themebtn"),
+            "the toggle button itself must be present: {body}"
         );
     }
 

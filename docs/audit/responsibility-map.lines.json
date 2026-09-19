@@ -8401,1430 +8401,1472 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "console_font_response",
+    "start_line": 158,
+    "end_line": 167
+  },
+  {
+    "file": "src/dash.rs",
     "name": "free_port_from",
-    "start_line": 96,
-    "end_line": 106
+    "start_line": 183,
+    "end_line": 193
   },
   {
     "file": "src/dash.rs",
     "name": "probe_dash_head",
-    "start_line": 162,
-    "end_line": 194
+    "start_line": 249,
+    "end_line": 281
   },
   {
     "file": "src/dash.rs",
     "name": "dash_serving_on",
-    "start_line": 208,
-    "end_line": 212
+    "start_line": 295,
+    "end_line": 299
   },
   {
     "file": "src/dash.rs",
     "name": "dash_serving_pid_on",
-    "start_line": 241,
-    "end_line": 251
+    "start_line": 328,
+    "end_line": 338
   },
   {
     "file": "src/dash.rs",
     "name": "header_line_value",
-    "start_line": 257,
-    "end_line": 287
+    "start_line": 344,
+    "end_line": 374
   },
   {
     "file": "src/dash.rs",
     "name": "head_has_header_line",
-    "start_line": 293,
-    "end_line": 316
+    "start_line": 380,
+    "end_line": 403
   },
   {
     "file": "src/dash.rs",
     "name": "head_block_ended",
-    "start_line": 321,
-    "end_line": 323
+    "start_line": 408,
+    "end_line": 410
   },
   {
     "file": "src/dash.rs",
     "name": "bind_singleton",
-    "start_line": 346,
-    "end_line": 358
+    "start_line": 433,
+    "end_line": 445
   },
   {
     "file": "src/dash.rs",
     "name": "displayable_pid",
-    "start_line": 418,
-    "end_line": 420
+    "start_line": 505,
+    "end_line": 507
   },
   {
     "file": "src/dash.rs",
     "name": "serialize",
-    "start_line": 424,
-    "end_line": 426
+    "start_line": 511,
+    "end_line": 513
   },
   {
     "file": "src/dash.rs",
     "name": "parse",
-    "start_line": 432,
-    "end_line": 437
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "read",
-    "start_line": 441,
-    "end_line": 443
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "write",
-    "start_line": 448,
-    "end_line": 450
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "pid_is_alive",
-    "start_line": 459,
-    "end_line": 461
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "tcp_listen_inode_for_port",
-    "start_line": 472,
-    "end_line": 491
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "pid_holding_port",
-    "start_line": 502,
+    "start_line": 519,
     "end_line": 524
   },
   {
     "file": "src/dash.rs",
+    "name": "read",
+    "start_line": 528,
+    "end_line": 530
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "write",
+    "start_line": 535,
+    "end_line": 537
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "pid_is_alive",
+    "start_line": 546,
+    "end_line": 548
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "tcp_listen_inode_for_port",
+    "start_line": 559,
+    "end_line": 578
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "pid_holding_port",
+    "start_line": 589,
+    "end_line": 611
+  },
+  {
+    "file": "src/dash.rs",
     "name": "process_state",
-    "start_line": 533,
-    "end_line": 541
+    "start_line": 620,
+    "end_line": 628
   },
   {
     "file": "src/dash.rs",
     "name": "format_held_port",
-    "start_line": 554,
-    "end_line": 569
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "describe_held_port",
-    "start_line": 585,
-    "end_line": 587
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "held_port_holder",
-    "start_line": 607,
-    "end_line": 610
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "describe_held_port_if_confirmed",
-    "start_line": 634,
-    "end_line": 636
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "url_port",
-    "start_line": 652,
+    "start_line": 641,
     "end_line": 656
   },
   {
     "file": "src/dash.rs",
+    "name": "describe_held_port",
+    "start_line": 672,
+    "end_line": 674
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "held_port_holder",
+    "start_line": 694,
+    "end_line": 697
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "describe_held_port_if_confirmed",
+    "start_line": 721,
+    "end_line": 723
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "url_port",
+    "start_line": 739,
+    "end_line": 743
+  },
+  {
+    "file": "src/dash.rs",
     "name": "pid_if_port_matches",
-    "start_line": 669,
-    "end_line": 671
+    "start_line": 756,
+    "end_line": 758
   },
   {
     "file": "src/dash.rs",
     "name": "dash_status",
-    "start_line": 729,
-    "end_line": 766
+    "start_line": 816,
+    "end_line": 853
   },
   {
     "file": "src/dash.rs",
     "name": "dash_start_needed",
-    "start_line": 778,
-    "end_line": 786
+    "start_line": 865,
+    "end_line": 873
   },
   {
     "file": "src/dash.rs",
     "name": "should_reap_singleton",
-    "start_line": 840,
-    "end_line": 851
+    "start_line": 927,
+    "end_line": 938
   },
   {
     "file": "src/dash.rs",
     "name": "instance_views",
-    "start_line": 889,
-    "end_line": 910
+    "start_line": 976,
+    "end_line": 997
   },
   {
     "file": "src/dash.rs",
     "name": "instances_json",
-    "start_line": 915,
-    "end_line": 917
+    "start_line": 1002,
+    "end_line": 1004
   },
   {
     "file": "src/dash.rs",
     "name": "build_state",
-    "start_line": 1230,
-    "end_line": 1343
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "build_graph_view",
-    "start_line": 1349,
-    "end_line": 1381
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "reproject",
-    "start_line": 1417,
+    "start_line": 1317,
     "end_line": 1430
   },
   {
     "file": "src/dash.rs",
+    "name": "build_graph_view",
+    "start_line": 1436,
+    "end_line": 1468
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "reproject",
+    "start_line": 1504,
+    "end_line": 1517
+  },
+  {
+    "file": "src/dash.rs",
     "name": "cap_clusters",
-    "start_line": 1438,
-    "end_line": 1457
+    "start_line": 1525,
+    "end_line": 1544
   },
   {
     "file": "src/dash.rs",
     "name": "reprojection_lens_key",
-    "start_line": 1475,
-    "end_line": 1486
+    "start_line": 1562,
+    "end_line": 1573
   },
   {
     "file": "src/dash.rs",
     "name": "reproject_derived",
-    "start_line": 1492,
-    "end_line": 1535
+    "start_line": 1579,
+    "end_line": 1622
   },
   {
     "file": "src/dash.rs",
     "name": "reproject_files",
-    "start_line": 1556,
-    "end_line": 1641
+    "start_line": 1643,
+    "end_line": 1728
   },
   {
     "file": "src/dash.rs",
     "name": "rationale_batch",
-    "start_line": 1648,
-    "end_line": 1662
+    "start_line": 1735,
+    "end_line": 1749
   },
   {
     "file": "src/dash.rs",
     "name": "graph_json",
-    "start_line": 1678,
-    "end_line": 1710
+    "start_line": 1765,
+    "end_line": 1797
   },
   {
     "file": "src/dash.rs",
     "name": "parse_call_dir",
-    "start_line": 1734,
-    "end_line": 1740
+    "start_line": 1821,
+    "end_line": 1827
   },
   {
     "file": "src/dash.rs",
     "name": "call_node_view",
-    "start_line": 1748,
-    "end_line": 1760
+    "start_line": 1835,
+    "end_line": 1847
   },
   {
     "file": "src/dash.rs",
     "name": "call_edge_view",
-    "start_line": 1764,
-    "end_line": 1772
+    "start_line": 1851,
+    "end_line": 1859
   },
   {
     "file": "src/dash.rs",
     "name": "ref_node_view",
-    "start_line": 1777,
-    "end_line": 1789
+    "start_line": 1864,
+    "end_line": 1876
   },
   {
     "file": "src/dash.rs",
     "name": "calls_view",
-    "start_line": 1804,
-    "end_line": 1890
+    "start_line": 1891,
+    "end_line": 1977
   },
   {
     "file": "src/dash.rs",
     "name": "calls_route",
-    "start_line": 1905,
-    "end_line": 1942
+    "start_line": 1992,
+    "end_line": 2029
   },
   {
     "file": "src/dash.rs",
     "name": "build_run_tree",
-    "start_line": 1964,
-    "end_line": 2075
+    "start_line": 2051,
+    "end_line": 2162
   },
   {
     "file": "src/dash.rs",
     "name": "unit_node",
-    "start_line": 2080,
-    "end_line": 2161
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "role_stage",
-    "start_line": 2165,
-    "end_line": 2224
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "driver_stage",
-    "start_line": 2229,
+    "start_line": 2167,
     "end_line": 2248
   },
   {
     "file": "src/dash.rs",
-    "name": "rollup",
+    "name": "role_stage",
     "start_line": 2252,
-    "end_line": 2260
+    "end_line": 2311
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "driver_stage",
+    "start_line": 2316,
+    "end_line": 2335
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "rollup",
+    "start_line": 2339,
+    "end_line": 2347
   },
   {
     "file": "src/dash.rs",
     "name": "stage_of_role",
-    "start_line": 2272,
-    "end_line": 2283
+    "start_line": 2359,
+    "end_line": 2370
   },
   {
     "file": "src/dash.rs",
     "name": "role_and_agent",
-    "start_line": 2291,
-    "end_line": 2312
+    "start_line": 2378,
+    "end_line": 2399
   },
   {
     "file": "src/dash.rs",
     "name": "gates_status",
-    "start_line": 2333,
-    "end_line": 2340
+    "start_line": 2420,
+    "end_line": 2427
   },
   {
     "file": "src/dash.rs",
     "name": "advanced_past_gates",
-    "start_line": 2351,
-    "end_line": 2354
+    "start_line": 2438,
+    "end_line": 2441
   },
   {
     "file": "src/dash.rs",
     "name": "unit_live_status",
-    "start_line": 2359,
-    "end_line": 2368
+    "start_line": 2446,
+    "end_line": 2455
   },
   {
     "file": "src/dash.rs",
     "name": "spec_of",
-    "start_line": 2373,
-    "end_line": 2381
+    "start_line": 2460,
+    "end_line": 2468
   },
   {
     "file": "src/dash.rs",
     "name": "graph_seeds",
-    "start_line": 2393,
-    "end_line": 2401
+    "start_line": 2480,
+    "end_line": 2488
   },
   {
     "file": "src/dash.rs",
     "name": "event_seed_ids",
-    "start_line": 2408,
-    "end_line": 2431
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "unit_seeds",
-    "start_line": 2443,
-    "end_line": 2466
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "repoint_seed",
-    "start_line": 2481,
-    "end_line": 2494
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "event_view",
-    "start_line": 2498,
-    "end_line": 2509
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "field_str",
-    "start_line": 2512,
+    "start_line": 2495,
     "end_line": 2518
   },
   {
     "file": "src/dash.rs",
+    "name": "unit_seeds",
+    "start_line": 2530,
+    "end_line": 2553
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "repoint_seed",
+    "start_line": 2568,
+    "end_line": 2581
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "event_view",
+    "start_line": 2585,
+    "end_line": 2596
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "field_str",
+    "start_line": 2599,
+    "end_line": 2605
+  },
+  {
+    "file": "src/dash.rs",
     "name": "field_str_array",
-    "start_line": 2522,
-    "end_line": 2533
+    "start_line": 2609,
+    "end_line": 2620
   },
   {
     "file": "src/dash.rs",
     "name": "now_unix",
-    "start_line": 2535,
-    "end_line": 2540
+    "start_line": 2622,
+    "end_line": 2627
   },
   {
     "file": "src/dash.rs",
     "name": "state_json",
-    "start_line": 2549,
-    "end_line": 2568
+    "start_line": 2636,
+    "end_line": 2655
   },
   {
     "file": "src/dash.rs",
     "name": "events_json",
-    "start_line": 2574,
-    "end_line": 2582
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "live_page",
-    "start_line": 2586,
-    "end_line": 2588
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "render_export",
-    "start_line": 2595,
-    "end_line": 2615
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "escape_for_script",
-    "start_line": 2628,
-    "end_line": 2641
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "html",
-    "start_line": 2656,
-    "end_line": 2662
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "json",
-    "start_line": 2663,
+    "start_line": 2661,
     "end_line": 2669
   },
   {
     "file": "src/dash.rs",
+    "name": "live_page",
+    "start_line": 2673,
+    "end_line": 2675
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_page",
+    "start_line": 2681,
+    "end_line": 2683
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "render_export",
+    "start_line": 2690,
+    "end_line": 2710
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "escape_for_script",
+    "start_line": 2723,
+    "end_line": 2736
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "html",
+    "start_line": 2751,
+    "end_line": 2757
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "json",
+    "start_line": 2758,
+    "end_line": 2764
+  },
+  {
+    "file": "src/dash.rs",
     "name": "text",
-    "start_line": 2670,
-    "end_line": 2676
+    "start_line": 2765,
+    "end_line": 2771
   },
   {
     "file": "src/dash.rs",
     "name": "binary",
-    "start_line": 2682,
-    "end_line": 2688
+    "start_line": 2777,
+    "end_line": 2783
   },
   {
     "file": "src/dash.rs",
     "name": "reason",
-    "start_line": 2690,
-    "end_line": 2699
+    "start_line": 2785,
+    "end_line": 2794
   },
   {
     "file": "src/dash.rs",
     "name": "write_to",
-    "start_line": 2709,
-    "end_line": 2725
+    "start_line": 2804,
+    "end_line": 2820
   },
   {
     "file": "src/dash.rs",
     "name": "route",
-    "start_line": 2734,
-    "end_line": 2896
+    "start_line": 2829,
+    "end_line": 3001
   },
   {
     "file": "src/dash.rs",
     "name": "percent_decode",
-    "start_line": 2905,
-    "end_line": 2923
+    "start_line": 3010,
+    "end_line": 3028
   },
   {
     "file": "src/dash.rs",
     "name": "query_param",
-    "start_line": 2926,
-    "end_line": 2932
+    "start_line": 3031,
+    "end_line": 3037
   },
   {
     "file": "src/dash.rs",
     "name": "parse_request_line",
-    "start_line": 2936,
-    "end_line": 2941
+    "start_line": 3041,
+    "end_line": 3046
   },
   {
     "file": "src/dash.rs",
     "name": "serve",
-    "start_line": 2966,
-    "end_line": 2993
+    "start_line": 3071,
+    "end_line": 3098
   },
   {
     "file": "src/dash.rs",
     "name": "serve_on",
-    "start_line": 3010,
-    "end_line": 3048
+    "start_line": 3115,
+    "end_line": 3153
   },
   {
     "file": "src/dash.rs",
     "name": "handle_conn",
-    "start_line": 3064,
-    "end_line": 3183
+    "start_line": 3169,
+    "end_line": 3288
   },
   {
     "file": "src/dash.rs",
     "name": "new",
-    "start_line": 3218,
-    "end_line": 3220
+    "start_line": 3323,
+    "end_line": 3325
   },
   {
     "file": "src/dash.rs",
     "name": "id",
-    "start_line": 3224,
-    "end_line": 3226
+    "start_line": 3329,
+    "end_line": 3331
   },
   {
     "file": "src/dash.rs",
     "name": "drop",
-    "start_line": 3230,
-    "end_line": 3241
+    "start_line": 3335,
+    "end_line": 3346
   },
   {
     "file": "src/dash.rs",
     "name": "spawn_blocking_child",
-    "start_line": 3260,
-    "end_line": 3269
+    "start_line": 3365,
+    "end_line": 3374
   },
   {
     "file": "src/dash.rs",
     "name": "watch_for_exit",
-    "start_line": 3274,
-    "end_line": 3283
+    "start_line": 3379,
+    "end_line": 3388
   },
   {
     "file": "src/dash.rs",
     "name": "reaped_child_reaps_even_when_the_driver_panics",
-    "start_line": 3286,
-    "end_line": 3302
+    "start_line": 3391,
+    "end_line": 3407
   },
   {
     "file": "src/dash.rs",
     "name": "dropping_the_peers_sidecar_reaps_its_collector_thread",
-    "start_line": 3305,
-    "end_line": 3329
+    "start_line": 3410,
+    "end_line": 3434
   },
   {
     "file": "src/dash.rs",
     "name": "ev",
-    "start_line": 3357,
-    "end_line": 3359
+    "start_line": 3462,
+    "end_line": 3464
   },
   {
     "file": "src/dash.rs",
     "name": "positioned",
-    "start_line": 3363,
-    "end_line": 3368
+    "start_line": 3468,
+    "end_line": 3473
   },
   {
     "file": "src/dash.rs",
     "name": "seeded_run",
-    "start_line": 3370,
-    "end_line": 3382
+    "start_line": 3475,
+    "end_line": 3487
   },
   {
     "file": "src/dash.rs",
     "name": "local_instance",
-    "start_line": 3384,
-    "end_line": 3393
+    "start_line": 3489,
+    "end_line": 3498
   },
   {
     "file": "src/dash.rs",
     "name": "instance_views_project_a_sorted_credential_free_landing",
-    "start_line": 3401,
-    "end_line": 3451
+    "start_line": 3506,
+    "end_line": 3556
   },
   {
     "file": "src/dash.rs",
     "name": "instance_view_age_floors_at_zero_for_a_future_heartbeat",
-    "start_line": 3458,
-    "end_line": 3466
+    "start_line": 3563,
+    "end_line": 3571
   },
   {
     "file": "src/dash.rs",
     "name": "api_instances_route_renders_the_landing_list",
-    "start_line": 3473,
-    "end_line": 3505
+    "start_line": 3578,
+    "end_line": 3610
   },
   {
     "file": "src/dash.rs",
     "name": "console_core_wasm_route_serves_the_embedded_artifact_as_application_wasm",
-    "start_line": 3512,
-    "end_line": 3528
+    "start_line": 3617,
+    "end_line": 3633
   },
   {
     "file": "src/dash.rs",
     "name": "console_core_wasm_artifact_is_under_the_three_megabyte_budget",
-    "start_line": 3533,
-    "end_line": 3545
+    "start_line": 3638,
+    "end_line": 3650
   },
   {
     "file": "src/dash.rs",
     "name": "embedded_artifact_matches_a_fresh_independent_nested_build",
-    "start_line": 3557,
-    "end_line": 3585
+    "start_line": 3662,
+    "end_line": 3690
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_route_serves_the_shell_page_with_mock_regions_and_both_theme_token_blocks",
+    "start_line": 3702,
+    "end_line": 3763
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_route_never_references_an_external_url",
+    "start_line": 3769,
+    "end_line": 3791
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_fonts_route_serves_each_embedded_font_and_its_license_text",
+    "start_line": 3798,
+    "end_line": 3856
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_fonts_route_404s_for_an_unknown_asset",
+    "start_line": 3861,
+    "end_line": 3875
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_page_wires_the_theme_toggles_persistence_round_trip",
+    "start_line": 3883,
+    "end_line": 3909
   },
   {
     "file": "src/dash.rs",
     "name": "root_serves_the_embedded_page_with_the_placeholder_resolved",
-    "start_line": 3588,
-    "end_line": 3613
+    "start_line": 3912,
+    "end_line": 3937
   },
   {
     "file": "src/dash.rs",
     "name": "gates_status_never_fabricates_passed_for_an_off_linear_unverdicted_unit",
-    "start_line": 3624,
-    "end_line": 3674
+    "start_line": 3948,
+    "end_line": 3998
   },
   {
     "file": "src/dash.rs",
     "name": "free_port_from_returns_the_start_port_when_free_and_the_next_free_one_when_it_is_taken",
-    "start_line": 3681,
-    "end_line": 3717
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "bind_singleton_binds_the_exact_port_and_never_searches",
-    "start_line": 3724,
-    "end_line": 3773
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "bind_singleton_short_circuits_on_an_already_serving_rigger_dash",
-    "start_line": 3784,
-    "end_line": 3857
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dash_serving_on_is_false_for_a_non_dash_listener",
-    "start_line": 3864,
-    "end_line": 3880
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dash_serving_on_is_bounded_against_a_byte_dribbling_holder",
-    "start_line": 3891,
-    "end_line": 3936
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dash_serving_on_recognizes_the_header_fast_even_if_the_holder_never_finishes_the_block",
-    "start_line": 3959,
-    "end_line": 4010
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dash_serving_pid_on_reports_the_pid_a_real_dash_response_names",
-    "start_line": 4021,
+    "start_line": 4005,
     "end_line": 4041
   },
   {
     "file": "src/dash.rs",
+    "name": "bind_singleton_binds_the_exact_port_and_never_searches",
+    "start_line": 4048,
+    "end_line": 4097
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "bind_singleton_short_circuits_on_an_already_serving_rigger_dash",
+    "start_line": 4108,
+    "end_line": 4181
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "dash_serving_on_is_false_for_a_non_dash_listener",
+    "start_line": 4188,
+    "end_line": 4204
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "dash_serving_on_is_bounded_against_a_byte_dribbling_holder",
+    "start_line": 4215,
+    "end_line": 4260
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "dash_serving_on_recognizes_the_header_fast_even_if_the_holder_never_finishes_the_block",
+    "start_line": 4283,
+    "end_line": 4334
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "dash_serving_pid_on_reports_the_pid_a_real_dash_response_names",
+    "start_line": 4345,
+    "end_line": 4365
+  },
+  {
+    "file": "src/dash.rs",
     "name": "dash_serving_pid_on_assembles_a_head_that_spans_many_read_calls",
-    "start_line": 4063,
-    "end_line": 4086
+    "start_line": 4387,
+    "end_line": 4410
   },
   {
     "file": "src/dash.rs",
     "name": "dash_serving_pid_on_is_none_for_a_non_dash_listener",
-    "start_line": 4093,
-    "end_line": 4108
+    "start_line": 4417,
+    "end_line": 4432
   },
   {
     "file": "src/dash.rs",
     "name": "dash_serving_pid_on_is_none_when_nothing_answers",
-    "start_line": 4113,
-    "end_line": 4116
+    "start_line": 4437,
+    "end_line": 4440
   },
   {
     "file": "src/dash.rs",
     "name": "dash_serving_pid_on_is_none_when_the_pid_header_value_is_not_a_number",
-    "start_line": 4136,
-    "end_line": 4156
+    "start_line": 4460,
+    "end_line": 4480
   },
   {
     "file": "src/dash.rs",
     "name": "bind_singleton_cold_race_loser_resolves_across_the_accept_window",
-    "start_line": 4164,
-    "end_line": 4193
+    "start_line": 4488,
+    "end_line": 4517
   },
   {
     "file": "src/dash.rs",
     "name": "the_page_layout_cannot_scroll_the_body_horizontally",
-    "start_line": 4204,
-    "end_line": 4239
+    "start_line": 4528,
+    "end_line": 4563
   },
   {
     "file": "src/dash.rs",
     "name": "the_landing_view_lists_instances_and_threads_the_attach_selector",
-    "start_line": 4250,
-    "end_line": 4287
+    "start_line": 4574,
+    "end_line": 4611
   },
   {
     "file": "src/dash.rs",
     "name": "css_rule",
-    "start_line": 4292,
-    "end_line": 4301
+    "start_line": 4616,
+    "end_line": 4625
   },
   {
     "file": "src/dash.rs",
     "name": "the_dashboard_fits_one_screen_with_internal_scroll",
-    "start_line": 4312,
-    "end_line": 4357
+    "start_line": 4636,
+    "end_line": 4681
   },
   {
     "file": "src/dash.rs",
     "name": "cells_fit_or_wrap_and_wide_cells_scroll_in_their_own_container",
-    "start_line": 4371,
-    "end_line": 4405
+    "start_line": 4695,
+    "end_line": 4729
   },
   {
     "file": "src/dash.rs",
     "name": "the_decision_history_renders_each_decision_as_a_native_details_with_preview_and_full_body",
-    "start_line": 4420,
-    "end_line": 4484
+    "start_line": 4744,
+    "end_line": 4808
   },
   {
     "file": "src/dash.rs",
     "name": "state_endpoint_projects_the_seeded_run",
-    "start_line": 4487,
-    "end_line": 4515
+    "start_line": 4811,
+    "end_line": 4839
   },
   {
     "file": "src/dash.rs",
     "name": "state_carries_the_live_agent_activity",
-    "start_line": 4518,
-    "end_line": 4580
+    "start_line": 4842,
+    "end_line": 4904
   },
   {
     "file": "src/dash.rs",
     "name": "state_counts_grep_fallbacks_and_carries_them_in_the_review_outcomes_data",
-    "start_line": 4583,
-    "end_line": 4650
+    "start_line": 4907,
+    "end_line": 4974
   },
   {
     "file": "src/dash.rs",
     "name": "done",
-    "start_line": 4665,
-    "end_line": 4670
+    "start_line": 4989,
+    "end_line": 4994
   },
   {
     "file": "src/dash.rs",
     "name": "run_tree_projects_the_spine_with_collapse_expand_and_driver_lines",
-    "start_line": 4659,
-    "end_line": 4841
+    "start_line": 4983,
+    "end_line": 5165
   },
   {
     "file": "src/dash.rs",
     "name": "review_verdicts_come_straight_from_the_metrics_classification",
-    "start_line": 4846,
-    "end_line": 4875
+    "start_line": 5170,
+    "end_line": 5199
   },
   {
     "file": "src/dash.rs",
     "name": "events_endpoint_is_since_exclusive",
-    "start_line": 4878,
-    "end_line": 4888
+    "start_line": 5202,
+    "end_line": 5212
   },
   {
     "file": "src/dash.rs",
     "name": "no_mutating_endpoint_exists",
-    "start_line": 4894,
-    "end_line": 4923
+    "start_line": 5218,
+    "end_line": 5247
   },
   {
     "file": "src/dash.rs",
     "name": "unknown_get_path_is_404",
-    "start_line": 4926,
-    "end_line": 4940
+    "start_line": 5250,
+    "end_line": 5264
   },
   {
     "file": "src/dash.rs",
     "name": "export_inlines_the_snapshot_as_a_static_page",
-    "start_line": 4943,
-    "end_line": 4972
+    "start_line": 5267,
+    "end_line": 5296
   },
   {
     "file": "src/dash.rs",
     "name": "export_neutralizes_a_script_breakout_in_the_inlined_state",
-    "start_line": 4980,
-    "end_line": 5027
+    "start_line": 5304,
+    "end_line": 5351
   },
   {
     "file": "src/dash.rs",
     "name": "decision_view_strikes_through_superseded_entries",
-    "start_line": 5030,
-    "end_line": 5056
+    "start_line": 5354,
+    "end_line": 5380
   },
   {
     "file": "src/dash.rs",
     "name": "cluster_key_folds_paths_by_directory_and_dev_loop_nodes_by_kind",
-    "start_line": 5065,
-    "end_line": 5128
+    "start_line": 5389,
+    "end_line": 5452
   },
   {
     "file": "src/dash.rs",
     "name": "clustered_overview_under_files_lens_admits_only_code_entities_keyed_by_their_own_file",
-    "start_line": 5140,
-    "end_line": 5233
+    "start_line": 5464,
+    "end_line": 5557
   },
   {
     "file": "src/dash.rs",
     "name": "cluster_detail_drills_a_cluster_to_its_members_and_caps_a_big_one_by_degree",
-    "start_line": 5252,
-    "end_line": 5495
+    "start_line": 5576,
+    "end_line": 5819
   },
   {
     "file": "src/dash.rs",
     "name": "cluster_detail_under_files_lens_is_unconditionally_empty",
-    "start_line": 5504,
-    "end_line": 5549
+    "start_line": 5828,
+    "end_line": 5873
   },
   {
     "file": "src/dash.rs",
     "name": "code_lens_buckets_code_entities_by_community_excludes_other_kinds_and_reports_underived_grain",
-    "start_line": 5566,
-    "end_line": 5763
+    "start_line": 5890,
+    "end_line": 6087
   },
   {
     "file": "src/dash.rs",
     "name": "concepts_lens_buckets_members_by_concept_excludes_membershipless_nodes_and_reports_underived_grain",
-    "start_line": 5777,
-    "end_line": 6016
+    "start_line": 6101,
+    "end_line": 6340
   },
   {
     "file": "src/dash.rs",
     "name": "tiered_chain_graph",
-    "start_line": 6022,
-    "end_line": 6056
+    "start_line": 6346,
+    "end_line": 6380
   },
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_returns_a_tier_tagged_seeded_neighborhood_as_json",
-    "start_line": 6059,
-    "end_line": 6123
+    "start_line": 6383,
+    "end_line": 6447
   },
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_percent_decodes_the_seed_so_select_to_seed_reaches_ids_with_special_chars",
-    "start_line": 6126,
-    "end_line": 6177
+    "start_line": 6450,
+    "end_line": 6501
   },
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_degrades_gracefully_for_an_unknown_seed_and_an_empty_graph",
-    "start_line": 6180,
-    "end_line": 6211
+    "start_line": 6504,
+    "end_line": 6535
   },
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_is_read_only_a_non_get_is_405",
-    "start_line": 6214,
-    "end_line": 6234
+    "start_line": 6538,
+    "end_line": 6558
   },
   {
     "file": "src/dash.rs",
     "name": "dispatch_graph",
-    "start_line": 6240,
-    "end_line": 6274
+    "start_line": 6564,
+    "end_line": 6598
   },
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_dispatches_cluster_overview_and_seed_by_parameter",
-    "start_line": 6283,
-    "end_line": 6381
+    "start_line": 6607,
+    "end_line": 6705
   },
   {
     "file": "src/dash.rs",
     "name": "the_overview_route_degrades_gracefully_on_an_empty_graph",
-    "start_line": 6395,
-    "end_line": 6449
+    "start_line": 6719,
+    "end_line": 6773
   },
   {
     "file": "src/dash.rs",
     "name": "neighborhood_bounds_by_depth_follows_both_directions_and_skips_invalidated_edges",
-    "start_line": 6452,
-    "end_line": 6506
+    "start_line": 6776,
+    "end_line": 6830
   },
   {
     "file": "src/dash.rs",
     "name": "star_graph",
-    "start_line": 6512,
-    "end_line": 6537
+    "start_line": 6836,
+    "end_line": 6861
   },
   {
     "file": "src/dash.rs",
     "name": "neighborhood_flags_god_nodes_by_degree_within_the_returned_neighborhood",
-    "start_line": 6540,
-    "end_line": 6573
+    "start_line": 6864,
+    "end_line": 6897
   },
   {
     "file": "src/dash.rs",
     "name": "path_is_the_shortest_route_between_two_selected_nodes_over_currently_valid_edges",
-    "start_line": 6576,
-    "end_line": 6648
+    "start_line": 6900,
+    "end_line": 6972
   },
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_flags_god_nodes_and_returns_the_query_path_between_two_selected_nodes",
-    "start_line": 6651,
-    "end_line": 6718
+    "start_line": 6975,
+    "end_line": 7042
   },
   {
     "file": "src/dash.rs",
     "name": "chain_graph_local",
-    "start_line": 6721,
-    "end_line": 6741
+    "start_line": 7045,
+    "end_line": 7065
   },
   {
     "file": "src/dash.rs",
     "name": "provenance_graph",
-    "start_line": 6748,
-    "end_line": 6785
+    "start_line": 7072,
+    "end_line": 7109
   },
   {
     "file": "src/dash.rs",
     "name": "explain_returns_a_nodes_incident_edges_as_source_and_tier_tagged_provenance",
-    "start_line": 6788,
-    "end_line": 6835
+    "start_line": 7112,
+    "end_line": 7159
   },
   {
     "file": "src/dash.rs",
     "name": "the_graph_route_carries_the_seed_nodes_explain_provenance",
-    "start_line": 6838,
-    "end_line": 6903
+    "start_line": 7162,
+    "end_line": 7227
   },
   {
     "file": "src/dash.rs",
     "name": "graph_seeds_enumerate_decisions_findings_and_their_files_never_units",
-    "start_line": 6906,
-    "end_line": 6937
+    "start_line": 7230,
+    "end_line": 7261
   },
   {
     "file": "src/dash.rs",
     "name": "a_units_seed_lands_on_the_neighborhood_of_its_decisions_and_files",
-    "start_line": 6940,
-    "end_line": 6984
+    "start_line": 7264,
+    "end_line": 7308
   },
   {
     "file": "src/dash.rs",
     "name": "the_run_tree_click_to_seed_route_lands_a_unit_on_a_real_neighborhood",
-    "start_line": 6987,
-    "end_line": 7093
+    "start_line": 7311,
+    "end_line": 7417
   },
   {
     "file": "src/dash.rs",
     "name": "unit_seeds_scope_content_to_the_owning_unit",
-    "start_line": 7096,
-    "end_line": 7149
+    "start_line": 7420,
+    "end_line": 7473
   },
   {
     "file": "src/dash.rs",
     "name": "repoint_seed_passes_a_known_node_and_re_points_a_unit_id",
-    "start_line": 7152,
-    "end_line": 7188
+    "start_line": 7476,
+    "end_line": 7512
   },
   {
     "file": "src/dash.rs",
     "name": "build_state_on_an_empty_run_is_empty_not_a_panic",
-    "start_line": 7191,
-    "end_line": 7210
+    "start_line": 7515,
+    "end_line": 7534
   },
   {
     "file": "src/dash.rs",
     "name": "release_ready_is_surfaced_on_the_dash_only_for_a_done_run",
-    "start_line": 7221,
-    "end_line": 7310
+    "start_line": 7545,
+    "end_line": 7634
   },
   {
     "file": "src/dash.rs",
     "name": "release_ready_pr_command_newline_renders_as_a_real_line_break_not_a_collapsed_run_on",
-    "start_line": 7328,
-    "end_line": 7383
+    "start_line": 7652,
+    "end_line": 7707
   },
   {
     "file": "src/dash.rs",
     "name": "request_line_parsing_extracts_method_and_target",
-    "start_line": 7386,
-    "end_line": 7393
+    "start_line": 7710,
+    "end_line": 7717
   },
   {
     "file": "src/dash.rs",
     "name": "query_param_reads_since",
-    "start_line": 7396,
-    "end_line": 7403
+    "start_line": 7720,
+    "end_line": 7727
   },
   {
     "file": "src/dash.rs",
     "name": "endpoints_serve_over_a_real_socket_against_a_seeded_store",
-    "start_line": 7411,
-    "end_line": 7488
+    "start_line": 7735,
+    "end_line": 7812
   },
   {
     "file": "src/dash.rs",
     "name": "a_post_over_a_real_socket_is_refused_without_touching_the_store",
-    "start_line": 7494,
-    "end_line": 7544
+    "start_line": 7818,
+    "end_line": 7868
   },
   {
     "file": "src/dash.rs",
     "name": "the_graph_provider_is_consulted_only_on_graph_requests_not_the_state_poll",
-    "start_line": 7555,
-    "end_line": 7667
+    "start_line": 7879,
+    "end_line": 7991
   },
   {
     "file": "src/dash.rs",
     "name": "dash_marker_round_trips_through_its_on_disk_record",
-    "start_line": 7672,
-    "end_line": 7682
+    "start_line": 7996,
+    "end_line": 8006
   },
   {
     "file": "src/dash.rs",
     "name": "dash_marker_parse_rejects_a_malformed_record",
-    "start_line": 7685,
-    "end_line": 7704
+    "start_line": 8009,
+    "end_line": 8028
   },
   {
     "file": "src/dash.rs",
     "name": "dash_marker_reads_none_for_an_absent_file",
-    "start_line": 7707,
-    "end_line": 7725
+    "start_line": 8031,
+    "end_line": 8049
   },
   {
     "file": "src/dash.rs",
     "name": "pid_is_alive_reports_self_and_rejects_an_impossible_pid",
-    "start_line": 7728,
-    "end_line": 7741
+    "start_line": 8052,
+    "end_line": 8065
   },
   {
     "file": "src/dash.rs",
     "name": "format_held_port_always_names_the_address_even_with_no_holder",
-    "start_line": 7746,
-    "end_line": 7758
+    "start_line": 8070,
+    "end_line": 8082
   },
   {
     "file": "src/dash.rs",
     "name": "format_held_port_names_the_pid_and_state_for_a_running_holder",
-    "start_line": 7761,
-    "end_line": 7778
+    "start_line": 8085,
+    "end_line": 8102
   },
   {
     "file": "src/dash.rs",
     "name": "format_held_port_names_the_pid_alone_when_its_state_is_not_discoverable",
-    "start_line": 7781,
-    "end_line": 7789
+    "start_line": 8105,
+    "end_line": 8113
   },
   {
     "file": "src/dash.rs",
     "name": "format_held_port_gives_the_stopped_listener_diagnosis_naming_resume_or_kill",
-    "start_line": 7792,
-    "end_line": 7807
+    "start_line": 8116,
+    "end_line": 8131
   },
   {
     "file": "src/dash.rs",
     "name": "pid_holding_port_finds_the_pid_of_a_listener_bound_in_this_process",
-    "start_line": 7810,
-    "end_line": 7822
+    "start_line": 8134,
+    "end_line": 8146
   },
   {
     "file": "src/dash.rs",
     "name": "pid_holding_port_is_none_for_a_port_nothing_is_listening_on",
-    "start_line": 7825,
-    "end_line": 7841
+    "start_line": 8149,
+    "end_line": 8165
   },
   {
     "file": "src/dash.rs",
     "name": "describe_held_port_names_this_process_when_it_holds_the_port_itself",
-    "start_line": 7844,
-    "end_line": 7862
+    "start_line": 8168,
+    "end_line": 8186
   },
   {
     "file": "src/dash.rs",
     "name": "describe_held_port_if_confirmed_names_the_holder_when_independently_confirmed",
-    "start_line": 7877,
-    "end_line": 7893
+    "start_line": 8201,
+    "end_line": 8217
   },
   {
     "file": "src/dash.rs",
     "name": "describe_held_port_if_confirmed_is_none_when_nothing_holds_the_port",
-    "start_line": 7900,
-    "end_line": 7916
+    "start_line": 8224,
+    "end_line": 8240
   },
   {
     "file": "src/dash.rs",
     "name": "dash_start_needed_is_true_when_none_serving_and_false_when_one_serves",
-    "start_line": 7919,
-    "end_line": 7936
+    "start_line": 8243,
+    "end_line": 8260
   },
   {
     "file": "src/dash.rs",
     "name": "dash_status_trusts_a_url_with_no_marker_and_catches_a_marker_that_lies",
-    "start_line": 7939,
-    "end_line": 7987
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dash_status_never_names_the_unattributed_pid_sentinel_as_a_dead_process",
-    "start_line": 7999,
-    "end_line": 8015
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "url_port_parses_the_recorded_shape_and_rejects_anything_else",
-    "start_line": 8018,
-    "end_line": 8039
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "dash_status_probes_the_urls_own_port_when_the_marker_names_a_different_dash",
-    "start_line": 8055,
-    "end_line": 8095
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "should_reap_singleton_reaps_only_when_no_registered_instance_is_live",
-    "start_line": 8098,
-    "end_line": 8136
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "should_reap_singleton_never_reaps_while_a_fresh_agent_liveness_signal_is_present",
-    "start_line": 8139,
-    "end_line": 8172
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "the_page_carries_the_directed_call_layered_render",
-    "start_line": 8184,
-    "end_line": 8255
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "cnode",
-    "start_line": 8273,
-    "end_line": 8283
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "cedge",
-    "start_line": 8286,
-    "end_line": 8299
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "file_node",
-    "start_line": 8301,
-    "end_line": 8307
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "layer_of",
-    "start_line": 8309,
+    "start_line": 8263,
     "end_line": 8311
   },
   {
     "file": "src/dash.rs",
-    "name": "ids",
-    "start_line": 8312,
-    "end_line": 8314
+    "name": "dash_status_never_names_the_unattributed_pid_sentinel_as_a_dead_process",
+    "start_line": 8323,
+    "end_line": 8339
   },
   {
     "file": "src/dash.rs",
-    "name": "apply_def",
-    "start_line": 8318,
-    "end_line": 8329
+    "name": "url_port_parses_the_recorded_shape_and_rejects_anything_else",
+    "start_line": 8342,
+    "end_line": 8363
   },
   {
     "file": "src/dash.rs",
-    "name": "apply_call",
-    "start_line": 8330,
-    "end_line": 8337
+    "name": "dash_status_probes_the_urls_own_port_when_the_marker_names_a_different_dash",
+    "start_line": 8379,
+    "end_line": 8419
   },
   {
     "file": "src/dash.rs",
-    "name": "calls_view_down_signs_callees_positive_and_carries_frontier_and_back",
-    "start_line": 8343,
-    "end_line": 8398
+    "name": "should_reap_singleton_reaps_only_when_no_registered_instance_is_live",
+    "start_line": 8422,
+    "end_line": 8460
   },
   {
     "file": "src/dash.rs",
-    "name": "calls_view_up_negates_callers_and_carries_the_referenced_sidecar",
-    "start_line": 8403,
-    "end_line": 8442
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "calls_view_both_centers_the_seed_with_callees_right_and_callers_left",
-    "start_line": 8448,
+    "name": "should_reap_singleton_never_reaps_while_a_fresh_agent_liveness_signal_is_present",
+    "start_line": 8463,
     "end_line": 8496
   },
   {
     "file": "src/dash.rs",
-    "name": "a_plain_neighborhood_omits_every_additive_call_field",
-    "start_line": 8502,
-    "end_line": 8539
+    "name": "the_page_carries_the_directed_call_layered_render",
+    "start_line": 8508,
+    "end_line": 8579
   },
   {
     "file": "src/dash.rs",
-    "name": "calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise",
-    "start_line": 8546,
-    "end_line": 8600
+    "name": "cnode",
+    "start_line": 8597,
+    "end_line": 8607
   },
   {
     "file": "src/dash.rs",
-    "name": "calls_route_clamps_depth_and_defaults_the_tier_floor",
-    "start_line": 8606,
-    "end_line": 8634
+    "name": "cedge",
+    "start_line": 8610,
+    "end_line": 8623
   },
   {
     "file": "src/dash.rs",
-    "name": "calls_route_walks_both_directions_for_dir_both",
-    "start_line": 8639,
-    "end_line": 8657
+    "name": "file_node",
+    "start_line": 8625,
+    "end_line": 8631
   },
   {
     "file": "src/dash.rs",
-    "name": "node",
-    "start_line": 8676,
-    "end_line": 8686
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "finding_node",
-    "start_line": 8691,
-    "end_line": 8701
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "edge",
-    "start_line": 8703,
-    "end_line": 8713
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "rationale_graph",
-    "start_line": 8729,
-    "end_line": 8762
+    "name": "layer_of",
+    "start_line": 8633,
+    "end_line": 8635
   },
   {
     "file": "src/dash.rs",
     "name": "ids",
-    "start_line": 8764,
+    "start_line": 8636,
+    "end_line": 8638
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "apply_def",
+    "start_line": 8642,
+    "end_line": 8653
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "apply_call",
+    "start_line": 8654,
+    "end_line": 8661
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "calls_view_down_signs_callees_positive_and_carries_frontier_and_back",
+    "start_line": 8667,
+    "end_line": 8722
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "calls_view_up_negates_callers_and_carries_the_referenced_sidecar",
+    "start_line": 8727,
     "end_line": 8766
   },
   {
     "file": "src/dash.rs",
+    "name": "calls_view_both_centers_the_seed_with_callees_right_and_callers_left",
+    "start_line": 8772,
+    "end_line": 8820
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "a_plain_neighborhood_omits_every_additive_call_field",
+    "start_line": 8826,
+    "end_line": 8863
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "calls_route_runs_the_traversal_for_view_calls_and_declines_otherwise",
+    "start_line": 8870,
+    "end_line": 8924
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "calls_route_clamps_depth_and_defaults_the_tier_floor",
+    "start_line": 8930,
+    "end_line": 8958
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "calls_route_walks_both_directions_for_dir_both",
+    "start_line": 8963,
+    "end_line": 8981
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "node",
+    "start_line": 9000,
+    "end_line": 9010
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "finding_node",
+    "start_line": 9015,
+    "end_line": 9025
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "edge",
+    "start_line": 9027,
+    "end_line": 9037
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "rationale_graph",
+    "start_line": 9053,
+    "end_line": 9086
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "ids",
+    "start_line": 9088,
+    "end_line": 9090
+  },
+  {
+    "file": "src/dash.rs",
     "name": "kinds",
-    "start_line": 8767,
-    "end_line": 8769
+    "start_line": 9091,
+    "end_line": 9093
   },
   {
     "file": "src/dash.rs",
     "name": "node_rationale_returns_attached_leaves_ordered_by_kind_then_id",
-    "start_line": 8775,
-    "end_line": 8789
+    "start_line": 9099,
+    "end_line": 9113
   },
   {
     "file": "src/dash.rs",
     "name": "a_finding_leaf_carries_content_only_never_the_by_or_unit_machinery",
-    "start_line": 8795,
-    "end_line": 8818
+    "start_line": 9119,
+    "end_line": 9142
   },
   {
     "file": "src/dash.rs",
     "name": "a_handbook_rule_and_a_supersedes_edge_are_not_rationale",
-    "start_line": 8824,
-    "end_line": 8837
+    "start_line": 9148,
+    "end_line": 9161
   },
   {
     "file": "src/dash.rs",
     "name": "an_invalidated_edge_is_not_live_rationale",
-    "start_line": 8842,
-    "end_line": 8850
+    "start_line": 9166,
+    "end_line": 9174
   },
   {
     "file": "src/dash.rs",
     "name": "a_node_without_rationale_returns_none",
-    "start_line": 8855,
-    "end_line": 8865
+    "start_line": 9179,
+    "end_line": 9189
   },
   {
     "file": "src/dash.rs",
     "name": "the_batch_covers_the_visible_set_and_keeps_only_nodes_with_rationale",
-    "start_line": 8871,
-    "end_line": 8896
+    "start_line": 9195,
+    "end_line": 9220
   },
   {
     "file": "src/dash.rs",
     "name": "the_batch_is_deterministic_across_request_order_and_dedups",
-    "start_line": 8901,
-    "end_line": 8918
+    "start_line": 9225,
+    "end_line": 9242
   },
   {
     "file": "src/dash.rs",
     "name": "the_explain_route_returns_the_batch_in_one_request",
-    "start_line": 8924,
-    "end_line": 8963
+    "start_line": 9248,
+    "end_line": 9287
   },
   {
     "file": "src/dash.rs",
     "name": "an_absent_explain_leaves_the_graph_route_unchanged",
-    "start_line": 8969,
-    "end_line": 8993
+    "start_line": 9293,
+    "end_line": 9317
   },
   {
     "file": "src/dash.rs",
     "name": "node",
-    "start_line": 9010,
-    "end_line": 9019
+    "start_line": 9334,
+    "end_line": 9343
   },
   {
     "file": "src/dash.rs",
     "name": "edge",
-    "start_line": 9021,
-    "end_line": 9031
+    "start_line": 9345,
+    "end_line": 9355
   },
   {
     "file": "src/dash.rs",
     "name": "subject_graph",
-    "start_line": 9038,
-    "end_line": 9063
+    "start_line": 9362,
+    "end_line": 9387
   },
   {
     "file": "src/dash.rs",
     "name": "memory_rail_lists_decisions_findings_and_concepts_excluding_lessons",
-    "start_line": 9069,
-    "end_line": 9112
+    "start_line": 9393,
+    "end_line": 9436
   },
   {
     "file": "src/dash.rs",
     "name": "memory_rail_is_empty_for_a_node_with_no_governing_memory",
-    "start_line": 9117,
-    "end_line": 9124
+    "start_line": 9441,
+    "end_line": 9448
   },
   {
     "file": "src/dash.rs",
     "name": "memory_rail_concepts_are_live_from_node_realizes_edges_to_a_concept_target_deduped_by_id",
-    "start_line": 9145,
-    "end_line": 9197
+    "start_line": 9469,
+    "end_line": 9521
   },
   {
     "file": "src/dash.rs",
     "name": "the_seeded_route_carries_memory_without_adding_a_single_node_to_the_neighborhood",
-    "start_line": 9205,
-    "end_line": 9255
+    "start_line": 9529,
+    "end_line": 9579
   },
   {
     "file": "src/dash.rs",
     "name": "a_cluster_drill_carries_no_memory_field",
-    "start_line": 9261,
-    "end_line": 9281
+    "start_line": 9585,
+    "end_line": 9605
   },
   {
     "file": "src/dash.rs",
     "name": "node",
-    "start_line": 9300,
-    "end_line": 9309
+    "start_line": 9624,
+    "end_line": 9633
   },
   {
     "file": "src/dash.rs",
     "name": "edge",
-    "start_line": 9311,
-    "end_line": 9321
+    "start_line": 9635,
+    "end_line": 9645
   },
   {
     "file": "src/dash.rs",
     "name": "card_graph",
-    "start_line": 9328,
-    "end_line": 9363
+    "start_line": 9652,
+    "end_line": 9687
   },
   {
     "file": "src/dash.rs",
     "name": "card_of_a_code_entity_carries_file_line_degree_community_concepts_and_memory_counts",
-    "start_line": 9366,
-    "end_line": 9409
+    "start_line": 9690,
+    "end_line": 9733
   },
   {
     "file": "src/dash.rs",
     "name": "card_of_a_membership_less_entity_has_no_community_and_no_line",
-    "start_line": 9415,
-    "end_line": 9423
+    "start_line": 9739,
+    "end_line": 9747
   },
   {
     "file": "src/dash.rs",
     "name": "card_of_a_proven_code_entity_carries_proven_by_and_proof_evidence",
-    "start_line": 9431,
-    "end_line": 9458
+    "start_line": 9755,
+    "end_line": 9782
   },
   {
     "file": "src/dash.rs",
     "name": "card_of_an_unproven_code_entity_has_proven_by_zero_and_no_evidence",
-    "start_line": 9466,
-    "end_line": 9471
+    "start_line": 9790,
+    "end_line": 9795
   },
   {
     "file": "src/dash.rs",
     "name": "card_of_a_file_reports_no_proof_of_its_own",
-    "start_line": 9477,
-    "end_line": 9490
+    "start_line": 9801,
+    "end_line": 9814
   },
   {
     "file": "src/dash.rs",
     "name": "card_tolerates_a_malformed_proof_evidence_attr",
-    "start_line": 9497,
-    "end_line": 9507
+    "start_line": 9821,
+    "end_line": 9831
   },
   {
     "file": "src/dash.rs",
     "name": "card_of_a_file_lists_its_contained_entities_as_top_entities",
-    "start_line": 9514,
-    "end_line": 9543
+    "start_line": 9838,
+    "end_line": 9867
   },
   {
     "file": "src/dash.rs",
     "name": "card_of_a_concept_lists_its_realizing_members_as_top_evidence",
-    "start_line": 9548,
-    "end_line": 9568
+    "start_line": 9872,
+    "end_line": 9892
   },
   {
     "file": "src/dash.rs",
     "name": "card_of_a_concept_carries_each_top_evidence_members_own_kind",
-    "start_line": 9577,
-    "end_line": 9598
+    "start_line": 9901,
+    "end_line": 9922
   },
   {
     "file": "src/dash.rs",
     "name": "card_of_a_file_carries_each_top_entity_members_own_kind",
-    "start_line": 9605,
-    "end_line": 9615
+    "start_line": 9929,
+    "end_line": 9939
   },
   {
     "file": "src/dash.rs",
     "name": "card_of_an_unknown_id_is_none",
-    "start_line": 9620,
-    "end_line": 9623
+    "start_line": 9944,
+    "end_line": 9947
   },
   {
     "file": "src/dash.rs",
     "name": "the_card_route_serves_a_known_subjects_card_and_null_for_an_unknown_one",
-    "start_line": 9629,
-    "end_line": 9671
+    "start_line": 9953,
+    "end_line": 9995
   }
 ]
