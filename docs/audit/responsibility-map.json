@@ -11665,6 +11665,30 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "is_console_event",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "2959071f4dfb672c"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_event_wire",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "80b87e3d68629367"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_progress_wire",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "89d43196e8777a6c"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "event_view",
     "is_test": false,
     "proposed_module": null,
@@ -11689,11 +11713,19 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "unix_seconds",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "825e0e6155dff435"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "now_unix",
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "82f1866014fd5cb7"
+    "content_hash": "fb91652155031be3"
   },
   {
     "file": "src/dash.rs",
@@ -11710,6 +11742,14 @@
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
     "content_hash": "ccc9a9803f7be45c"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_snapshot_json",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "fb51acf4e125f825"
   },
   {
     "file": "src/dash.rs",
@@ -11789,7 +11829,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"route\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "e033b5326c7ceb33"
+    "content_hash": "27e4f57d358d55a1"
   },
   {
     "file": "src/dash.rs",
@@ -11821,7 +11861,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "b25847ee68133e90"
+    "content_hash": "66dc0bd6812a798f"
   },
   {
     "file": "src/dash.rs",
@@ -11829,7 +11869,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "b8321ab1cedd533f"
+    "content_hash": "1e7bb113d454f86c"
   },
   {
     "file": "src/dash.rs",
@@ -11837,7 +11877,31 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"handle\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "a2d18ff9d0e1dc58"
+    "content_hash": "048f766335d2159a"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "env_duration_ms",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "91180a43c64adcd9"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "write_sse",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "f474771c6f72a4b8"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "serve_console_stream",
+    "is_test": false,
+    "proposed_module": "dash::server",
+    "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`.",
+    "content_hash": "7e8d649d135f27b8"
   },
   {
     "file": "src/dash.rs",
@@ -12142,6 +12206,30 @@
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "d37e8dbb1503d69e"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_event_filter_admits_only_the_named_run_lifecycle_types",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "381569a98ec5e454"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_event_wire_matches_console_cores_wire_event_shape",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "dfe843c703bff94a"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_snapshot_endpoint_filters_events_carries_progress_liveness_and_definitions",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1407e5e0a34cc914"
   },
   {
     "file": "src/dash.rs",
@@ -12501,7 +12589,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "aba9ddbb163dda4b"
+    "content_hash": "12b6394751f1da01"
   },
   {
     "file": "src/dash.rs",
@@ -12509,7 +12597,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a55530768b4bb976"
+    "content_hash": "7165985941b4a11a"
   },
   {
     "file": "src/dash.rs",
@@ -12517,7 +12605,7 @@
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d15a37aac6fe1117"
+    "content_hash": "e5f8dea3c6300819"
   },
   {
     "file": "src/dash.rs",

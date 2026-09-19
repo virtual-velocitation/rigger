@@ -601,7 +601,7 @@
   {
     "name": "serve",
     "file": "src/dash.rs",
-    "content_hash": "dda53586dfed30f6",
+    "content_hash": "768c3ca3d3fc54d6",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [

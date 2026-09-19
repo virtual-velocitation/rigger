@@ -12,8 +12,14 @@
 //!
 //! Two hard lines the spec draws, enforced structurally:
 //!   - **No async runtime.** The HTTP layer is hand-rolled and synchronous over
-//!     [`std::net::TcpListener`] (one request at a time, loopback only). The default
-//!     build gains no tokio/axum and no new dependency at all.
+//!     [`std::net::TcpListener`], loopback only. The default build gains no tokio/axum and
+//!     no new dependency at all. Every request is answered one at a time on the accept
+//!     loop's own thread, with ONE exception (spec 94, criterion 2): `GET
+//!     /api/console/stream` is a long-lived `text/event-stream` connection a console tab
+//!     holds open for as long as it is open, so `handle_conn` hands it to its own plain
+//!     `std::thread` (never an async task - the hard line above is unaffected) and returns
+//!     immediately, so the accept loop keeps answering every other request - including a
+//!     second open stream - without waiting on it.
 //!   - **No write/control surface.** [`route`] answers only `GET`; every other method,
 //!     on every path, is refused with `405`. The conductor stays the sole mutation
 //!     authority - control goes through the CLI, never the dash.
@@ -22,7 +28,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -56,7 +63,7 @@ pub use crate::contextgraph::query::{
 };
 use crate::eventstore::{Event, Position};
 use crate::progress::{self, AgentActivity};
-use crate::{blocker, ledger, metrics, spawn};
+use crate::{blocker, ledger, metrics, run, spawn};
 
 /// The single-file page, embedded at compile time (vanilla HTML/CSS/JS, no build step).
 /// [`STATE_PLACEHOLDER`] is substituted with `null` for live serving (the page polls the
@@ -1209,6 +1216,53 @@ pub struct EventView {
     #[serde(rename = "type")]
     pub type_: String,
     pub summary: String,
+}
+
+/// The `/api/console/definition` fold (spec 94, criterion 2, Design's "the definition's
+/// stage and gate names"): the distinct workflow stage names this run's own
+/// `SpawnRequested` events actually used, and the distinct gate names this run's own
+/// `GateVerdict`s actually recorded (the same names [`MetricsView::gates`] aggregates) -
+/// both READ from this run's own recorded events, never from a loaded `workflow.yml`
+/// (see `d-u94c2-definition-names`: this endpoint's provider chain carries no `Config`).
+/// Sorted, so the wire shape is deterministic regardless of recording order.
+#[derive(Debug, Serialize)]
+pub struct ConsoleDefinitionView {
+    pub stages: Vec<String>,
+    pub gates: Vec<String>,
+}
+
+/// One progress line on `/api/console/snapshot` (Design, THE SNAPSHOT: "its progress lines
+/// with times"). `position` is this line's own position in the SEPARATE progress store (not
+/// a console-event position), which [`serve_console_stream`]'s own delta tracking reuses so
+/// a reconnect never resends a line the snapshot already carried.
+#[derive(Debug, Serialize)]
+pub struct ConsoleProgressView {
+    pub id: String,
+    pub activity: String,
+    pub position: Position,
+    pub recorded_at: u64,
+}
+
+/// The `/api/console/snapshot` body (spec 94, criterion 2: THE SNAPSHOT AND THE STREAM).
+/// `events` is [`CONSOLE_EVENT_TYPES`]-filtered and carries console-core's own wire shape
+/// (`d-u94c2-wire-event-shape`: `{"type":..,"data":..,"position":..}`), so the served page
+/// hands this list straight to the wasm core's `fold_reset` with no reshaping. Deliberately
+/// absent (see `d-u94c2-snapshot-field-scope`, never fabricated): per-spawn usage totals and
+/// turn counts (no transcript ingestion exists in this codebase yet - spec 99), a per-serve
+/// action token (spec 97's guarded actions do not exist yet), and a liveness/wall-clock
+/// bound (would need `Config` threaded into the dash's provider chain).
+#[derive(Debug, Serialize)]
+pub struct ConsoleSnapshotView {
+    pub run_id: String,
+    pub spec: String,
+    pub base: String,
+    pub events: Vec<serde_json::Value>,
+    pub progress: Vec<ConsoleProgressView>,
+    pub liveness: HashMap<String, u64>,
+    pub definition: ConsoleDefinitionView,
+    /// The highest position among `events` (0 for an empty run) - the cursor a client
+    /// passes straight to `GET /api/console/stream?since=` to resume with no gap.
+    pub head: Position,
 }
 
 // ---------------------------------------------------------------------------
@@ -2493,6 +2547,78 @@ pub fn repoint_seed(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> 
     }
 }
 
+/// The run-lifecycle event types the console recognizes (spec 94, criterion 2; the addendum
+/// `docs/architecture-addendum-mission-control.md` §2's own list, verbatim) - the ONLY types
+/// that count toward the console's position N, and the ONLY types `/api/console/snapshot`'s
+/// `events` and `/api/console/stream`'s `event` frame ever carry. An ALLOW-list, so the
+/// graph-extraction types sharing the same run stream (`CodeEntityExtracted`, `EdgeInferred`,
+/// `DocLinkExtracted`, `DocConceptExtracted`) and this project's own `AgentProgress` (a
+/// separate store regardless) are excluded by construction, never by a second, hand-kept deny
+/// list. `StepTaken` is spec 99's own new event type (`specs/99-the-agents-session-is-in-the-
+/// log.md`, "the one new run-stream event type in the Mission Control set") - no unit emits it
+/// yet, so this entry currently matches nothing; recognizing it now costs nothing and spec 99
+/// need not touch this filter when it starts emitting it. `DefinitionSuperseded` is likewise
+/// not a distinct type anywhere in this codebase today - a `--rebase-definition` supersession
+/// rides the existing `DecisionMade` vocabulary instead (`run_store::record_rebase`'s own doc:
+/// "no new event type - the spec-13 global constraint"), so it is already covered by
+/// `TYPE_DECISION_MADE` below and this literal entry is a forward-compatible no-op.
+const CONSOLE_EVENT_TYPES: &[&str] = &[
+    run::TYPE_RUN_STARTED,
+    crate::conductor::TYPE_UNIT_PROPOSED,
+    ledger::TYPE_UNIT_STARTED,
+    ledger::TYPE_UNIT_STATUS,
+    ledger::TYPE_UNIT_INTEGRATED,
+    ledger::TYPE_UNIT_FAILED,
+    ledger::TYPE_UNIT_ESCALATED,
+    ledger::TYPE_UNIT_RESUMED,
+    spawn::TYPE_SPAWN_REQUESTED,
+    spawn::TYPE_SPAWN_RESULT,
+    "StepTaken",
+    crate::contextgraph::TYPE_GATE_VERDICT,
+    crate::contextgraph::TYPE_REVIEW_FINDING,
+    crate::contextgraph::TYPE_DECISION_MADE,
+    crate::contextgraph::TYPE_LESSON_LEARNED,
+    metrics::TYPE_BLAST_RADIUS_COMPUTED,
+    crate::contextgraph::TYPE_FILE_TOUCHED,
+    "DefinitionSuperseded",
+    blocker::TYPE_BUDGET_EXHAUSTED,
+];
+
+/// Whether `e` is one of [`CONSOLE_EVENT_TYPES`] - the one membership test both
+/// `console_snapshot_json` and `serve_console_stream` filter through, so the snapshot's
+/// initial list and the stream's later deltas can never recognize a different set of types.
+fn is_console_event(e: &Event) -> bool {
+    CONSOLE_EVENT_TYPES.contains(&e.type_.as_str())
+}
+
+/// One console event as console-core's own `WireEvent` (`crates/console-core/src/lib.rs`)
+/// deserializes it: `{"type":..,"data":..,"position":..}` (`d-u94c2-wire-event-shape`). `data`
+/// is the event's own JSON body embedded whole (parsed once here, never re-derived into a
+/// truncated summary like [`event_view`]'s `EventView`) so the served page hands this value
+/// straight to `fold_reset`/`fold_push` with zero reshaping. A malformed body (never produced
+/// by this codebase's own writers, but never trusted blindly either) degrades to `null`
+/// rather than failing the whole feed.
+fn console_event_wire(e: &Event) -> serde_json::Value {
+    let data: serde_json::Value =
+        serde_json::from_slice(&e.data).unwrap_or(serde_json::Value::Null);
+    serde_json::json!({ "type": e.type_, "data": data, "position": e.position })
+}
+
+/// One progress-store event as the stream's `progress` frame / the snapshot's `progress`
+/// list render it - the [`AgentProgress`](progress::AgentProgress) payload plus this event's
+/// own position (the progress store's own ordering, distinct from a console event's
+/// position) and recorded time. A malformed body degrades to an empty id/activity rather
+/// than dropping the line or failing the feed.
+fn console_progress_wire(e: &Event) -> ConsoleProgressView {
+    let ap: progress::AgentProgress = serde_json::from_slice(&e.data).unwrap_or_default();
+    ConsoleProgressView {
+        id: ap.id,
+        activity: ap.activity,
+        position: e.position,
+        recorded_at: unix_seconds(e.recorded_at),
+    }
+}
+
 /// A generic feed view of one event: position, type, and a bounded, per-type-agnostic
 /// preview of the payload.
 fn event_view(e: &Event) -> EventView {
@@ -2532,11 +2658,18 @@ fn field_str_array(e: &Event, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+/// Unix seconds for a [`SystemTime`], never failing (a pre-epoch time - never produced by a
+/// real store - degrades to `0` rather than panicking). The one authority [`now_unix`] and
+/// [`console_progress_wire`] both convert through, so a clock-conversion bug cannot drift
+/// between them.
+fn unix_seconds(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+fn now_unix() -> u64 {
+    unix_seconds(SystemTime::now())
 }
 
 // ---------------------------------------------------------------------------
@@ -2579,6 +2712,68 @@ pub fn events_json(events: &[Event], since: Position) -> String {
         .collect();
     // A tiny hand-built object so the endpoint has no dedicated wrapper DTO.
     serde_json::json!({ "events": feed }).to_string()
+}
+
+/// The `/api/console/snapshot` body (spec 94, criterion 2: THE SNAPSHOT). `events` is the
+/// current run's slice (the provider chain already scopes it, like every other `/api/*`
+/// route); `base` is the serving command's env/default fallback, exactly like
+/// [`build_state`]'s own `effective_base` - the run's PERSISTED base
+/// ([`run::current_run_base`]) wins when this run recorded one.
+pub fn console_snapshot_json(
+    events: &[Event],
+    progress_events: &[Event],
+    liveness_ages: &HashMap<String, u64>,
+    base: &str,
+) -> Result<String, serde_json::Error> {
+    let run_id = run::current_run_id(events).unwrap_or_default();
+    let spec = events
+        .iter()
+        .rev()
+        .find(|e| e.type_ == run::TYPE_RUN_STARTED)
+        .and_then(|e| serde_json::from_slice::<run::RunStarted>(&e.data).ok())
+        .map(|r| r.spec)
+        .unwrap_or_default();
+    let effective_base = run::current_run_base(events).unwrap_or_else(|| base.to_string());
+
+    let mut console_events: Vec<&Event> = events.iter().filter(|e| is_console_event(e)).collect();
+    console_events.sort_by_key(|e| e.position);
+    let head = console_events.last().map(|e| e.position).unwrap_or(0);
+    let events_wire = console_events
+        .iter()
+        .map(|e| console_event_wire(e))
+        .collect();
+
+    let progress = progress_events.iter().map(console_progress_wire).collect();
+
+    // Definition names (Design's "the definition's stage and gate names"): read from THIS
+    // run's own recorded events, never from a loaded `workflow.yml` Config - see
+    // `d-u94c2-definition-names`.
+    let m = metrics::project(events);
+    let gates: Vec<String> = m.gates.keys().cloned().collect();
+    let mut stages: BTreeSet<String> = BTreeSet::new();
+    for e in events {
+        if e.type_ == spawn::TYPE_SPAWN_REQUESTED {
+            if let Ok(req) = serde_json::from_slice::<spawn::SpawnRequest>(&e.data) {
+                if !req.stage.is_empty() {
+                    stages.insert(req.stage);
+                }
+            }
+        }
+    }
+
+    serde_json::to_string(&ConsoleSnapshotView {
+        run_id,
+        spec,
+        base: effective_base,
+        events: events_wire,
+        progress,
+        liveness: liveness_ages.clone(),
+        definition: ConsoleDefinitionView {
+            stages: stages.into_iter().collect(),
+            gates,
+        },
+        head,
+    })
 }
 
 /// The live page: the template with the state placeholder resolved to `null`, so the
@@ -2762,6 +2957,15 @@ pub fn route(
         // embedded at compile time by `build.rs`'s nested cross-compile - served verbatim,
         // never generated or read from disk per request.
         "/console/core.wasm" => Response::binary(200, "application/wasm", CONSOLE_CORE_WASM),
+        // THE SNAPSHOT (spec 94, criterion 2): the console's own bootstrap read - run
+        // identity, the console-event feed, progress lines, liveness ages, and the
+        // definition names this run's events actually recorded. See `console_snapshot_json`.
+        "/api/console/snapshot" => {
+            match console_snapshot_json(events, progress_events, liveness_ages, base) {
+                Ok(body) => Response::json(200, body),
+                Err(e) => Response::text(500, &format!("dash: console snapshot failed: {e}")),
+            }
+        }
         "/api/state" => {
             match state_json(
                 events,
@@ -2974,7 +3178,7 @@ pub fn serve<F, G, H, I>(
     base: &str,
 ) -> io::Result<()>
 where
-    F: Fn(Option<&str>) -> Result<DashInputs, String>,
+    F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
     G: Fn(Option<&str>) -> Graph,
     H: Fn() -> Vec<InstanceView>,
     I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
@@ -3018,13 +3222,17 @@ pub fn serve_on<F, G, H, I>(
     base: &str,
 ) -> io::Result<()>
 where
-    F: Fn(Option<&str>) -> Result<DashInputs, String>,
+    F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
     G: Fn(Option<&str>) -> Graph,
     H: Fn() -> Vec<InstanceView>,
     I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
 {
     let bound = listener.local_addr()?;
     eprintln!("rigger dash: serving on http://{bound}/ (read-only; Ctrl-C to stop)");
+    // Shared so THE STREAM (spec 94 c2) can clone a handle onto its own thread per open
+    // connection (`d-u94c2-stream-threading`) without cloning `F` itself, which is not
+    // generally `Clone` - see `handle_conn`'s own doc.
+    let provider = Arc::new(provider);
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
@@ -3063,7 +3271,7 @@ where
 #[allow(clippy::too_many_arguments)]
 fn handle_conn<F, G, H, I>(
     stream: TcpStream,
-    provider: &F,
+    provider: &Arc<F>,
     graph_provider: &G,
     calls_provider: &I,
     instances_provider: &H,
@@ -3072,7 +3280,7 @@ fn handle_conn<F, G, H, I>(
     base: &str,
 ) -> io::Result<()>
 where
-    F: Fn(Option<&str>) -> Result<DashInputs, String>,
+    F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
     G: Fn(Option<&str>) -> Graph,
     H: Fn() -> Vec<InstanceView>,
     I: Fn(Option<&str>, &[String], Direction, i64, &str) -> CallGraph,
@@ -3096,7 +3304,35 @@ where
     }
 
     let mut stream = reader.into_inner();
-    let response = match parse_request_line(request_line.trim_end()) {
+    let parsed = parse_request_line(request_line.trim_end());
+
+    // THE STREAM (spec 94, criterion 2; d-u94c2-stream-threading): a console tab's
+    // `EventSource` holds this connection open for as long as the tab is - potentially the
+    // whole life of a run - so it is special-cased HERE, before the request ever reaches
+    // `route`, and handed to its OWN thread (no async runtime; see this module's own top
+    // doc comment). Every other path below stays on THIS accept-loop connection, answered
+    // and closed in one round trip exactly as documented there.
+    if let Some((method, target)) = &parsed {
+        let path = target.split('?').next().unwrap_or(target);
+        if method == "GET" && path == "/api/console/stream" {
+            let since = query_param(target, "since")
+                .and_then(|v| v.parse::<Position>().ok())
+                .unwrap_or(0);
+            let instance = query_param(target, "instance")
+                .map(percent_decode)
+                .filter(|s| !s.is_empty());
+            let provider = Arc::clone(provider);
+            std::thread::spawn(move || {
+                serve_console_stream(stream, provider.as_ref(), instance.as_deref(), since);
+            });
+            return Ok(());
+        }
+    }
+
+    // Every other path reads through the plain `&F` the pre-existing dispatch below always
+    // expected - shadowed here so that body stays byte-identical to before this criterion.
+    let provider = provider.as_ref();
+    let response = match parsed {
         None => Response::text(400, "bad request"),
         Some((method, target)) => {
             let path = target.split('?').next().unwrap_or(&target);
@@ -3180,6 +3416,142 @@ where
         }
     };
     response.write_to(&mut stream)
+}
+
+/// Env override for [`serve_console_stream`]'s poll interval (milliseconds) - how often it
+/// re-consults `provider` for new console events/progress lines. Tiny by default so the
+/// spec's one-second delivery bound has ample margin; the crate's own tests can shrink it
+/// further for a tight deadline, mirroring [`crate::main`]'s `DASH_REAP_POLL_ENV` pattern
+/// for the same "real cadence in production, fast in tests" shape.
+const DASH_STREAM_POLL_MS_ENV: &str = "RIGGER_DASH_STREAM_POLL_MS";
+/// Env override for the `liveness` frame's cadence (milliseconds), matching Design's "every
+/// 5 s while any spawn is live".
+const DASH_STREAM_LIVENESS_MS_ENV: &str = "RIGGER_DASH_STREAM_LIVENESS_MS";
+/// Env override for the `heartbeat` frame's cadence (milliseconds), matching Design's
+/// "every 15 s".
+const DASH_STREAM_HEARTBEAT_MS_ENV: &str = "RIGGER_DASH_STREAM_HEARTBEAT_MS";
+
+/// Read an env-overridable millisecond duration, clamped to at least 1ms so a `0` override
+/// can never spin a poll loop.
+fn env_duration_ms(key: &str, default_ms: u64) -> Duration {
+    let ms = std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(default_ms)
+        .max(1);
+    Duration::from_millis(ms)
+}
+
+/// Write one SSE frame (`event: <name>\ndata: <json>\n\n`) and flush it immediately - a
+/// stream client must see each frame as it is produced, never buffered behind the next one.
+fn write_sse(w: &mut impl Write, event: &str, data: &serde_json::Value) -> io::Result<()> {
+    write!(w, "event: {event}\ndata: {data}\n\n")?;
+    w.flush()
+}
+
+/// Serve ONE `/api/console/stream` connection until the client disconnects (spec 94,
+/// criterion 2: THE STREAM) - runs on its own thread ([`d-u94c2-stream-threading`],
+/// [`handle_conn`]'s own doc), so it never blocks the accept loop.
+///
+/// Carries `text/event-stream` frames, re-consulting the SAME per-request `provider` every
+/// other route already reads on a short poll (never a store subscription - a second, parallel
+/// read mechanism the rest of the dash does not have): `event` (one [`CONSOLE_EVENT_TYPES`]
+/// event past `since`, in position order), `progress` (one progress line past whatever the
+/// FIRST poll already held - the snapshot the client fetched before connecting already
+/// carries that history), `liveness` (all marker ages, every [`DASH_STREAM_LIVENESS_MS_ENV`]
+/// while any spawn is live), and `heartbeat` (every [`DASH_STREAM_HEARTBEAT_MS_ENV`]
+/// unconditionally). A `provider` failure degrades to a silent retry on the next poll - the
+/// same best-effort discipline every other `/api/*` route keeps, never a torn-down
+/// connection with no explanation (the client's own health strip reads staleness from the
+/// frame cadence, not from a socket close).
+fn serve_console_stream<F>(
+    mut stream: TcpStream,
+    provider: &F,
+    instance: Option<&str>,
+    since: Position,
+) where
+    F: Fn(Option<&str>) -> Result<DashInputs, String>,
+{
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\
+         {}: {}\r\n{}: {}\r\nConnection: close\r\n\r\n",
+        DASH_HEADER,
+        env!("CARGO_PKG_VERSION"),
+        DASH_HEADER_PID,
+        std::process::id(),
+    );
+    if stream.write_all(header.as_bytes()).is_err() || stream.flush().is_err() {
+        return;
+    }
+
+    let poll = env_duration_ms(DASH_STREAM_POLL_MS_ENV, 200);
+    let liveness_every = env_duration_ms(DASH_STREAM_LIVENESS_MS_ENV, 5_000);
+    let heartbeat_every = env_duration_ms(DASH_STREAM_HEARTBEAT_MS_ENV, 15_000);
+
+    let mut last_event = since;
+    // `None` until the first successful poll: that poll's OWN progress lines are already in
+    // the snapshot the client fetched before connecting (Design, THE SNAPSHOT), so only a
+    // line appended STRICTLY AFTER this stream started counts as a delta.
+    let mut progress_floor: Option<Position> = None;
+    let mut last_liveness = Instant::now()
+        .checked_sub(liveness_every)
+        .unwrap_or_else(Instant::now);
+    let mut last_heartbeat = Instant::now();
+
+    loop {
+        if let Ok((events, _graph, progress_events, liveness_ages)) = provider(instance) {
+            let floor = *progress_floor.get_or_insert_with(|| {
+                progress_events
+                    .iter()
+                    .map(|e| e.position)
+                    .max()
+                    .unwrap_or(0)
+            });
+
+            let mut new_events: Vec<&Event> = events
+                .iter()
+                .filter(|e| is_console_event(e) && e.position > last_event)
+                .collect();
+            new_events.sort_by_key(|e| e.position);
+            for e in new_events {
+                if write_sse(&mut stream, "event", &console_event_wire(e)).is_err() {
+                    return;
+                }
+                last_event = e.position;
+            }
+
+            let mut new_progress: Vec<&Event> = progress_events
+                .iter()
+                .filter(|e| e.position > floor)
+                .collect();
+            new_progress.sort_by_key(|e| e.position);
+            for e in new_progress {
+                let wire = console_progress_wire(e);
+                let v = serde_json::to_value(&wire).unwrap_or(serde_json::Value::Null);
+                if write_sse(&mut stream, "progress", &v).is_err() {
+                    return;
+                }
+                progress_floor = Some(e.position);
+            }
+
+            if !liveness_ages.is_empty() && last_liveness.elapsed() >= liveness_every {
+                let v = serde_json::json!({ "ages": liveness_ages });
+                if write_sse(&mut stream, "liveness", &v).is_err() {
+                    return;
+                }
+                last_liveness = Instant::now();
+            }
+        }
+
+        if last_heartbeat.elapsed() >= heartbeat_every {
+            if write_sse(&mut stream, "heartbeat", &serde_json::json!({})).is_err() {
+                return;
+            }
+            last_heartbeat = Instant::now();
+        }
+
+        std::thread::sleep(poll);
+    }
 }
 
 /// A supervised handle over a long-lived `rigger` child PROCESS - the auto-started
@@ -4512,6 +4884,148 @@ mod tests {
         assert_eq!(gates[0]["fail"], 1);
         // The live /api/state does not inline the event feed (the page tails it separately).
         assert!(v.get("events").is_none() || v["events"].is_null());
+    }
+
+    /// Spec 94, criterion 2 (THE SNAPSHOT AND THE STREAM): the console-event allow-list
+    /// admits exactly the run-lifecycle types the addendum §2 names, and excludes the
+    /// graph-extraction types that share the same stream plus this project's own
+    /// `AgentProgress` (a separate store regardless).
+    #[test]
+    fn console_event_filter_admits_only_the_named_run_lifecycle_types() {
+        for t in [
+            "RunStarted",
+            "UnitProposed",
+            "UnitStarted",
+            "UnitStatus",
+            "UnitIntegrated",
+            "UnitFailed",
+            "UnitEscalated",
+            "UnitResumed",
+            "SpawnRequested",
+            "SpawnResult",
+            "StepTaken",
+            "GateVerdict",
+            "ReviewFinding",
+            "DecisionMade",
+            "LessonLearned",
+            "BlastRadiusComputed",
+            "FileTouched",
+            "DefinitionSuperseded",
+            "BudgetExhausted",
+        ] {
+            assert!(
+                is_console_event(&ev(t, "{}")),
+                "{t} must count as a console event"
+            );
+        }
+        for t in [
+            "CodeEntityExtracted",
+            "EdgeInferred",
+            "DocLinkExtracted",
+            "DocConceptExtracted",
+            "AgentProgress",
+            "SomethingElseEntirely",
+        ] {
+            assert!(
+                !is_console_event(&ev(t, "{}")),
+                "{t} must NOT count as a console event"
+            );
+        }
+    }
+
+    /// `console_event_wire` matches console-core's own `WireEvent` shape verbatim
+    /// (d-u94c2-wire-event-shape): `{"type":..,"data":..,"position":..}`, with `data` the
+    /// event's own JSON body embedded whole (never a re-stringified summary).
+    #[test]
+    fn console_event_wire_matches_console_cores_wire_event_shape() {
+        let mut e = ev("UnitIntegrated", r#"{"id":"u1","commit":"abc123"}"#);
+        e.position = 42;
+        let v = console_event_wire(&e);
+        assert_eq!(v["type"], "UnitIntegrated");
+        assert_eq!(v["position"], 42);
+        assert_eq!(v["data"]["id"], "u1");
+        assert_eq!(v["data"]["commit"], "abc123");
+    }
+
+    #[test]
+    fn console_snapshot_endpoint_filters_events_carries_progress_liveness_and_definitions() {
+        let mut events = positioned(vec![
+            ev(
+                "RunStarted",
+                r#"{"run":"r1","spec":"specs/94-the-console-shell-and-the-live-data-plane.md"}"#,
+            ),
+            ev(
+                "SpawnRequested",
+                r#"{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"}"#,
+            ),
+            ev("GateVerdict", r#"{"gate":"cargo test","pass":true}"#),
+            // A graph-extraction type sharing the same stream: must NOT appear in `events`.
+            ev(
+                "CodeEntityExtracted",
+                r#"{"id":"src/dash.rs::route","kind":"function"}"#,
+            ),
+        ]);
+        // RunStarted carries the run id in META_RUN_ID like every real one does, so
+        // `run::current_run_base`/`current_run_id` (scoped by that meta) resolve normally.
+        for e in &mut events {
+            if e.type_ == "RunStarted" {
+                e.meta
+                    .insert(crate::run::META_RUN_ID.to_string(), "r1".to_string());
+            }
+        }
+
+        let progress = positioned(vec![ev(
+            "AgentProgress",
+            r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
+        )]);
+        let liveness = HashMap::from([("u1/implementer#0".to_string(), 12u64)]);
+
+        let r = route(
+            "GET",
+            "/api/console/snapshot",
+            &events,
+            &Graph::default(),
+            &progress,
+            &liveness,
+            3,
+            "rigger-run",
+            "origin/main",
+            &[],
+        );
+        assert_eq!(r.status, 200);
+        assert_eq!(r.content_type, "application/json");
+        let v: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+
+        assert_eq!(v["run_id"], "r1");
+        assert_eq!(
+            v["spec"],
+            "specs/94-the-console-shell-and-the-live-data-plane.md"
+        );
+        let feed = v["events"].as_array().unwrap();
+        assert_eq!(
+            feed.len(),
+            3,
+            "the graph-extraction event must be excluded: {feed:?}"
+        );
+        assert!(
+            feed.iter().all(|e| e["type"] != "CodeEntityExtracted"),
+            "{feed:?}"
+        );
+        assert_eq!(feed[0]["type"], "RunStarted");
+        assert_eq!(feed[2]["type"], "GateVerdict");
+        // `head` is the highest position among CONSOLE events only - the 4th (excluded)
+        // event's own position (4) must never leak into it.
+        assert_eq!(v["head"], 3);
+
+        let progress_out = v["progress"].as_array().unwrap();
+        assert_eq!(progress_out.len(), 1);
+        assert_eq!(progress_out[0]["id"], "u1/implementer#0");
+        assert_eq!(progress_out[0]["activity"], "reading spec");
+
+        assert_eq!(v["liveness"]["u1/implementer#0"], 12);
+
+        assert_eq!(v["definition"]["stages"], serde_json::json!(["implement"]));
+        assert_eq!(v["definition"]["gates"], serde_json::json!(["cargo test"]));
     }
 
     #[test]
@@ -7452,6 +7966,7 @@ mod tests {
                 crate::contextgraph::CallGraph::default()
             };
         let instances_provider = Vec::new;
+        let provider = Arc::new(provider);
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
             handle_conn(
@@ -7514,6 +8029,7 @@ mod tests {
         };
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
+        let provider = Arc::new(provider);
         let server = std::thread::spawn(move || {
             let (conn, _) = listener.accept().unwrap();
             handle_conn(
@@ -7556,7 +8072,6 @@ mod tests {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
 
         // The polled provider: the cheap run-scoped inputs `/api/state` and `/api/events` ride.
         // Its graph slot is the run-seeded slice (here empty); it is what the decisions/findings
@@ -7591,6 +8106,7 @@ mod tests {
         let instances_provider = Vec::new;
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let addr = listener.local_addr().unwrap();
+        let provider = Arc::new(provider);
         // A bounded accept loop (three requests) so the server thread joins deterministically.
         let server = std::thread::spawn(move || {
             for _ in 0..3 {
