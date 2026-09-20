@@ -372,15 +372,19 @@
       },
       {
         "file": "src/console/mod.rs",
-        "line": 752
-      },
-      {
-        "file": "src/console/mod.rs",
-        "line": 777
+        "line": 761
       },
       {
         "file": "src/console/mod.rs",
         "line": 789
+      },
+      {
+        "file": "src/console/mod.rs",
+        "line": 814
+      },
+      {
+        "file": "src/console/mod.rs",
+        "line": 826
       }
     ]
   },

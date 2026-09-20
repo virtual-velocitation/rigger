@@ -730,6 +730,43 @@ mod tests {
         assert!(track.marks.is_empty(), "{:?}", track.marks);
     }
 
+    /// SCRUB_TRACK, the old-contract sentinel: an adjudicator result whose verdict line
+    /// carries `upheld`/`discarded` but NO `verdict` key at all (`Adjudication::verdict`'s
+    /// own doc comment: "an old-contract line naming only upheld/discarded" - a run recorded
+    /// before this criterion existed) parses to `Some(Adjudication)` with `verdict: None`,
+    /// not `None` outright - a DIFFERENT sentinel than `scrub_track_ignores_a_non_adjudicator_result`
+    /// (non-adjudicator) or the "no verdict line at all" case `adjudication()`'s own test
+    /// covers. `verdict_mark` must degrade to no mark here too, never a guessed colour for
+    /// the CONSTRAINTS WALK's "an older run lacking a field - the fold renders the blank,
+    /// never fails" - mutation-discriminating against a permissive default match arm (e.g.
+    /// `_ => "gray"` in place of `_ => return None`), which this test would catch but an
+    /// empty-string-verdict probe could not (an empty string already falls through the
+    /// existing match's `_` arm harmlessly either way).
+    #[test]
+    fn scrub_track_marks_nothing_for_an_old_contract_line_with_no_verdict_key() {
+        let events = vec![adjudicator_result(
+            "u1/adjudicator#0",
+            r#"{"upheld":["f1"],"discarded":[]}"#,
+            6,
+        )];
+        // Confirm the test's own premise against the real parser, not just the mark logic:
+        // this line DOES parse to Some(Adjudication) with verdict: None (the exact shape
+        // verdict_mark's `?` chain must degrade on), never the "no verdict line" None case.
+        let res = spawn::SpawnResult::from_event(&events[0]).expect("parses as a SpawnResult");
+        let adj = res
+            .adjudication()
+            .expect("upheld/discarded alone still parses as a verdict-shaped line");
+        assert_eq!(adj.verdict, None, "test setup: {adj:?}");
+
+        let track = scrub_track(&events);
+        assert!(
+            track.marks.is_empty(),
+            "an old-contract line with no verdict key must yield no mark, never a guessed \
+             colour: {:?}",
+            track.marks
+        );
+    }
+
     /// SCRUB_TRACK, hour ticks: consecutive events whose `recorded_at` crosses an hour
     /// boundary produce one tick per crossing, pinned to the position of the first event
     /// AT OR AFTER that boundary, labelled by the UTC hour - never a tick at the very first
