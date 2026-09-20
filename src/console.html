@@ -524,10 +524,18 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
         renderTrack();
       }
     });
-    // THE STREAM's own reconnect-with-since= contract (spec 94 criterion 2):
-    // EventSource retries automatically at the connection it was opened with, so no
-    // page-side reconnect call is needed here; the health strip's disconnected signal
-    // is specs 95-98's own paint, out of this criterion's scope.
+    // THE STREAM's own reconnect-with-since= contract (spec 94 criterion 2),
+    // fixed at the root by adj-u94c3-verdict-reject-stream-reconnect-duplicate-events:
+    // a bare EventSource retrying at the URL it was opened with would otherwise replay
+    // this tab's whole already-processed range on every ordinary dropped connection,
+    // since that URL's own since= is frozen at page-load and never re-evaluated - the
+    // native retry itself needs no page-side reconnect call, but ONLY because the
+    // server now reads the id: line this same retry sends back as Last-Event-ID
+    // (write_sse/handle_conn, src/dash.rs) and resumes from there instead. fold_push
+    // is additionally idempotent by position (console-core's own op_fold_push), so
+    // even a frame this resume mechanism still lets through twice renders no duplicate
+    // mark and grows session.events by zero, not by one. The health strip's
+    // disconnected signal is specs 95-98's own paint, out of this criterion's scope.
     source.onerror = function () {};
   }
 

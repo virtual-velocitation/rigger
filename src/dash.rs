@@ -3420,11 +3420,23 @@ where
         return Ok(()); // client closed before sending anything
     }
     // Drain the remaining request headers (bounded) so the client's write completes before
-    // we reply; we route on the request line alone (GET has no body).
+    // we reply; we route on the request line alone (GET has no body) - except for
+    // `Last-Event-ID` (`adj-u94c3-verdict-reject-stream-reconnect-duplicate-events`), THE
+    // STREAM's own reconnect-resume signal: a real `EventSource`'s native retry sends it
+    // automatically, current from the `id:` line `write_sse` stamps on each `event` frame,
+    // so it reflects what the browser actually applied - unlike the URL's own `since=`,
+    // which that same native retry reissues verbatim from whatever `connectStream(since)`
+    // was called with at page-load and never re-evaluates.
     let mut header = String::new();
+    let mut last_event_id: Option<Position> = None;
     while reader.read_line(&mut header)? > 0 {
         if header == "\r\n" || header == "\n" {
             break;
+        }
+        if let Some((name, value)) = header.trim_end_matches(['\r', '\n']).split_once(':') {
+            if name.trim().eq_ignore_ascii_case("last-event-id") {
+                last_event_id = value.trim().parse::<Position>().ok();
+            }
         }
         header.clear();
     }
@@ -3441,9 +3453,16 @@ where
     if let Some((method, target)) = &parsed {
         let path = target.split('?').next().unwrap_or(target);
         if method == "GET" && path == "/api/console/stream" {
-            let since = query_param(target, "since")
-                .and_then(|v| v.parse::<Position>().ok())
-                .unwrap_or(0);
+            // `Last-Event-ID` wins over the query string when present (see the header
+            // drain's own doc above): it is the one signal that survives an ordinary
+            // dropped connection with the browser's actual last-applied position, where
+            // `since=` in the URL is frozen at whatever `connectStream` was first called
+            // with.
+            let since = last_event_id.unwrap_or_else(|| {
+                query_param(target, "since")
+                    .and_then(|v| v.parse::<Position>().ok())
+                    .unwrap_or(0)
+            });
             // The snapshot's own `progress_head` (adj-u94c2-verdict-reject-progress-floor-
             // race): mirrors `since` exactly so the stream's progress floor is fixed at
             // connect time from the client's own cursor, never derived from whatever the
@@ -3581,10 +3600,29 @@ fn env_duration_ms(key: &str, default_ms: u64) -> Duration {
     Duration::from_millis(ms)
 }
 
-/// Write one SSE frame (`event: <name>\ndata: <json>\n\n`) and flush it immediately - a
-/// stream client must see each frame as it is produced, never buffered behind the next one.
-fn write_sse(w: &mut impl Write, event: &str, data: &serde_json::Value) -> io::Result<()> {
-    write!(w, "event: {event}\ndata: {data}\n\n")?;
+/// Write one SSE frame (`event: <name>\ndata: <json>\n\n`, or `event: <name>\nid: <id>\ndata:
+/// <json>\n\n` when `id` is given) and flush it immediately - a stream client must see each
+/// frame as it is produced, never buffered behind the next one.
+///
+/// `id` is `Some` ONLY for the `event` frame kind (`adj-u94c3-verdict-reject-stream-
+/// reconnect-duplicate-events`'s fix): it is the position-carrying frame `connectStream`
+/// resumes by, and the `id:` line is what keeps a real `EventSource`'s own `lastEventId`
+/// current, so its native reconnect sends a meaningful `Last-Event-ID` request header
+/// (`handle_conn` reads it back) instead of replaying from whatever `since=` the URL was
+/// constructed with at page-load, which a browser's automatic retry never re-evaluates.
+/// `progress`/`liveness`/`heartbeat` carry no `id:` - `progress` in particular lives in a
+/// SEPARATE position space from `since=`'s (its own `progress_since` cursor already resumes
+/// it), and stamping it here would corrupt `Last-Event-ID`'s meaning for the event feed.
+fn write_sse(
+    w: &mut impl Write,
+    event: &str,
+    id: Option<Position>,
+    data: &serde_json::Value,
+) -> io::Result<()> {
+    match id {
+        Some(id) => write!(w, "event: {event}\nid: {id}\ndata: {data}\n\n")?,
+        None => write!(w, "event: {event}\ndata: {data}\n\n")?,
+    }
     w.flush()
 }
 
@@ -3651,7 +3689,14 @@ fn serve_console_stream<F>(
                 .collect();
             new_events.sort_by_key(|e| e.position);
             for e in new_events {
-                if write_sse(&mut stream, "event", &console_event_wire(e)).is_err() {
+                if write_sse(
+                    &mut stream,
+                    "event",
+                    Some(e.position),
+                    &console_event_wire(e),
+                )
+                .is_err()
+                {
                     return;
                 }
                 last_event = e.position;
@@ -3665,7 +3710,7 @@ fn serve_console_stream<F>(
             for e in new_progress {
                 let wire = console_progress_wire(e);
                 let v = serde_json::to_value(&wire).unwrap_or(serde_json::Value::Null);
-                if write_sse(&mut stream, "progress", &v).is_err() {
+                if write_sse(&mut stream, "progress", None, &v).is_err() {
                     return;
                 }
                 progress_floor = e.position;
@@ -3673,7 +3718,7 @@ fn serve_console_stream<F>(
 
             if !liveness_ages.is_empty() && last_liveness.elapsed() >= liveness_every {
                 let v = serde_json::json!({ "ages": liveness_ages });
-                if write_sse(&mut stream, "liveness", &v).is_err() {
+                if write_sse(&mut stream, "liveness", None, &v).is_err() {
                     return;
                 }
                 last_liveness = Instant::now();
@@ -3681,7 +3726,7 @@ fn serve_console_stream<F>(
         }
 
         if last_heartbeat.elapsed() >= heartbeat_every {
-            if write_sse(&mut stream, "heartbeat", &serde_json::json!({})).is_err() {
+            if write_sse(&mut stream, "heartbeat", None, &serde_json::json!({})).is_err() {
                 return;
             }
             last_heartbeat = Instant::now();

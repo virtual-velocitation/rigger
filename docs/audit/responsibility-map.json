@@ -11901,7 +11901,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"handle\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "3310a226f31958dc"
+    "content_hash": "35365e9ee2d2b61e"
   },
   {
     "file": "src/dash.rs",
@@ -11917,7 +11917,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "f474771c6f72a4b8"
+    "content_hash": "a584bf0fa44227d7"
   },
   {
     "file": "src/dash.rs",
@@ -11925,7 +11925,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "512852c13d89ad79"
+    "content_hash": "d716c184ced46bf2"
   },
   {
     "file": "src/dash.rs",

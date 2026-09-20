@@ -545,11 +545,11 @@
     "test_only_references": [
       {
         "file": "src/dash.rs",
-        "line": 8649
+        "line": 8694
       },
       {
         "file": "src/dash.rs",
-        "line": 8653
+        "line": 8698
       },
       {
         "file": "src/main.rs",
@@ -1284,7 +1284,7 @@
     "ambiguous_with": [
       "src/budget.rs:57",
       "src/contextgraph/query.rs:306",
-      "src/dash.rs:3727",
+      "src/dash.rs:3772",
       "src/driver/replay.rs:237",
       "src/driver/workflow.rs:83",
       "src/eventstore/mod.rs:109",
@@ -1331,35 +1331,35 @@
       },
       {
         "file": "src/dash.rs",
-        "line": 5436
+        "line": 5481
       },
       {
         "file": "src/dash.rs",
-        "line": 5502
+        "line": 5547
       },
       {
         "file": "src/dash.rs",
-        "line": 5587
+        "line": 5632
       },
       {
         "file": "src/dash.rs",
-        "line": 5588
+        "line": 5633
       },
       {
         "file": "src/dash.rs",
-        "line": 5589
+        "line": 5634
       },
       {
         "file": "src/dash.rs",
-        "line": 5590
+        "line": 5635
       },
       {
         "file": "src/dash.rs",
-        "line": 5591
+        "line": 5636
       },
       {
         "file": "src/dash.rs",
-        "line": 5593
+        "line": 5638
       },
       {
         "file": "src/driver/replay.rs",

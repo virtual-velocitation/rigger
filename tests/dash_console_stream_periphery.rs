@@ -42,18 +42,23 @@ use rigger::dash::{self, DashInputs, InstanceView};
 use rigger::eventstore::Event;
 use rigger::run::{META_BASE, META_RUN_ID};
 
-/// One SSE frame as this test reads it off the wire: the `event:` name and the `data:`
-/// line's raw text (never re-parsed here beyond what a real `EventSource` client itself
-/// would see - one event name, one data line, per the server's own `write_sse`).
+/// One SSE frame as this test reads it off the wire: the `event:` name, the optional `id:`
+/// line (only the server's `event` frames carry one - `adj-u94c3-verdict-reject-stream-
+/// reconnect-duplicate-events`'s fix, the one signal a real `EventSource` needs to send a
+/// meaningful `Last-Event-ID` on its own native reconnect) and the `data:` line's raw text
+/// (never re-parsed here beyond what a real `EventSource` client itself would see).
 #[derive(Debug)]
 struct Frame {
     event: String,
+    id: Option<String>,
     data: String,
 }
 
-/// Read exactly one SSE frame (`event: <name>\ndata: <json>\n\n`) off `r`, or `None` on EOF.
+/// Read exactly one SSE frame (`event: <name>\nid: <id>\ndata: <json>\n\n`, the `id:` line
+/// optional) off `r`, or `None` on EOF.
 fn read_frame(r: &mut impl BufRead) -> Option<Frame> {
     let mut event = None;
+    let mut id = None;
     let mut data = None;
     loop {
         let mut line = String::new();
@@ -66,12 +71,15 @@ fn read_frame(r: &mut impl BufRead) -> Option<Frame> {
         }
         if let Some(v) = line.strip_prefix("event: ") {
             event = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("id: ") {
+            id = Some(v.to_string());
         } else if let Some(v) = line.strip_prefix("data: ") {
             data = Some(v.to_string());
         }
     }
     Some(Frame {
         event: event.unwrap_or_default(),
+        id,
         data: data.unwrap_or_default(),
     })
 }
@@ -215,11 +223,28 @@ fn open_stream_with_progress_since(
 /// so `open_stream`/`open_stream_with_progress_since` and any test naming its own extra
 /// param share this exact header handling rather than each re-implementing it.
 fn open_stream_with_query(addr: std::net::SocketAddr, query: &str) -> BufReader<TcpStream> {
+    open_stream_with_query_and_headers(addr, query, &[])
+}
+
+/// Like [`open_stream_with_query`], but also names extra request headers (e.g. a real
+/// `EventSource`'s own native `Last-Event-ID` on its automatic reconnect - never a value a
+/// test picks in place of the server's own `id:` line). The one place this file builds the
+/// stream request, so every other opener in this file shares this exact header handling
+/// rather than re-implementing it.
+fn open_stream_with_query_and_headers(
+    addr: std::net::SocketAddr,
+    query: &str,
+    extra_headers: &[(&str, &str)],
+) -> BufReader<TcpStream> {
     let mut client = TcpStream::connect(addr).expect("connect to the served dash");
     client
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set a read timeout on the client");
-    let req = format!("GET /api/console/stream?{query} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    let mut req = format!("GET /api/console/stream?{query} HTTP/1.1\r\nHost: localhost\r\n");
+    for (name, value) in extra_headers {
+        req.push_str(&format!("{name}: {value}\r\n"));
+    }
+    req.push_str("\r\n");
     client.write_all(req.as_bytes()).expect("write the request");
     let mut reader = BufReader::new(client);
 
@@ -349,6 +374,73 @@ fn since_resumes_with_no_gap_and_no_replay() {
         "since=2 must skip the two pre-existing events, not replay them: {data:?}"
     );
     assert_eq!(data["position"], 3);
+}
+
+/// `write_sse` carries an `id:` line matching the event's own position for every `event`
+/// frame (`adj-u94c3-verdict-reject-stream-reconnect-duplicate-events`'s fix) - the one
+/// signal a real `EventSource` needs to keep `lastEventId` current, so its own native
+/// reconnect can send a meaningful `Last-Event-ID` instead of replaying from whatever
+/// `since=` the URL was constructed with at page-load.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn an_event_frame_carries_an_id_line_matching_its_position() {
+    let store = FakeStore::default();
+    let addr = serve_test_dash(store.clone());
+    let mut stream = open_stream(addr, 0);
+
+    store.push_event(ev("UnitStarted", r#"{"id":"u1"}"#));
+
+    let frame = read_frame(&mut stream).expect("a frame must arrive");
+    assert_eq!(frame.event, "event");
+    assert_eq!(
+        frame.id.as_deref(),
+        Some("1"),
+        "the event frame's id: line must match its own position: {frame:?}"
+    );
+}
+
+/// Regression for `adv-u94c3-stream-reconnect-duplicates-events` /
+/// `adj-u94c3-verdict-reject-stream-reconnect-duplicate-events`: an actual DROPPED and
+/// RECONNECTED stream, not just a fresh socket given a manually-supplied `since=`. The
+/// first connection sees one event and the `id:` line the test above proves; that
+/// connection is then dropped with no clean close - exactly what a laptop sleeping, a wifi
+/// blip or a backgrounded tab looks like from the server's side - while the URL's own
+/// `since=0` stays whatever it was at page-load (a real `EventSource`'s native retry
+/// reissues that SAME URL verbatim; `connectStream` never re-evaluates it). The reconnect
+/// carries `Last-Event-ID: 1`, exactly what the browser's own reconnect sends automatically
+/// using the `id:` line it kept from the first connection - never a value this test invents
+/// in `since=`'s place - and the server must resume PAST it, proving the header wins over
+/// the stale query value rather than replaying the already-delivered event a second time.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn a_reconnect_with_last_event_id_resumes_past_it_even_though_since_in_the_url_is_stale() {
+    let store = FakeStore::default();
+    store.push_event(ev("UnitStarted", r#"{"id":"u1"}"#));
+    let addr = serve_test_dash(store.clone());
+
+    // First connection: `since=0`, this tab's first ever connect.
+    let mut first = open_stream(addr, 0);
+    let frame = read_frame(&mut first).expect("the pre-existing event must arrive");
+    assert_eq!(frame.id.as_deref(), Some("1"), "{frame:?}");
+    drop(first); // the dropped connection: gone with no clean close.
+
+    store.push_event(ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#));
+
+    // The reconnect: the SAME stale `since=0` the URL still carries, but with
+    // `Last-Event-ID: 1` - what a real browser's own native retry sends.
+    let mut second = open_stream_with_query_and_headers(
+        addr,
+        "since=0&progress_since=0",
+        &[("Last-Event-ID", "1")],
+    );
+    let frame2 = read_frame(&mut second).expect("a frame must arrive after reconnect");
+    let data2: serde_json::Value = serde_json::from_str(&frame2.data).unwrap();
+    assert_eq!(
+        data2["type"], "UnitIntegrated",
+        "Last-Event-ID must win over the stale since=0 in the URL - the pre-existing \
+         event must never be replayed: {data2:?}"
+    );
+    assert_eq!(data2["position"], 2);
 }
 
 /// A new progress line appended after connect arrives as its own `progress` frame, carrying

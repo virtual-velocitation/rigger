@@ -175,6 +175,18 @@ fn op_fold_push(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
         Ok(v) => v,
         Err(e) => return error_reply(format!("fold_push: malformed input: {e}")),
     };
+    // Idempotent by position (adj-u94c3-verdict-reject-stream-reconnect-duplicate-events):
+    // this is the ONE place a page's live event log is mutated, so it is the one place a
+    // duplicate delivery must be caught, regardless of which transport path let it through
+    // (a browser's native `EventSource` reconnect replaying part of a range it already
+    // delivered, a page that calls `fold_push` twice for the same frame, or any future
+    // caller). A caller-visible position it has already applied answers the CURRENT fold
+    // unchanged - never a second copy appended and never a second `console::fold` re-run -
+    // so `session.events` cannot grow unboundedly from a repeated frame and `scrub_track`
+    // never renders two marks for one real event.
+    if session.events.iter().any(|e| e.position == ev.position) {
+        return ok_json(fold_state_reply(&session.current));
+    }
     let mut events = session.events.clone();
     events.push(ev.into_event());
     match console::fold(&events, session.max_retries) {
@@ -829,6 +841,48 @@ mod dispatch_tests {
             r#"{"type":"UnitIntegrated","data":{"id":"u1","commit":"abc"},"position":2}"#,
         );
         assert_eq!(v["units"]["u1"], "integrated", "{v:?}");
+    }
+
+    /// Regression for `adv-u94c3-stream-reconnect-duplicates-events` /
+    /// `adj-u94c3-verdict-reject-stream-reconnect-duplicate-events`: an ordinary dropped
+    /// connection (laptop sleep, wifi blip, a backgrounded tab) can hand `fold_push` the
+    /// SAME wire frame twice - a reconnect that replays part of a range it already
+    /// delivered. `fold_push` must be idempotent by position: pushing an already-applied
+    /// position a second time answers the fold UNCHANGED, never a second copy of the
+    /// event and never a second mark for the same real event. Proven at both levels the
+    /// finding named: `session.events` (no unbounded growth) and `scrub_track`'s own marks
+    /// (no duplicate mark) - the fold's `units` state alone would not distinguish "pushed
+    /// once" from "pushed twice", since folding the same `UnitIntegrated` again lands on
+    /// the identical status either way.
+    #[test]
+    fn fold_push_is_idempotent_for_a_position_already_applied() {
+        let mut s = ConsoleSession::new();
+        call(
+            &mut s,
+            "fold_reset",
+            r#"{"events":[{"type":"UnitStarted","data":{"id":"u1"},"position":1}]}"#,
+        );
+        let push = r#"{"type":"UnitIntegrated","data":{"id":"u1","commit":"abc"},"position":2}"#;
+        call(&mut s, "fold_push", push);
+        // The SAME frame again - exactly what a reconnect replaying an already-delivered
+        // range hands the core, never a value this test invents.
+        let v = call(&mut s, "fold_push", push);
+        assert_eq!(v["units"]["u1"], "integrated", "{v:?}");
+        assert_eq!(
+            s.events.len(),
+            2,
+            "a duplicate position must never grow the session's event log: {:?}",
+            s.events
+        );
+
+        let marks = call(&mut s, "scrub_track", "{}");
+        let marks = marks["marks"].as_array().expect("{marks:?}");
+        assert_eq!(
+            marks.len(),
+            1,
+            "a duplicate position must never render a second mark for the same real \
+             event: {marks:?}"
+        );
     }
 
     /// A `fold_reset` that never sends `max_retries` (the field omitted entirely, `None`
