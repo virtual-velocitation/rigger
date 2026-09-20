@@ -380,11 +380,15 @@
       },
       {
         "file": "src/console/mod.rs",
-        "line": 912
+        "line": 928
       },
       {
         "file": "src/console/mod.rs",
-        "line": 924
+        "line": 947
+      },
+      {
+        "file": "src/console/mod.rs",
+        "line": 959
       }
     ]
   },
@@ -395,27 +399,27 @@
     "test_only_references": [
       {
         "file": "src/console/mod.rs",
-        "line": 947
+        "line": 982
       },
       {
         "file": "src/console/mod.rs",
-        "line": 964
+        "line": 999
       },
       {
         "file": "src/console/mod.rs",
-        "line": 989
+        "line": 1024
       },
       {
         "file": "src/console/mod.rs",
-        "line": 1017
+        "line": 1052
       },
       {
         "file": "src/console/mod.rs",
-        "line": 1039
+        "line": 1074
       },
       {
         "file": "src/console/mod.rs",
-        "line": 1062
+        "line": 1097
       }
     ]
   },
@@ -1362,7 +1366,7 @@
       },
       {
         "file": "src/console/mod.rs",
-        "line": 935
+        "line": 970
       },
       {
         "file": "src/dash.rs",
