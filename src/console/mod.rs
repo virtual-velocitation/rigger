@@ -902,6 +902,41 @@ mod tests {
         );
     }
 
+    /// SCRUB_TRACK, hour ticks, the `>` vs `>=` boundary: once a REAL (non-epoch-sentinel)
+    /// timestamp has seeded `last_hour`, a SECOND event still within that SAME hour must
+    /// tick NEVER - only a STRICTLY greater hour crosses a boundary. The prior test's own
+    /// same-hour event (`based(30 * 60, 2)`) cannot pin this: it is the run's very FIRST
+    /// real timestamp, so `last_hour` is still `None` entering that check and the
+    /// `is_some_and` short-circuits to `false` regardless of `>` vs `>=` - it exercises
+    /// only the epoch-sentinel `continue` above, never this comparison. Here the baseline
+    /// event carries a genuine non-zero timestamp, so the second, same-hour event actually
+    /// reaches the `>`/`>=` comparison with `last_hour` already `Some(_)`.
+    #[test]
+    fn hour_ticks_never_double_ticks_a_second_event_within_the_seeded_hour() {
+        use std::time::{Duration, SystemTime};
+        let based = |secs: u64, pos: Position| {
+            let mut e = ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#);
+            e.position = pos;
+            e.recorded_at = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+            e
+        };
+        let events = vec![
+            based(60, 1),   // 00:01 - the first REAL timestamp: seeds hour 0, no tick
+            based(1800, 2), // 00:30 - still hour 0: no tick (pins `>`, not `>=`)
+            based(3660, 3), // 01:01 - crosses into hour 1: tick at position 3
+        ];
+        let track = scrub_track(&events);
+        assert_eq!(
+            track.ticks,
+            vec![ScrubTick {
+                position: 3,
+                label: "01:00".to_string()
+            }],
+            "a same-hour event right after the seeded baseline must never tick: {:?}",
+            track.ticks
+        );
+    }
+
     /// An event with the sentinel `recorded_at = UNIX_EPOCH` (`Event::mint_time`'s own
     /// core-lane fallback when a caller never set a real time - see its doc) contributes no
     /// boundary crossing: a wasm-decoded stream with no wire timestamp degrades to no ticks,
