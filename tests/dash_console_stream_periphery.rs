@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serial_test::serial;
 
@@ -294,6 +294,36 @@ fn a_newly_appended_console_event_arrives_as_an_event_frame_and_a_graph_type_nev
          reordered: {data2:?}"
     );
     assert_eq!(data2["position"], 3);
+}
+
+/// `console_event_wire`'s additive `recorded_at` field (spec 94 criterion 3,
+/// `d-u94c3-wire-event-recorded-at`) reaches a REAL client over the stream's `event` frame -
+/// not just `src/dash.rs`'s own inside-out unit test
+/// (`console_event_wire_carries_recorded_at`), which proves the JSON shape against the pure
+/// function in isolation and never crosses a socket. `console_event_wire` is the SAME
+/// function the snapshot's `events` array serializes with (`src/dash.rs:2845`), so this one
+/// real-socket proof for the stream's `event` frame covers both call sites of the one
+/// wire-shaping authority. Proves the wall-clock second `console::scrub_track`'s hour ticks
+/// need actually survives real HTTP/SSE framing - the one hop the in-process tests cannot see.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn a_console_event_frame_carries_recorded_at_as_unix_seconds_over_the_real_stream() {
+    let store = FakeStore::default();
+    let addr = serve_test_dash(store.clone());
+    let mut stream = open_stream(addr, 0);
+
+    let mut e = ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#);
+    e.recorded_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    store.push_event(e);
+
+    let frame = read_frame(&mut stream).expect("a frame must arrive");
+    assert_eq!(frame.event, "event");
+    let data: serde_json::Value = serde_json::from_str(&frame.data).expect("frame data is JSON");
+    assert_eq!(
+        data["recorded_at"], 1_700_000_000,
+        "the stream's event frame must carry the event's real recorded_at as unix seconds, \
+         the wall-clock second console::scrub_track's hour ticks need: {data:?}"
+    );
 }
 
 /// `since=N` resumes with no gap: a client that connects naming a position already past

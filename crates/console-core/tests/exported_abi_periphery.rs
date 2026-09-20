@@ -1476,3 +1476,195 @@ fn console_call_wires_scrub_track_through_the_public_abi() {
          console::scrub_track's own direct answer for the identical event log"
     );
 }
+
+/// `scrub_track`'s VERDICT marks read [`rigger::spawn::Adjudication::verdict`] - spec 94
+/// criterion 3's additive FIELD on the already-`pub` `Adjudication` struct (a plain
+/// `pub fn`/`struct`/`enum`/`trait`/`const`/`type` grep misses a new field on an existing
+/// item; this test exists precisely because that field never crosses a real boundary
+/// anywhere else). Proven crossing the real exported ABI, not merely `console::mod`'s own
+/// in-process tests (`scrub_track_marks_unit_verdicts_red_and_green`) or this crate's
+/// private `dispatch_tests`, both of which call `dispatch`/`scrub_track` directly and never
+/// go through `console_call`'s pointer-packing marshaling. A REJECT answers a different
+/// reply length than an APPROVE would (their tooltips differ: "u1: reject" vs "u1:
+/// approve"), each matching `console::scrub_track`'s own direct answer for the identical
+/// adjudicator result - proving the verdict literal itself, not just a mark's bare
+/// presence, survives the ABI.
+#[test]
+fn console_call_wires_scrub_track_reject_verdict_marks_through_the_public_abi() {
+    use rigger::console;
+    use rigger::spawn::SpawnResult;
+
+    let event = SpawnResult::ok(
+        "u1/adjudicator#0",
+        r#"{"verdict":"reject","cause":"genuine-defect"}"#,
+    )
+    .to_event()
+    .unwrap();
+    let data: serde_json::Value = serde_json::from_slice(&event.data).unwrap();
+    let wire = serde_json::json!({
+        "events": [{ "type": event.type_, "data": data, "position": 1 }]
+    })
+    .to_string();
+
+    let reset = unsafe { call("fold_reset", &wire) };
+    assert!(
+        reply_len(reset) > 0,
+        "fold_reset must answer a non-empty reply through the exported ABI"
+    );
+    let queried = unsafe { call("scrub_track", "{}") };
+
+    let mut direct_event = event;
+    direct_event.position = 1;
+    let direct = console::scrub_track(&[direct_event]);
+    assert_eq!(direct.marks.len(), 1, "test setup: {direct:?}");
+    assert_eq!(
+        direct.marks[0].color, "red",
+        "test setup must actually produce a reject mark: {direct:?}"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({
+        "marks": direct.marks,
+        "ticks": direct.ticks
+    }))
+    .unwrap()
+    .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "scrub_track's reject verdict mark through the exported ABI must be the same length \
+         as console::scrub_track's own direct answer for the identical adjudicator result"
+    );
+}
+
+/// The APPROVE half of `console_call_wires_scrub_track_reject_verdict_marks_through_the_public_abi`'s
+/// own doc - same real-ABI proof, the opposite verdict literal, so a regression that only
+/// wired one branch of `spawn::Adjudication::verdict`'s two known values through the ABI
+/// (or wired neither and always answered a fixed color) cannot pass both tests at once.
+#[test]
+fn console_call_wires_scrub_track_approve_verdict_marks_through_the_public_abi() {
+    use rigger::console;
+    use rigger::spawn::SpawnResult;
+
+    let event = SpawnResult::ok("u1/adjudicator#0", r#"{"verdict":"approve"}"#)
+        .to_event()
+        .unwrap();
+    let data: serde_json::Value = serde_json::from_slice(&event.data).unwrap();
+    let wire = serde_json::json!({
+        "events": [{ "type": event.type_, "data": data, "position": 1 }]
+    })
+    .to_string();
+
+    let reset = unsafe { call("fold_reset", &wire) };
+    assert!(
+        reply_len(reset) > 0,
+        "fold_reset must answer a non-empty reply through the exported ABI"
+    );
+    let queried = unsafe { call("scrub_track", "{}") };
+
+    let mut direct_event = event;
+    direct_event.position = 1;
+    let direct = console::scrub_track(&[direct_event]);
+    assert_eq!(direct.marks.len(), 1, "test setup: {direct:?}");
+    assert_eq!(
+        direct.marks[0].color, "green",
+        "test setup must actually produce an approve mark: {direct:?}"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({
+        "marks": direct.marks,
+        "ticks": direct.ticks
+    }))
+    .unwrap()
+    .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "scrub_track's approve verdict mark through the exported ABI must be the same length \
+         as console::scrub_track's own direct answer for the identical adjudicator result"
+    );
+}
+
+/// `WireEvent`'s additive `recorded_at` (spec 94 criterion 3, `d-u94c3-wire-event-recorded-at`)
+/// reaches `console::scrub_track`'s hour ticks through the REAL exported ABI - not merely
+/// through this crate's private `dispatch_tests`
+/// (`fold_reset_recorded_at_feeds_scrub_tracks_hour_ticks`), which calls `dispatch` directly
+/// and never crosses `console_call`'s own pointer-packing marshaling. Two wire events an hour
+/// apart, each carrying `recorded_at`, answer a `scrub_track` reply the same length as
+/// `console::scrub_track`'s own direct answer for the SAME two events built with
+/// `Event::recorded_at` set natively - proving the wire value actually reaches the `Event`,
+/// not merely surviving JSON parsing and then being dropped before the fold sees it.
+#[test]
+fn console_call_scrub_track_hour_ticks_read_recorded_at_across_the_public_abi() {
+    use rigger::console;
+    use rigger::eventstore::Event;
+    use std::time::{Duration, SystemTime};
+
+    let events_json = r#"{"events":[
+        {"type":"UnitStarted","data":{"id":"u1"},"position":1,"recorded_at":100},
+        {"type":"UnitIntegrated","data":{"id":"u1","commit":"abc"},"position":2,"recorded_at":4000}
+    ]}"#;
+    let reset = unsafe { call("fold_reset", events_json) };
+    assert!(
+        reply_len(reset) > 0,
+        "fold_reset must answer a non-empty reply through the exported ABI"
+    );
+
+    let queried = unsafe { call("scrub_track", "{}") };
+
+    let mut e0 = Event::new("UnitStarted", br#"{"id":"u1"}"#.to_vec());
+    e0.position = 1;
+    e0.recorded_at = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+    let mut e1 = Event::new("UnitIntegrated", br#"{"id":"u1","commit":"abc"}"#.to_vec());
+    e1.position = 2;
+    e1.recorded_at = SystemTime::UNIX_EPOCH + Duration::from_secs(4000);
+    let direct = console::scrub_track(&[e0, e1]);
+    assert_eq!(
+        direct.ticks.len(),
+        1,
+        "test setup must actually cross an hour boundary: {direct:?}"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({
+        "marks": direct.marks,
+        "ticks": direct.ticks
+    }))
+    .unwrap()
+    .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "scrub_track's hour ticks through the exported ABI must be the same length as \
+         console::scrub_track's own direct answer when the wire events carry recorded_at"
+    );
+}
+
+/// Back-compat half of `d-u94c3-wire-event-recorded-at`: a wire event that OMITS
+/// `recorded_at` entirely - every snapshot recorded before this criterion, and every other
+/// `fold_reset` call in this file - still answers `scrub_track`'s documented degrade (no
+/// ticks, never an error) through the REAL exported ABI, not just `hour_ticks`'s own
+/// in-process unit test.
+#[test]
+fn console_call_scrub_track_omits_ticks_through_the_public_abi_when_the_wire_carries_no_recorded_at(
+) {
+    let reset = unsafe {
+        call(
+            "fold_reset",
+            r#"{"events":[{"type":"UnitStarted","data":{"id":"u1"},"position":1}]}"#,
+        )
+    };
+    assert!(
+        reply_len(reset) > 0,
+        "fold_reset must answer a non-empty reply through the exported ABI"
+    );
+
+    let queried = unsafe { call("scrub_track", "{}") };
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "marks": [], "ticks": [] }))
+        .unwrap()
+        .len();
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "a wire event with no recorded_at must degrade to an empty ticks list through the \
+         exported ABI, never an error or a spurious tick"
+    );
+}
