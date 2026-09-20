@@ -6989,6 +6989,11 @@
         "content_hash": "c2dfa05b7c5ac948"
       },
       {
+        "file": "tests/statusline_command_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "6381403cc55e857d"
+      },
+      {
         "file": "tests/step_attention_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "0735b50d92c43a6c"
@@ -7365,7 +7370,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 750 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 751 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0062",

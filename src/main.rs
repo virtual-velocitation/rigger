@@ -2026,6 +2026,17 @@ fn server_store_location(cwd: &Path) -> StoreLocation {
     StoreLocation { dir }
 }
 
+/// Marker error: [`require_store_dir`] found no `.rigger/events.db` at or above the cwd (spec
+/// 94 criterion 5 round 2 - the checkin adjudication reject on `adv-u94c5-setup-wires-a-
+/// command-that-hard-fails-with-no-run-yet`). `cmd_status`'s `--line` path downcasts on this
+/// SPECIFIC type, never a string match on the message it carries, to degrade to a graceful
+/// placeholder instead of the CLI's hard error; every other caller of `require_store_dir`
+/// (and every OTHER failure `--line` itself can hit) still propagates it exactly as the plain
+/// error it replaces - only the message text moved into a named type, byte-for-byte.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct NoStoreFound(String);
+
 /// Resolve the `.rigger` store a store-opening COURIER command (`emit`/`result`/`peers`/
 /// `reported`) must use, REFUSING rather than fabricating a fresh empty store when neither
 /// the current directory nor any ancestor holds one (spec 05, done-when: "store-opening
@@ -2085,15 +2096,14 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
     }
     let walk = walk_stores_from(&cwd);
     let dir = walk.dir.ok_or_else(|| -> Box<dyn std::error::Error> {
-        format!(
+        Box::new(NoStoreFound(format!(
             "no rigger store found: neither {} nor any parent directory has an initialized \
              {RIGGER_DIR}/events.db. This usually means the command ran from the wrong \
              directory (e.g. a unit worktree, whose {RIGGER_DIR} is not the run's store). \
              Run it from the project root that owns the run; refusing to fabricate a fresh \
              empty store here.",
             cwd.display()
-        )
-        .into()
+        )))
     })?;
     // Outermost store wins (spec 08 item 6): a NEARER shadow `events.db` (inside a unit
     // worktree or a scratch dir) must never SILENTLY eclipse the repo root's real run
@@ -7885,6 +7895,14 @@ fn liveness_ages_for_wave(
     ages
 }
 
+/// Spec 94 CONSTRAINTS WALK's own empty-store text ("no run recorded; start one with `rigger
+/// run <spec>`"): the ONE placeholder [`cmd_status`]'s `--line` path renders for the literal
+/// state `rigger setup` itself leaves every project in (no `.rigger/events.db` anywhere yet,
+/// until the first `rigger run` - or again after a store reset), so this line and the future
+/// console page's identical empty-store render (specs 95-98) are never two independently-
+/// worded copies of the same fact.
+const NO_RUN_RECORDED_LINE: &str = "no run recorded; start one with `rigger run <spec>`";
+
 /// `rigger status [--json|--line]` - present the live per-agent view of the current run (spec
 /// 14, unit 2). Rigger CONSOLIDATES its three signals for every in-flight spawn - the
 /// run-stream milestone, the latest progress report, and the liveness-marker age it reads in
@@ -7917,7 +7935,32 @@ fn cmd_status(args: &[String]) -> Res {
     if json && line {
         return Err("status: --line and --json are mutually exclusive".into());
     }
-    let (loc, selection) = require_store_dir()?;
+    // Spec 94 criterion 5 round 2 (checkin adjudication reject on
+    // `adv-u94c5-setup-wires-a-command-that-hard-fails-with-no-run-yet`): `--line` is the
+    // exact command `rigger setup` registers as the editor's status line, so an editor polls
+    // it automatically and unconditionally - with no human present to read a hard error. The
+    // literal state `rigger setup` itself leaves every project in (no `.rigger/events.db`
+    // anywhere yet, until the first `rigger run`, and again after any store reset) must
+    // render [`NO_RUN_RECORDED_LINE`] with exit 0 instead of propagating
+    // `require_store_dir`'s refusal - the SAME graceful degradation the console's own
+    // empty-store shell takes (spec 94 CONSTRAINTS WALK), never a second wording. Matched by
+    // DOWNCASTING on [`NoStoreFound`] specifically (never a string match on its message), so
+    // every OTHER `--line` failure (a corrupt store, an unreadable stream) still propagates
+    // exactly as before this round - only the no-store-at-all case degrades. The default and
+    // `--json` paths below are human-invoked and keep the CLI's existing hard refusal
+    // unchanged: this fast path is `--line`-only.
+    let (loc, selection) = if line {
+        match require_store_dir() {
+            Ok(pair) => pair,
+            Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => {
+                println!("{NO_RUN_RECORDED_LINE}");
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        require_store_dir()?
+    };
     let now = std::time::SystemTime::now();
 
     // The current run's slice of the run stream, and its id.

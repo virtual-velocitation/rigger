@@ -197,6 +197,38 @@ fn status_line_on_a_clean_run() {
     assert_eq!(out.trim_end_matches('\n'), "- . 0/0 units . healthy");
 }
 
+/// The literal state `rigger setup` itself leaves every project in, until the first `rigger
+/// run`: no `.rigger/events.db` exists yet anywhere, only the settings `rigger setup` just
+/// wrote. The editor polls `--line` unconditionally, with no human to read a hard error, so
+/// it must render the SAME graceful text the console's own empty-store shell renders (spec 94
+/// CONSTRAINTS WALK: "no run recorded; start one with `rigger run <spec>`"), exit 0 - never
+/// the CLI's "no rigger store found" refusal every other store-opening courier still gives
+/// (adjudication reject on the prior round: adv-u94c5-setup-wires-a-command-that-hard-fails-
+/// with-no-run-yet).
+#[test]
+fn status_line_on_a_project_with_no_store_yet_renders_a_graceful_placeholder() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["setup"]);
+    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
+    assert!(
+        !root.join(".rigger").join("events.db").exists(),
+        "this test only means something in the literal post-setup, no-store-yet state"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["status", "--line"]);
+    assert!(
+        ok,
+        "rigger status --line must succeed even before the first `rigger run`; stderr:\n{err}"
+    );
+    assert_eq!(
+        out.trim_end_matches('\n'),
+        "no run recorded; start one with `rigger run <spec>`",
+        "must mirror the console's own empty-store text (spec 94 CONSTRAINTS WALK); got:\n{out}"
+    );
+}
+
 /// `rigger status --line --json` (or any other combination with `--json`) is rejected: the
 /// two are different output modes for the same command and cannot both apply to one call.
 #[test]

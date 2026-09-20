@@ -6277,7 +6277,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"store_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "02afc1a2cca9cefc"
+    "content_hash": "d1146b0092466ea2"
   },
   {
     "file": "src/main.rs",
@@ -7165,7 +7165,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "857529cf00437ef8"
+    "content_hash": "3daeacb74aba8d50"
   },
   {
     "file": "src/main.rs",
