@@ -282,3 +282,60 @@ fn setup_registers_the_statusline_command() {
         "a rerun on an up-to-date repo must not re-report the status line registration; got:\n{out2}"
     );
 }
+
+/// `rigger setup`'s statusLine registration is drift-aware like every other install step
+/// (mirrors `install_operator_mcp`'s identical Installed/Refreshed/AlreadyCurrent contract,
+/// proven for that artifact by
+/// `setup_reports_a_drifted_operator_mcp_server_as_refreshed_through_the_full_composition` in
+/// `tests/cli.rs`): a `statusLine` command drifted from an older build (or a hand edit) is
+/// self-healed AND reported as refreshed - distinct from a fresh install, and never silently
+/// repaired - and no sibling artifact `setup` already installed re-reports merely because this
+/// one drifted.
+#[test]
+fn setup_reports_a_drifted_statusline_command_as_refreshed() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["setup"]);
+    assert!(ok, "the first setup must succeed; stderr:\n{err}");
+
+    // Hand-corrupt ONLY the statusLine entry (an older build's command, or a hand edit) -
+    // every other artifact `setup` just installed stays exactly as it is.
+    let settings_path = root.join(".claude").join("settings.json");
+    let mut settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    settings["statusLine"] = serde_json::json!({
+        "type": "command",
+        "command": "/old/stale/statusline.sh",
+    });
+    std::fs::write(
+        &settings_path,
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+
+    let (out2, err2, ok2) = run_rigger(root, &["setup"]);
+    assert!(ok2, "the repair rerun must succeed; stderr:\n{err2}");
+    assert!(
+        out2.contains("refreshed the drifted rigger status line command"),
+        "a drifted statusLine entry must be reported as refreshed, not silently repaired; got:\n{out2}"
+    );
+    assert!(
+        !out2.contains("registered the rigger status line command"),
+        "a refresh must never be misreported as a fresh install; got:\n{out2}"
+    );
+    // Nothing ELSE drifted - the already-installed SessionStart hook must not re-report,
+    // proving the combined gate isolates the one artifact that actually changed.
+    assert!(
+        !out2.contains("registered the rigger MCP server")
+            && !out2.contains("installed the graph-first lookup hook"),
+        "an untouched artifact must not re-report merely because a sibling drifted; got:\n{out2}"
+    );
+
+    let settings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    assert_eq!(
+        settings["statusLine"]["command"], "rigger status --line",
+        "the drifted command must self-heal to the current build's own invocation"
+    );
+}
