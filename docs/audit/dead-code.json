@@ -447,7 +447,7 @@
   {
     "name": "palette_commands",
     "file": "src/console/mod.rs",
-    "content_hash": "8dfa75f269eccf56",
+    "content_hash": "63c75c6672d67c61",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [

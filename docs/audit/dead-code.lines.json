@@ -356,66 +356,66 @@
     "test_only_references": [
       {
         "file": "src/console/mod.rs",
-        "line": 760
+        "line": 761
       },
       {
         "file": "src/console/mod.rs",
-        "line": 784
+        "line": 785
       },
       {
         "file": "src/console/mod.rs",
-        "line": 806
+        "line": 807
       },
       {
         "file": "src/console/mod.rs",
-        "line": 823
+        "line": 824
       },
       {
         "file": "src/console/mod.rs",
-        "line": 855
+        "line": 856
       },
       {
         "file": "src/console/mod.rs",
-        "line": 883
+        "line": 884
       },
       {
         "file": "src/console/mod.rs",
-        "line": 908
+        "line": 909
       },
       {
         "file": "src/console/mod.rs",
-        "line": 920
+        "line": 921
       }
     ]
   },
   {
     "file": "src/console/mod.rs",
     "name": "palette_commands",
-    "line": 419,
+    "line": 428,
     "test_only_references": [
       {
         "file": "src/console/mod.rs",
-        "line": 943
+        "line": 944
       },
       {
         "file": "src/console/mod.rs",
-        "line": 960
+        "line": 961
       },
       {
         "file": "src/console/mod.rs",
-        "line": 985
+        "line": 986
       },
       {
         "file": "src/console/mod.rs",
-        "line": 1013
+        "line": 1014
       },
       {
         "file": "src/console/mod.rs",
-        "line": 1035
+        "line": 1036
       },
       {
         "file": "src/console/mod.rs",
-        "line": 1064
+        "line": 1059
       }
     ]
   },
@@ -1114,7 +1114,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 9991
+        "line": 9997
       }
     ]
   },
@@ -1362,7 +1362,7 @@
       },
       {
         "file": "src/console/mod.rs",
-        "line": 931
+        "line": 932
       },
       {
         "file": "src/dash.rs",
@@ -1506,115 +1506,115 @@
       },
       {
         "file": "src/spawn.rs",
-        "line": 1105
+        "line": 1132
       },
       {
         "file": "src/spawn.rs",
-        "line": 1114
+        "line": 1141
       },
       {
         "file": "src/spawn.rs",
-        "line": 1130
+        "line": 1157
       },
       {
         "file": "src/spawn.rs",
-        "line": 1146
+        "line": 1173
       },
       {
         "file": "src/spawn.rs",
-        "line": 1171
+        "line": 1198
       },
       {
         "file": "src/spawn.rs",
-        "line": 1172
+        "line": 1199
       },
       {
         "file": "src/spawn.rs",
-        "line": 1241
+        "line": 1268
       },
       {
         "file": "src/spawn.rs",
-        "line": 1249
+        "line": 1276
       },
       {
         "file": "src/spawn.rs",
-        "line": 1362
+        "line": 1389
       },
       {
         "file": "src/spawn.rs",
-        "line": 1378
+        "line": 1405
       },
       {
         "file": "src/spawn.rs",
-        "line": 1382
+        "line": 1409
       },
       {
         "file": "src/spawn.rs",
-        "line": 1385
+        "line": 1412
       },
       {
         "file": "src/spawn.rs",
-        "line": 1445
+        "line": 1472
       },
       {
         "file": "src/spawn.rs",
-        "line": 1473
+        "line": 1500
       },
       {
         "file": "src/spawn.rs",
-        "line": 1488
+        "line": 1515
       },
       {
         "file": "src/spawn.rs",
-        "line": 1504
+        "line": 1531
       },
       {
         "file": "src/spawn.rs",
-        "line": 1518
+        "line": 1545
       },
       {
         "file": "src/spawn.rs",
-        "line": 1537
+        "line": 1564
       },
       {
         "file": "src/spawn.rs",
-        "line": 1596
+        "line": 1623
       },
       {
         "file": "src/spawn.rs",
-        "line": 1620
+        "line": 1647
       },
       {
         "file": "src/spawn.rs",
-        "line": 1638
+        "line": 1665
       },
       {
         "file": "src/spawn.rs",
-        "line": 1658
+        "line": 1685
       },
       {
         "file": "src/spawn.rs",
-        "line": 1676
+        "line": 1703
       },
       {
         "file": "src/spawn.rs",
-        "line": 1694
+        "line": 1721
       },
       {
         "file": "src/spawn.rs",
-        "line": 1695
+        "line": 1722
       },
       {
         "file": "src/spawn.rs",
-        "line": 1735
+        "line": 1762
       },
       {
         "file": "src/spawn.rs",
-        "line": 1766
+        "line": 1793
       },
       {
         "file": "src/spawn.rs",
-        "line": 1880
+        "line": 1907
       },
       {
         "file": "src/spawn_store.rs",
@@ -1853,11 +1853,11 @@
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1115
+        "line": 1142
       },
       {
         "file": "src/spawn.rs",
-        "line": 1131
+        "line": 1158
       }
     ]
   },
@@ -1868,15 +1868,15 @@
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1116
+        "line": 1143
       },
       {
         "file": "src/spawn.rs",
-        "line": 1132
+        "line": 1159
       },
       {
         "file": "src/spawn.rs",
-        "line": 1173
+        "line": 1200
       },
       {
         "file": "src/spawn_store.rs",
@@ -1891,11 +1891,11 @@
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1117
+        "line": 1144
       },
       {
         "file": "src/spawn.rs",
-        "line": 1133
+        "line": 1160
       }
     ]
   },
@@ -1906,11 +1906,11 @@
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1118
+        "line": 1145
       },
       {
         "file": "src/spawn.rs",
-        "line": 1134
+        "line": 1161
       }
     ]
   },
@@ -1921,15 +1921,15 @@
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1119
+        "line": 1146
       },
       {
         "file": "src/spawn.rs",
-        "line": 1135
+        "line": 1162
       },
       {
         "file": "src/spawn.rs",
-        "line": 1174
+        "line": 1201
       },
       {
         "file": "src/spawn_store.rs",
@@ -1944,15 +1944,15 @@
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1474
+        "line": 1501
       },
       {
         "file": "src/spawn.rs",
-        "line": 1504
+        "line": 1531
       },
       {
         "file": "src/spawn.rs",
-        "line": 1538
+        "line": 1565
       }
     ]
   },
@@ -1963,15 +1963,15 @@
     "test_only_references": [
       {
         "file": "src/spawn.rs",
-        "line": 1596
+        "line": 1623
       },
       {
         "file": "src/spawn.rs",
-        "line": 1639
+        "line": 1666
       },
       {
         "file": "src/spawn.rs",
-        "line": 1677
+        "line": 1704
       }
     ]
   },

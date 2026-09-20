@@ -451,6 +451,13 @@ impl SpawnRequest {
     }
 }
 
+/// The [`TYPE_SPAWN_REQUESTED`] events in `events`, still serialized - the ONE prefilter
+/// [`recorded`], [`is_recorded`] and [`recorded_lenient`] all fold over, so a non-spawn
+/// event is skipped in exactly one place rather than three times over.
+fn spawn_requested_events(events: &[Event]) -> impl Iterator<Item = &Event> {
+    events.iter().filter(|e| e.type_ == TYPE_SPAWN_REQUESTED)
+}
+
 /// Fold the [`TYPE_SPAWN_REQUESTED`] events in `events` into the spawn requests
 /// already parked, keyed by their deterministic id.
 ///
@@ -458,14 +465,15 @@ impl SpawnRequest {
 /// log) from an unrecorded one (park it); the budget breaker counts the entries.
 /// Non-spawn events are ignored, so the same run stream feeds this and the
 /// ledger/graph projections. A re-parked id (an idempotency violation the replay
-/// driver is responsible for preventing) collapses to the last-written request.
+/// driver is responsible for preventing) collapses to the last-written request. A
+/// malformed spawn body is a genuine invariant violation for both callers, so this
+/// propagates the parse error rather than skipping it - see [`recorded_lenient`] for
+/// the degrade-tolerant sibling a read-only display caller needs instead.
 pub fn recorded(events: &[Event]) -> Result<BTreeMap<String, SpawnRequest>, serde_json::Error> {
     let mut out = BTreeMap::new();
-    for e in events {
-        if e.type_ == TYPE_SPAWN_REQUESTED {
-            let req = SpawnRequest::from_event(e)?;
-            out.insert(req.id.clone(), req);
-        }
+    for e in spawn_requested_events(events) {
+        let req = SpawnRequest::from_event(e)?;
+        out.insert(req.id.clone(), req);
     }
     Ok(out)
 }
@@ -474,9 +482,28 @@ pub fn recorded(events: &[Event]) -> Result<BTreeMap<String, SpawnRequest>, serd
 /// membership check over [`recorded`] for the replay driver's park-or-replay
 /// decision. A malformed spawn event never matches (it cannot carry a valid id).
 pub fn is_recorded(events: &[Event], id: &str) -> bool {
-    events.iter().any(|e| {
-        e.type_ == TYPE_SPAWN_REQUESTED && SpawnRequest::from_event(e).is_ok_and(|r| r.id == id)
-    })
+    spawn_requested_events(events).any(|e| SpawnRequest::from_event(e).is_ok_and(|r| r.id == id))
+}
+
+/// Degrade-tolerant sibling of [`recorded`] (spec 94 c4, adj-u94c4-r3-verdict-reject-
+/// recorded-spawn-duplication): the SAME fold over [`TYPE_SPAWN_REQUESTED`] events,
+/// sharing [`spawn_requested_events`]'s own prefilter, but a malformed body is SKIPPED
+/// rather than failing the whole enumeration. For a read-only DISPLAY caller
+/// (`console::palette_commands`'s agent list) where one bad/older-run entry must lose
+/// only its own row, never the whole reply - CONSTRAINTS WALK: "An older run lacking a
+/// field - the fold renders the blank, never fails." [`recorded`]'s own `?` stays
+/// correct for its OTHER callers (the replay driver's park-or-replay decision, the
+/// budget breaker's hard count), where a malformed spawn is a genuine invariant
+/// violation this function must never silently paper over - this is a second entry
+/// point for a genuinely different caller contract, not a relaxation of that one.
+pub fn recorded_lenient(events: &[Event]) -> BTreeMap<String, SpawnRequest> {
+    let mut out = BTreeMap::new();
+    for e in spawn_requested_events(events) {
+        if let Ok(req) = SpawnRequest::from_event(e) {
+            out.insert(req.id.clone(), req);
+        }
+    }
+    out
 }
 
 /// The event type a recorded spawn RESULT is persisted as - the "result" half of the

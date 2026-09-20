@@ -44,6 +44,15 @@ struct ConsoleSession {
     events: Vec<Event>,
     max_retries: u32,
     current: console::ConsoleState,
+    /// The position `current` was folded as of (spec 94 c3, THE POSITION MODEL), or `None`
+    /// for the LIVE head - `fold_reset`/`fold_push` always fold the whole accumulated log
+    /// (so they set this back to `None`), `fold_at` scrubs to one position (so it sets this
+    /// to `Some(that position)`). The SINGLE source of truth [`events_at_cursor`] reads so
+    /// every op that must stay state-of-the-cursor-consistent with `current` (today, only
+    /// `palette_commands`'s agent section) narrows together with it under a scrub, rather
+    /// than one section quietly answering from the full, unscoped log
+    /// (adv-u94c4-r3-palette-agent-list-ignores-scrub-cursor-courtroom-list-does-not).
+    cursor: Option<u64>,
     graph: Option<Graph>,
     /// The last `map_build`-computed map engine model (spec 84 criterion 1: districts, rank,
     /// world-space layout) - `map_frame` renders a screen-space [`console::map::DrawList`] from
@@ -62,6 +71,7 @@ impl ConsoleSession {
             events: Vec::new(),
             max_retries: 0,
             current: console::fold(&[], 0).unwrap_or_default(),
+            cursor: None,
             graph: None,
             map: None,
             map_viewport: (0.0, 0.0),
@@ -164,6 +174,8 @@ fn op_fold_reset(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
             session.events = events;
             session.max_retries = max_retries;
             session.current = state;
+            // A reset always describes the live head, never a scrub - see `cursor`'s own doc.
+            session.cursor = None;
             ok_json(fold_state_reply(&session.current))
         }
         Err(e) => error_reply(format!("fold_reset: {e}")),
@@ -193,6 +205,8 @@ fn op_fold_push(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
         Ok(state) => {
             session.events = events;
             session.current = state;
+            // A push always folds the whole (now-extended) live log - see `cursor`'s own doc.
+            session.cursor = None;
             ok_json(fold_state_reply(&session.current))
         }
         Err(e) => error_reply(format!("fold_push: {e}")),
@@ -204,20 +218,41 @@ struct FoldAtInput {
     position: u64,
 }
 
+/// Every event in `events` at or before `position` - the ONE truncation [`op_fold_at`] and
+/// [`events_at_cursor`] both apply, so a scrub position means the identical prefix
+/// wherever it is read from.
+fn events_up_to(events: &[Event], position: u64) -> Vec<Event> {
+    events
+        .iter()
+        .filter(|e| e.position <= position)
+        .cloned()
+        .collect()
+}
+
+/// The event window `session.current` was folded over RIGHT NOW (spec 94 c3, THE POSITION
+/// MODEL) - `session.events` truncated to `session.cursor` when the session is scrubbed,
+/// or the whole accumulated log at the live head. Every op that must stay state-of-the-
+/// cursor-consistent with `session.current` reads THROUGH this rather than `session.events`
+/// directly, so a scrub via `fold_at` narrows every dependent view together - see
+/// [`op_palette_commands`], the one caller today
+/// (adv-u94c4-r3-palette-agent-list-ignores-scrub-cursor-courtroom-list-does-not).
+fn events_at_cursor(session: &ConsoleSession) -> Vec<Event> {
+    match session.cursor {
+        Some(position) => events_up_to(&session.events, position),
+        None => session.events.clone(),
+    }
+}
+
 fn op_fold_at(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
     let p: FoldAtInput = match serde_json::from_slice(input) {
         Ok(v) => v,
         Err(e) => return error_reply(format!("fold_at: malformed input: {e}")),
     };
-    let slice: Vec<Event> = session
-        .events
-        .iter()
-        .filter(|e| e.position <= p.position)
-        .cloned()
-        .collect();
+    let slice = events_up_to(&session.events, p.position);
     match console::fold(&slice, session.max_retries) {
         Ok(state) => {
             session.current = state.clone();
+            session.cursor = Some(p.position);
             ok_json(fold_state_reply(&state))
         }
         Err(e) => error_reply(format!("fold_at: {e}")),
@@ -247,15 +282,22 @@ fn op_scrub_track(session: &ConsoleSession) -> Vec<u8> {
     ok_json(serde_json::json!({ "marks": track.marks, "ticks": track.ticks }))
 }
 
-/// `palette_commands` (spec 94 c4, THE PALETTE): the session's own accumulated event
-/// log plus its already-folded units, through [`console::palette_commands`] - not a
-/// second, independently-derived copy. Takes no input (like `scrub_track`): the whole
-/// recorded stream is already loaded via `fold_reset`/`fold_push`. Like `scrub_track`,
-/// never errors: `console::palette_commands` itself never fails (a malformed recorded
-/// spawn loses only its own agent row - CONSTRAINTS WALK: "An older run lacking a field
-/// - the fold renders the blank, never fails"), so this has no error path to answer.
+/// `palette_commands` (spec 94 c4, THE PALETTE): the session's own event log - narrowed
+/// to the SAME cursor `session.current` was folded at, through [`events_at_cursor`], never
+/// the raw unscoped `session.events` - plus its already-folded units, through
+/// [`console::palette_commands`] (not a second, independently-derived copy). This is what
+/// keeps the courtroom section (already reading `session.current.units`, cursor-scoped by
+/// construction) and the agent section in agreement after a `fold_at` scrub
+/// (adv-u94c4-r3-palette-agent-list-ignores-scrub-cursor-courtroom-list-does-not) - both
+/// now fold from the one `events_at_cursor` window. Takes no input (like `scrub_track`):
+/// the whole recorded stream is already loaded via `fold_reset`/`fold_push`/`fold_at`.
+/// Like `scrub_track`, never errors: `console::palette_commands` itself never fails (a
+/// malformed recorded spawn loses only its own agent row - CONSTRAINTS WALK: "An older
+/// run lacking a field - the fold renders the blank, never fails"), so this has no error
+/// path to answer.
 fn op_palette_commands(session: &ConsoleSession) -> Vec<u8> {
-    let commands = console::palette_commands(&session.events, &session.current.units);
+    let events = events_at_cursor(session);
+    let commands = console::palette_commands(&events, &session.current.units);
     ok_json(serde_json::json!({ "commands": commands }))
 }
 
@@ -1633,6 +1675,74 @@ mod dispatch_tests {
         assert!(
             !commands.iter().any(|c| c["kind"] == "agent"),
             "a malformed spawn must never produce an agent row: {commands:?}"
+        );
+    }
+
+    /// `palette_commands` after a `fold_at` scrub keeps its courtroom section (already
+    /// cursor-scoped through `session.current.units`, which `fold_at` folded over the
+    /// truncated prefix) and its agent section IN AGREEMENT about the same cursor -
+    /// adv-u94c4-r3-palette-agent-list-ignores-scrub-cursor-courtroom-list-does-not: before
+    /// this fix the agent section always read `session.events` (the full, unscoped log)
+    /// while the courtroom section read `session.current.units` (scoped to the scrub
+    /// position), so the two disagreed after any backward scrub. `u2` and its spawn are
+    /// recorded AFTER the scrub position, so a correct reply omits both consistently - the
+    /// SAME position both sections must honor (spec 94 Goal: "one page whose every view is
+    /// the state of the run after N events").
+    #[test]
+    fn palette_commands_after_fold_at_scopes_courtroom_and_agents_to_the_same_cursor() {
+        let mut s = ConsoleSession::new();
+        call(
+            &mut s,
+            "fold_reset",
+            r#"{"events":[
+                {"type":"UnitStarted","data":{"id":"u1"},"position":1},
+                {"type":"SpawnRequested","data":{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"},"position":2},
+                {"type":"UnitStarted","data":{"id":"u2"},"position":3},
+                {"type":"SpawnRequested","data":{"id":"u2/implementer#0","unit":"u2","stage":"implement","prompt":"do it"},"position":4}
+            ]}"#,
+        );
+
+        // Scrub back to right after u1's own spawn, before u2 ever appears.
+        call(&mut s, "fold_at", r#"{"position":2}"#);
+        let v = call(&mut s, "palette_commands", "{}");
+        let commands = v["commands"].as_array().expect("{v:?}");
+        let courtrooms: std::collections::BTreeSet<&str> = commands
+            .iter()
+            .filter(|c| c["kind"] == "courtroom")
+            .map(|c| c["id"].as_str().expect("id"))
+            .collect();
+        let agents: std::collections::BTreeSet<&str> = commands
+            .iter()
+            .filter(|c| c["kind"] == "agent")
+            .map(|c| c["id"].as_str().expect("id"))
+            .collect();
+        assert_eq!(
+            courtrooms,
+            std::collections::BTreeSet::from(["u1"]),
+            "courtroom section must reflect the scrub position: {commands:?}"
+        );
+        assert_eq!(
+            agents,
+            std::collections::BTreeSet::from(["u1/implementer#0"]),
+            "agent section must reflect the SAME scrub position the courtroom section \
+             does, not the full unscoped log: {commands:?}"
+        );
+
+        // Scrubbing forward again to the head restores u2 and its spawn to BOTH sections.
+        call(&mut s, "fold_at", r#"{"position":4}"#);
+        let v = call(&mut s, "palette_commands", "{}");
+        let commands = v["commands"].as_array().expect("{v:?}");
+        assert!(
+            commands
+                .iter()
+                .any(|c| c["kind"] == "courtroom" && c["id"] == "u2"),
+            "{commands:?}"
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| c["kind"] == "agent" && c["id"] == "u2/implementer#0"),
+            "{commands:?}"
         );
     }
 

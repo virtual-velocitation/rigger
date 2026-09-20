@@ -3937,15 +3937,21 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // construction of ScrubTrack itself is not counted, matching frame/hit's own "struct
         // literal, not a call edge" exclusion above) = 10.
         ("src/console/mod.rs", "scrub_track") => 10,
-        // palette_commands (src/console/mod.rs, spec 94 criterion 4, new): 5 test-only call
+        // palette_commands (src/console/mod.rs, spec 94 criterion 4, new): 6 test-only call
         // sites (palette_commands_lists_the_seven_views_in_tab_order,
         // palette_commands_lists_every_units_courtroom,
         // palette_commands_lists_every_distinct_recorded_agent,
         // palette_commands_includes_jump_to_live_and_replay_from_start,
-        // palette_commands_propagates_a_malformed_spawn_requested_event - 1 call each) plus 1
-        // local outgoing call (spawn::recorded, read through it for every recorded agent id
-        // rather than a second parser of SpawnRequested - see palette_commands's own doc) = 6.
-        ("src/console/mod.rs", "palette_commands") => 6,
+        // palette_commands_omits_only_a_malformed_spawn_requested_entry (round 3's rename of
+        // the prior palette_commands_propagates_a_malformed_spawn_requested_event, when the
+        // degrade-not-fail fix landed), palette_commands_keeps_a_valid_spawn_alongside_a_
+        // malformed_one (round 3, new) - 1 call each) plus 1 local outgoing call
+        // (spawn::recorded_lenient, read through it for every recorded agent id rather than a
+        // second parser of SpawnRequested - see palette_commands's own doc; round 4 swapped
+        // this in for the prior spawn::recorded call this comment used to cite, once
+        // spawn::recorded_lenient was added as recorded's degrade-tolerant sibling so the
+        // enumeration lives in exactly one place) = 7.
+        ("src/console/mod.rs", "palette_commands") => 7,
         (other_file, other_name) => panic!(
             "dead-code candidate {other_file}::{other_name} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \

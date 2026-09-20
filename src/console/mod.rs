@@ -22,7 +22,7 @@
 /// semantic zoom, label placement). `core`, like this module itself - see [`map`]'s own doc.
 pub mod map;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::blocker::{self, Blocker};
 use crate::eventstore::{Event, Position};
@@ -404,18 +404,27 @@ pub const VIEWS: [(&str, &str); 7] = [
 /// event names), jump to live, and replay from the start (both left for the page to
 /// execute with its OWN cursor/replay functions - this module invents no second copy of
 /// those). Pure over `events` and `units` - no clock, no store, no process (`core`'s own
-/// purity rule) - and, like [`scrub_track`], NEVER FAILS: this reads each
-/// `TYPE_SPAWN_REQUESTED` event through [`spawn::SpawnRequest::from_event`] directly and
-/// skips (never propagates) any body that doesn't deserialize, the SAME degrade-not-fail
-/// pattern `scrub_track`'s own `filter_map` and `dash.rs::console_snapshot_json`'s `if let
-/// Ok(...)` already use for this identical older-run scenario - CONSTRAINTS WALK: "An
-/// older run lacking a field - the fold renders the blank, never fails." `spawn::recorded`
-/// is the wrong tool here on purpose: its own `?` is correct for its OTHER callers (the
-/// replay driver's park-or-replay decision, the budget breaker's hard count), where a
-/// malformed spawn is a genuine invariant violation, but the palette is read-only display
-/// over five INDEPENDENT sections - one malformed or older-run spawn entry must lose only
-/// its own agent row, never the views/courtroom/live/replay entries that don't depend on
-/// it at all.
+/// purity rule) - and, like [`scrub_track`], NEVER FAILS: the agent section folds through
+/// [`spawn::recorded_lenient`] - not a second, inlined copy of its filter-parse loop -
+/// which skips (never propagates) any `TYPE_SPAWN_REQUESTED` body that doesn't
+/// deserialize, the SAME degrade-not-fail pattern `scrub_track`'s own `filter_map` and
+/// `dash.rs::console_snapshot_json`'s `if let Ok(...)` already use for this identical
+/// older-run scenario - CONSTRAINTS WALK: "An older run lacking a field - the fold
+/// renders the blank, never fails." [`spawn::recorded`] stays the right tool for its
+/// OTHER callers (the replay driver's park-or-replay decision, the budget breaker's hard
+/// count), where a malformed spawn is a genuine invariant violation; [`spawn::recorded_lenient`]
+/// is the sibling this read-only display caller needs instead, so one malformed or
+/// older-run spawn entry loses only its own agent row, never the views/courtroom/live/
+/// replay entries that don't depend on it at all.
+///
+/// CURSOR CONTRACT: this function trusts its caller to have already scoped `events` and
+/// `units` to the SAME position - it reconciles nothing itself, matching [`scrub_track`]'s
+/// own "no clock, no store" purity. `crates/console-core`'s `op_palette_commands` is the
+/// one caller today, and folds both `events` and `units` through the session's own cursor
+/// (`fold_reset`/`fold_push` = live, `fold_at` = the scrubbed position) via
+/// `events_at_cursor`, so the courtroom section and the agent section always agree on
+/// "the state of the run after N events" (spec 94 Goal) - a mismatched pair here is a
+/// caller bug, not a case this function degrades on the way it degrades a malformed spawn.
 pub fn palette_commands(events: &[Event], units: &UnitStatuses) -> Vec<PaletteCommand> {
     let mut commands: Vec<PaletteCommand> = VIEWS
         .iter()
@@ -434,15 +443,7 @@ pub fn palette_commands(events: &[Event], units: &UnitStatuses) -> Vec<PaletteCo
         });
     }
 
-    let mut agent_ids: BTreeSet<String> = BTreeSet::new();
-    for e in events {
-        if e.type_ == spawn::TYPE_SPAWN_REQUESTED {
-            if let Ok(req) = spawn::SpawnRequest::from_event(e) {
-                agent_ids.insert(req.id);
-            }
-        }
-    }
-    for id in agent_ids {
+    for id in spawn::recorded_lenient(events).into_keys() {
         commands.push(PaletteCommand {
             kind: "agent",
             id: id.clone(),
