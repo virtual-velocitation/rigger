@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rigger Mission Control</title>
+<style>
+/* Rigger Mission Control (spec 94 criterion 1, THE PAGE IS THE MOCK'S SHELL): the
+   header, tab bar, health strip, view, dock, scrubber and statusline regions, the
+   mock's class names, and the CSS custom properties verbatim for both themes (light
+   on :root, dark under both the system media query and an explicit [data-theme]
+   override so a person's own choice always wins over the system default). Every
+   region below is a container only - no snapshot, no stream, no fold. It renders the
+   spec's own "empty store" constraint (a run: "no run recorded; start one with
+   `rigger run <spec>`", the scrubber disabled, the health strip showing dash and
+   store only) because that is the true state of a page that reads no store at all;
+   criteria 2 and 3 replace this placeholder content with the real snapshot/stream
+   and the position-addressed fold, never this file re-deriving it. */
+:root{
+  --bg:#F2F5F7; --surface:#FFFFFF; --surface2:#E9EEF2; --line:#D3DCE3; --line2:#BFCAD3;
+  --ink:#17232C; --ink2:#4A5A66; --muted:#7C8B97; --faint:#A9B6C0;
+  --accent:#B86F2E; --accent-ink:#FFFFFF; --accent-soft:rgba(184,111,46,.14);
+  --good:#2E8B57; --warn:#B7791F; --crit:#C7423B; --review:#6D5DD3; --stale:#9AA7B1;
+  --good-soft:rgba(46,139,87,.14); --warn-soft:rgba(183,121,31,.16); --crit-soft:rgba(199,66,59,.14); --review-soft:rgba(109,93,211,.14);
+  --term-bg:#0F171E; --term-ink:#D6E0E8;
+  --shadow:0 1px 2px rgba(23,35,44,.06),0 8px 24px -12px rgba(23,35,44,.18);
+  --sans:"Source Sans 3",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --ui:"Sora",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0C141B; --surface:#131D26; --surface2:#182430; --line:#22303C; --line2:#2E3E4C;
+  --ink:#E4ECF1; --ink2:#B4C1CC; --muted:#8B9BA8; --faint:#5E6E7B;
+  --accent:#D08A48; --accent-ink:#1A1208; --accent-soft:rgba(208,138,72,.16);
+  --good:#4FB477; --warn:#E0A13A; --crit:#E0564F; --review:#8B7BE0; --stale:#6C7C89;
+  --good-soft:rgba(79,180,119,.15); --warn-soft:rgba(224,161,58,.16); --crit-soft:rgba(224,86,79,.15); --review-soft:rgba(139,123,224,.16);
+  --term-bg:#080F15; --term-ink:#CFDAE3;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 28px -14px rgba(0,0,0,.6);
+}}
+:root[data-theme="dark"]{
+  --bg:#0C141B; --surface:#131D26; --surface2:#182430; --line:#22303C; --line2:#2E3E4C;
+  --ink:#E4ECF1; --ink2:#B4C1CC; --muted:#8B9BA8; --faint:#5E6E7B;
+  --accent:#D08A48; --accent-ink:#1A1208; --accent-soft:rgba(208,138,72,.16);
+  --good:#4FB477; --warn:#E0A13A; --crit:#E0564F; --review:#8B7BE0; --stale:#6C7C89;
+  --good-soft:rgba(79,180,119,.15); --warn-soft:rgba(224,161,58,.16); --crit-soft:rgba(224,86,79,.15); --review-soft:rgba(139,123,224,.16);
+  --term-bg:#080F15; --term-ink:#CFDAE3;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 28px -14px rgba(0,0,0,.6);
+}
+
+/* THE ASSETS (spec 94 criterion 1): the three faces, Latin-subset woff2, served from
+   this same origin under /console/fonts/<family>/ - never fetched from a network
+   font host, so the served page references no URL outside its own origin. */
+@font-face{font-family:"Sora";font-style:normal;font-weight:400;font-display:swap;src:url("/console/fonts/sora/Sora-400.woff2") format("woff2");}
+@font-face{font-family:"Sora";font-style:normal;font-weight:500;font-display:swap;src:url("/console/fonts/sora/Sora-500.woff2") format("woff2");}
+@font-face{font-family:"Sora";font-style:normal;font-weight:600;font-display:swap;src:url("/console/fonts/sora/Sora-600.woff2") format("woff2");}
+@font-face{font-family:"Source Sans 3";font-style:normal;font-weight:400;font-display:swap;src:url("/console/fonts/source-sans-3/SourceSans3-400.woff2") format("woff2");}
+@font-face{font-family:"Source Sans 3";font-style:normal;font-weight:600;font-display:swap;src:url("/console/fonts/source-sans-3/SourceSans3-600.woff2") format("woff2");}
+@font-face{font-family:"Source Sans 3";font-style:italic;font-weight:400;font-display:swap;src:url("/console/fonts/source-sans-3/SourceSans3-400italic.woff2") format("woff2");}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400;font-display:swap;src:url("/console/fonts/jetbrains-mono/JetBrainsMono-400.woff2") format("woff2");}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:500;font-display:swap;src:url("/console/fonts/jetbrains-mono/JetBrainsMono-500.woff2") format("woff2");}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+button:focus-visible,[tabindex]:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.ui{font-family:var(--ui)}
+.hint{color:var(--muted);font-size:12.5px}
+kbd{font-family:var(--mono);font-size:11px;border:1px solid var(--line2);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--ink2)}
+
+/* ---------- shell ---------- */
+#app{display:grid;grid-template-rows:auto auto 1fr auto auto;height:100vh;min-height:640px}
+header.top{display:flex;align-items:center;gap:18px;padding:10px 18px;border-bottom:1px solid var(--line);background:var(--surface)}
+.brand{font-family:var(--ui);font-weight:600;font-size:15px;letter-spacing:.01em;display:flex;align-items:center;gap:10px}
+.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.projsel{font:12.5px var(--ui);color:var(--ink);background:var(--surface2);border:1px solid var(--line2);border-radius:8px;padding:5px 8px}
+.runid{font-family:var(--mono);font-size:12.5px;color:var(--muted)}
+.spacer{flex:1}
+.themebtn{padding:5px 10px;border:1px solid var(--line2);border-radius:8px;font-size:12px;color:var(--ink2)}
+.themebtn:hover{background:var(--surface2)}
+
+nav.tabs{display:flex;align-items:stretch;gap:2px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--surface)}
+nav.tabs button{font-family:var(--ui);font-size:13px;padding:10px 14px;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px}
+nav.tabs button:hover{color:var(--ink)}
+nav.tabs button[aria-current="page"]{color:var(--ink);border-bottom-color:var(--accent)}
+nav.tabs .health{margin-left:auto;display:flex;align-items:center;gap:14px;font-family:var(--ui);font-size:12px;color:var(--muted)}
+.sig{display:inline-flex;align-items:center;gap:6px}
+.sig i{width:8px;height:8px;border-radius:50%;display:inline-block;background:var(--good)}
+.sig.warn i{background:var(--warn)} .sig.crit i{background:var(--crit)} .sig.stale i{background:var(--stale)}
+
+main.body{display:grid;grid-template-columns:1fr 300px;min-height:0}
+@media (max-width:1100px){main.body{grid-template-columns:1fr}.dock{display:none}}
+section.view{min-width:0;min-height:0;overflow:auto;padding:18px 20px 24px}
+aside.dock{border-left:1px solid var(--line);background:var(--surface);min-height:0;overflow:auto;padding:16px}
+
+/* ---------- scrubber ---------- */
+footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;padding:10px 18px 8px;border-top:1px solid var(--line);background:var(--surface)}
+.playbtn{width:34px;height:34px;border-radius:50%;border:1px solid var(--line2);display:grid;place-items:center;color:var(--ink)}
+.playbtn:hover{background:var(--surface2)}
+.playbtn:disabled{opacity:.4;cursor:default}
+.track{position:relative;height:40px}
+.track input[type=range]{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;z-index:3}
+.track input[type=range]:disabled{cursor:default}
+.track .rail{position:absolute;left:0;right:0;top:18px;height:4px;border-radius:2px;background:var(--line2)}
+.track .fill{position:absolute;left:0;top:18px;height:4px;border-radius:2px;background:var(--accent)}
+.track .knob{position:absolute;top:11px;width:18px;height:18px;border-radius:50%;background:var(--accent);border:2px solid var(--surface);box-shadow:0 0 0 2px var(--accent);transform:translateX(-50%);z-index:2}
+.cursor{font-family:var(--mono);font-size:12.5px;color:var(--ink2);min-width:230px;text-align:right}
+.statusline{display:flex;align-items:center;gap:12px;padding:6px 18px;border-top:1px solid var(--line);background:var(--bg);font-family:var(--mono);font-size:12px;color:var(--muted)}
+@media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand"><span class="dot"></span>Rigger Mission Control</div>
+    <select class="projsel" id="projsel" aria-label="Project"><option value="rigger">rigger</option></select>
+    <div class="runid mono" id="runid">no run recorded; start one with <span class="mono">rigger run &lt;spec&gt;</span></div>
+    <span class="spacer"></span>
+    <button class="themebtn" id="themebtn" title="Toggle theme" aria-label="Toggle theme">Theme</button>
+    <button class="themebtn" id="palbtn" title="Command palette" aria-label="Command palette"><kbd>&#8984;K</kbd></button>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-view="fleet" aria-current="page">Fleet</button>
+    <button data-view="theater">Theater</button>
+    <button data-view="agents">Agents</button>
+    <button data-view="court">Courtroom</button>
+    <button data-view="map">Knowledge</button>
+    <button data-view="plan">Plan</button>
+    <button data-view="brief">Briefing</button>
+    <div class="health" id="health">
+      <span class="sig stale"><i></i>dash</span>
+      <span class="sig stale"><i></i>store</span>
+    </div>
+  </nav>
+
+  <main class="body">
+    <section class="view" data-view="fleet"><p class="hint">Fleet renders in spec 97.</p></section>
+    <section class="view" data-view="theater" hidden><p class="hint">Theater renders in spec 95.</p></section>
+    <section class="view" data-view="agents" hidden><p class="hint">Agents renders in spec 95.</p></section>
+    <section class="view" data-view="court" hidden><p class="hint">Courtroom renders in spec 96.</p></section>
+    <section class="view" data-view="map" hidden><p class="hint">Knowledge renders in spec 98.</p></section>
+    <section class="view" data-view="plan" hidden><p class="hint">Plan renders in spec 96.</p></section>
+    <section class="view" data-view="brief" hidden><p class="hint">Briefing renders in spec 97.</p></section>
+    <aside class="dock" id="dock"><p class="hint">The dock (Next, Needs you, Run) renders in spec 95.</p></aside>
+  </main>
+
+  <footer class="scrub">
+    <button class="playbtn" id="play" title="Play / pause (space)" aria-label="Play" disabled>&#9654;</button>
+    <div class="track" id="track">
+      <div class="rail"></div><div class="fill" id="fill"></div>
+      <div class="knob" id="knob" hidden></div>
+      <input type="range" id="range" min="1" max="1" value="1" aria-label="Time scrubber" disabled>
+    </div>
+    <div class="cursor mono" id="cursor">no run recorded; start one with rigger run &lt;spec&gt;</div>
+  </footer>
+  <div class="statusline mono" id="statusline">no run recorded; start one with rigger run &lt;spec&gt;</div>
+</div>
+
+<script>
+// THE THEME TOGGLE'S PERSISTENCE (spec 94 criterion 1, the one behavior this shell
+// owns outright): the chosen theme is written to the browser's own storage and read
+// back on every load, so a person's choice survives a reload/restart of this same
+// browser without asking the server for anything. `apply(null)` removes the
+// attribute entirely, which is how a person returns to "follow the system", the
+// default this page ships with.
+(function () {
+  var THEME_KEY = "rigger-console-theme";
+  var root = document.documentElement;
+
+  function apply(theme) {
+    if (theme === "light" || theme === "dark") {
+      root.setAttribute("data-theme", theme);
+    } else {
+      root.removeAttribute("data-theme");
+    }
+  }
+
+  var stored = null;
+  try {
+    stored = localStorage.getItem(THEME_KEY);
+  } catch (e) {
+    stored = null; // a private window or blocked site data: fall back to the system theme
+  }
+  apply(stored);
+
+  var themeBtn = document.getElementById("themebtn");
+  if (themeBtn) {
+    themeBtn.addEventListener("click", function () {
+      var current = root.getAttribute("data-theme");
+      var isDark = current
+        ? current === "dark"
+        : window.matchMedia("(prefers-color-scheme: dark)").matches;
+      var next = isDark ? "light" : "dark";
+      apply(next);
+      try {
+        localStorage.setItem(THEME_KEY, next);
+      } catch (e) {
+        // best-effort: the toggle still works for this load, it just will not persist
+      }
+    });
+  }
+})();
+
+// Tab switching, shell-only: which of the seven static view sections is visible.
+// This never touches the URL - the position-addressed URL hash (view, selection,
+// position) is criterion 3's routing, layered on top of this same markup once the
+// snapshot and the fold exist to render into it.
+(function () {
+  var tabs = document.querySelectorAll("nav.tabs button[data-view]");
+  var views = document.querySelectorAll("section.view[data-view]");
+
+  function show(name) {
+    views.forEach(function (v) {
+      v.hidden = v.getAttribute("data-view") !== name;
+    });
+    tabs.forEach(function (b) {
+      if (b.getAttribute("data-view") === name) {
+        b.setAttribute("aria-current", "page");
+      } else {
+        b.removeAttribute("aria-current");
+      }
+    });
+  }
+
+  tabs.forEach(function (b) {
+    b.addEventListener("click", function () {
+      show(b.getAttribute("data-view"));
+    });
+  });
+})();
+</script>
+</body>
+</html>
