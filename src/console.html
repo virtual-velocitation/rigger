@@ -112,6 +112,17 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
 .track .rail .tick{position:absolute;top:0;width:1px;height:4px;background:var(--line2);transform:translateX(-50%)}
 .cursor{font-family:var(--mono);font-size:12.5px;color:var(--ink2);min-width:230px;text-align:right}
 .statusline{display:flex;align-items:center;gap:12px;padding:6px 18px;border-top:1px solid var(--line);background:var(--bg);font-family:var(--mono);font-size:12px;color:var(--muted)}
+
+/* ---------- palette (spec 94 c4, THE PALETTE) ---------- */
+.palette-overlay{position:fixed;inset:0;background:rgba(23,35,44,.35);display:flex;align-items:flex-start;justify-content:center;padding:12vh 16px 0;z-index:50}
+.palette{width:min(560px,100%);max-height:70vh;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line2);border-radius:12px;box-shadow:var(--shadow);overflow:hidden}
+.palette-input{width:100%;border:0;border-bottom:1px solid var(--line);padding:14px 16px;font:15px var(--ui);color:var(--ink);background:transparent}
+.palette-input:focus{outline:0}
+.palette-list{list-style:none;margin:0;padding:6px;overflow:auto}
+.palette-list li{padding:8px 10px;border-radius:8px;font-size:13.5px;color:var(--ink2);cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:10px}
+.palette-list li[aria-selected="true"]{background:var(--accent-soft);color:var(--ink)}
+.palette-list li .kind{color:var(--faint);font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.04em;flex:none}
+.palette-empty{padding:14px 16px;color:var(--muted);font-size:13px}
 @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -161,6 +172,28 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
     <div class="cursor mono" id="cursor">no run recorded; start one with rigger run &lt;spec&gt;</div>
   </footer>
   <div class="statusline mono" id="statusline">no run recorded; start one with rigger run &lt;spec&gt;</div>
+</div>
+
+<!-- THE PALETTE (spec 94 c4): entries come from the core's own palette_commands op -
+     views, every unit's courtroom, every agent, jump to live, replay from start - never
+     a second, page-side command list. Opens on Ctrl-K/Cmd-K (and the header's [^K]
+     button), filters as typed, Enter runs the highlighted entry, Escape closes. -->
+<div class="palette-overlay" id="paletteOverlay" hidden>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+    <input
+      class="palette-input mono"
+      id="paletteInput"
+      type="text"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="Jump to a view, a unit's courtroom, an agent, live, or replay..."
+      aria-label="Command palette"
+      role="combobox"
+      aria-expanded="true"
+      aria-controls="paletteList"
+    >
+    <ul class="palette-list" id="paletteList" role="listbox"></ul>
+  </div>
 </div>
 
 <script>
@@ -315,6 +348,12 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
   // Five events per second (Design: "the play button replays from the cursor at five
   // events per second").
   var REPLAY_MS = 1000 / 5;
+
+  // THE PALETTE's own filtered state (spec 94 c4): `commands` is the core's own
+  // palette_commands reply, fetched fresh every time the palette opens (Design: "its
+  // entries come from palette_commands in the core"); `filtered`/`highlight` are
+  // page-only render state, never sent back to the core.
+  var PALETTE = { commands: [], filtered: [], highlight: 0 };
 
   function render() {
     var state = callOp("fold_at", { position: STATE.cursor });
@@ -575,6 +614,143 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
     };
   }
 
+  // THE PALETTE (spec 94 c4): opens on Ctrl-K/Cmd-K (wired in the document keydown
+  // handler below, and on the header's palbtn), filters as typed, Enter runs the
+  // highlighted entry, Escape closes. "Jump to live" and "replay from start" run
+  // through this SAME module's own jumpToLive/goTo/togglePlay - never a second copy of
+  // u94c3's cursor and replay functions.
+  function clickTab(id) {
+    var btn = document.querySelector('nav.tabs button[data-view="' + id + '"]');
+    if (btn) btn.click();
+  }
+
+  function renderPaletteList() {
+    var list = document.getElementById("paletteList");
+    if (!list) return;
+    list.innerHTML = "";
+    if (PALETTE.filtered.length === 0) {
+      var empty = document.createElement("li");
+      empty.className = "palette-empty";
+      empty.textContent = "No matching command";
+      list.appendChild(empty);
+      return;
+    }
+    PALETTE.filtered.forEach(function (cmd, i) {
+      var li = document.createElement("li");
+      li.setAttribute("role", "option");
+      li.setAttribute("aria-selected", i === PALETTE.highlight ? "true" : "false");
+      var label = document.createElement("span");
+      label.textContent = cmd.label;
+      var kind = document.createElement("span");
+      kind.className = "kind";
+      kind.textContent = cmd.kind;
+      li.appendChild(label);
+      li.appendChild(kind);
+      li.addEventListener("mousedown", function (e) {
+        e.preventDefault();
+        PALETTE.highlight = i;
+        runHighlightedPaletteCommand();
+      });
+      list.appendChild(li);
+    });
+  }
+
+  function filterPalette(query) {
+    var q = query.trim().toLowerCase();
+    PALETTE.filtered = !q
+      ? PALETTE.commands
+      : PALETTE.commands.filter(function (c) {
+          return c.label.toLowerCase().indexOf(q) !== -1;
+        });
+    PALETTE.highlight = 0;
+    renderPaletteList();
+  }
+
+  function movePaletteHighlight(dir) {
+    if (PALETTE.filtered.length === 0) return;
+    var n = PALETTE.filtered.length;
+    PALETTE.highlight = (PALETTE.highlight + dir + n) % n;
+    renderPaletteList();
+  }
+
+  function runPaletteCommand(cmd) {
+    if (cmd.kind === "view") {
+      clickTab(cmd.id);
+    } else if (cmd.kind === "courtroom") {
+      clickTab("court");
+      STATE.selection = [cmd.id];
+      updateHash();
+    } else if (cmd.kind === "agent") {
+      clickTab("agents");
+      STATE.selection = [cmd.id];
+      updateHash();
+    } else if (cmd.kind === "live") {
+      jumpToLive();
+    } else if (cmd.kind === "replay") {
+      stopPlaying();
+      if (STATE.positions.length) {
+        goTo(STATE.positions[0], false);
+        togglePlay();
+      }
+    }
+  }
+
+  function runHighlightedPaletteCommand() {
+    var cmd = PALETTE.filtered[PALETTE.highlight];
+    if (!cmd) return;
+    closePalette();
+    runPaletteCommand(cmd);
+  }
+
+  function openPalette() {
+    if (!core) return;
+    var overlay = document.getElementById("paletteOverlay");
+    var input = document.getElementById("paletteInput");
+    if (!overlay || !input) return;
+    PALETTE.commands = callOp("palette_commands", {}).commands || [];
+    input.value = "";
+    filterPalette("");
+    overlay.hidden = false;
+    input.focus();
+  }
+
+  function closePalette() {
+    var overlay = document.getElementById("paletteOverlay");
+    if (overlay) overlay.hidden = true;
+  }
+
+  function wirePalette() {
+    var palBtn = document.getElementById("palbtn");
+    if (palBtn) palBtn.addEventListener("click", openPalette);
+    var overlay = document.getElementById("paletteOverlay");
+    if (overlay) {
+      overlay.addEventListener("mousedown", function (e) {
+        if (e.target === overlay) closePalette();
+      });
+    }
+    var input = document.getElementById("paletteInput");
+    if (input) {
+      input.addEventListener("input", function () {
+        filterPalette(input.value);
+      });
+      input.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closePalette();
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          runHighlightedPaletteCommand();
+        } else if (e.key === "ArrowDown") {
+          e.preventDefault();
+          movePaletteHighlight(1);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          movePaletteHighlight(-1);
+        }
+      });
+    }
+  }
+
   function wireControls() {
     var range = document.getElementById("range");
     if (range) {
@@ -589,6 +765,14 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
       play.addEventListener("click", togglePlay);
     }
     document.addEventListener("keydown", function (e) {
+      // Ctrl-K / Cmd-K opens the palette (Design: "THE PALETTE AND KEYS") - checked
+      // BEFORE the input-tag guard below, since a chorded shortcut like this must open
+      // the palette regardless of what currently has focus (e.g. the time scrubber).
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        openPalette();
+        return;
+      }
       var tag = (document.activeElement && document.activeElement.tagName) || "";
       if (tag === "INPUT" || tag === "TEXTAREA") return;
       if (e.key === " " || e.code === "Space") {
@@ -600,6 +784,12 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
         stepEvent(1);
       } else if (e.key === "End") {
         jumpToLive();
+      } else if (/^[0-6]$/.test(e.key)) {
+        // Design §6.9 / "THE PALETTE AND KEYS": "the digits 0-6 switch views" - the
+        // SAME left-to-right tab order the palette's own view entries list.
+        var tabs = document.querySelectorAll("nav.tabs button[data-view]");
+        var idx = parseInt(e.key, 10);
+        if (tabs[idx]) tabs[idx].click();
       }
     });
     document.querySelectorAll("nav.tabs button[data-view]").forEach(function (btn) {
@@ -609,6 +799,7 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
         updateHash();
       });
     });
+    wirePalette();
   }
 
   function boot() {

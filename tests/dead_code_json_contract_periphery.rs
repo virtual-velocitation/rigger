@@ -825,9 +825,13 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// `keep-public-surface` candidate, the SAME cross-crate shape every console::map entry above
 /// carries (its one real caller, console-core's `scrub_track` op, lives outside `src/`).
 /// Candidates +1 (39 -> 40), keep-public-surface +1 (13 -> 14), delete and keep-pending
-/// unchanged.
+/// unchanged. Now 41/21/15/5 (was 40/21/14/5) after spec 94 criterion 4's THE PALETTE:
+/// `console::palette_commands` (src/console/mod.rs) lands as a fresh `keep-public-surface`
+/// candidate, the SAME cross-crate shape `scrub_track` above already carries (its one real
+/// caller, console-core's `palette_commands` op, lives outside `src/`). Candidates +1
+/// (40 -> 41), keep-public-surface +1 (14 -> 15), delete and keep-pending unchanged.
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_14_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_15_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -844,7 +848,7 @@ fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_14
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (40, 21, 14, 5),
+        (41, 21, 15, 5),
         "the committed disposition split has changed since this criterion's research"
     );
 }

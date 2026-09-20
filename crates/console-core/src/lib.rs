@@ -247,6 +247,17 @@ fn op_scrub_track(session: &ConsoleSession) -> Vec<u8> {
     ok_json(serde_json::json!({ "marks": track.marks, "ticks": track.ticks }))
 }
 
+/// `palette_commands` (spec 94 c4, THE PALETTE): the session's own accumulated event
+/// log plus its already-folded units, through [`console::palette_commands`] - not a
+/// second, independently-derived copy. Takes no input (like `scrub_track`): the whole
+/// recorded stream is already loaded via `fold_reset`/`fold_push`.
+fn op_palette_commands(session: &ConsoleSession) -> Vec<u8> {
+    match console::palette_commands(&session.events, &session.current.units) {
+        Ok(commands) => ok_json(serde_json::json!({ "commands": commands })),
+        Err(e) => error_reply(format!("palette_commands: {e}")),
+    }
+}
+
 fn op_view(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
     let v: ViewInput = match serde_json::from_slice(input) {
         Ok(v) => v,
@@ -636,8 +647,8 @@ fn op_map_hit(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
 /// candidate lists plus search - see [`MAP_QUERY_KINDS`]'s own doc for why they ride `graph_query`
 /// rather than a new op). `scrub_track` (spec 94 criterion 3, THE POSITION MODEL) answers real
 /// marks/ticks now, straight from [`console::scrub_track`] - not the spec-93 stub any more.
-/// `palette_commands` (criterion 4's own territory) still answers the documented error-reply
-/// stub rather than fabricated data.
+/// `palette_commands` (spec 94 criterion 4, THE PALETTE) likewise answers real entries now,
+/// straight from [`console::palette_commands`] - not the spec-93 stub any more.
 fn dispatch(session: &mut ConsoleSession, op: &str, input: &[u8]) -> Vec<u8> {
     match op {
         "fold_reset" => op_fold_reset(session, input),
@@ -651,7 +662,7 @@ fn dispatch(session: &mut ConsoleSession, op: &str, input: &[u8]) -> Vec<u8> {
         "map_hit" => op_map_hit(session, input),
         "scrub_track" => op_scrub_track(session),
         "statusline" => ok_json(serde_json::json!({ "statusline": session.current.statusline })),
-        "palette_commands" => error_reply("palette_commands: not yet available"),
+        "palette_commands" => op_palette_commands(session),
         other => error_reply(format!("unknown op: {other}")),
     }
 }
@@ -1548,13 +1559,60 @@ mod dispatch_tests {
         assert!(frame.get("error").is_some(), "{frame:?}");
     }
 
-    /// `palette_commands` - a view model no unit in this spec's DAG builds yet (spec 94
-    /// criterion 4's own territory) - answers with an error reply rather than fabricated
-    /// data. `scrub_track` graduated out of this stub set (spec 94 criterion 3, THE
-    /// POSITION MODEL) - see its own tests below.
+    /// `palette_commands` (spec 94 c4, THE PALETTE) answers the SAME entry list
+    /// `console::palette_commands` itself returns for the session's accumulated event
+    /// log and its already-folded units - not a second, independently-derived copy -
+    /// proven with a real unit and a real recorded agent. Malformed input is accepted
+    /// (the op takes none, like `scrub_track`/`statusline`): it ignores `input`
+    /// entirely.
     #[test]
-    fn palette_commands_answers_with_a_not_yet_available_error_reply() {
+    fn palette_commands_answers_console_palette_commands_own_entries() {
         let mut s = ConsoleSession::new();
+        call(
+            &mut s,
+            "fold_reset",
+            r#"{"events":[
+                {"type":"UnitStarted","data":{"id":"u1"},"position":1},
+                {"type":"SpawnRequested","data":{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"},"position":2}
+            ]}"#,
+        );
+        let v = call(&mut s, "palette_commands", "not json");
+        let commands = v["commands"].as_array().expect("{v:?}");
+        assert!(
+            commands
+                .iter()
+                .any(|c| c["kind"] == "view" && c["id"] == "fleet"),
+            "{commands:?}"
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| c["kind"] == "courtroom" && c["id"] == "u1"),
+            "{commands:?}"
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| c["kind"] == "agent" && c["id"] == "u1/implementer#0"),
+            "{commands:?}"
+        );
+        assert!(commands.iter().any(|c| c["kind"] == "live"), "{commands:?}");
+        assert!(
+            commands.iter().any(|c| c["kind"] == "replay"),
+            "{commands:?}"
+        );
+    }
+
+    /// `palette_commands` propagates a malformed `SpawnRequested` in the session's own
+    /// accumulated log as the documented `{"error": ...}` reply - never a panic -
+    /// mirroring `fold_reset`'s own error-propagation shape for a malformed event.
+    #[test]
+    fn palette_commands_answers_an_error_reply_for_a_malformed_recorded_spawn() {
+        let mut s = ConsoleSession::new();
+        s.events.push(rigger::eventstore::Event::new(
+            "SpawnRequested",
+            b"not json".to_vec(),
+        ));
         let v = call(&mut s, "palette_commands", "{}");
         assert!(v.get("error").is_some(), "{v:?}");
     }

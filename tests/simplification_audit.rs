@@ -3937,6 +3937,15 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // construction of ScrubTrack itself is not counted, matching frame/hit's own "struct
         // literal, not a call edge" exclusion above) = 10.
         ("src/console/mod.rs", "scrub_track") => 10,
+        // palette_commands (src/console/mod.rs, spec 94 criterion 4, new): 5 test-only call
+        // sites (palette_commands_lists_the_seven_views_in_tab_order,
+        // palette_commands_lists_every_units_courtroom,
+        // palette_commands_lists_every_distinct_recorded_agent,
+        // palette_commands_includes_jump_to_live_and_replay_from_start,
+        // palette_commands_propagates_a_malformed_spawn_requested_event - 1 call each) plus 1
+        // local outgoing call (spawn::recorded, read through it for every recorded agent id
+        // rather than a second parser of SpawnRequested - see palette_commands's own doc) = 6.
+        ("src/console/mod.rs", "palette_commands") => 6,
         (other_file, other_name) => panic!(
             "dead-code candidate {other_file}::{other_name} has no recorded knowledge-graph \
              degree - run `rigger graph --show {other_file}::<name>` and add it here (spec 87 \
@@ -6530,6 +6539,22 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              console_call_wires_scrub_track_through_the_public_abi (exported_abi_periphery.rs) \
              proves it crosses the real exported ABI. Keep-public-surface, identical shape to the \
              console::map entries above.",
+        ),
+        ("src/console/mod.rs", "palette_commands") => (
+            KeepPublicSurface,
+            "palette_commands (spec 94 criterion 4's own THE PALETTE) has no production caller \
+             within src/ for the SAME cross-crate reason scrub_track above does not: its one \
+             real caller is console-core's op_palette_commands (crates/console-core/src/\
+             lib.rs), a separate workspace-member crate (`rigger` compiled with \
+             `default-features = false, features = [\"core\"]`) invisible to this scanner's \
+             same-crate reference sweep by construction. Already landed and wired, not a future \
+             consumer: console_call's real 'palette_commands' op dispatches to this exact \
+             function today (see dispatch's own match arm and this crate's own dispatch_tests \
+             coverage - palette_commands_answers_console_palette_commands_own_entries and its \
+             malformed-recorded-spawn sibling), plus \
+             console_call_wires_palette_commands_through_the_public_abi \
+             (exported_abi_periphery.rs) proves it crosses the real exported ABI. \
+             Keep-public-surface, identical shape to scrub_track above.",
         ),
         (other_file, other_name) => panic!(
             "dead-code candidate {other_file}::{other_name} has no assigned disposition - this is \
@@ -11056,9 +11081,15 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (40, 21, 14, 5),
+            (41, 21, 15, 5),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}\n\n\
+             Was (40, 21, 14, 5) before spec 94 criterion 4's own THE PALETTE. ONE fresh \
+             keep-public-surface candidate lands in src/console/mod.rs, the SAME cross-crate \
+             shape scrub_track above already carries: palette_commands (console-core's real \
+             'palette_commands' op, needing only a fold_reset'd session) - candidates: +1, \
+             keep_public: 14 -> 15. Net: 40 + 1 = 41 candidates; 21 delete unchanged; 14 + 1 = 15 \
+             keep-public-surface; 5 keep-pending unchanged.\n\n\
              Was (39, 21, 13, 5) before spec 94 criterion 3's own THE POSITION MODEL. ONE fresh \
              keep-public-surface candidate lands in src/console/mod.rs, the SAME cross-crate \
              shape every console::map entry above already carries: scrub_track (console-core's \

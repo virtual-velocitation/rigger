@@ -370,6 +370,85 @@ pub fn scrub_track(events: &[Event]) -> ScrubTrack {
     }
 }
 
+/// One entry of the command palette (spec 94 c4, THE PALETTE): a target the page's own
+/// routing already understands. `kind` names which of the five sections
+/// [`palette_commands`] fills (`"view"`, `"courtroom"`, `"agent"`, `"live"`,
+/// `"replay"`); `id` is the exact token the page routes on (a `data-view` slug, a unit
+/// id, or a spawn id) - never a second id scheme the page must translate; `label` is
+/// the rendered text a person filters against as they type.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PaletteCommand {
+    pub kind: &'static str,
+    pub id: String,
+    pub label: String,
+}
+
+/// The seven views the tab bar renders, left to right (Design §1's own row; §6.9: "the
+/// digits 0-6 switch views") - the SAME `data-view` slugs `src/console.html`'s tab
+/// markup already carries, so a palette pick needs no second slug table kept in step by
+/// hand.
+pub const VIEWS: [(&str, &str); 7] = [
+    ("fleet", "Fleet"),
+    ("theater", "Theater"),
+    ("agents", "Agents"),
+    ("court", "Courtroom"),
+    ("map", "Knowledge"),
+    ("plan", "Plan"),
+    ("brief", "Briefing"),
+];
+
+/// The command palette's whole entry list for a recorded stream (spec 94 c4:
+/// `palette_commands`): the seven views, every unit's courtroom (one per id already in
+/// `units` - [`fold`]'s own [`ConsoleState::units`], never a second unit enumeration),
+/// every agent (one per distinct spawn id [`spawn::recorded`] finds in `events` - the
+/// SAME authority the replay driver and the spawn-budget breaker already fold spawns
+/// through, never a second parser of `SpawnRequested`), jump to live, and replay from
+/// the start (both left for the page to execute with its OWN cursor/replay functions -
+/// this module invents no second copy of those). Pure over `events` and `units` - no
+/// clock, no store, no process (`core`'s own purity rule).
+pub fn palette_commands(
+    events: &[Event],
+    units: &UnitStatuses,
+) -> Result<Vec<PaletteCommand>, serde_json::Error> {
+    let mut commands: Vec<PaletteCommand> = VIEWS
+        .iter()
+        .map(|(id, label)| PaletteCommand {
+            kind: "view",
+            id: (*id).to_string(),
+            label: (*label).to_string(),
+        })
+        .collect();
+
+    for id in units.keys() {
+        commands.push(PaletteCommand {
+            kind: "courtroom",
+            id: id.clone(),
+            label: format!("Courtroom: {id}"),
+        });
+    }
+
+    for id in spawn::recorded(events)?.into_keys() {
+        commands.push(PaletteCommand {
+            kind: "agent",
+            id: id.clone(),
+            label: format!("Agent: {id}"),
+        });
+    }
+
+    commands.push(PaletteCommand {
+        kind: "live",
+        id: "live".to_string(),
+        label: "Jump to live".to_string(),
+    });
+    commands.push(PaletteCommand {
+        kind: "replay",
+        id: "replay".to_string(),
+        label: "Replay from start".to_string(),
+    });
+
+    Ok(commands)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -828,5 +907,115 @@ mod tests {
             track.marks.iter().map(|m| m.position).collect::<Vec<_>>(),
             vec![2, 8]
         );
+    }
+
+    /// A `SpawnRequested` event for `unit`/`role`#`attempt` at `position` - built through
+    /// [`spawn::SpawnRequest`]'s own `to_event`, never a hand-assembled JSON literal, so
+    /// these tests exercise the exact wire shape `spawn::recorded` reads in production.
+    fn spawn_requested(unit: &str, role: &str, attempt: u32, position: Position) -> Event {
+        let mut e = spawn::SpawnRequest::new(unit, "implement", role, attempt, "do the thing")
+            .to_event()
+            .unwrap();
+        e.position = position;
+        e
+    }
+
+    /// PALETTE_COMMANDS, views: the seven views, in the tab bar's own left-to-right
+    /// order, for even a completely empty session - a palette must still let a person
+    /// jump to a view (or live/replay) when no run has been folded yet.
+    #[test]
+    fn palette_commands_lists_the_seven_views_in_tab_order() {
+        let commands = palette_commands(&[], &UnitStatuses::new()).unwrap();
+        let views: Vec<(&str, &str)> = commands
+            .iter()
+            .filter(|c| c.kind == "view")
+            .map(|c| (c.id.as_str(), c.label.as_str()))
+            .collect();
+        assert_eq!(views, VIEWS.to_vec(), "{commands:?}");
+    }
+
+    /// PALETTE_COMMANDS, courtroom: one entry per unit id already in `units` - the SAME
+    /// map [`fold`] produces, never a second unit enumeration - labelled `Courtroom:
+    /// <id>` so it reads and filters the same way the mock's own entries do.
+    #[test]
+    fn palette_commands_lists_every_units_courtroom() {
+        let mut units = UnitStatuses::new();
+        units.insert("u90c1".to_string(), "integrated");
+        units.insert("u90c2".to_string(), "reviewed");
+        let commands = palette_commands(&[], &units).unwrap();
+        let courtrooms: Vec<(&str, &str)> = commands
+            .iter()
+            .filter(|c| c.kind == "courtroom")
+            .map(|c| (c.id.as_str(), c.label.as_str()))
+            .collect();
+        assert_eq!(
+            courtrooms,
+            vec![("u90c1", "Courtroom: u90c1"), ("u90c2", "Courtroom: u90c2"),],
+            "{commands:?}"
+        );
+    }
+
+    /// PALETTE_COMMANDS, agents: one entry per DISTINCT spawn id a recorded
+    /// `SpawnRequested` names - proven with two units' worth of spawns AND a repeated
+    /// round (the same id parked twice, exactly what a courier retry or a replayed
+    /// step can do) to prove `spawn::recorded`'s own de-duplication is what this reads,
+    /// not a second copy of it.
+    #[test]
+    fn palette_commands_lists_every_distinct_recorded_agent() {
+        let events = vec![
+            spawn_requested("u90c1", "implementer", 0, 1),
+            spawn_requested("u90c2", "implementer", 0, 2),
+            spawn_requested("u90c1", "implementer", 0, 3), // re-parked: same id again
+        ];
+        let commands = palette_commands(&events, &UnitStatuses::new()).unwrap();
+        let agents: Vec<&str> = commands
+            .iter()
+            .filter(|c| c.kind == "agent")
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(
+            agents,
+            vec!["u90c1/implementer#0", "u90c2/implementer#0"],
+            "{commands:?}"
+        );
+        let labels: Vec<&str> = commands
+            .iter()
+            .filter(|c| c.kind == "agent")
+            .map(|c| c.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Agent: u90c1/implementer#0", "Agent: u90c2/implementer#0"],
+            "{commands:?}"
+        );
+    }
+
+    /// PALETTE_COMMANDS, live and replay: exactly one of each, present even for a
+    /// completely empty session, and last in the list (after every view/courtroom/
+    /// agent entry) - the page renders them, it never invents them.
+    #[test]
+    fn palette_commands_includes_jump_to_live_and_replay_from_start() {
+        let commands = palette_commands(&[], &UnitStatuses::new()).unwrap();
+        let last_two: Vec<(&str, &str)> = commands
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .map(|c| (c.kind, c.label.as_str()))
+            .collect();
+        assert_eq!(
+            last_two,
+            vec![("live", "Jump to live"), ("replay", "Replay from start")],
+            "{commands:?}"
+        );
+    }
+
+    /// PALETTE_COMMANDS never fabricates an agent from malformed `SpawnRequested`
+    /// data - it propagates `spawn::recorded`'s own parse error, exactly like `fold`
+    /// propagates a malformed event's error today, rather than silently dropping it.
+    #[test]
+    fn palette_commands_propagates_a_malformed_spawn_requested_event() {
+        let bad = Event::new(spawn::TYPE_SPAWN_REQUESTED, b"not json".to_vec());
+        assert!(palette_commands(&[bad], &UnitStatuses::new()).is_err());
     }
 }

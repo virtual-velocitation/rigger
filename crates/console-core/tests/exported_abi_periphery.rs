@@ -1477,6 +1477,51 @@ fn console_call_wires_scrub_track_through_the_public_abi() {
     );
 }
 
+/// `palette_commands` (spec 94 criterion 4, THE PALETTE) wires through the exported ABI to
+/// `console::palette_commands`'s own entries - proven crossing the real FFI boundary, not
+/// merely through this crate's own private `dispatch_tests` (already covered in `src/lib.rs`).
+/// Like `scrub_track` above, needs no prior `graph_load`/`map_build`: only a `fold_reset`'d
+/// session, and a stream that carries both a unit and a recorded spawn so the reply's length
+/// differs from the empty-session case, not merely a vacuous match.
+#[test]
+fn console_call_wires_palette_commands_through_the_public_abi() {
+    use rigger::console;
+    use rigger::eventstore::Event;
+
+    let events_json = r#"{"events":[
+        {"type":"UnitStarted","data":{"id":"u1"},"position":1},
+        {"type":"SpawnRequested","data":{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"},"position":2}
+    ]}"#;
+    let reset = unsafe { call("fold_reset", events_json) };
+    assert!(
+        reply_len(reset) > 0,
+        "fold_reset must answer a non-empty reply through the exported ABI"
+    );
+
+    let queried = unsafe { call("palette_commands", "{}") };
+
+    let mut e1 = Event::new("UnitStarted", br#"{"id":"u1"}"#.to_vec());
+    e1.position = 1;
+    let mut e2 = Event::new(
+        "SpawnRequested",
+        br#"{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"}"#.to_vec(),
+    );
+    e2.position = 2;
+    let events = [e1, e2];
+    let state = console::fold(&events, 0).unwrap();
+    let direct = console::palette_commands(&events, &state.units).unwrap();
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "commands": direct }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "palette_commands's reply through the exported ABI must be the same length as \
+         console::palette_commands's own direct answer for the identical event log"
+    );
+}
+
 /// `scrub_track`'s VERDICT marks read [`rigger::spawn::Adjudication::verdict`] - spec 94
 /// criterion 3's additive FIELD on the already-`pub` `Adjudication` struct (a plain
 /// `pub fn`/`struct`/`enum`/`trait`/`const`/`type` grep misses a new field on an existing

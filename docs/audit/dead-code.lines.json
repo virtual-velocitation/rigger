@@ -356,35 +356,62 @@
     "test_only_references": [
       {
         "file": "src/console/mod.rs",
-        "line": 666
+        "line": 745
       },
       {
         "file": "src/console/mod.rs",
-        "line": 690
+        "line": 769
       },
       {
         "file": "src/console/mod.rs",
-        "line": 712
+        "line": 791
       },
       {
         "file": "src/console/mod.rs",
-        "line": 729
+        "line": 808
       },
       {
         "file": "src/console/mod.rs",
-        "line": 761
+        "line": 840
       },
       {
         "file": "src/console/mod.rs",
-        "line": 789
+        "line": 868
       },
       {
         "file": "src/console/mod.rs",
-        "line": 814
+        "line": 893
       },
       {
         "file": "src/console/mod.rs",
-        "line": 826
+        "line": 905
+      }
+    ]
+  },
+  {
+    "file": "src/console/mod.rs",
+    "name": "palette_commands",
+    "line": 409,
+    "test_only_references": [
+      {
+        "file": "src/console/mod.rs",
+        "line": 928
+      },
+      {
+        "file": "src/console/mod.rs",
+        "line": 945
+      },
+      {
+        "file": "src/console/mod.rs",
+        "line": 970
+      },
+      {
+        "file": "src/console/mod.rs",
+        "line": 998
+      },
+      {
+        "file": "src/console/mod.rs",
+        "line": 1019
       }
     ]
   },
@@ -1083,7 +1110,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 9966
+        "line": 9991
       }
     ]
   },
@@ -1328,6 +1355,10 @@
       {
         "file": "src/conductor.rs",
         "line": 29030
+      },
+      {
+        "file": "src/console/mod.rs",
+        "line": 916
       },
       {
         "file": "src/dash.rs",
