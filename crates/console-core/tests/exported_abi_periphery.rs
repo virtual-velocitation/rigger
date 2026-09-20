@@ -1509,7 +1509,7 @@ fn console_call_wires_palette_commands_through_the_public_abi() {
     e2.position = 2;
     let events = [e1, e2];
     let state = console::fold(&events, 0).unwrap();
-    let direct = console::palette_commands(&events, &state.units).unwrap();
+    let direct = console::palette_commands(&events, &state.units);
     let expected_len = serde_json::to_vec(&serde_json::json!({ "commands": direct }))
         .unwrap()
         .len();
@@ -1522,24 +1522,29 @@ fn console_call_wires_palette_commands_through_the_public_abi() {
     );
 }
 
-/// `palette_commands`'s error path - `spawn::recorded` failing on a malformed recorded
-/// `SpawnRequested` event, propagated by `palette_commands`'s own `?` - answers a real,
-/// non-empty error reply THROUGH THE EXPORTED ABI, not merely through this crate's own
-/// private `dispatch_tests`
-/// (`palette_commands_answers_an_error_reply_for_a_malformed_recorded_spawn`, `src/lib.rs`,
-/// which pushes the malformed event directly onto `session.events` in-process, never
-/// crossing `console_call`'s pointer-packing marshaling). Unlike `scrub_track` (infallible
-/// over `events`), `palette_commands` returns a `Result` - the one op-specific error path
-/// `console_call_answers_an_error_reply_for_malformed_input` (which only exercises
-/// `fold_reset`'s own parsing failure, never a later op's own internal error) does not
-/// reach. The malformed spawn event still folds cleanly through the real `fold_reset` op
-/// first - neither `ledger::project` nor `blocker::from_events` reads a `SpawnRequested`
-/// payload (confirmed by reading both) - so this is the one way to land a
-/// syntactically-valid-wire, semantically-malformed spawn event in a session through the
-/// real ABI at all, then observe `palette_commands` fail on it for real.
+/// `palette_commands` degrades on a malformed recorded `SpawnRequested` event THROUGH THE
+/// EXPORTED ABI - never fails (CONSTRAINTS WALK: "An older run lacking a field - the fold
+/// renders the blank, never fails") - not merely through this crate's own private
+/// `dispatch_tests`
+/// (`palette_commands_omits_only_a_malformed_recorded_spawns_agent_row`, `src/lib.rs`, which
+/// pushes the malformed event directly onto `session.events` in-process, never crossing
+/// `console_call`'s pointer-packing marshaling). This native host's packed reply pointer is
+/// unreadable (see this file's own header), so - exactly like
+/// `console_call_wires_palette_commands_through_the_public_abi` above - the proof is a length
+/// match against `console::palette_commands`'s own direct (degraded) answer for the identical
+/// malformed event log, the strongest content proof available at this boundary; a stale `?`
+/// that still propagated the parse error would instead answer the much shorter `{"error":
+/// ...}` reply, so the length match is a real behavioral assertion, not a vacuous one. The
+/// malformed spawn event still folds cleanly through the real `fold_reset` op first - neither
+/// `ledger::project` nor `blocker::from_events` reads a `SpawnRequested` payload (confirmed by
+/// reading both) - so this is the one way to land a syntactically-valid-wire,
+/// semantically-malformed spawn event in a session through the real ABI at all, then observe
+/// `palette_commands` degrade on it for real.
 #[test]
-fn console_call_palette_commands_answers_an_error_reply_for_a_malformed_recorded_spawn_through_the_public_abi(
-) {
+fn console_call_palette_commands_degrades_on_a_malformed_recorded_spawn_through_the_public_abi() {
+    use rigger::console;
+    use rigger::eventstore::Event;
+
     // A JSON string, not a spawn-request object - well-formed wire JSON (so fold_reset's own
     // parsing and console::fold succeed) but not a shape SpawnRequest::from_event can parse.
     let events_json = r#"{"events":[
@@ -1554,11 +1559,26 @@ fn console_call_palette_commands_answers_an_error_reply_for_a_malformed_recorded
     );
 
     let queried = unsafe { call("palette_commands", "{}") };
+
+    let mut bad = Event::new("SpawnRequested", br#""not a spawn request""#.to_vec());
+    bad.position = 1;
+    let events = [bad];
+    let state = console::fold(&events, 0).unwrap();
+    let direct = console::palette_commands(&events, &state.units);
     assert!(
-        reply_len(queried) > 0,
-        "palette_commands must still answer a non-empty error reply through the exported \
-         ABI when a recorded SpawnRequested is malformed, never an empty reply or a panic \
-         that would abort the whole call across the FFI boundary"
+        direct.iter().all(|c| c.kind != "agent"),
+        "a malformed spawn must never produce an agent row: {direct:?}"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "commands": direct }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "palette_commands must still answer a real, degraded (never error) reply through the \
+         exported ABI when a recorded SpawnRequested is malformed - matching \
+         console::palette_commands's own direct answer for the identical event log"
     );
 }
 

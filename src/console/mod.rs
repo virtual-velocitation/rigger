@@ -22,7 +22,7 @@
 /// semantic zoom, label placement). `core`, like this module itself - see [`map`]'s own doc.
 pub mod map;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::blocker::{self, Blocker};
 use crate::eventstore::{Event, Position};
@@ -400,16 +400,23 @@ pub const VIEWS: [(&str, &str); 7] = [
 /// The command palette's whole entry list for a recorded stream (spec 94 c4:
 /// `palette_commands`): the seven views, every unit's courtroom (one per id already in
 /// `units` - [`fold`]'s own [`ConsoleState::units`], never a second unit enumeration),
-/// every agent (one per distinct spawn id [`spawn::recorded`] finds in `events` - the
-/// SAME authority the replay driver and the spawn-budget breaker already fold spawns
-/// through, never a second parser of `SpawnRequested`), jump to live, and replay from
-/// the start (both left for the page to execute with its OWN cursor/replay functions -
-/// this module invents no second copy of those). Pure over `events` and `units` - no
-/// clock, no store, no process (`core`'s own purity rule).
-pub fn palette_commands(
-    events: &[Event],
-    units: &UnitStatuses,
-) -> Result<Vec<PaletteCommand>, serde_json::Error> {
+/// every agent (one per distinct, well-formed spawn id a [`spawn::TYPE_SPAWN_REQUESTED`]
+/// event names), jump to live, and replay from the start (both left for the page to
+/// execute with its OWN cursor/replay functions - this module invents no second copy of
+/// those). Pure over `events` and `units` - no clock, no store, no process (`core`'s own
+/// purity rule) - and, like [`scrub_track`], NEVER FAILS: this reads each
+/// `TYPE_SPAWN_REQUESTED` event through [`spawn::SpawnRequest::from_event`] directly and
+/// skips (never propagates) any body that doesn't deserialize, the SAME degrade-not-fail
+/// pattern `scrub_track`'s own `filter_map` and `dash.rs::console_snapshot_json`'s `if let
+/// Ok(...)` already use for this identical older-run scenario - CONSTRAINTS WALK: "An
+/// older run lacking a field - the fold renders the blank, never fails." `spawn::recorded`
+/// is the wrong tool here on purpose: its own `?` is correct for its OTHER callers (the
+/// replay driver's park-or-replay decision, the budget breaker's hard count), where a
+/// malformed spawn is a genuine invariant violation, but the palette is read-only display
+/// over five INDEPENDENT sections - one malformed or older-run spawn entry must lose only
+/// its own agent row, never the views/courtroom/live/replay entries that don't depend on
+/// it at all.
+pub fn palette_commands(events: &[Event], units: &UnitStatuses) -> Vec<PaletteCommand> {
     let mut commands: Vec<PaletteCommand> = VIEWS
         .iter()
         .map(|(id, label)| PaletteCommand {
@@ -427,7 +434,15 @@ pub fn palette_commands(
         });
     }
 
-    for id in spawn::recorded(events)?.into_keys() {
+    let mut agent_ids: BTreeSet<String> = BTreeSet::new();
+    for e in events {
+        if e.type_ == spawn::TYPE_SPAWN_REQUESTED {
+            if let Ok(req) = spawn::SpawnRequest::from_event(e) {
+                agent_ids.insert(req.id);
+            }
+        }
+    }
+    for id in agent_ids {
         commands.push(PaletteCommand {
             kind: "agent",
             id: id.clone(),
@@ -446,7 +461,7 @@ pub fn palette_commands(
         label: "Replay from start".to_string(),
     });
 
-    Ok(commands)
+    commands
 }
 
 #[cfg(test)]
@@ -925,7 +940,7 @@ mod tests {
     /// jump to a view (or live/replay) when no run has been folded yet.
     #[test]
     fn palette_commands_lists_the_seven_views_in_tab_order() {
-        let commands = palette_commands(&[], &UnitStatuses::new()).unwrap();
+        let commands = palette_commands(&[], &UnitStatuses::new());
         let views: Vec<(&str, &str)> = commands
             .iter()
             .filter(|c| c.kind == "view")
@@ -942,7 +957,7 @@ mod tests {
         let mut units = UnitStatuses::new();
         units.insert("u90c1".to_string(), "integrated");
         units.insert("u90c2".to_string(), "reviewed");
-        let commands = palette_commands(&[], &units).unwrap();
+        let commands = palette_commands(&[], &units);
         let courtrooms: Vec<(&str, &str)> = commands
             .iter()
             .filter(|c| c.kind == "courtroom")
@@ -958,8 +973,8 @@ mod tests {
     /// PALETTE_COMMANDS, agents: one entry per DISTINCT spawn id a recorded
     /// `SpawnRequested` names - proven with two units' worth of spawns AND a repeated
     /// round (the same id parked twice, exactly what a courier retry or a replayed
-    /// step can do) to prove `spawn::recorded`'s own de-duplication is what this reads,
-    /// not a second copy of it.
+    /// step can do) to prove this dedups by id itself, sorted, rather than emitting a
+    /// row per event.
     #[test]
     fn palette_commands_lists_every_distinct_recorded_agent() {
         let events = vec![
@@ -967,7 +982,7 @@ mod tests {
             spawn_requested("u90c2", "implementer", 0, 2),
             spawn_requested("u90c1", "implementer", 0, 3), // re-parked: same id again
         ];
-        let commands = palette_commands(&events, &UnitStatuses::new()).unwrap();
+        let commands = palette_commands(&events, &UnitStatuses::new());
         let agents: Vec<&str> = commands
             .iter()
             .filter(|c| c.kind == "agent")
@@ -995,7 +1010,7 @@ mod tests {
     /// agent entry) - the page renders them, it never invents them.
     #[test]
     fn palette_commands_includes_jump_to_live_and_replay_from_start() {
-        let commands = palette_commands(&[], &UnitStatuses::new()).unwrap();
+        let commands = palette_commands(&[], &UnitStatuses::new());
         let last_two: Vec<(&str, &str)> = commands
             .iter()
             .rev()
@@ -1010,12 +1025,42 @@ mod tests {
         );
     }
 
-    /// PALETTE_COMMANDS never fabricates an agent from malformed `SpawnRequested`
-    /// data - it propagates `spawn::recorded`'s own parse error, exactly like `fold`
-    /// propagates a malformed event's error today, rather than silently dropping it.
+    /// PALETTE_COMMANDS degrades, never fails, on a malformed `SpawnRequested` (spec 94's
+    /// own CONSTRAINTS WALK: "An older run lacking a field - the fold renders the blank,
+    /// never fails") - the bad entry loses only its own agent row; the views/live/replay
+    /// sections it doesn't depend on still answer in full.
     #[test]
-    fn palette_commands_propagates_a_malformed_spawn_requested_event() {
+    fn palette_commands_omits_only_a_malformed_spawn_requested_entry() {
         let bad = Event::new(spawn::TYPE_SPAWN_REQUESTED, b"not json".to_vec());
-        assert!(palette_commands(&[bad], &UnitStatuses::new()).is_err());
+        let commands = palette_commands(&[bad], &UnitStatuses::new());
+        assert!(!commands.is_empty(), "{commands:?}");
+        assert!(
+            commands.iter().any(|c| c.kind == "view" && c.id == "fleet"),
+            "{commands:?}"
+        );
+        assert!(commands.iter().any(|c| c.kind == "live"), "{commands:?}");
+        assert!(commands.iter().any(|c| c.kind == "replay"), "{commands:?}");
+        assert!(
+            !commands.iter().any(|c| c.kind == "agent"),
+            "a malformed spawn must never produce an agent row: {commands:?}"
+        );
+    }
+
+    /// PALETTE_COMMANDS, mixed log: a valid spawn survives alongside a malformed one in
+    /// the SAME event log - proving the skip is per-event, not an all-or-nothing guard
+    /// over the whole stream.
+    #[test]
+    fn palette_commands_keeps_a_valid_spawn_alongside_a_malformed_one() {
+        let events = vec![
+            spawn_requested("u90c1", "implementer", 0, 1),
+            Event::new(spawn::TYPE_SPAWN_REQUESTED, b"not json".to_vec()),
+        ];
+        let commands = palette_commands(&events, &UnitStatuses::new());
+        let agents: Vec<&str> = commands
+            .iter()
+            .filter(|c| c.kind == "agent")
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(agents, vec!["u90c1/implementer#0"], "{commands:?}");
     }
 }

@@ -356,62 +356,66 @@
     "test_only_references": [
       {
         "file": "src/console/mod.rs",
-        "line": 745
+        "line": 760
       },
       {
         "file": "src/console/mod.rs",
-        "line": 769
+        "line": 784
       },
       {
         "file": "src/console/mod.rs",
-        "line": 791
+        "line": 806
       },
       {
         "file": "src/console/mod.rs",
-        "line": 808
+        "line": 823
       },
       {
         "file": "src/console/mod.rs",
-        "line": 840
+        "line": 855
       },
       {
         "file": "src/console/mod.rs",
-        "line": 868
+        "line": 883
       },
       {
         "file": "src/console/mod.rs",
-        "line": 893
+        "line": 908
       },
       {
         "file": "src/console/mod.rs",
-        "line": 905
+        "line": 920
       }
     ]
   },
   {
     "file": "src/console/mod.rs",
     "name": "palette_commands",
-    "line": 409,
+    "line": 419,
     "test_only_references": [
       {
         "file": "src/console/mod.rs",
-        "line": 928
+        "line": 943
       },
       {
         "file": "src/console/mod.rs",
-        "line": 945
+        "line": 960
       },
       {
         "file": "src/console/mod.rs",
-        "line": 970
+        "line": 985
       },
       {
         "file": "src/console/mod.rs",
-        "line": 998
+        "line": 1013
       },
       {
         "file": "src/console/mod.rs",
-        "line": 1019
+        "line": 1035
+      },
+      {
+        "file": "src/console/mod.rs",
+        "line": 1064
       }
     ]
   },
@@ -1358,7 +1362,7 @@
       },
       {
         "file": "src/console/mod.rs",
-        "line": 916
+        "line": 931
       },
       {
         "file": "src/dash.rs",

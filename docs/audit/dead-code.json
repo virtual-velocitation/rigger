@@ -447,29 +447,33 @@
   {
     "name": "palette_commands",
     "file": "src/console/mod.rs",
-    "content_hash": "1839448471440220",
+    "content_hash": "8dfa75f269eccf56",
     "visibility": "pub",
     "ambiguous": false,
     "test_only_references": [
       {
         "file": "src/console/mod.rs",
-        "content_hash": "577d04a1d9542408"
+        "content_hash": "a84511409cd6012f"
       },
       {
         "file": "src/console/mod.rs",
-        "content_hash": "0e1b9b579dd26778"
+        "content_hash": "f092f872899d19ff"
       },
       {
         "file": "src/console/mod.rs",
-        "content_hash": "048ffaa8d0c48e73"
+        "content_hash": "0200d2ab19a8e750"
       },
       {
         "file": "src/console/mod.rs",
-        "content_hash": "577d04a1d9542408"
+        "content_hash": "a84511409cd6012f"
       },
       {
         "file": "src/console/mod.rs",
-        "content_hash": "cd90c3ecc2e622e2"
+        "content_hash": "21d12741f59fb252"
+      },
+      {
+        "file": "src/console/mod.rs",
+        "content_hash": "0200d2ab19a8e750"
       }
     ],
     "disposition": "keep-public-surface",

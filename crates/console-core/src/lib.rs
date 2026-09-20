@@ -250,12 +250,13 @@ fn op_scrub_track(session: &ConsoleSession) -> Vec<u8> {
 /// `palette_commands` (spec 94 c4, THE PALETTE): the session's own accumulated event
 /// log plus its already-folded units, through [`console::palette_commands`] - not a
 /// second, independently-derived copy. Takes no input (like `scrub_track`): the whole
-/// recorded stream is already loaded via `fold_reset`/`fold_push`.
+/// recorded stream is already loaded via `fold_reset`/`fold_push`. Like `scrub_track`,
+/// never errors: `console::palette_commands` itself never fails (a malformed recorded
+/// spawn loses only its own agent row - CONSTRAINTS WALK: "An older run lacking a field
+/// - the fold renders the blank, never fails"), so this has no error path to answer.
 fn op_palette_commands(session: &ConsoleSession) -> Vec<u8> {
-    match console::palette_commands(&session.events, &session.current.units) {
-        Ok(commands) => ok_json(serde_json::json!({ "commands": commands })),
-        Err(e) => error_reply(format!("palette_commands: {e}")),
-    }
+    let commands = console::palette_commands(&session.events, &session.current.units);
+    ok_json(serde_json::json!({ "commands": commands }))
 }
 
 fn op_view(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
@@ -1603,18 +1604,36 @@ mod dispatch_tests {
         );
     }
 
-    /// `palette_commands` propagates a malformed `SpawnRequested` in the session's own
-    /// accumulated log as the documented `{"error": ...}` reply - never a panic -
-    /// mirroring `fold_reset`'s own error-propagation shape for a malformed event.
+    /// `palette_commands` degrades on a malformed `SpawnRequested` in the session's own
+    /// accumulated log - CONSTRAINTS WALK: "An older run lacking a field - the fold
+    /// renders the blank, never fails" - so the reply stays a real, non-empty
+    /// `{"commands": [...]}` with the seven views/live/replay entries intact and only the
+    /// bad spawn's own agent row missing, never an `{"error": ...}` reply.
     #[test]
-    fn palette_commands_answers_an_error_reply_for_a_malformed_recorded_spawn() {
+    fn palette_commands_omits_only_a_malformed_recorded_spawns_agent_row() {
         let mut s = ConsoleSession::new();
         s.events.push(rigger::eventstore::Event::new(
             "SpawnRequested",
             b"not json".to_vec(),
         ));
         let v = call(&mut s, "palette_commands", "{}");
-        assert!(v.get("error").is_some(), "{v:?}");
+        assert!(v.get("error").is_none(), "{v:?}");
+        let commands = v["commands"].as_array().expect("{v:?}");
+        assert!(
+            commands
+                .iter()
+                .any(|c| c["kind"] == "view" && c["id"] == "fleet"),
+            "{commands:?}"
+        );
+        assert!(commands.iter().any(|c| c["kind"] == "live"), "{commands:?}");
+        assert!(
+            commands.iter().any(|c| c["kind"] == "replay"),
+            "{commands:?}"
+        );
+        assert!(
+            !commands.iter().any(|c| c["kind"] == "agent"),
+            "a malformed spawn must never produce an agent row: {commands:?}"
+        );
     }
 
     /// `scrub_track` (spec 94 c3) answers the SAME marks/ticks `console::scrub_track`
