@@ -115,6 +115,13 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
 
 /* ---------- palette (spec 94 c4, THE PALETTE) ---------- */
 .palette-overlay{position:fixed;inset:0;background:rgba(23,35,44,.35);display:flex;align-items:flex-start;justify-content:center;padding:12vh 16px 0;z-index:50}
+/* The class rule above must never outrank the UA `[hidden]{display:none}` default
+   (author-origin always beats user-agent-origin regardless of specificity, so an
+   unqualified `display:flex` here would keep the overlay visible even while `hidden`
+   is set) - this raises the hidden state's specificity above the plain class rule so
+   `hidden` wins whenever it is present, same as every other hidden-toggled element in
+   this file relies on the UA default alone for. */
+.palette-overlay[hidden]{display:none}
 .palette{width:min(560px,100%);max-height:70vh;display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--line2);border-radius:12px;box-shadow:var(--shadow);overflow:hidden}
 .palette-input{width:100%;border:0;border-bottom:1px solid var(--line);padding:14px 16px;font:15px var(--ui);color:var(--ink);background:transparent}
 .palette-input:focus{outline:0}
