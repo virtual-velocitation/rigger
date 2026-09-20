@@ -113,20 +113,21 @@ fn ev(type_: &str, json: &str) -> Event {
     Event::new(type_, json.as_bytes().to_vec())
 }
 
-/// Bind and serve a fresh `dash::serve_on` backed by `store`, returning the bound address.
-/// Never joined: `serve_on` loops for the life of the process, like every other real-socket
-/// dash test in this tree.
-fn serve_test_dash(store: FakeStore) -> std::net::SocketAddr {
+/// Bind an ephemeral loopback listener and serve `dash::serve_on` over it with the given
+/// events `provider`, wired to the SAME fixed graph/calls/instances providers and server
+/// config every stream test in this file needs (none of them exercise the whole-graph,
+/// directed-call, or instance-registry routes). The one place this file spells `serve_on`'s
+/// other five arguments, so [`serve_test_dash`], [`serve_multi_instance_dash`] and
+/// [`serve_test_dash_over_fixed_events`] share this exact boilerplate rather than each
+/// re-implementing it - flagged as near-duplicate by this project's own duplication audit
+/// before this fix consolidated them. Never joined: `serve_on` loops for the life of the
+/// process, like every other real-socket dash test in this tree.
+fn serve_dash_with_provider<F>(provider: F) -> std::net::SocketAddr
+where
+    F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
+{
     let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral loopback port");
     let addr = listener.local_addr().expect("learn the bound port");
-    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((
-            store.events.lock().unwrap().clone(),
-            Graph::default(),
-            store.progress.lock().unwrap().clone(),
-            store.liveness.lock().unwrap().clone(),
-        ))
-    };
     let graph_provider = |_instance: Option<&str>| Graph::default();
     let calls_provider =
         |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str| CallGraph::default();
@@ -146,6 +147,20 @@ fn serve_test_dash(store: FakeStore) -> std::net::SocketAddr {
     addr
 }
 
+/// Bind and serve a fresh `dash::serve_on` backed by `store`, returning the bound address.
+fn serve_test_dash(store: FakeStore) -> std::net::SocketAddr {
+    serve_dash_with_provider(
+        move |_instance: Option<&str>| -> Result<DashInputs, String> {
+            Ok((
+                store.events.lock().unwrap().clone(),
+                Graph::default(),
+                store.progress.lock().unwrap().clone(),
+                store.liveness.lock().unwrap().clone(),
+            ))
+        },
+    )
+}
+
 /// Bind and serve `dash::serve_on` whose provider selects between DISTINCT named
 /// [`FakeStore`]s by the request's `?instance=` selector (spec 50, criterion 3): an exact
 /// name match in `named` wins, anything else (absent, empty, or unrecognized) falls back to
@@ -158,41 +173,24 @@ fn serve_multi_instance_dash(
     default: FakeStore,
     named: &[(&str, FakeStore)],
 ) -> std::net::SocketAddr {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral loopback port");
-    let addr = listener.local_addr().expect("learn the bound port");
     let named: Vec<(String, FakeStore)> = named
         .iter()
         .map(|(name, store)| (name.to_string(), store.clone()))
         .collect();
-    let provider = move |instance: Option<&str>| -> Result<DashInputs, String> {
-        let store = instance
-            .and_then(|want| named.iter().find(|(name, _)| name == want))
-            .map(|(_, store)| store)
-            .unwrap_or(&default);
-        Ok((
-            store.events.lock().unwrap().clone(),
-            Graph::default(),
-            store.progress.lock().unwrap().clone(),
-            store.liveness.lock().unwrap().clone(),
-        ))
-    };
-    let graph_provider = |_instance: Option<&str>| Graph::default();
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str| CallGraph::default();
-    let instances_provider = Vec::<InstanceView>::new;
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-    addr
+    serve_dash_with_provider(
+        move |instance: Option<&str>| -> Result<DashInputs, String> {
+            let store = instance
+                .and_then(|want| named.iter().find(|(name, _)| name == want))
+                .map(|(_, store)| store)
+                .unwrap_or(&default);
+            Ok((
+                store.events.lock().unwrap().clone(),
+                Graph::default(),
+                store.progress.lock().unwrap().clone(),
+                store.liveness.lock().unwrap().clone(),
+            ))
+        },
+    )
 }
 
 /// Open a `GET /api/console/stream?since=<since>` connection and hand back a buffered reader
@@ -226,16 +224,15 @@ fn open_stream_with_query(addr: std::net::SocketAddr, query: &str) -> BufReader<
     open_stream_with_query_and_headers(addr, query, &[])
 }
 
-/// Like [`open_stream_with_query`], but also names extra request headers (e.g. a real
-/// `EventSource`'s own native `Last-Event-ID` on its automatic reconnect - never a value a
-/// test picks in place of the server's own `id:` line). The one place this file builds the
-/// stream request, so every other opener in this file shares this exact header handling
-/// rather than re-implementing it.
-fn open_stream_with_query_and_headers(
+/// Connect to `GET /api/console/stream?<query>` and read back the raw status line and a
+/// `BufReader` positioned right after the response headers - the one place this file
+/// builds the stream request, so every opener below (200-asserting or not) shares this
+/// exact connect/write/status-line handling rather than re-implementing it.
+fn send_stream_request(
     addr: std::net::SocketAddr,
     query: &str,
     extra_headers: &[(&str, &str)],
-) -> BufReader<TcpStream> {
+) -> (String, BufReader<TcpStream>) {
     let mut client = TcpStream::connect(addr).expect("connect to the served dash");
     client
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -250,6 +247,21 @@ fn open_stream_with_query_and_headers(
 
     let mut status = String::new();
     reader.read_line(&mut status).expect("read the status line");
+    (status.trim_end_matches(['\r', '\n']).to_string(), reader)
+}
+
+/// Like [`open_stream_with_query`], but also names extra request headers (e.g. a real
+/// `EventSource`'s own native `Last-Event-ID` on its automatic reconnect - never a value a
+/// test picks in place of the server's own `id:` line). Asserts the framing headers a real
+/// `EventSource` cares about: every stream this file opens through here is expected to
+/// answer 200; a case that is not (the retained-window guard's `410`) reads the status
+/// line directly through [`send_stream_request`]/[`open_stream_status_line`] instead.
+fn open_stream_with_query_and_headers(
+    addr: std::net::SocketAddr,
+    query: &str,
+    extra_headers: &[(&str, &str)],
+) -> BufReader<TcpStream> {
+    let (status, mut reader) = send_stream_request(addr, query, extra_headers);
     assert!(
         status.starts_with("HTTP/1.1 200"),
         "the stream must answer 200: {status}"
@@ -818,5 +830,140 @@ fn with_no_activity_the_stream_emits_only_prompt_heartbeats_never_a_liveness_fra
     assert_eq!(
         frame.data, "{}",
         "a heartbeat frame carries an empty JSON object"
+    );
+}
+
+// --- Spec 94, criterion 3's own round-2 fix: THE STREAM's retained-window guard
+// (adj-u94c3-r2-verdict-reject-retained-window-gap-refetch) ---
+
+/// Serve `dash::serve_on` whose provider reads back a FIXED `Vec<Event>` exactly as handed
+/// in, positions and all - unlike [`FakeStore::push_event`], which renumbers every event to
+/// a contiguous `len() + 1`, and would therefore erase the very GAPS a real
+/// `prune_derived_index` deletion leaves behind. The events below come from a REAL
+/// `rigger::eventstore::sqlite::Store` (never a mocked/hand-picked gap), read back once
+/// after the prune so this provider re-serves precisely what the store actually still
+/// holds.
+fn serve_test_dash_over_fixed_events(events: Vec<Event>) -> std::net::SocketAddr {
+    serve_dash_with_provider(
+        move |_instance: Option<&str>| -> Result<DashInputs, String> {
+            Ok((events.clone(), Graph::default(), Vec::new(), HashMap::new()))
+        },
+    )
+}
+
+/// Open a `GET /api/console/stream?<query>` connection and hand back its raw status line,
+/// via [`send_stream_request`], WITHOUT [`open_stream_with_query`]'s own "must answer 200"
+/// assertion - the one place this file reads a stream response that is allowed to be
+/// anything other than 200.
+fn open_stream_status_line(addr: std::net::SocketAddr, query: &str) -> String {
+    send_stream_request(addr, query, &[]).0
+}
+
+/// A real store holding three recordings of ONE derived-index replay key (positions 1-3, a
+/// duplication `prune_derived_index` sheds down to its latest recording) followed by one
+/// real console event (position 4) - then PRUNED for real, exactly the way `rigger reset
+/// --derived` prunes production data. `prune_derived_index`'s own `rn DESC` window keeps the
+/// group's LATEST position (3) and deletes the two earlier duplicates (1, 2), so the store's
+/// post-prune floor - the smallest position ANY row still occupies, of ANY type - moves from
+/// 1 to 3. A `since=`/`Last-Event-ID` naming 1 or 2 therefore names a position this store
+/// has ACTUALLY pruned, not a mocked one: exactly the scenario
+/// `adj-u94c3-r2-verdict-reject-retained-window-gap-refetch` requires a test to exercise.
+fn store_with_a_real_retained_window_gap() -> (tempfile::TempDir, Vec<Event>) {
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction as StoreDirection, EventStore, ExpectedRevision, Filter};
+
+    let dir = tempfile::tempdir().expect("a scratch dir for the real sqlite store");
+    let path = dir.path().join("events.db");
+    let path = path.to_str().unwrap();
+    let store = Store::open(path).expect("open a real sqlite event store");
+
+    let events = vec![
+        Event::new("CodeEntityExtracted", br#"{"id":"src/a.rs::x"}"#.to_vec())
+            .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+        Event::new("CodeEntityExtracted", br#"{"id":"src/a.rs::x"}"#.to_vec())
+            .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+        Event::new("CodeEntityExtracted", br#"{"id":"src/a.rs::x"}"#.to_vec())
+            .with_meta(rigger::ingest::META_REPLAY_KEY, "gc/src/a.rs@h1#0"),
+        Event::new("DecisionMade", br#"{"id":"d1","summary":"kept"}"#.to_vec()),
+    ];
+    store
+        .append("run", ExpectedRevision::Any, &events)
+        .expect("seed the real store");
+
+    let pruned = store
+        .prune_derived_index("", &rigger::ingest::derived_index_identity())
+        .expect("a real prune_derived_index run");
+    assert!(
+        pruned.total_removed() > 0,
+        "the seeded duplicates must actually be deleted, not a no-op: {pruned:?}"
+    );
+
+    let remaining = store
+        .read_all(0, StoreDirection::Forward, &Filter::default())
+        .expect("read back what the store actually still holds, post-prune");
+    let floor = remaining
+        .iter()
+        .map(|e| e.position)
+        .min()
+        .expect("the store still holds the surviving duplicate and the console event");
+    assert_eq!(
+        floor, 3,
+        "the prune must delete positions 1 and 2 and keep the group's latest (3): {remaining:?}"
+    );
+    (dir, remaining)
+}
+
+/// A reconnecting client naming a `since=`/`Last-Event-ID` the store has actually pruned
+/// receives a REAL, distinct non-200 response (never a bare closed socket, which a real
+/// `EventSource` would just retry forever at the same stale position) -
+/// `adj-u94c3-r2-verdict-reject-retained-window-gap-refetch`'s own required fix. `since=`
+/// naming the surviving floor (3) EXACTLY is a different story: not-less-than the floor is
+/// not a gap, so that connects normally - proving the guard is a STRICT `since < floor`
+/// comparison over the SAME real prune-created gap, never an off-by-one that also refuses
+/// the boundary.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn a_since_strictly_below_the_stores_real_prune_floor_is_refused_but_the_floor_itself_streams() {
+    let (_dir, remaining) = store_with_a_real_retained_window_gap();
+    let addr = serve_test_dash_over_fixed_events(remaining);
+
+    let refused = open_stream_status_line(addr, "since=2&progress_since=0");
+    assert!(
+        refused.starts_with("HTTP/1.1 410"),
+        "a since= the store has actually pruned must be refused with a distinct non-200, \
+         not served as an ordinary 200 stream: {refused}"
+    );
+
+    let at_floor = open_stream_status_line(addr, "since=3&progress_since=0");
+    assert!(
+        at_floor.starts_with("HTTP/1.1 200"),
+        "since= exactly at the floor is not beyond it: {at_floor}"
+    );
+}
+
+/// Recovery: reconnecting from `since=0` (the "no prior cursor" sentinel a page-side
+/// snapshot re-fetch + `connectStream(0)`... in practice `connectStream(snapshot.head)`,
+/// exercised here at its own `since=0` floor case) after the SAME real prune delivers
+/// exactly the current console event, never the deleted duplicates and never a corrupted or
+/// missing fold - proving the recovery a `410` is meant to trigger actually lands a client
+/// on the CORRECT current state, not merely on SOME response.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn reconnecting_from_scratch_after_the_real_prune_delivers_exactly_the_surviving_console_event() {
+    let (_dir, remaining) = store_with_a_real_retained_window_gap();
+    let addr = serve_test_dash_over_fixed_events(remaining);
+
+    let mut stream = open_stream(addr, 0);
+    let frame = read_frame(&mut stream).expect("a frame must arrive");
+    assert_eq!(
+        frame.event, "event",
+        "the surviving CodeEntityExtracted row is a graph-extraction type, never an event \
+         frame; the first (and only) event frame must be the console event: {frame:?}"
+    );
+    let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
+    assert_eq!(data["type"], "DecisionMade");
+    assert_eq!(
+        data["position"], 4,
+        "the fold must land on the console event's real position, not a renumbered one"
     );
 }

@@ -3004,6 +3004,7 @@ impl Response {
             400 => "Bad Request",
             404 => "Not Found",
             405 => "Method Not Allowed",
+            410 => "Gone",
             500 => "Internal Server Error",
             _ => "OK",
         }
@@ -3626,6 +3627,21 @@ fn write_sse(
     w.flush()
 }
 
+/// Write the retained-window refusal [`serve_console_stream`]'s own guard sends, and close
+/// the connection - a real, parseable HTTP response (via the same [`Response::write_to`]
+/// every other route answers through, so it carries the same [`DASH_HEADER`]/
+/// [`DASH_HEADER_PID`] markers), never a bare socket drop. `410 Gone` names the position
+/// itself as no longer obtainable (as opposed to `404`, which would say the RESOURCE - the
+/// stream endpoint - does not exist, which is false) and points the reader at the recovery
+/// this guard exists to trigger: re-fetch the snapshot and resume from its head.
+fn write_retained_window_gone(stream: &mut TcpStream, since: Position, floor: Position) {
+    let body = format!(
+        "position {since} is older than the earliest position this store still retains \
+         ({floor}); re-fetch /api/console/snapshot and resume the stream from its head"
+    );
+    let _ = Response::text(410, &body).write_to(stream);
+}
+
 /// Serve ONE `/api/console/stream` connection until the client disconnects (spec 94,
 /// criterion 2: THE STREAM) - runs on its own thread ([`d-u94c2-stream-threading`],
 /// [`handle_conn`]'s own doc), so it never blocks the accept loop.
@@ -3645,7 +3661,9 @@ fn write_sse(
 /// unconditionally). A `provider` failure degrades to a silent retry on the next poll - the
 /// same best-effort discipline every other `/api/*` route keeps, never a torn-down
 /// connection with no explanation (the client's own health strip reads staleness from the
-/// frame cadence, not from a socket close).
+/// frame cadence, not from a socket close). BEFORE any of that: the retained-window guard
+/// documented on its own `if` below, which may answer `410` and return without ever
+/// writing the `200`/`text/event-stream` header at all.
 fn serve_console_stream<F>(
     mut stream: TcpStream,
     provider: &F,
@@ -3655,6 +3673,43 @@ fn serve_console_stream<F>(
 ) where
     F: Fn(Option<&str>) -> Result<DashInputs, String>,
 {
+    // THE STREAM's retained-window guard (spec 94 criterion 3's own CONSTRAINTS WALK,
+    // "Stream drop": "a gap beyond the server's retained window triggers a snapshot
+    // re-fetch" - `adj-u94c3-r2-verdict-reject-retained-window-gap-refetch`). A
+    // reconnecting client's `since=`/`Last-Event-ID` names a position it has ALREADY
+    // applied; if the store's own current floor - the smallest [`Position`] any row (of
+    // ANY type, not just a console one) still occupies - has moved PAST that position,
+    // something that once sat between them is gone (the routine `rigger reset --derived`
+    // hygiene operation, [`crate::eventstore::sqlite::Store::prune_derived_index`], is
+    // one such compaction today; a future one may cover more ground than today's four
+    // derived-index types), and resuming with `since` as though nothing had changed would
+    // silently miss whatever stood there. `since == 0` is the "from the very start"
+    // sentinel a fresh tab's first-ever connect always carries, never a stale cursor, so
+    // it is exempt; an empty store (`floor` is `None` - no row anywhere yet) exempts
+    // every `since` the same way, because there is nothing to have pruned.
+    //
+    // The refusal is a REAL, DISTINCT non-200 HTTP response ([`write_retained_window_gone`])
+    // rather than a bare closed socket, because a real `EventSource` treats the two
+    // completely differently: a network-level close is a "reestablish the connection"
+    // per the SSE spec, so the browser's OWN built-in retry reopens this exact URL,
+    // forever, at the identical stale `since=` - the very stall this guard exists to
+    // end. A non-200 response is instead a "fail the connection": `readyState` is set to
+    // `CLOSED` and `error` fires ONCE with no further auto-retry, which is the one signal
+    // `connectStream`'s `onerror` handler (`src/console.html`) can act on to re-fetch
+    // `/api/console/snapshot`, `fold_reset` onto the CURRENT state, and reopen the stream
+    // from the fresh head - rather than replaying a position the store can never serve
+    // again.
+    if since > 0 {
+        if let Ok((events, _, _, _)) = provider(instance) {
+            if let Some(floor) = events.iter().map(|e| e.position).min() {
+                if since < floor {
+                    write_retained_window_gone(&mut stream, since, floor);
+                    return;
+                }
+            }
+        }
+    }
+
     let header = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\
          {}: {}\r\n{}: {}\r\nConnection: close\r\n\r\n",

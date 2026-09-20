@@ -162,3 +162,28 @@ fn the_served_console_page_restores_and_updates_the_url_hash() {
         );
     }
 }
+
+/// THE POSITION MODEL's retained-window recovery (CONSTRAINTS WALK, "Stream drop": "a gap
+/// beyond the server's retained window triggers a snapshot re-fetch";
+/// `adj-u94c3-r2-verdict-reject-retained-window-gap-refetch`). A real `EventSource` sets
+/// `readyState` to `CLOSED` only for a DEFINITIVE server refusal (`write_retained_window_
+/// gone`, `src/dash.rs`'s own `410`) - never for an ordinary dropped connection, which it
+/// retries on its own with no page-side call at all (`readyState` stays `CONNECTING` for
+/// that case, and this page must do nothing then, or every routine reconnect would refetch
+/// the whole snapshot). `onerror` must act on exactly that `CLOSED` signal by re-fetching
+/// the snapshot, folding it fresh, and reopening the stream - never the bare no-op it was
+/// before this fix.
+#[test]
+fn the_served_console_page_recovers_from_a_closed_stream_by_refetching_the_snapshot() {
+    let body = served_console_body();
+    assert!(
+        !body.contains("source.onerror = function () {};"),
+        "onerror must no longer be a bare no-op: {body}"
+    );
+    for needle in ["EventSource.CLOSED", "/api/console/snapshot", "fold_reset"] {
+        assert!(
+            body.contains(needle),
+            "missing {needle:?} in the served console page: {body}"
+        );
+    }
+}

@@ -11837,7 +11837,7 @@
     "is_test": false,
     "proposed_module": "dash::response",
     "reason": "method inside `impl Response`; grouped with its other `Response` methods.",
-    "content_hash": "18e361220bdd1cc4"
+    "content_hash": "c419a38eba2be7c7"
   },
   {
     "file": "src/dash.rs",
@@ -11921,11 +11921,19 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "write_retained_window_gone",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "a20b249e818015b5"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "serve_console_stream",
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "d716c184ced46bf2"
+    "content_hash": "6e3f395a2f91b165"
   },
   {
     "file": "src/dash.rs",

@@ -29,8 +29,8 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 3911,
-        "end_line": 3913
+        "start_line": 3966,
+        "end_line": 3968
       },
       {
         "file": "src/ledger.rs",
@@ -89,8 +89,8 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 3917,
-        "end_line": 3922
+        "start_line": 3972,
+        "end_line": 3977
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -354,8 +354,8 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 3816,
-        "end_line": 3816
+        "start_line": 3871,
+        "end_line": 3871
       },
       {
         "file": "src/driver/cli.rs",
@@ -2384,8 +2384,8 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 3778,
-        "end_line": 3780
+        "start_line": 3833,
+        "end_line": 3835
       },
       {
         "file": "src/eventstore/mod.rs",
@@ -2529,13 +2529,13 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 9981,
-        "end_line": 9991
+        "start_line": 10036,
+        "end_line": 10046
       },
       {
         "file": "src/dash.rs",
-        "start_line": 10271,
-        "end_line": 10281
+        "start_line": 10326,
+        "end_line": 10336
       },
       {
         "file": "tests/concepts_labels_membership.rs",
@@ -3524,13 +3524,13 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 3943,
-        "end_line": 3943
+        "start_line": 3998,
+        "end_line": 3998
       },
       {
         "file": "src/dash.rs",
-        "start_line": 3992,
-        "end_line": 3992
+        "start_line": 4047,
+        "end_line": 4047
       },
       {
         "file": "src/docs.rs",
@@ -8824,13 +8824,13 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 9970,
-        "end_line": 9979
+        "start_line": 10025,
+        "end_line": 10034
       },
       {
         "file": "src/dash.rs",
-        "start_line": 10260,
-        "end_line": 10269
+        "start_line": 10315,
+        "end_line": 10324
       },
       {
         "file": "tests/graph_query_engine_relocation_periphery.rs",
@@ -8894,8 +8894,8 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 9261,
-        "end_line": 9267
+        "start_line": 9316,
+        "end_line": 9322
       },
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -9024,8 +9024,8 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 9663,
-        "end_line": 9673
+        "start_line": 9718,
+        "end_line": 9728
       },
       {
         "file": "tests/dash_graph_exploration_overview.rs",
@@ -9369,8 +9369,8 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 9290,
-        "end_line": 9297
+        "start_line": 9345,
+        "end_line": 9352
       },
       {
         "file": "tests/calls_down_execution_path_periphery.rs",
@@ -9449,8 +9449,8 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 9278,
-        "end_line": 9289
+        "start_line": 9333,
+        "end_line": 9344
       },
       {
         "file": "tests/calls_down_execution_path_periphery.rs",
@@ -9719,38 +9719,38 @@
       },
       {
         "file": "src/dash.rs",
-        "start_line": 8690,
-        "end_line": 8690
+        "start_line": 8745,
+        "end_line": 8745
       },
       {
         "file": "src/dash.rs",
-        "start_line": 8771,
-        "end_line": 8771
+        "start_line": 8826,
+        "end_line": 8826
       },
       {
         "file": "src/dash.rs",
-        "start_line": 8779,
-        "end_line": 8779
+        "start_line": 8834,
+        "end_line": 8834
       },
       {
         "file": "src/dash.rs",
-        "start_line": 8786,
-        "end_line": 8786
+        "start_line": 8841,
+        "end_line": 8841
       },
       {
         "file": "src/dash.rs",
-        "start_line": 8805,
-        "end_line": 8805
+        "start_line": 8860,
+        "end_line": 8860
       },
       {
         "file": "src/dash.rs",
-        "start_line": 8838,
-        "end_line": 8838
+        "start_line": 8893,
+        "end_line": 8893
       },
       {
         "file": "src/dash.rs",
-        "start_line": 8861,
-        "end_line": 8861
+        "start_line": 8916,
+        "end_line": 8916
       },
       {
         "file": "src/main.rs",
@@ -10124,18 +10124,18 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 4066,
-        "end_line": 4082
+        "start_line": 4121,
+        "end_line": 4137
       },
       {
         "file": "src/dash.rs",
-        "start_line": 4310,
-        "end_line": 4324
+        "start_line": 4365,
+        "end_line": 4379
       },
       {
         "file": "src/dash.rs",
-        "start_line": 5884,
-        "end_line": 5898
+        "start_line": 5939,
+        "end_line": 5953
       }
     ]
   },
@@ -10144,13 +10144,13 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 4218,
-        "end_line": 4240
+        "start_line": 4273,
+        "end_line": 4295
       },
       {
         "file": "src/dash.rs",
-        "start_line": 4332,
-        "end_line": 4358
+        "start_line": 4387,
+        "end_line": 4413
       }
     ]
   },
@@ -10159,28 +10159,28 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 4637,
-        "end_line": 4653
+        "start_line": 4692,
+        "end_line": 4708
       },
       {
         "file": "src/dash.rs",
-        "start_line": 4794,
-        "end_line": 4814
+        "start_line": 4849,
+        "end_line": 4869
       },
       {
         "file": "src/dash.rs",
-        "start_line": 4836,
-        "end_line": 4859
+        "start_line": 4891,
+        "end_line": 4914
       },
       {
         "file": "src/dash.rs",
-        "start_line": 4866,
-        "end_line": 4881
+        "start_line": 4921,
+        "end_line": 4936
       },
       {
         "file": "src/dash.rs",
-        "start_line": 4909,
-        "end_line": 4929
+        "start_line": 4964,
+        "end_line": 4984
       }
     ]
   },
@@ -10189,13 +10189,13 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 4664,
-        "end_line": 4709
+        "start_line": 4719,
+        "end_line": 4764
       },
       {
         "file": "src/dash.rs",
-        "start_line": 4732,
-        "end_line": 4783
+        "start_line": 4787,
+        "end_line": 4838
       }
     ]
   },
@@ -10204,8 +10204,8 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 5193,
-        "end_line": 5257
+        "start_line": 5248,
+        "end_line": 5312
       },
       {
         "file": "tests/dash_decisions_progressive_disclosure.rs",
@@ -10219,8 +10219,8 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 6980,
-        "end_line": 7014
+        "start_line": 7035,
+        "end_line": 7069
       },
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -10234,8 +10234,8 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 7470,
-        "end_line": 7495
+        "start_line": 7525,
+        "end_line": 7550
       },
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -10249,8 +10249,8 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 7679,
-        "end_line": 7699
+        "start_line": 7734,
+        "end_line": 7754
       },
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -10264,13 +10264,13 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 8804,
-        "end_line": 8822
+        "start_line": 8859,
+        "end_line": 8877
       },
       {
         "file": "src/dash.rs",
-        "start_line": 8837,
-        "end_line": 8853
+        "start_line": 8892,
+        "end_line": 8908
       }
     ]
   },
@@ -10279,8 +10279,8 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 9246,
-        "end_line": 9259
+        "start_line": 9301,
+        "end_line": 9314
       },
       {
         "file": "tests/dash_calls_route_periphery.rs",
@@ -10294,8 +10294,8 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 9269,
-        "end_line": 9271
+        "start_line": 9324,
+        "end_line": 9326
       },
       {
         "file": "tests/calls_down_execution_path_periphery.rs",
@@ -10309,8 +10309,8 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 9636,
-        "end_line": 9646
+        "start_line": 9691,
+        "end_line": 9701
       },
       {
         "file": "tests/rationale_overlay_seam.rs",
@@ -10324,13 +10324,13 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 9724,
-        "end_line": 9726
+        "start_line": 9779,
+        "end_line": 9781
       },
       {
         "file": "src/dash.rs",
-        "start_line": 9727,
-        "end_line": 9729
+        "start_line": 9782,
+        "end_line": 9784
       }
     ]
   },
@@ -10339,13 +10339,13 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 9929,
-        "end_line": 9953
+        "start_line": 9984,
+        "end_line": 10008
       },
       {
         "file": "src/dash.rs",
-        "start_line": 10221,
-        "end_line": 10241
+        "start_line": 10276,
+        "end_line": 10296
       },
       {
         "file": "tests/metadata_card_periphery.rs",
@@ -10359,13 +10359,13 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 9998,
-        "end_line": 10023
+        "start_line": 10053,
+        "end_line": 10078
       },
       {
         "file": "src/dash.rs",
-        "start_line": 10288,
-        "end_line": 10323
+        "start_line": 10343,
+        "end_line": 10378
       },
       {
         "file": "tests/graph_query_engine_relocation_periphery.rs",
@@ -10389,13 +10389,13 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 10437,
-        "end_line": 10450
+        "start_line": 10492,
+        "end_line": 10505
       },
       {
         "file": "src/dash.rs",
-        "start_line": 10457,
-        "end_line": 10467
+        "start_line": 10512,
+        "end_line": 10522
       }
     ]
   },
@@ -10404,8 +10404,8 @@
     "sites": [
       {
         "file": "src/dash.rs",
-        "start_line": 10589,
-        "end_line": 10631
+        "start_line": 10644,
+        "end_line": 10686
       },
       {
         "file": "tests/metadata_card_periphery.rs",

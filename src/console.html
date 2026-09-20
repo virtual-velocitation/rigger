@@ -536,7 +536,43 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
     // even a frame this resume mechanism still lets through twice renders no duplicate
     // mark and grows session.events by zero, not by one. The health strip's
     // disconnected signal is specs 95-98's own paint, out of this criterion's scope.
-    source.onerror = function () {};
+    //
+    // Stream drop beyond the server's retained window (CONSTRAINTS WALK, "Stream
+    // drop"; adj-u94c3-r2-verdict-reject-retained-window-gap-refetch): an ordinary
+    // dropped connection closes the socket with NO HTTP response, which a real
+    // EventSource treats as a network error - readyState goes to CONNECTING and the
+    // browser's OWN retry reopens this same URL automatically, needing nothing from
+    // this handler (the case above). A stale since/Last-Event-ID the store can no
+    // longer serve instead gets a REAL, distinct HTTP response
+    // (write_retained_window_gone, src/dash.rs) - which is a definitive server
+    // refusal, so the spec sets readyState to CLOSED and fires error exactly ONCE,
+    // with no further auto-retry at the same stale position. That CLOSED state is
+    // the one signal this handler acts on: re-fetch the snapshot, fold_reset onto
+    // whatever the store currently holds, and reopen the stream from the fresh
+    // head - rather than doing nothing and leaving a closed EventSource that never
+    // reconnects at all.
+    source.onerror = function () {
+      if (source.readyState !== EventSource.CLOSED) return;
+      fetch("/api/console/snapshot")
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (snapshot) {
+          var events = snapshot.events || [];
+          callOp("fold_reset", { events: events });
+          STATE.head = snapshot.head || 0;
+          STATE.positions = events
+            .map(function (e) {
+              return e.position;
+            })
+            .sort(function (a, b) {
+              return a - b;
+            });
+          renderTrack();
+          if (STATE.live) goTo(STATE.head, true);
+          connectStream(STATE.head);
+        });
+    };
   }
 
   function wireControls() {
