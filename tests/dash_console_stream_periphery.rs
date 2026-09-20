@@ -203,7 +203,10 @@ fn open_stream_with_progress_since(
     since: u64,
     progress_since: u64,
 ) -> BufReader<TcpStream> {
-    open_stream_with_query(addr, &format!("since={since}&progress_since={progress_since}"))
+    open_stream_with_query(
+        addr,
+        &format!("since={since}&progress_since={progress_since}"),
+    )
 }
 
 /// Open a `GET /api/console/stream?<query>` connection with an arbitrary raw query string
