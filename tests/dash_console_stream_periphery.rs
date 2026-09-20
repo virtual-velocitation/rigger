@@ -40,7 +40,7 @@ use serial_test::serial;
 use rigger::contextgraph::{CallGraph, Direction, Graph};
 use rigger::dash::{self, DashInputs, InstanceView};
 use rigger::eventstore::Event;
-use rigger::run::META_RUN_ID;
+use rigger::run::{META_BASE, META_RUN_ID};
 
 /// One SSE frame as this test reads it off the wire: the `event:` name and the `data:`
 /// line's raw text (never re-parsed here beyond what a real `EventSource` client itself
@@ -138,6 +138,55 @@ fn serve_test_dash(store: FakeStore) -> std::net::SocketAddr {
     addr
 }
 
+/// Bind and serve `dash::serve_on` whose provider selects between DISTINCT named
+/// [`FakeStore`]s by the request's `?instance=` selector (spec 50, criterion 3): an exact
+/// name match in `named` wins, anything else (absent, empty, or unrecognized) falls back to
+/// `default` - mirroring `handle_conn`'s own `instance.as_deref().filter(|s|
+/// !s.is_empty())` fallback shape. Lets a test prove a NEW call site (the stream branch's
+/// own `?instance=` extraction, threaded across its `std::thread` hand-off into
+/// `serve_console_stream`) actually reaches the selected store, the same way
+/// [`serve_test_dash`] proves the single-store case.
+fn serve_multi_instance_dash(
+    default: FakeStore,
+    named: &[(&str, FakeStore)],
+) -> std::net::SocketAddr {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind an ephemeral loopback port");
+    let addr = listener.local_addr().expect("learn the bound port");
+    let named: Vec<(String, FakeStore)> = named
+        .iter()
+        .map(|(name, store)| (name.to_string(), store.clone()))
+        .collect();
+    let provider = move |instance: Option<&str>| -> Result<DashInputs, String> {
+        let store = instance
+            .and_then(|want| named.iter().find(|(name, _)| name == want))
+            .map(|(_, store)| store)
+            .unwrap_or(&default);
+        Ok((
+            store.events.lock().unwrap().clone(),
+            Graph::default(),
+            store.progress.lock().unwrap().clone(),
+            store.liveness.lock().unwrap().clone(),
+        ))
+    };
+    let graph_provider = |_instance: Option<&str>| Graph::default();
+    let calls_provider =
+        |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str| CallGraph::default();
+    let instances_provider = Vec::<InstanceView>::new;
+    std::thread::spawn(move || {
+        let _ = dash::serve_on(
+            listener,
+            provider,
+            graph_provider,
+            calls_provider,
+            instances_provider,
+            3,
+            "rigger-run",
+            "origin/main",
+        );
+    });
+    addr
+}
+
 /// Open a `GET /api/console/stream?since=<since>` connection and hand back a buffered reader
 /// positioned right after the response headers, having asserted the framing headers a real
 /// `EventSource` cares about.
@@ -154,14 +203,20 @@ fn open_stream_with_progress_since(
     since: u64,
     progress_since: u64,
 ) -> BufReader<TcpStream> {
+    open_stream_with_query(addr, &format!("since={since}&progress_since={progress_since}"))
+}
+
+/// Open a `GET /api/console/stream?<query>` connection with an arbitrary raw query string
+/// (e.g. to name `instance=` alongside `since=`/`progress_since=`), asserting the same
+/// framing headers [`open_stream`] does. The one place this file builds the stream request,
+/// so `open_stream`/`open_stream_with_progress_since` and any test naming its own extra
+/// param share this exact header handling rather than each re-implementing it.
+fn open_stream_with_query(addr: std::net::SocketAddr, query: &str) -> BufReader<TcpStream> {
     let mut client = TcpStream::connect(addr).expect("connect to the served dash");
     client
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set a read timeout on the client");
-    let req = format!(
-        "GET /api/console/stream?since={since}&progress_since={progress_since} HTTP/1.1\r\n\
-         Host: localhost\r\n\r\n"
-    );
+    let req = format!("GET /api/console/stream?{query} HTTP/1.1\r\nHost: localhost\r\n\r\n");
     client.write_all(req.as_bytes()).expect("write the request");
     let mut reader = BufReader::new(client);
 
@@ -386,6 +441,37 @@ fn an_open_stream_never_blocks_an_ordinary_request_on_another_connection() {
     );
 }
 
+/// THE STREAM's own `?instance=` extraction (`handle_conn`'s pre-route branch,
+/// `d-u94c2-stream-threading`) is a NEW call site for the spec-50 multi-instance attach
+/// selector: it is threaded across a `std::thread` hand-off into `serve_console_stream`'s
+/// own poll loop, never through the generic `provider(instance)` call every other route
+/// already shares. Proving the SAME extraction mechanism (`query_param` + `percent_decode`)
+/// elsewhere (as `tests/cli.rs` already does for `/api/state`/`/api/graph`) does not prove
+/// THIS call site's own wiring - a connection naming one instance must observe only that
+/// instance's store, never the default project's.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn the_stream_threads_its_instance_selector_to_the_matching_stores_events() {
+    let default_store = FakeStore::default();
+    let inst_a_store = FakeStore::default();
+    inst_a_store.push_event(ev("UnitIntegrated", r#"{"id":"only-in-inst-a"}"#));
+    let addr = serve_multi_instance_dash(default_store.clone(), &[("inst-a", inst_a_store)]);
+
+    let mut stream = open_stream_with_query(addr, "since=0&progress_since=0&instance=inst-a");
+    let frame =
+        read_frame(&mut stream).expect("a frame must arrive from the selected instance's store");
+    assert_eq!(frame.event, "event");
+    let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
+    assert_eq!(
+        data["data"]["id"], "only-in-inst-a",
+        "the stream must scope to the ?instance= selector's own store: {data:?}"
+    );
+    assert!(
+        default_store.events.lock().unwrap().is_empty(),
+        "the default (un-instanced) store must never observe an event pushed to inst-a's own store"
+    );
+}
+
 /// A plain `GET <path>` over a real socket, decoded as (status code, `Content-Type`, JSON
 /// body) - the generic escape hatch this file uses for a route that answers once and closes
 /// (`Connection: close`), unlike the SSE routes `open_stream` drives.
@@ -497,6 +583,40 @@ fn console_snapshot_is_served_over_a_real_socket_with_the_filtered_feed_and_defi
     assert_eq!(v["liveness"]["u1/implementer#0"], 12);
     assert_eq!(v["definition"]["stages"], serde_json::json!(["implement"]));
     assert_eq!(v["definition"]["gates"], serde_json::json!(["cargo test"]));
+}
+
+/// THE SNAPSHOT's `base` field (`console_snapshot_json`'s own doc comment: "the run's
+/// PERSISTED base (`run::current_run_base`) wins" - the exact same `effective_base` pattern
+/// `build_state` already uses for `/api/state`, line-for-line): a run's own persisted base,
+/// stamped in `RunStarted`'s `META_BASE` metadata, wins over whatever default `rigger dash`
+/// was started with; an unstamped run falls back to that served default. No test anywhere -
+/// not the in-process unit test, not any periphery test above - asserted on `base` before
+/// this one.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn console_snapshot_base_prefers_the_runs_persisted_base_over_the_served_default() {
+    // No META_BASE recorded: falls back to the default `serve_test_dash` starts with
+    // ("origin/main").
+    let unstamped = FakeStore::default();
+    unstamped.push_event(ev("RunStarted", r#"{"run":"r1","spec":"s"}"#));
+    let addr = serve_test_dash(unstamped);
+    let (_, _, v) = get_json(addr, "/api/console/snapshot");
+    assert_eq!(
+        v["base"], "origin/main",
+        "an unstamped run must fall back to the served default base: {v:?}"
+    );
+
+    // A persisted base wins over that same served default.
+    let stamped = FakeStore::default();
+    stamped.push_event(
+        ev("RunStarted", r#"{"run":"r1","spec":"s"}"#).with_meta(META_BASE, "origin/release-9.9"),
+    );
+    let addr2 = serve_test_dash(stamped);
+    let (_, _, v2) = get_json(addr2, "/api/console/snapshot");
+    assert_eq!(
+        v2["base"], "origin/release-9.9",
+        "a run's own persisted base must win over the served default: {v2:?}"
+    );
 }
 
 /// A live spawn's liveness map arrives PROMPTLY as its own `liveness` frame naming its ages -
