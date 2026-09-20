@@ -714,7 +714,14 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
     var overlay = document.getElementById("paletteOverlay");
     var input = document.getElementById("paletteInput");
     if (!overlay || !input) return;
-    PALETTE.commands = callOp("palette_commands", {}).commands || [];
+    // Pass the SAME position this page currently displays (spec 94 c4's own REQUIRED FIX,
+    // adj-u94c4-r4-verdict-reject-push-while-scrubbed-desync): `palette_commands` takes an
+    // explicit position argument rather than reading the core's own ambient fold state, so
+    // an ordinary live push arriving while this page is scrubbed (which never re-renders -
+    // see connectStream's push handler) can never desync the palette from the still-shown
+    // cursor readout the way an ambient core cursor could.
+    var args = STATE.live ? {} : { position: STATE.cursor };
+    PALETTE.commands = callOp("palette_commands", args).commands || [];
     input.value = "";
     filterPalette("");
     overlay.hidden = false;

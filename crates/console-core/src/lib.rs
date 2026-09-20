@@ -40,19 +40,22 @@ use rigger::eventstore::Event;
 /// This crate resolves nothing itself: `blocker::effective_max_retries` is the ONE place
 /// `0` maps to `safety::MAX_RETRIES`, so `max_retries` here is threaded straight through
 /// verbatim, never shadowed by a second, independently-maintained copy of that constant.
+///
+/// No ambient "current position" field lives here (spec 94 c4's own REQUIRED FIX,
+/// adj-u94c4-r4-verdict-reject-push-while-scrubbed-desync): an earlier round kept one
+/// (`cursor: Option<u64>`) so `palette_commands` could answer state-of-the-cursor-
+/// consistent with a prior `fold_at` scrub, but `fold_push`/`fold_reset` legitimately
+/// reset it to live on every call (a live push always extends the log to the head), so a
+/// caller reading it after any intervening push silently got the live answer instead of
+/// the scrub it still visibly displayed - a caller bug that ambient state built in by
+/// construction. Every op that must answer at a caller-chosen position (`fold_at`,
+/// `palette_commands`) now takes that position as an explicit argument instead, so the
+/// reply depends only on what the caller asked for, never on call order relative to a
+/// push.
 struct ConsoleSession {
     events: Vec<Event>,
     max_retries: u32,
     current: console::ConsoleState,
-    /// The position `current` was folded as of (spec 94 c3, THE POSITION MODEL), or `None`
-    /// for the LIVE head - `fold_reset`/`fold_push` always fold the whole accumulated log
-    /// (so they set this back to `None`), `fold_at` scrubs to one position (so it sets this
-    /// to `Some(that position)`). The SINGLE source of truth [`events_at_cursor`] reads so
-    /// every op that must stay state-of-the-cursor-consistent with `current` (today, only
-    /// `palette_commands`'s agent section) narrows together with it under a scrub, rather
-    /// than one section quietly answering from the full, unscoped log
-    /// (adv-u94c4-r3-palette-agent-list-ignores-scrub-cursor-courtroom-list-does-not).
-    cursor: Option<u64>,
     graph: Option<Graph>,
     /// The last `map_build`-computed map engine model (spec 84 criterion 1: districts, rank,
     /// world-space layout) - `map_frame` renders a screen-space [`console::map::DrawList`] from
@@ -71,7 +74,6 @@ impl ConsoleSession {
             events: Vec::new(),
             max_retries: 0,
             current: console::fold(&[], 0).unwrap_or_default(),
-            cursor: None,
             graph: None,
             map: None,
             map_viewport: (0.0, 0.0),
@@ -174,8 +176,6 @@ fn op_fold_reset(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
             session.events = events;
             session.max_retries = max_retries;
             session.current = state;
-            // A reset always describes the live head, never a scrub - see `cursor`'s own doc.
-            session.cursor = None;
             ok_json(fold_state_reply(&session.current))
         }
         Err(e) => error_reply(format!("fold_reset: {e}")),
@@ -205,8 +205,6 @@ fn op_fold_push(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
         Ok(state) => {
             session.events = events;
             session.current = state;
-            // A push always folds the whole (now-extended) live log - see `cursor`'s own doc.
-            session.cursor = None;
             ok_json(fold_state_reply(&session.current))
         }
         Err(e) => error_reply(format!("fold_push: {e}")),
@@ -219,7 +217,7 @@ struct FoldAtInput {
 }
 
 /// Every event in `events` at or before `position` - the ONE truncation [`op_fold_at`] and
-/// [`events_at_cursor`] both apply, so a scrub position means the identical prefix
+/// [`op_palette_commands`] both apply, so a scrub position means the identical prefix
 /// wherever it is read from.
 fn events_up_to(events: &[Event], position: u64) -> Vec<Event> {
     events
@@ -227,20 +225,6 @@ fn events_up_to(events: &[Event], position: u64) -> Vec<Event> {
         .filter(|e| e.position <= position)
         .cloned()
         .collect()
-}
-
-/// The event window `session.current` was folded over RIGHT NOW (spec 94 c3, THE POSITION
-/// MODEL) - `session.events` truncated to `session.cursor` when the session is scrubbed,
-/// or the whole accumulated log at the live head. Every op that must stay state-of-the-
-/// cursor-consistent with `session.current` reads THROUGH this rather than `session.events`
-/// directly, so a scrub via `fold_at` narrows every dependent view together - see
-/// [`op_palette_commands`], the one caller today
-/// (adv-u94c4-r3-palette-agent-list-ignores-scrub-cursor-courtroom-list-does-not).
-fn events_at_cursor(session: &ConsoleSession) -> Vec<Event> {
-    match session.cursor {
-        Some(position) => events_up_to(&session.events, position),
-        None => session.events.clone(),
-    }
 }
 
 fn op_fold_at(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
@@ -252,7 +236,6 @@ fn op_fold_at(session: &mut ConsoleSession, input: &[u8]) -> Vec<u8> {
     match console::fold(&slice, session.max_retries) {
         Ok(state) => {
             session.current = state.clone();
-            session.cursor = Some(p.position);
             ok_json(fold_state_reply(&state))
         }
         Err(e) => error_reply(format!("fold_at: {e}")),
@@ -282,22 +265,54 @@ fn op_scrub_track(session: &ConsoleSession) -> Vec<u8> {
     ok_json(serde_json::json!({ "marks": track.marks, "ticks": track.ticks }))
 }
 
-/// `palette_commands` (spec 94 c4, THE PALETTE): the session's own event log - narrowed
-/// to the SAME cursor `session.current` was folded at, through [`events_at_cursor`], never
-/// the raw unscoped `session.events` - plus its already-folded units, through
-/// [`console::palette_commands`] (not a second, independently-derived copy). This is what
-/// keeps the courtroom section (already reading `session.current.units`, cursor-scoped by
-/// construction) and the agent section in agreement after a `fold_at` scrub
-/// (adv-u94c4-r3-palette-agent-list-ignores-scrub-cursor-courtroom-list-does-not) - both
-/// now fold from the one `events_at_cursor` window. Takes no input (like `scrub_track`):
-/// the whole recorded stream is already loaded via `fold_reset`/`fold_push`/`fold_at`.
-/// Like `scrub_track`, never errors: `console::palette_commands` itself never fails (a
-/// malformed recorded spawn loses only its own agent row - CONSTRAINTS WALK: "An older
-/// run lacking a field - the fold renders the blank, never fails"), so this has no error
-/// path to answer.
-fn op_palette_commands(session: &ConsoleSession) -> Vec<u8> {
-    let events = events_at_cursor(session);
-    let commands = console::palette_commands(&events, &session.current.units);
+/// `palette_commands`'s wire input: an explicit position, mirroring [`FoldAtInput`] - never
+/// the session's own ambient state. `None` (the field omitted, `null`, or malformed/absent
+/// input entirely - see below) means the live head, exactly like a fresh session with no
+/// scrub applied.
+#[derive(serde::Deserialize, Default)]
+struct PaletteCommandsInput {
+    #[serde(default)]
+    position: Option<u64>,
+}
+
+/// `palette_commands` (spec 94 c4, THE PALETTE): takes the SAME explicit position `fold_at`
+/// does (REQUIRED FIX, adj-u94c4-r4-verdict-reject-push-while-scrubbed-desync) rather than
+/// reading an ambient session cursor - a page's `fold_push`/`fold_reset` between the page's
+/// last `fold_at` scrub and this call legitimately (and silently) resets any such ambient
+/// state back to live, so an op that trusted it could answer from the live head while the
+/// page still visibly displayed a scrub position. An explicit argument makes the reply
+/// depend only on what the caller asks for, never on call order relative to a push.
+///
+/// Both the courtroom section (`units`, re-derived below) and the agent section (`events`,
+/// truncated by [`events_up_to`] - the SAME truncation [`op_fold_at`] applies) are computed
+/// from that ONE position, via a fresh [`console::fold`] call, never from `session.current`
+/// (which can equally be stale relative to the requested position) - so the two sections
+/// can never drift the way
+/// adv-u94c4-r3-palette-agent-list-ignores-scrub-cursor-courtroom-list-does-not first found:
+/// one fold feeds both, exactly like [`op_fold_at`] itself derives `current` from a
+/// truncated slice rather than trusting whatever the session already held.
+/// [`console::palette_commands`] itself is the one command-list authority either way (not a
+/// second, independently-derived copy).
+///
+/// Never errors, matching `scrub_track`: malformed/unparseable input degrades to the live
+/// head (the same "no explicit position" default `{}` already uses, so passing garbage is
+/// never worse than passing nothing), and a `console::fold` failure over `events` (in
+/// practice unreachable here - `console::palette_commands`'s own doc already establishes
+/// neither `ledger::project` nor `blocker::from_events` reads a `SpawnRequested` payload, so
+/// a malformed recorded spawn folds cleanly) falls back to `session.current.units` rather
+/// than surfacing an `{"error": ...}` reply.
+fn op_palette_commands(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
+    let position = serde_json::from_slice::<PaletteCommandsInput>(input)
+        .unwrap_or_default()
+        .position;
+    let events = match position {
+        Some(p) => events_up_to(&session.events, p),
+        None => session.events.clone(),
+    };
+    let units = console::fold(&events, session.max_retries)
+        .map(|state| state.units)
+        .unwrap_or_else(|_| session.current.units.clone());
+    let commands = console::palette_commands(&events, &units);
     ok_json(serde_json::json!({ "commands": commands }))
 }
 
@@ -705,7 +720,7 @@ fn dispatch(session: &mut ConsoleSession, op: &str, input: &[u8]) -> Vec<u8> {
         "map_hit" => op_map_hit(session, input),
         "scrub_track" => op_scrub_track(session),
         "statusline" => ok_json(serde_json::json!({ "statusline": session.current.statusline })),
-        "palette_commands" => op_palette_commands(session),
+        "palette_commands" => op_palette_commands(session, input),
         other => error_reply(format!("unknown op: {other}")),
     }
 }
@@ -1605,9 +1620,9 @@ mod dispatch_tests {
     /// `palette_commands` (spec 94 c4, THE PALETTE) answers the SAME entry list
     /// `console::palette_commands` itself returns for the session's accumulated event
     /// log and its already-folded units - not a second, independently-derived copy -
-    /// proven with a real unit and a real recorded agent. Malformed input is accepted
-    /// (the op takes none, like `scrub_track`/`statusline`): it ignores `input`
-    /// entirely.
+    /// proven with a real unit and a real recorded agent. Malformed input degrades to the
+    /// live head (like an omitted `position`), never an `{"error": ...}` reply - see
+    /// `PaletteCommandsInput`'s own doc.
     #[test]
     fn palette_commands_answers_console_palette_commands_own_entries() {
         let mut s = ConsoleSession::new();
@@ -1678,18 +1693,22 @@ mod dispatch_tests {
         );
     }
 
-    /// `palette_commands` after a `fold_at` scrub keeps its courtroom section (already
-    /// cursor-scoped through `session.current.units`, which `fold_at` folded over the
-    /// truncated prefix) and its agent section IN AGREEMENT about the same cursor -
+    /// `palette_commands` given an explicit `position` keeps its courtroom section and its
+    /// agent section IN AGREEMENT about that SAME position -
     /// adv-u94c4-r3-palette-agent-list-ignores-scrub-cursor-courtroom-list-does-not: before
-    /// this fix the agent section always read `session.events` (the full, unscoped log)
-    /// while the courtroom section read `session.current.units` (scoped to the scrub
-    /// position), so the two disagreed after any backward scrub. `u2` and its spawn are
-    /// recorded AFTER the scrub position, so a correct reply omits both consistently - the
-    /// SAME position both sections must honor (spec 94 Goal: "one page whose every view is
-    /// the state of the run after N events").
+    /// the round-3 fix the agent section always read `session.events` (the full, unscoped
+    /// log) while the courtroom section read `session.current.units` (scoped to whatever
+    /// `fold_at` last scrubbed to), so the two disagreed after any backward scrub. `u2` and
+    /// its spawn are recorded AFTER the requested position, so a correct reply omits both
+    /// consistently - the SAME position both sections must honor (spec 94 Goal: "one page
+    /// whose every view is the state of the run after N events"). Round-4's fix scoped this
+    /// through an ambient `session.cursor` `fold_at` set as a side effect; round-5 (this
+    /// test) proves the SAME agreement now holds from the explicit `position` argument
+    /// alone, with no preceding `fold_at` call at all - see
+    /// `palette_commands_answers_the_scrubbed_window_even_after_a_live_push_races_it`
+    /// below for the race an ambient cursor could not survive.
     #[test]
-    fn palette_commands_after_fold_at_scopes_courtroom_and_agents_to_the_same_cursor() {
+    fn palette_commands_scopes_courtroom_and_agents_to_its_explicit_position() {
         let mut s = ConsoleSession::new();
         call(
             &mut s,
@@ -1702,9 +1721,9 @@ mod dispatch_tests {
             ]}"#,
         );
 
-        // Scrub back to right after u1's own spawn, before u2 ever appears.
-        call(&mut s, "fold_at", r#"{"position":2}"#);
-        let v = call(&mut s, "palette_commands", "{}");
+        // Ask for right after u1's own spawn, before u2 ever appears - no `fold_at` call at
+        // all, just the explicit `position` argument.
+        let v = call(&mut s, "palette_commands", r#"{"position":2}"#);
         let commands = v["commands"].as_array().expect("{v:?}");
         let courtrooms: std::collections::BTreeSet<&str> = commands
             .iter()
@@ -1719,18 +1738,17 @@ mod dispatch_tests {
         assert_eq!(
             courtrooms,
             std::collections::BTreeSet::from(["u1"]),
-            "courtroom section must reflect the scrub position: {commands:?}"
+            "courtroom section must reflect the requested position: {commands:?}"
         );
         assert_eq!(
             agents,
             std::collections::BTreeSet::from(["u1/implementer#0"]),
-            "agent section must reflect the SAME scrub position the courtroom section \
+            "agent section must reflect the SAME requested position the courtroom section \
              does, not the full unscoped log: {commands:?}"
         );
 
-        // Scrubbing forward again to the head restores u2 and its spawn to BOTH sections.
-        call(&mut s, "fold_at", r#"{"position":4}"#);
-        let v = call(&mut s, "palette_commands", "{}");
+        // Asking for position 4 restores u2 and its spawn to BOTH sections.
+        let v = call(&mut s, "palette_commands", r#"{"position":4}"#);
         let commands = v["commands"].as_array().expect("{v:?}");
         assert!(
             commands
@@ -1743,6 +1761,84 @@ mod dispatch_tests {
                 .iter()
                 .any(|c| c["kind"] == "agent" && c["id"] == "u2/implementer#0"),
             "{commands:?}"
+        );
+    }
+
+    /// THE REQUIRED FIX's own proof (adj-u94c4-r4-verdict-reject-push-while-scrubbed-desync):
+    /// (a) fold to a scrub position, (b) push a new event with NO intervening `fold_at`
+    /// call, (c) assert `palette_commands` still answers the SCRUBBED window, not the live
+    /// one, when called with that SAME explicit `position` - through the real dispatch ABI,
+    /// mirroring `palette_commands_scopes_courtroom_and_agents_to_its_explicit_position`
+    /// above for the static case. Under the round-4 design this failed: `fold_push`
+    /// unconditionally reset the ambient `session.cursor` to live, so a caller (like
+    /// `openPalette`, which queries `palette_commands` with no `fold_at` of its own) that
+    /// read it after this push silently got u2 - beyond the scrub position the page still
+    /// visibly displayed. An explicit `position` argument cannot be raced this way: nothing
+    /// but the argument itself decides the answer.
+    #[test]
+    fn palette_commands_answers_the_scrubbed_window_even_after_a_live_push_races_it() {
+        let mut s = ConsoleSession::new();
+        call(
+            &mut s,
+            "fold_reset",
+            r#"{"events":[
+                {"type":"UnitStarted","data":{"id":"u1"},"position":1},
+                {"type":"SpawnRequested","data":{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"},"position":2}
+            ]}"#,
+        );
+
+        // (a) Scrub back to right after u1's own spawn.
+        call(&mut s, "fold_at", r#"{"position":2}"#);
+
+        // (b) A live event streams in - u2 and its own spawn - with NO intervening
+        // `fold_at` call (exactly what `connectStream`'s push handler does while the page
+        // is scrubbed: it calls `fold_push` unconditionally, then skips `render()`/
+        // `fold_at` because `STATE.live` is false).
+        call(
+            &mut s,
+            "fold_push",
+            r#"{"type":"UnitStarted","data":{"id":"u2"},"position":3}"#,
+        );
+        call(
+            &mut s,
+            "fold_push",
+            r#"{"type":"SpawnRequested","data":{"id":"u2/implementer#0","unit":"u2","stage":"implement","prompt":"do it"},"position":4}"#,
+        );
+
+        // (c) Ask `palette_commands` for the SAME position 2 the page still displays - it
+        // must still exclude u2 and its spawn from BOTH sections, not silently answer live.
+        let v = call(&mut s, "palette_commands", r#"{"position":2}"#);
+        let commands = v["commands"].as_array().expect("{v:?}");
+        assert!(
+            !commands
+                .iter()
+                .any(|c| c["kind"] == "courtroom" && c["id"] == "u2"),
+            "an intervening live push must never leak a post-cursor unit into a \
+             fixed-position palette_commands reply: {commands:?}"
+        );
+        assert!(
+            !commands
+                .iter()
+                .any(|c| c["kind"] == "agent" && c["id"] == "u2/implementer#0"),
+            "an intervening live push must never leak a post-cursor agent into a \
+             fixed-position palette_commands reply: {commands:?}"
+        );
+        assert!(
+            commands
+                .iter()
+                .any(|c| c["kind"] == "courtroom" && c["id"] == "u1"),
+            "the scrubbed window itself must still answer correctly: {commands:?}"
+        );
+
+        // The live head (no position argument) DOES see u2 - proving the push really
+        // landed and this is a genuine scrub-vs-live distinction, not an inert push.
+        let live = call(&mut s, "palette_commands", "{}");
+        let live_commands = live["commands"].as_array().expect("{live:?}");
+        assert!(
+            live_commands
+                .iter()
+                .any(|c| c["kind"] == "courtroom" && c["id"] == "u2"),
+            "the live head must see the pushed event: {live_commands:?}"
         );
     }
 

@@ -420,10 +420,13 @@ pub const VIEWS: [(&str, &str); 7] = [
 /// CURSOR CONTRACT: this function trusts its caller to have already scoped `events` and
 /// `units` to the SAME position - it reconciles nothing itself, matching [`scrub_track`]'s
 /// own "no clock, no store" purity. `crates/console-core`'s `op_palette_commands` is the
-/// one caller today, and folds both `events` and `units` through the session's own cursor
-/// (`fold_reset`/`fold_push` = live, `fold_at` = the scrubbed position) via
-/// `events_at_cursor`, so the courtroom section and the agent section always agree on
-/// "the state of the run after N events" (spec 94 Goal) - a mismatched pair here is a
+/// one caller today; it takes an explicit `position` argument (spec 94 c4's own REQUIRED
+/// FIX, adj-u94c4-r4-verdict-reject-push-while-scrubbed-desync - an earlier round scoped
+/// both through an AMBIENT session cursor instead, which a `fold_push`/`fold_reset`
+/// legitimately (and silently) reset to live between a caller's scrub and its later read)
+/// and independently re-derives both `events` and `units` from that ONE position via a
+/// fresh `console::fold` call, so the courtroom section and the agent section always agree
+/// on "the state of the run after N events" (spec 94 Goal) - a mismatched pair here is a
 /// caller bug, not a case this function degrades on the way it degrades a malformed spawn.
 pub fn palette_commands(events: &[Event], units: &UnitStatuses) -> Vec<PaletteCommand> {
     let mut commands: Vec<PaletteCommand> = VIEWS
