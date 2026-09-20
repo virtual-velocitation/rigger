@@ -1263,6 +1263,13 @@ pub struct ConsoleSnapshotView {
     /// The highest position among `events` (0 for an empty run) - the cursor a client
     /// passes straight to `GET /api/console/stream?since=` to resume with no gap.
     pub head: Position,
+    /// The highest position among `progress` (0 for an empty run) - the cursor a client
+    /// passes straight to `GET /api/console/stream?progress_since=` to resume with no gap,
+    /// mirroring `head`/`since=` (`adj-u94c2-verdict-reject-progress-floor-race`: the
+    /// stream's own floor MUST come from this cursor, never from whatever its first live
+    /// poll happens to observe, or a line recorded between this snapshot and that poll is
+    /// silently lost).
+    pub progress_head: Position,
 }
 
 // ---------------------------------------------------------------------------
@@ -2743,6 +2750,11 @@ pub fn console_snapshot_json(
         .map(|e| console_event_wire(e))
         .collect();
 
+    let progress_head = progress_events
+        .iter()
+        .map(|e| e.position)
+        .max()
+        .unwrap_or(0);
     let progress = progress_events.iter().map(console_progress_wire).collect();
 
     // Definition names (Design's "the definition's stage and gate names"): read from THIS
@@ -2773,6 +2785,7 @@ pub fn console_snapshot_json(
             gates,
         },
         head,
+        progress_head,
     })
 }
 
@@ -3318,12 +3331,25 @@ where
             let since = query_param(target, "since")
                 .and_then(|v| v.parse::<Position>().ok())
                 .unwrap_or(0);
+            // The snapshot's own `progress_head` (adj-u94c2-verdict-reject-progress-floor-
+            // race): mirrors `since` exactly so the stream's progress floor is fixed at
+            // connect time from the client's own cursor, never derived from whatever the
+            // stream's first live poll happens to observe.
+            let progress_since = query_param(target, "progress_since")
+                .and_then(|v| v.parse::<Position>().ok())
+                .unwrap_or(0);
             let instance = query_param(target, "instance")
                 .map(percent_decode)
                 .filter(|s| !s.is_empty());
             let provider = Arc::clone(provider);
             std::thread::spawn(move || {
-                serve_console_stream(stream, provider.as_ref(), instance.as_deref(), since);
+                serve_console_stream(
+                    stream,
+                    provider.as_ref(),
+                    instance.as_deref(),
+                    since,
+                    progress_since,
+                );
             });
             return Ok(());
         }
@@ -3456,10 +3482,15 @@ fn write_sse(w: &mut impl Write, event: &str, data: &serde_json::Value) -> io::R
 /// Carries `text/event-stream` frames, re-consulting the SAME per-request `provider` every
 /// other route already reads on a short poll (never a store subscription - a second, parallel
 /// read mechanism the rest of the dash does not have): `event` (one [`CONSOLE_EVENT_TYPES`]
-/// event past `since`, in position order), `progress` (one progress line past whatever the
-/// FIRST poll already held - the snapshot the client fetched before connecting already
-/// carries that history), `liveness` (all marker ages, every [`DASH_STREAM_LIVENESS_MS_ENV`]
-/// while any spawn is live), and `heartbeat` (every [`DASH_STREAM_HEARTBEAT_MS_ENV`]
+/// event past `since`, in position order), `progress` (one progress line past
+/// `progress_since`, in position order - the snapshot's own `progress_head`, the client's
+/// cursor into the SAME separate progress store, mirroring `since`/`head` exactly:
+/// `adj-u94c2-verdict-reject-progress-floor-race`. The floor is fixed HERE, at connect time,
+/// from that cursor - never derived from whatever the stream's own first live poll happens
+/// to observe, or a line recorded between the snapshot fetch and that first poll would be
+/// silently and permanently lost, in neither the snapshot (already fetched) nor the stream
+/// (floored away)), `liveness` (all marker ages, every [`DASH_STREAM_LIVENESS_MS_ENV`] while
+/// any spawn is live), and `heartbeat` (every [`DASH_STREAM_HEARTBEAT_MS_ENV`]
 /// unconditionally). A `provider` failure degrades to a silent retry on the next poll - the
 /// same best-effort discipline every other `/api/*` route keeps, never a torn-down
 /// connection with no explanation (the client's own health strip reads staleness from the
@@ -3469,6 +3500,7 @@ fn serve_console_stream<F>(
     provider: &F,
     instance: Option<&str>,
     since: Position,
+    progress_since: Position,
 ) where
     F: Fn(Option<&str>) -> Result<DashInputs, String>,
 {
@@ -3489,10 +3521,10 @@ fn serve_console_stream<F>(
     let heartbeat_every = env_duration_ms(DASH_STREAM_HEARTBEAT_MS_ENV, 15_000);
 
     let mut last_event = since;
-    // `None` until the first successful poll: that poll's OWN progress lines are already in
-    // the snapshot the client fetched before connecting (Design, THE SNAPSHOT), so only a
-    // line appended STRICTLY AFTER this stream started counts as a delta.
-    let mut progress_floor: Option<Position> = None;
+    // Fixed at connect time from the client's own cursor (the snapshot's `progress_head`),
+    // exactly like `last_event` above starts from `since` - never derived from whatever the
+    // first live poll happens to observe (`adj-u94c2-verdict-reject-progress-floor-race`).
+    let mut progress_floor = progress_since;
     let mut last_liveness = Instant::now()
         .checked_sub(liveness_every)
         .unwrap_or_else(Instant::now);
@@ -3500,14 +3532,6 @@ fn serve_console_stream<F>(
 
     loop {
         if let Ok((events, _graph, progress_events, liveness_ages)) = provider(instance) {
-            let floor = *progress_floor.get_or_insert_with(|| {
-                progress_events
-                    .iter()
-                    .map(|e| e.position)
-                    .max()
-                    .unwrap_or(0)
-            });
-
             let mut new_events: Vec<&Event> = events
                 .iter()
                 .filter(|e| is_console_event(e) && e.position > last_event)
@@ -3522,7 +3546,7 @@ fn serve_console_stream<F>(
 
             let mut new_progress: Vec<&Event> = progress_events
                 .iter()
-                .filter(|e| e.position > floor)
+                .filter(|e| e.position > progress_floor)
                 .collect();
             new_progress.sort_by_key(|e| e.position);
             for e in new_progress {
@@ -3531,7 +3555,7 @@ fn serve_console_stream<F>(
                 if write_sse(&mut stream, "progress", &v).is_err() {
                     return;
                 }
-                progress_floor = Some(e.position);
+                progress_floor = e.position;
             }
 
             if !liveness_ages.is_empty() && last_liveness.elapsed() >= liveness_every {
@@ -4947,6 +4971,32 @@ mod tests {
         assert_eq!(v["data"]["commit"], "abc123");
     }
 
+    /// `console_event_wire`'s documented degrade-not-fail sentinel: a body that is not valid
+    /// JSON (never produced by this codebase's own writers, but never trusted blindly either)
+    /// yields `data: null` rather than panicking or dropping the frame.
+    #[test]
+    fn console_event_wire_with_a_malformed_body_degrades_to_null_data() {
+        let mut e = ev("UnitIntegrated", "not json at all");
+        e.position = 7;
+        let v = console_event_wire(&e);
+        assert_eq!(v["type"], "UnitIntegrated");
+        assert_eq!(v["position"], 7);
+        assert_eq!(v["data"], serde_json::Value::Null);
+    }
+
+    /// `console_progress_wire`'s documented degrade-not-fail sentinel: a body that fails to
+    /// deserialize as `AgentProgress` yields an empty id/activity (never a panic or a
+    /// dropped line) while the event's own position and recorded time still come through.
+    #[test]
+    fn console_progress_wire_with_a_malformed_body_degrades_to_empty_id_and_activity() {
+        let mut e = ev("AgentProgress", "not json at all");
+        e.position = 9;
+        let v = console_progress_wire(&e);
+        assert_eq!(v.id, "");
+        assert_eq!(v.activity, "");
+        assert_eq!(v.position, 9);
+    }
+
     #[test]
     fn console_snapshot_endpoint_filters_events_carries_progress_liveness_and_definitions() {
         let mut events = positioned(vec![
@@ -5021,6 +5071,9 @@ mod tests {
         assert_eq!(progress_out.len(), 1);
         assert_eq!(progress_out[0]["id"], "u1/implementer#0");
         assert_eq!(progress_out[0]["activity"], "reading spec");
+        // `progress_head` mirrors `head`, but over the separate progress store: the cursor a
+        // client threads into `?progress_since=` to resume with no gap.
+        assert_eq!(v["progress_head"], 1);
 
         assert_eq!(v["liveness"]["u1/implementer#0"], 12);
 

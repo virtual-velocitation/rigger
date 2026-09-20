@@ -11749,7 +11749,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "fb51acf4e125f825"
+    "content_hash": "1d1ffc67f39080ab"
   },
   {
     "file": "src/dash.rs",
@@ -11877,7 +11877,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"handle\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "048f766335d2159a"
+    "content_hash": "3310a226f31958dc"
   },
   {
     "file": "src/dash.rs",
@@ -11901,7 +11901,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"serve\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "7e8d649d135f27b8"
+    "content_hash": "512852c13d89ad79"
   },
   {
     "file": "src/dash.rs",
@@ -12225,11 +12225,27 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "console_event_wire_with_a_malformed_body_degrades_to_null_data",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "200e7b25650637f8"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_progress_wire_with_a_malformed_body_degrades_to_empty_id_and_activity",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "95a90ce6ffd94cc7"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "console_snapshot_endpoint_filters_events_carries_progress_liveness_and_definitions",
     "is_test": true,
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1407e5e0a34cc914"
+    "content_hash": "fe683ff8e0d43875"
   },
   {
     "file": "src/dash.rs",

@@ -142,11 +142,26 @@ fn serve_test_dash(store: FakeStore) -> std::net::SocketAddr {
 /// positioned right after the response headers, having asserted the framing headers a real
 /// `EventSource` cares about.
 fn open_stream(addr: std::net::SocketAddr, since: u64) -> BufReader<TcpStream> {
+    open_stream_with_progress_since(addr, since, 0)
+}
+
+/// Like [`open_stream`], but also names `progress_since` - the snapshot's own
+/// `progress_head` cursor a real client threads through so the stream's progress floor is
+/// fixed at connect time from it, never from whatever the stream's own first live poll
+/// happens to observe (`adj-u94c2-verdict-reject-progress-floor-race`).
+fn open_stream_with_progress_since(
+    addr: std::net::SocketAddr,
+    since: u64,
+    progress_since: u64,
+) -> BufReader<TcpStream> {
     let mut client = TcpStream::connect(addr).expect("connect to the served dash");
     client
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set a read timeout on the client");
-    let req = format!("GET /api/console/stream?since={since} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    let req = format!(
+        "GET /api/console/stream?since={since}&progress_since={progress_since} HTTP/1.1\r\n\
+         Host: localhost\r\n\r\n"
+    );
     client.write_all(req.as_bytes()).expect("write the request");
     let mut reader = BufReader::new(client);
 
@@ -267,6 +282,51 @@ fn a_new_progress_line_arrives_as_a_progress_frame() {
     let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
     assert_eq!(data["id"], "u1/implementer#0");
     assert_eq!(data["activity"], "reading spec");
+}
+
+/// Regression for the progress-floor race (`adj-u94c2-verdict-reject-progress-floor-race`):
+/// a progress line recorded in the gap between a client's snapshot fetch and that same
+/// client's subsequent stream connect must still be delivered, not silently dropped. The
+/// client threads `progress_since` from the snapshot's own `progress_head` (its last-seen
+/// progress position) into the stream, exactly like `since=` already resumes the event feed
+/// with no gap - so the stream's floor is fixed at connect time from that cursor, never
+/// derived from whatever its own first live poll happens to observe.
+///
+/// Both lines are already on the store BEFORE the stream ever opens, so a floor derived from
+/// the first poll's own MAX (the old, buggy behavior) would swallow line B too, exactly as
+/// it did in production - this reproduces the race deterministically, with no timing
+/// dependence, rather than racing a sleep against the poll thread.
+#[test]
+#[serial(dash_console_stream_periphery)]
+fn progress_since_resumes_a_line_recorded_before_the_stream_ever_polled() {
+    let store = FakeStore::default();
+    // Line A (position 1): what the client's OWN snapshot fetch already returned as
+    // `progress_head`.
+    store.push_progress(ev(
+        "AgentProgress",
+        r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
+    ));
+    // Line B (position 2): recorded in the gap between that snapshot fetch and the stream
+    // connecting - already on the store by the time the stream's first poll runs, exactly
+    // the window that swallowed a line under the old first-poll-max floor.
+    store.push_progress(ev(
+        "AgentProgress",
+        r#"{"id":"u1/implementer#0","activity":"writing code"}"#,
+    ));
+    let addr = serve_test_dash(store.clone());
+
+    // Connects naming line A's own position as `progress_since`, exactly what the
+    // snapshot's `progress_head` would have told it - so only line B is a delta.
+    let mut stream = open_stream_with_progress_since(addr, 0, 1);
+
+    let frame = read_frame(&mut stream).expect("a progress frame must arrive");
+    assert_eq!(frame.event, "progress");
+    let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
+    assert_eq!(
+        data["activity"], "writing code",
+        "progress_since=1 must still deliver line B even though it was already on the \
+         store before the stream's first poll ran: {data:?}"
+    );
 }
 
 /// TWO console tabs (Constraints Walk: "independent cursors, no per-viewer server state")
@@ -430,6 +490,10 @@ fn console_snapshot_is_served_over_a_real_socket_with_the_filtered_feed_and_defi
     );
     assert_eq!(v["progress"][0]["id"], "u1/implementer#0");
     assert_eq!(v["progress"][0]["activity"], "reading spec");
+    assert_eq!(
+        v["progress_head"], 1,
+        "the cursor a client threads into ?progress_since= to resume with no gap"
+    );
     assert_eq!(v["liveness"]["u1/implementer#0"], 12);
     assert_eq!(v["definition"]["stages"], serde_json::json!(["implement"]));
     assert_eq!(v["definition"]["gates"], serde_json::json!(["cargo test"]));
