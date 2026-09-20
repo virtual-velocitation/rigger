@@ -1668,3 +1668,75 @@ fn console_call_scrub_track_omits_ticks_through_the_public_abi_when_the_wire_car
          exported ABI, never an error or a spurious tick"
     );
 }
+
+/// `fold_push`'s idempotency-by-position fix
+/// (`adj-u94c3-verdict-reject-stream-reconnect-duplicate-events` /
+/// `u94c3-fix-stream-reconnect-duplicate-events`) wires through the REAL exported ABI - not
+/// merely this crate's own private
+/// `dispatch_tests::fold_push_is_idempotent_for_a_position_already_applied`, which calls
+/// `dispatch` directly and never crosses `console_call`'s pointer-packing marshaling. A real
+/// `EventSource` reconnect replaying an already-delivered frame (exactly what
+/// `tests/dash_console_stream_periphery.rs`'s own real-socket reconnect test proves the
+/// SERVER half of) must never grow the fold past ONE mark for the ONE real event: pushing the
+/// identical wire frame twice through `console_call` answers the SAME reply length the first
+/// push did, and the following `scrub_track` answers exactly the single-mark length a lone
+/// push would - never a longer reply carrying a second, duplicate mark for the same event.
+#[test]
+fn console_call_fold_push_is_idempotent_for_a_position_already_applied_through_the_public_abi() {
+    use rigger::console;
+    use rigger::eventstore::Event;
+
+    let reset = unsafe {
+        call(
+            "fold_reset",
+            r#"{"events":[{"type":"UnitStarted","data":{"id":"u1"},"position":1}]}"#,
+        )
+    };
+    assert!(
+        reply_len(reset) > 0,
+        "fold_reset must answer a non-empty reply through the exported ABI"
+    );
+
+    let push = r#"{"type":"UnitIntegrated","data":{"id":"u1","commit":"abc"},"position":2}"#;
+    let first = unsafe { call("fold_push", push) };
+    assert!(
+        reply_len(first) > 0,
+        "the first fold_push must answer a non-empty reply through the exported ABI"
+    );
+    // The SAME frame again - exactly what a reconnect replaying an already-delivered range
+    // hands the core, never a value this test invents.
+    let second = unsafe { call("fold_push", push) };
+    assert_eq!(
+        reply_len(second),
+        reply_len(first),
+        "a duplicate fold_push for a position already applied must answer the SAME fold \
+         state through the exported ABI, never a changed one"
+    );
+
+    let queried = unsafe { call("scrub_track", "{}") };
+
+    let mut e0 = Event::new("UnitStarted", br#"{"id":"u1"}"#.to_vec());
+    e0.position = 1;
+    let mut e1 = Event::new("UnitIntegrated", br#"{"id":"u1","commit":"abc"}"#.to_vec());
+    e1.position = 2;
+    let direct = console::scrub_track(&[e0, e1]);
+    assert_eq!(
+        direct.marks.len(),
+        1,
+        "test setup: the one real UnitIntegrated event must produce exactly one mark: {direct:?}"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({
+        "marks": direct.marks,
+        "ticks": direct.ticks
+    }))
+    .unwrap()
+    .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "scrub_track through the exported ABI must render exactly ONE mark for the ONE real \
+         event even after fold_push saw its position twice - a duplicate delivery must never \
+         render a second mark for the same real event"
+    );
+}
