@@ -24,8 +24,8 @@
       },
       {
         "file": "src/console/mod.rs",
-        "start_line": 472,
-        "end_line": 474
+        "start_line": 475,
+        "end_line": 477
       },
       {
         "file": "src/dash.rs",
@@ -8644,18 +8644,18 @@
     "sites": [
       {
         "file": "src/console/mod.rs",
-        "start_line": 543,
-        "end_line": 557
+        "start_line": 546,
+        "end_line": 560
       },
       {
         "file": "src/console/mod.rs",
-        "start_line": 563,
-        "end_line": 574
+        "start_line": 566,
+        "end_line": 577
       },
       {
         "file": "src/console/mod.rs",
-        "start_line": 639,
-        "end_line": 652
+        "start_line": 642,
+        "end_line": 655
       }
     ]
   },
@@ -8664,18 +8664,18 @@
     "sites": [
       {
         "file": "src/console/mod.rs",
-        "start_line": 688,
-        "end_line": 701
+        "start_line": 691,
+        "end_line": 704
       },
       {
         "file": "src/console/mod.rs",
-        "start_line": 706,
-        "end_line": 718
+        "start_line": 709,
+        "end_line": 721
       },
       {
         "file": "src/console/mod.rs",
-        "start_line": 724,
-        "end_line": 734
+        "start_line": 727,
+        "end_line": 737
       }
     ]
   },
@@ -16846,6 +16846,11 @@
         "file": "tests/cli.rs",
         "start_line": 4832,
         "end_line": 4845
+      },
+      {
+        "file": "tests/console_palette_periphery.rs",
+        "start_line": 500,
+        "end_line": 515
       },
       {
         "file": "tests/projections_stay_local.rs",

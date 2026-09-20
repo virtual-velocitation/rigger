@@ -18301,12 +18301,17 @@
         "content_hash": "5150fcc6015ab76e"
       },
       {
+        "file": "tests/console_palette_periphery.rs",
+        "name": "the_served_console_page_sends_the_scrub_position_to_palette_commands_when_not_live",
+        "content_hash": "5150fcc6015ab76e"
+      },
+      {
         "file": "tests/projections_stay_local.rs",
         "name": "the_graph_and_progress_projections_open_via_the_local_sqlite_constructors",
         "content_hash": "5150fcc6015ab76e"
       }
     ],
-    "proposed_home": "a new shared module (sites span 2 files: tests/cli.rs, tests/projections_stay_local.rs)",
+    "proposed_home": "a new shared module (sites span 3 files: tests/cli.rs, tests/console_palette_periphery.rs, tests/projections_stay_local.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

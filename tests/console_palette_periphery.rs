@@ -469,3 +469,47 @@ fn the_palette_overlay_display_rule_never_defeats_the_hidden_attribute() {
          `hidden` is removed by openPalette, so the palette actually paints once opened"
     );
 }
+
+// ---------------------------------------------------------------------------------
+// THE EXPLICIT POSITION WIRING PROOF (round-5 fix for the round-4 reject
+// `adj-u94c4-r4-verdict-reject-push-while-scrubbed-desync`): `crates/console-core`
+// changed `palette_commands` to take an explicit `position` argument instead of
+// reading the core's own ambient fold cursor (proven, at that Rust ABI boundary, by
+// `crates/console-core/tests/exported_abi_periphery.rs`'s
+// `console_call_palette_commands_answers_the_scrubbed_window_even_after_a_live_push_races_it_through_the_public_abi`).
+// That fix has a SECOND half this page's own source must also carry: `openPalette`
+// itself must actually SEND the page's own scrub position rather than an empty `{}`
+// while scrubbed, or the Rust-side fix is inert - a pure-JS regression reverting only
+// this one page's wiring (no Rust change at all) would silently reintroduce the exact
+// desync the round-4 reject named, with every Rust-side ABI test still green, since
+// an omitted `position` degrades to the live head (`PaletteCommandsInput`'s own
+// default). The existing `the_served_console_page_fetches_entries_from_the_core_
+// palette_commands_op` test above only pins the literal substring
+// `callOp("palette_commands"` - satisfied whether or not `args` carries a position -
+// so it cannot catch this regression class; this test pins the argument computation
+// itself.
+// ---------------------------------------------------------------------------------
+
+/// `openPalette` sends the SAME position the page currently displays (Design's THE
+/// POSITION MODEL; the round-5 fix for
+/// `adj-u94c4-r4-verdict-reject-push-while-scrubbed-desync`): `STATE.cursor` while
+/// scrubbed, so a live push that arrives without an intervening `fold_at` (an ordinary
+/// `connectStream` push while `STATE.live` is false) can never desync the palette from
+/// the still-shown cursor readout the way an omitted/ambient position could.
+#[test]
+fn the_served_console_page_sends_the_scrub_position_to_palette_commands_when_not_live() {
+    let body = served_console_body();
+    assert!(
+        body.contains("STATE.live ? {} : { position: STATE.cursor }"),
+        "openPalette must compute its palette_commands argument from STATE.live/STATE.cursor \
+         (empty while live, the explicit scrub position otherwise) rather than always \
+         passing {{}}, or a live push while scrubbed can silently desync the palette from \
+         the displayed cursor exactly as adj-u94c4-r4-verdict-reject-push-while-scrubbed-desync \
+         found: {body}"
+    );
+    assert!(
+        body.contains("callOp(\"palette_commands\", args)"),
+        "openPalette must pass its own computed `args` (not a literal {{}}) into \
+         palette_commands: {body}"
+    );
+}
