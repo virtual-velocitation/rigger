@@ -75,6 +75,13 @@ triggers a snapshot re-fetch. Two tabs - independent cursors, no per-viewer serv
 older run lacking a field - the fold renders the blank, never fails. Core fails to load - one
 sentence naming the module and the build; there is no script fallback.
 
+THE RETAINED WINDOW, decided: the server retains every console event of the run - only the
+derived index is ever pruned - so a real client's cursor is always resumable today, and the
+window's edge is a contract, not a production path: a `since=` cursor below the first console
+position the store holds answers 410 Gone and the page re-fetches the snapshot. That contract
+is proven at the endpoint with a real store and a cursor below that floor; no unit owes a
+proof that pruning can move the floor, and the guard stays as the edge's implementation.
+
 ## Notes (non-criteria)
 
 Browser behavior is outside the gate set. Each page-side criterion is proven at two levels
