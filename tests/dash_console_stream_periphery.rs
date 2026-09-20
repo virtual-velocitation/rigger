@@ -474,6 +474,16 @@ fn a_new_progress_line_arrives_as_a_progress_frame() {
     let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
     assert_eq!(data["id"], "u1/implementer#0");
     assert_eq!(data["activity"], "reading spec");
+    // `write_sse`'s own doc (`adj-u94c3-verdict-reject-stream-reconnect-duplicate-events`'s
+    // fix): a `progress` frame carries NO `id:` line - it lives in a SEPARATE position
+    // space from the event feed's `since=`/`Last-Event-ID` (its own `progress_since`
+    // cursor already resumes it), so stamping one here would corrupt `Last-Event-ID`'s
+    // meaning for a reconnecting `EventSource`. Mutation-discriminating against an `id:
+    // Some(e.position)` accidentally added to this call site.
+    assert_eq!(
+        frame.id, None,
+        "a progress frame must carry no id: line: {frame:?}"
+    );
 }
 
 /// Regression for the progress-floor race (`adj-u94c2-verdict-reject-progress-floor-race`):
@@ -776,6 +786,12 @@ fn a_live_liveness_map_arrives_promptly_as_a_liveness_frame_naming_its_ages() {
     assert_eq!(frame.event, "liveness", "{frame:?}");
     let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
     assert_eq!(data["ages"]["u1/implementer#0"], 7);
+    // Same contract as the progress frame's own id: assertion above - a liveness frame is
+    // not resumable by position at all, so it must carry no id: line either.
+    assert_eq!(
+        frame.id, None,
+        "a liveness frame must carry no id: line: {frame:?}"
+    );
 }
 
 /// RAII guard: sets an env var for the life of the guard and restores whatever value (or
@@ -830,6 +846,12 @@ fn with_no_activity_the_stream_emits_only_prompt_heartbeats_never_a_liveness_fra
     assert_eq!(
         frame.data, "{}",
         "a heartbeat frame carries an empty JSON object"
+    );
+    // Same contract as the progress/liveness frames' own id: assertions above - a
+    // heartbeat carries no position at all, so it must carry no id: line either.
+    assert_eq!(
+        frame.id, None,
+        "a heartbeat frame must carry no id: line: {frame:?}"
     );
 }
 
