@@ -1522,6 +1522,46 @@ fn console_call_wires_palette_commands_through_the_public_abi() {
     );
 }
 
+/// `palette_commands`'s error path - `spawn::recorded` failing on a malformed recorded
+/// `SpawnRequested` event, propagated by `palette_commands`'s own `?` - answers a real,
+/// non-empty error reply THROUGH THE EXPORTED ABI, not merely through this crate's own
+/// private `dispatch_tests`
+/// (`palette_commands_answers_an_error_reply_for_a_malformed_recorded_spawn`, `src/lib.rs`,
+/// which pushes the malformed event directly onto `session.events` in-process, never
+/// crossing `console_call`'s pointer-packing marshaling). Unlike `scrub_track` (infallible
+/// over `events`), `palette_commands` returns a `Result` - the one op-specific error path
+/// `console_call_answers_an_error_reply_for_malformed_input` (which only exercises
+/// `fold_reset`'s own parsing failure, never a later op's own internal error) does not
+/// reach. The malformed spawn event still folds cleanly through the real `fold_reset` op
+/// first - neither `ledger::project` nor `blocker::from_events` reads a `SpawnRequested`
+/// payload (confirmed by reading both) - so this is the one way to land a
+/// syntactically-valid-wire, semantically-malformed spawn event in a session through the
+/// real ABI at all, then observe `palette_commands` fail on it for real.
+#[test]
+fn console_call_palette_commands_answers_an_error_reply_for_a_malformed_recorded_spawn_through_the_public_abi(
+) {
+    // A JSON string, not a spawn-request object - well-formed wire JSON (so fold_reset's own
+    // parsing and console::fold succeed) but not a shape SpawnRequest::from_event can parse.
+    let events_json = r#"{"events":[
+        {"type":"SpawnRequested","data":"not a spawn request","position":1}
+    ]}"#;
+    let reset = unsafe { call("fold_reset", events_json) };
+    assert!(
+        reply_len(reset) > 0,
+        "fold_reset must fold the malformed spawn event cleanly through the real ABI \
+         (its own wire JSON is well-formed; neither ledger::project nor blocker::from_events \
+         reads a SpawnRequested payload)"
+    );
+
+    let queried = unsafe { call("palette_commands", "{}") };
+    assert!(
+        reply_len(queried) > 0,
+        "palette_commands must still answer a non-empty error reply through the exported \
+         ABI when a recorded SpawnRequested is malformed, never an empty reply or a panic \
+         that would abort the whole call across the FFI boundary"
+    );
+}
+
 /// `scrub_track`'s VERDICT marks read [`rigger::spawn::Adjudication::verdict`] - spec 94
 /// criterion 3's additive FIELD on the already-`pub` `Adjudication` struct (a plain
 /// `pub fn`/`struct`/`enum`/`trait`/`const`/`type` grep misses a new field on an existing
