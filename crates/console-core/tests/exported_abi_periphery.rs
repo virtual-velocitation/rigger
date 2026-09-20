@@ -1582,6 +1582,69 @@ fn console_call_palette_commands_degrades_on_a_malformed_recorded_spawn_through_
     );
 }
 
+/// The round-3 fix's own required proof (`adj-u94c4-r2-verdict-reject-palette-commands-fail-total`:
+/// "add a case proving a valid spawn survives alongside a malformed one in the SAME event
+/// log"), THROUGH THE EXPORTED ABI. That mixed-log case landed only as an in-process unit test
+/// (`palette_commands_keeps_a_valid_spawn_alongside_a_malformed_one`, `src/console/mod.rs`) and
+/// this crate's own private `dispatch_tests` backdoor still covers only the single-malformed-
+/// only scenario - never crossing `console_call`'s pointer-packing marshaling with BOTH an agent
+/// worth keeping and one worth dropping in the SAME session. The single-malformed ABI test
+/// above only proves the degrade is total when NOTHING survives; it cannot tell "skips
+/// per-event" apart from "an all-or-nothing guard that happens to also degrade instead of
+/// error" - only a mixed log does that, exactly the distinction `d-u94c4-r3-palette-commands-
+/// degrades-not-fails` exists to fix.
+#[test]
+fn console_call_palette_commands_keeps_a_valid_spawn_alongside_a_malformed_one_through_the_public_abi(
+) {
+    use rigger::console;
+    use rigger::eventstore::Event;
+
+    let events_json = r#"{"events":[
+        {"type":"SpawnRequested","data":{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"},"position":1},
+        {"type":"SpawnRequested","data":"not a spawn request","position":2}
+    ]}"#;
+    let reset = unsafe { call("fold_reset", events_json) };
+    assert!(
+        reply_len(reset) > 0,
+        "fold_reset must fold a mixed valid/malformed spawn log cleanly through the real ABI"
+    );
+
+    let queried = unsafe { call("palette_commands", "{}") };
+
+    let mut valid = Event::new(
+        "SpawnRequested",
+        br#"{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"}"#.to_vec(),
+    );
+    valid.position = 1;
+    let mut bad = Event::new("SpawnRequested", br#""not a spawn request""#.to_vec());
+    bad.position = 2;
+    let events = [valid, bad];
+    let state = console::fold(&events, 0).unwrap();
+    let direct = console::palette_commands(&events, &state.units);
+    let agents: Vec<&str> = direct
+        .iter()
+        .filter(|c| c.kind == "agent")
+        .map(|c| c.id.as_str())
+        .collect();
+    assert_eq!(
+        agents,
+        vec!["u1/implementer#0"],
+        "test setup must actually keep the one valid agent while dropping the malformed entry: \
+         {direct:?}"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "commands": direct }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "palette_commands must keep the valid agent alongside a dropped malformed one through \
+         the exported ABI - the same length as console::palette_commands's own direct answer \
+         for the identical mixed event log"
+    );
+}
+
 /// `scrub_track`'s VERDICT marks read [`rigger::spawn::Adjudication::verdict`] - spec 94
 /// criterion 3's additive FIELD on the already-`pub` `Adjudication` struct (a plain
 /// `pub fn`/`struct`/`enum`/`trait`/`const`/`type` grep misses a new field on an existing
