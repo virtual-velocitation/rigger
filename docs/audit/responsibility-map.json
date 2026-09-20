@@ -6277,7 +6277,7 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"store_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "02afc1a2cca9cefc"
+    "content_hash": "d1146b0092466ea2"
   },
   {
     "file": "src/main.rs",
@@ -7165,7 +7165,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "1b8613617542b533"
+    "content_hash": "3daeacb74aba8d50"
   },
   {
     "file": "src/main.rs",
@@ -8053,7 +8053,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "7bf9349160268913"
+    "content_hash": "bec5f8c153817516"
   },
   {
     "file": "src/main.rs",
@@ -8062,6 +8062,14 @@
     "proposed_module": "main::setup",
     "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
     "content_hash": "eb8dfeab21f6d8d2"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "install_status_line",
+    "is_test": false,
+    "proposed_module": "main::setup",
+    "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
+    "content_hash": "05090a803e6f745e"
   },
   {
     "file": "src/main.rs",
@@ -11201,6 +11209,14 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "console_font_response",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "588e1f70923cc330"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "free_port_from",
     "is_test": false,
     "proposed_module": null,
@@ -11761,6 +11777,14 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "console_page",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "fba6262a4c0a33c1"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "render_export",
     "is_test": false,
     "proposed_module": null,
@@ -11829,7 +11853,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"route\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "27e4f57d358d55a1"
+    "content_hash": "89981e9149588078"
   },
   {
     "file": "src/dash.rs",
@@ -12038,6 +12062,46 @@
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "d8e5ebdfc87b8ee6"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_route_serves_the_shell_page_with_mock_regions_and_both_theme_token_blocks",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "9425afd0ea857721"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_route_never_references_an_external_url",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "47848104dd3be5c7"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_fonts_route_serves_each_embedded_font_and_its_license_text",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a2c5ab561d3639f8"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_fonts_route_404s_for_an_unknown_asset",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "c75cf96ad5d34c85"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_page_wires_the_theme_toggles_persistence_round_trip",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8b47196a9fd9ad98"
   },
   {
     "file": "src/dash.rs",

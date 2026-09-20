@@ -502,27 +502,27 @@
   {
     "file": "src/dash.rs",
     "name": "pid_is_alive",
-    "line": 466,
+    "line": 553,
     "test_only_references": [
       {
         "file": "src/dash.rs",
-        "line": 8303
+        "line": 8627
       },
       {
         "file": "src/dash.rs",
-        "line": 8307
+        "line": 8631
       },
       {
         "file": "src/main.rs",
-        "line": 14086
+        "line": 14213
       },
       {
         "file": "src/main.rs",
-        "line": 14107
+        "line": 14234
       },
       {
         "file": "src/main.rs",
-        "line": 14622
+        "line": 14749
       },
       {
         "file": "tests/cli.rs",
@@ -537,7 +537,7 @@
   {
     "file": "src/dash.rs",
     "name": "serve",
-    "line": 3183,
+    "line": 3288,
     "test_only_references": [
       {
         "file": "src/mcpserver.rs",
@@ -1245,7 +1245,7 @@
     "ambiguous_with": [
       "src/budget.rs:57",
       "src/contextgraph/query.rs:306",
-      "src/dash.rs:3614",
+      "src/dash.rs:3719",
       "src/driver/replay.rs:237",
       "src/driver/workflow.rs:83",
       "src/eventstore/mod.rs:109",
@@ -1292,35 +1292,35 @@
       },
       {
         "file": "src/dash.rs",
-        "line": 5090
+        "line": 5414
       },
       {
         "file": "src/dash.rs",
-        "line": 5156
+        "line": 5480
       },
       {
         "file": "src/dash.rs",
-        "line": 5241
+        "line": 5565
       },
       {
         "file": "src/dash.rs",
-        "line": 5242
+        "line": 5566
       },
       {
         "file": "src/dash.rs",
-        "line": 5243
+        "line": 5567
       },
       {
         "file": "src/dash.rs",
-        "line": 5244
+        "line": 5568
       },
       {
         "file": "src/dash.rs",
-        "line": 5245
+        "line": 5569
       },
       {
         "file": "src/dash.rs",
-        "line": 5247
+        "line": 5571
       },
       {
         "file": "src/driver/replay.rs",
@@ -1372,47 +1372,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 17295
+        "line": 17422
       },
       {
         "file": "src/main.rs",
-        "line": 17328
+        "line": 17455
       },
       {
         "file": "src/main.rs",
-        "line": 17347
+        "line": 17474
       },
       {
         "file": "src/main.rs",
-        "line": 17350
+        "line": 17477
       },
       {
         "file": "src/main.rs",
-        "line": 17353
+        "line": 17480
       },
       {
         "file": "src/main.rs",
-        "line": 19223
+        "line": 19350
       },
       {
         "file": "src/main.rs",
-        "line": 19236
+        "line": 19363
       },
       {
         "file": "src/main.rs",
-        "line": 19251
+        "line": 19378
       },
       {
         "file": "src/main.rs",
-        "line": 24696
+        "line": 24823
       },
       {
         "file": "src/main.rs",
-        "line": 24697
+        "line": 24824
       },
       {
         "file": "src/main.rs",
-        "line": 24698
+        "line": 24825
       },
       {
         "file": "src/mcpserver.rs",

@@ -1548,10 +1548,12 @@ isolated scratch namespace, and print the stats diff\n                          
 vs the recorded baseline. Never writes the real run\n                              \
 stream - past runs become a regression corpus for a\n                              \
 config edit (\"did that change regress first-pass yield?\")\n  \
-rigger status [--json]      present the live per-agent view of the current run: for\n                              \
+rigger status [--json|--line] present the live per-agent view of the current run: for\n                              \
 each in-flight agent, what it is doing (latest progress),\n                              \
 its heartbeat age, and how long since its last store event\n                              \
-(the blackout). --json prints the shim/dash machine shape\n  \
+(the blackout). --json prints the shim/dash machine shape;\n                              \
+--line prints only the one-line statusline (the same line\n                              \
+`rigger setup` registers as the editor's status bar)\n  \
 rigger dash [--port <n>]    serve the read-only observability page on 127.0.0.1\n                              \
 (default port 7420) with live past/present/future views;\n                              \
 --export <path> writes the equivalent static snapshot\n  \
@@ -2024,6 +2026,17 @@ fn server_store_location(cwd: &Path) -> StoreLocation {
     StoreLocation { dir }
 }
 
+/// Marker error: [`require_store_dir`] found no `.rigger/events.db` at or above the cwd (spec
+/// 94 criterion 5 round 2 - the checkin adjudication reject on `adv-u94c5-setup-wires-a-
+/// command-that-hard-fails-with-no-run-yet`). `cmd_status`'s `--line` path downcasts on this
+/// SPECIFIC type, never a string match on the message it carries, to degrade to a graceful
+/// placeholder instead of the CLI's hard error; every other caller of `require_store_dir`
+/// (and every OTHER failure `--line` itself can hit) still propagates it exactly as the plain
+/// error it replaces - only the message text moved into a named type, byte-for-byte.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct NoStoreFound(String);
+
 /// Resolve the `.rigger` store a store-opening COURIER command (`emit`/`result`/`peers`/
 /// `reported`) must use, REFUSING rather than fabricating a fresh empty store when neither
 /// the current directory nor any ancestor holds one (spec 05, done-when: "store-opening
@@ -2083,15 +2096,14 @@ fn require_store_dir() -> Result<(StoreLocation, StoreSelection), Box<dyn std::e
     }
     let walk = walk_stores_from(&cwd);
     let dir = walk.dir.ok_or_else(|| -> Box<dyn std::error::Error> {
-        format!(
+        Box::new(NoStoreFound(format!(
             "no rigger store found: neither {} nor any parent directory has an initialized \
              {RIGGER_DIR}/events.db. This usually means the command ran from the wrong \
              directory (e.g. a unit worktree, whose {RIGGER_DIR} is not the run's store). \
              Run it from the project root that owns the run; refusing to fabricate a fresh \
              empty store here.",
             cwd.display()
-        )
-        .into()
+        )))
     })?;
     // Outermost store wins (spec 08 item 6): a NEARER shadow `events.db` (inside a unit
     // worktree or a scratch dir) must never SILENTLY eclipse the repo root's real run
@@ -7883,23 +7895,72 @@ fn liveness_ages_for_wave(
     ages
 }
 
-/// `rigger status [--json]` - present the live per-agent view of the current run (spec 14,
-/// unit 2). Rigger CONSOLIDATES its three signals for every in-flight spawn - the run-stream
-/// milestone, the latest progress report, and the liveness-marker age it reads in Rust here
-/// (so no consumer stats a file) - into one view: what each agent is at, what it is doing,
-/// how long since its last activity and heartbeat, and how long since its last store event
-/// (the blackout this closes). `--json` prints the machine shape the shim and the dash also
-/// consume; the default is a readable table. Read-only over the run store, the separate
-/// progress store, and the liveness markers.
+/// Spec 94 CONSTRAINTS WALK's own empty-store text ("no run recorded; start one with `rigger
+/// run <spec>`"): the ONE placeholder [`cmd_status`]'s `--line` path renders for the literal
+/// state `rigger setup` itself leaves every project in (no `.rigger/events.db` anywhere yet,
+/// until the first `rigger run` - or again after a store reset), so this line and the future
+/// console page's identical empty-store render (specs 95-98) are never two independently-
+/// worded copies of the same fact.
+const NO_RUN_RECORDED_LINE: &str = "no run recorded; start one with `rigger run <spec>`";
+
+/// `rigger status [--json|--line]` - present the live per-agent view of the current run (spec
+/// 14, unit 2). Rigger CONSOLIDATES its three signals for every in-flight spawn - the
+/// run-stream milestone, the latest progress report, and the liveness-marker age it reads in
+/// Rust here (so no consumer stats a file) - into one view: what each agent is at, what it is
+/// doing, how long since its last activity and heartbeat, and how long since its last store
+/// event (the blackout this closes). `--json` prints the machine shape the shim and the dash
+/// also consume; `--line` prints ONLY the core's one-line statusline (spec 94, criterion 5 -
+/// the same command `rigger setup` registers as the editor's status bar); the default is a
+/// readable table. Read-only over the run store, the separate progress store, and the
+/// liveness markers.
 fn cmd_status(args: &[String]) -> Res {
     let mut json = false;
+    // Spec 94, criterion 5 (THE STATUSLINE COMMAND): `--line` prints ONLY the core's
+    // `console::statusline` text - the same line the human-readable path below prints as its
+    // own first line - for an editor's status bar (`rigger setup` registers this exact
+    // command; see `install_status_line`). Mutually exclusive with `--json`: the two are
+    // different output modes for the same command, never composed.
+    let mut line = false;
     for a in args {
         match a.as_str() {
             "--json" => json = true,
-            other => return Err(format!("status: unknown argument {other:?} (only --json)").into()),
+            "--line" => line = true,
+            other => {
+                return Err(
+                    format!("status: unknown argument {other:?} (only --json or --line)").into(),
+                )
+            }
         }
     }
-    let (loc, selection) = require_store_dir()?;
+    if json && line {
+        return Err("status: --line and --json are mutually exclusive".into());
+    }
+    // Spec 94 criterion 5 round 2 (checkin adjudication reject on
+    // `adv-u94c5-setup-wires-a-command-that-hard-fails-with-no-run-yet`): `--line` is the
+    // exact command `rigger setup` registers as the editor's status line, so an editor polls
+    // it automatically and unconditionally - with no human present to read a hard error. The
+    // literal state `rigger setup` itself leaves every project in (no `.rigger/events.db`
+    // anywhere yet, until the first `rigger run`, and again after any store reset) must
+    // render [`NO_RUN_RECORDED_LINE`] with exit 0 instead of propagating
+    // `require_store_dir`'s refusal - the SAME graceful degradation the console's own
+    // empty-store shell takes (spec 94 CONSTRAINTS WALK), never a second wording. Matched by
+    // DOWNCASTING on [`NoStoreFound`] specifically (never a string match on its message), so
+    // every OTHER `--line` failure (a corrupt store, an unreadable stream) still propagates
+    // exactly as before this round - only the no-store-at-all case degrades. The default and
+    // `--json` paths below are human-invoked and keep the CLI's existing hard refusal
+    // unchanged: this fast path is `--line`-only.
+    let (loc, selection) = if line {
+        match require_store_dir() {
+            Ok(pair) => pair,
+            Err(e) if e.downcast_ref::<NoStoreFound>().is_some() => {
+                println!("{NO_RUN_RECORDED_LINE}");
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        require_store_dir()?
+    };
     let now = std::time::SystemTime::now();
 
     // The current run's slice of the run stream, and its id.
@@ -7908,6 +7969,20 @@ fn cmd_status(args: &[String]) -> Res {
     let all = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
     let run_events = runscope::current_run(&all);
     let run_id = runscope::current_run_id(&all).unwrap_or_default();
+
+    // Spec 94, criterion 5: `--line` needs only the run's event slice and the configured
+    // remediation bound - console::fold's own three inputs (unit statuses, current blockers,
+    // the dock) - so it short-circuits HERE, before the progress-store read, the liveness
+    // marker stat and the dash-server probe below, none of which the statusline text depends
+    // on. An editor polling this command on every render stays cheap. `console::fold`, not a
+    // second independently-composed copy, so a repeated poll can never drift from `rigger
+    // status`'s own first line.
+    if line {
+        let (_, max_retries) = scratch_defaults(&loc);
+        let console_state = console::fold(run_events, max_retries)?;
+        println!("{}", console_state.statusline);
+        return Ok(());
+    }
 
     // This run's progress, from the SEPARATE store (absent/empty is fine - the store is
     // created lazily by the first `rigger progress`).
@@ -12677,6 +12752,10 @@ fn cmd_setup(args: &[String]) -> Res {
     // install above.
     let mcp_registered = install_operator_mcp(root)?;
     let lookup_hook = install_lookup_hook(root)?;
+    // Register `rigger status --line` as the editor's status line command (spec 94, criterion
+    // 5: THE STATUSLINE COMMAND) - so the line under the person's conversation and the
+    // console's own bottom line are one text. Drift-aware like every install above.
+    let status_line = install_status_line(root)?;
 
     // The --agents import (units 4 + 8 woven) is itself a REQUESTED change: it runs
     // before the silent-no-op check and always reports its outcome, so an import onto
@@ -12706,6 +12785,7 @@ fn cmd_setup(args: &[String]) -> Res {
     let hook_changed = hook != InstallOutcome::AlreadyCurrent;
     let mcp_changed = mcp_registered != InstallOutcome::AlreadyCurrent;
     let lookup_hook_changed = lookup_hook != InstallOutcome::AlreadyCurrent;
+    let status_line_changed = status_line != InstallOutcome::AlreadyCurrent;
     if !scaffold.changed()
         && !workflow_changed
         && !skill_changed
@@ -12714,6 +12794,7 @@ fn cmd_setup(args: &[String]) -> Res {
         && !imported
         && !mcp_changed
         && !lookup_hook_changed
+        && !status_line_changed
     {
         // A silent no-op: nothing drifted, so there is nothing to report.
         return Ok(());
@@ -12792,6 +12873,18 @@ fn cmd_setup(args: &[String]) -> Res {
         ),
         InstallOutcome::AlreadyCurrent => {}
     }
+    match status_line {
+        InstallOutcome::Installed => println!(
+            "registered the rigger status line command (.claude/settings.json: statusLine -> \
+             {STATUS_LINE_COMMAND}) - the editor's status bar now shows the same line `rigger \
+             status` prints first"
+        ),
+        InstallOutcome::Refreshed => println!(
+            "refreshed the drifted rigger status line command (.claude/settings.json) to match \
+             this rigger build"
+        ),
+        InstallOutcome::AlreadyCurrent => {}
+    }
     // The starter-fleet pointer fires exactly when default agents were NEWLY
     // scaffolded (spec 05 line 57 clause 2): the per-artifact report's `new_agents`
     // is the scaffolded-new signal.
@@ -12835,6 +12928,40 @@ fn install_lookup_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::error
     let existed = settings_path.exists();
     let existing = std::fs::read(&settings_path).unwrap_or_default();
     let merged = hooks::install_pretooluse_hook(&existing, GREP_GUARD_MATCHER, GREP_GUARD_COMMAND)?;
+    if merged == existing {
+        return Ok(InstallOutcome::AlreadyCurrent);
+    }
+    std::fs::write(&settings_path, &merged)?;
+    Ok(if existed {
+        InstallOutcome::Refreshed
+    } else {
+        InstallOutcome::Installed
+    })
+}
+
+/// The command `rigger setup` registers as the editor's status line (spec 94, criterion 5:
+/// THE STATUSLINE COMMAND) - prints `console::statusline`'s own text (see `cmd_status`'s
+/// `--line` handling), so the line the editor shows under the person's conversation and the
+/// line `rigger status` prints first are one text, never two derivations.
+const STATUS_LINE_COMMAND: &str = "rigger status --line";
+
+/// Register [`STATUS_LINE_COMMAND`] as the editor's status line (spec 94, criterion 5): merges
+/// `.claude/settings.json`'s `statusLine` key via [`hooks::install_status_line`]. Drift-aware
+/// and non-destructive like every other `rigger setup` install (see
+/// [`install_operator_mcp`]'s identical `existed`/byte-compare shape - `statusLine` has no
+/// per-tool namespacing to preserve, so, like the `mcpServers` entry there, rigger owns this
+/// key exclusively and self-heals a drifted one unconditionally).
+///
+/// The same three-state contract every other `rigger setup` install artifact has: absent
+/// settings.json -> `Installed`, an existing settings.json gaining or self-healing the key ->
+/// `Refreshed`, already carrying the exact command -> `AlreadyCurrent` (a silent no-op).
+fn install_status_line(root: &Path) -> Result<InstallOutcome, Box<dyn std::error::Error>> {
+    let claude_dir = root.join(".claude");
+    std::fs::create_dir_all(&claude_dir)?;
+    let settings_path = claude_dir.join("settings.json");
+    let existed = settings_path.exists();
+    let existing = std::fs::read(&settings_path).unwrap_or_default();
+    let merged = hooks::install_status_line(&existing, STATUS_LINE_COMMAND)?;
     if merged == existing {
         return Ok(InstallOutcome::AlreadyCurrent);
     }

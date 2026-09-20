@@ -125,6 +125,34 @@ pub fn install_mcp_server(
     Ok(out)
 }
 
+/// Merge the editor's `statusLine` setting into the settings JSON (spec 94, criterion 5: THE
+/// STATUSLINE COMMAND) - the same one-line summary `rigger status --line` prints, running
+/// under the person's conversation. Like [`install_mcp_server`]'s `mcpServers` entry, rigger
+/// OWNS this top-level key exclusively (there is only ever one status line), so the value is
+/// written UNCONDITIONALLY - replacing whatever a drifted older build (or a hand edit) left
+/// there - while every OTHER top-level key is preserved untouched. Because the write is
+/// unconditional on the same `command`, calling this twice reproduces the same bytes
+/// (idempotent by construction, the same guarantee [`install_mcp_server`] documents).
+/// `existing` may be empty.
+pub fn install_status_line(existing: &[u8], command: &str) -> Result<Vec<u8>, Error> {
+    let mut root: Value = if existing.iter().all(u8::is_ascii_whitespace) {
+        json!({})
+    } else {
+        serde_json::from_slice(existing).map_err(|e| Error(format!("parse settings.json: {e}")))?
+    };
+    let obj = root
+        .as_object_mut()
+        .ok_or_else(|| Error("settings.json is not a JSON object".into()))?;
+    obj.insert(
+        "statusLine".to_string(),
+        json!({"type": "command", "command": command}),
+    );
+    let mut out = serde_json::to_vec_pretty(&root)
+        .map_err(|e| Error(format!("encode settings.json: {e}")))?;
+    out.push(b'\n');
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +284,52 @@ mod tests {
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["mcpServers"]["rigger"]["command"], "rigger");
         assert_eq!(v["mcpServers"]["rigger"]["args"][0], "mcp");
+    }
+
+    #[test]
+    fn status_line_installs_and_is_idempotent() {
+        let first = install_status_line(b"", "rigger status --line").unwrap();
+        let v: Value = serde_json::from_slice(&first).unwrap();
+        assert_eq!(v["statusLine"]["type"], "command");
+        assert_eq!(v["statusLine"]["command"], "rigger status --line");
+
+        let second = install_status_line(&first, "rigger status --line").unwrap();
+        assert_eq!(
+            first, second,
+            "installing twice must reproduce the same bytes"
+        );
+    }
+
+    #[test]
+    fn status_line_preserves_other_top_level_settings() {
+        let existing = br#"{
+            "model": "opus",
+            "hooks": {
+                "SessionStart": [
+                    {"matcher": "", "hooks": [{"type": "command", "command": "rigger prime"}]}
+                ]
+            }
+        }"#;
+        let out = install_status_line(existing, "rigger status --line").unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["model"], "opus");
+        assert_eq!(
+            v["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            "rigger prime"
+        );
+        assert_eq!(v["statusLine"]["command"], "rigger status --line");
+    }
+
+    #[test]
+    fn status_line_self_heals_a_drifted_entry() {
+        // An older rigger build (or a hand edit, or someone else's status line) left a
+        // different shape under "statusLine" - a fresh install self-heals it, the same
+        // drift-repair every other `rigger setup` step performs and `install_mcp_server`'s
+        // own "rigger" entry documents.
+        let existing =
+            br#"{"statusLine": {"type": "command", "command": "/old/stale/statusline.sh"}}"#;
+        let out = install_status_line(existing, "rigger status --line").unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["statusLine"]["command"], "rigger status --line");
     }
 }
