@@ -105,6 +105,11 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
 .track .rail{position:absolute;left:0;right:0;top:18px;height:4px;border-radius:2px;background:var(--line2)}
 .track .fill{position:absolute;left:0;top:18px;height:4px;border-radius:2px;background:var(--accent)}
 .track .knob{position:absolute;top:11px;width:18px;height:18px;border-radius:50%;background:var(--accent);border:2px solid var(--surface);box-shadow:0 0 0 2px var(--accent);transform:translateX(-50%);z-index:2}
+/* THE POSITION MODEL's marks and ticks (spec 94 c3, `scrub_track`): small rail
+   fixtures a page paints from the core's own marks/ticks list, never invented here. */
+.track .rail .mark{position:absolute;top:14px;width:6px;height:10px;border-radius:2px;transform:translateX(-50%);z-index:1}
+.track .rail .mark.tall{top:8px;height:22px;width:4px}
+.track .rail .tick{position:absolute;top:0;width:1px;height:4px;background:var(--line2);transform:translateX(-50%)}
 .cursor{font-family:var(--mono);font-size:12.5px;color:var(--ink2);min-width:230px;text-align:right}
 .statusline{display:flex;align-items:center;gap:12px;padding:6px 18px;border-top:1px solid var(--line);background:var(--bg);font-family:var(--mono);font-size:12px;color:var(--muted)}
 @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
@@ -229,6 +234,377 @@ footer.scrub{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-ite
       show(b.getAttribute("data-view"));
     });
   });
+})();
+
+// THE POSITION MODEL (spec 94 criterion 3): loads the console core (spec 93's wasm
+// module) and drives it through the fold ops the addendum's own data-plane diagram
+// names verbatim - fold_reset(events), fold_push(e), fold_at(N) - so the page renders
+// the SAME state struct the core computes, never a second, page-side fold. THE ABI's
+// own words: "the whole page-side ABI is thirty lines of loader" - callOp below is it.
+(function () {
+  "use strict";
+
+  var WASM_URL = "/console/core.wasm";
+  var core = null; // { alloc, free, call, memory } once loadCore() resolves
+
+  function loadCore() {
+    return fetch(WASM_URL)
+      .then(function (r) {
+        return r.arrayBuffer();
+      })
+      .then(function (bytes) {
+        return WebAssembly.instantiate(bytes, {});
+      })
+      .then(function (result) {
+        var exports = result.instance.exports;
+        core = {
+          alloc: exports.console_alloc,
+          free: exports.console_free,
+          call: exports.console_call,
+          memory: exports.memory,
+        };
+      });
+  }
+
+  // Write a JS string into a fresh core_alloc'd buffer, returning its {ptr, len}.
+  function writeBytes(str) {
+    var bytes = new TextEncoder().encode(str);
+    var ptr = core.alloc(bytes.length);
+    new Uint8Array(core.memory.buffer, ptr, bytes.length).set(bytes);
+    return { ptr: ptr, len: bytes.length };
+  }
+
+  // console_call packs (ptr << 32) | len into one u64 (this crate's own `pack`, whose
+  // doc explains the packing); a wasm i64 export return crosses the JS boundary as a
+  // BigInt, so both halves are read with BigInt arithmetic before narrowing to Number.
+  function readReply(packed) {
+    var len = Number(packed & 0xffffffffn);
+    var ptr = Number(packed >> 32n);
+    var bytes = new Uint8Array(core.memory.buffer, ptr, len).slice();
+    core.free(ptr, len);
+    return JSON.parse(new TextDecoder().decode(bytes));
+  }
+
+  // The whole calling surface: an op name plus a JSON input, out a JSON reply - the
+  // SAME dispatch contract `crates/console-core` documents for `console_call`.
+  function callOp(op, input) {
+    var opBytes = writeBytes(op);
+    var inBytes = writeBytes(JSON.stringify(input === undefined ? {} : input));
+    var packed = core.call(opBytes.ptr, opBytes.len, inBytes.ptr, inBytes.len);
+    core.free(opBytes.ptr, opBytes.len);
+    core.free(inBytes.ptr, inBytes.len);
+    return readReply(packed);
+  }
+
+  // THE CURSOR (Design: "The cursor is a position among console events; its range is
+  // the run's first console event to the head"). `positions` is every console-event
+  // position seen so far (snapshot plus stream deltas), kept sorted, so stepping and
+  // replaying land on real events rather than raw integers a filtered position space
+  // may skip.
+  var STATE = {
+    head: 0,
+    positions: [],
+    cursor: 0,
+    live: true,
+    playing: false,
+    playTimer: null,
+    view: "fleet",
+    selection: [],
+  };
+
+  // Five events per second (Design: "the play button replays from the cursor at five
+  // events per second").
+  var REPLAY_MS = 1000 / 5;
+
+  function render() {
+    var state = callOp("fold_at", { position: STATE.cursor });
+    var statusEl = document.getElementById("statusline");
+    if (statusEl && state && state.statusline) {
+      statusEl.textContent = state.statusline;
+    }
+    renderCursor();
+    renderTrack();
+  }
+
+  function renderCursor() {
+    var el = document.getElementById("cursor");
+    if (!el) return;
+    if (STATE.live) {
+      el.textContent = "LIVE . event " + STATE.cursor + "/" + STATE.head;
+    } else {
+      el.textContent = "event " + STATE.cursor + "/" + STATE.head + " . replay";
+    }
+  }
+
+  var MARK_COLOR_VAR = {
+    green: "--good",
+    red: "--crit",
+    accent: "--accent",
+    review: "--review",
+  };
+
+  function paintTrack(track) {
+    var rail = document.querySelector(".track .rail");
+    if (!rail) return;
+    var existing = rail.querySelectorAll(".mark, .tick");
+    for (var i = 0; i < existing.length; i++) {
+      existing[i].remove();
+    }
+    var lo = STATE.positions.length ? STATE.positions[0] : 0;
+    var hi = Math.max(STATE.head, lo + 1);
+    function pct(pos) {
+      return Math.min(100, Math.max(0, ((pos - lo) / (hi - lo)) * 100)) + "%";
+    }
+    (track.ticks || []).forEach(function (t) {
+      var el = document.createElement("div");
+      el.className = "tick";
+      el.style.left = pct(t.position);
+      el.title = t.label;
+      rail.appendChild(el);
+    });
+    (track.marks || []).forEach(function (m) {
+      var el = document.createElement("div");
+      el.className = "mark mark-" + m.kind + (m.tall ? " tall" : "");
+      el.style.left = pct(m.position);
+      el.style.background = "var(" + (MARK_COLOR_VAR[m.color] || "--accent") + ")";
+      el.title = m.tooltip;
+      rail.appendChild(el);
+    });
+  }
+
+  function renderTrack() {
+    var range = document.getElementById("range");
+    if (range) {
+      range.max = String(Math.max(STATE.head, 1));
+      range.value = String(STATE.cursor);
+      range.disabled = STATE.positions.length === 0;
+    }
+    var play = document.getElementById("play");
+    if (play) play.disabled = STATE.positions.length === 0;
+    var fill = document.getElementById("fill");
+    if (fill && STATE.head > 0) {
+      fill.style.width = Math.min(100, (STATE.cursor / STATE.head) * 100) + "%";
+    }
+    paintTrack(callOp("scrub_track", {}));
+  }
+
+  function goTo(position, live) {
+    STATE.cursor = position;
+    STATE.live = !!live;
+    render();
+    updateHash();
+  }
+
+  // The next/previous REAL console-event position from `from` (never a raw +/-1,
+  // which a filtered position space may skip) - Design: "the left and right arrows
+  // step one event".
+  function nextPosition(from, dir) {
+    var positions = STATE.positions;
+    if (positions.length === 0) return from;
+    var idx = positions.indexOf(from);
+    if (idx !== -1) {
+      var next = idx + dir;
+      if (next < 0) return positions[0];
+      if (next >= positions.length) return from;
+      return positions[next];
+    }
+    // Not an exact event position (e.g. a drag mid-range): land on the nearest event
+    // in the requested direction.
+    var candidate = dir > 0 ? null : positions[0];
+    for (var i = 0; i < positions.length; i++) {
+      if (dir > 0 && positions[i] > from) {
+        candidate = positions[i];
+        break;
+      }
+      if (dir < 0 && positions[i] <= from) {
+        candidate = positions[i];
+      }
+    }
+    return candidate === null ? from : candidate;
+  }
+
+  function stopPlaying() {
+    STATE.playing = false;
+    if (STATE.playTimer) {
+      clearInterval(STATE.playTimer);
+      STATE.playTimer = null;
+    }
+    var play = document.getElementById("play");
+    if (play) play.setAttribute("aria-label", "Play");
+  }
+
+  function stepEvent(dir) {
+    stopPlaying();
+    goTo(nextPosition(STATE.cursor, dir), false);
+  }
+
+  function jumpToLive() {
+    stopPlaying();
+    goTo(STATE.head, true);
+  }
+
+  // Design: "the play button replays from the cursor at five events per second ...
+  // and stops at the head".
+  function togglePlay() {
+    if (STATE.playing) {
+      stopPlaying();
+      return;
+    }
+    if (STATE.positions.length === 0) return;
+    STATE.playing = true;
+    STATE.live = false;
+    var play = document.getElementById("play");
+    if (play) play.setAttribute("aria-label", "Pause");
+    STATE.playTimer = setInterval(function () {
+      var to = nextPosition(STATE.cursor, 1);
+      if (to >= STATE.head) {
+        stopPlaying();
+        goTo(STATE.head, true);
+        return;
+      }
+      goTo(to, false);
+    }, REPLAY_MS);
+  }
+
+  // THE URL HASH (Design: "The URL hash carries the view, the selection and the
+  // position (`#/theater?at=N`, `#/court/<unit>/<round>?at=N`) and is restored on
+  // load, so a moment is a link"). `history.replaceState`, never `pushState`: a scrub
+  // or a replay tick is not a browser-history-worthy navigation.
+  function parseHash() {
+    var hash = location.hash.replace(/^#\/?/, "");
+    var queryIdx = hash.indexOf("?");
+    var path = queryIdx === -1 ? hash : hash.slice(0, queryIdx);
+    var query = queryIdx === -1 ? "" : hash.slice(queryIdx + 1);
+    var atMatch = query.match(/(?:^|&)at=(\d+)/);
+    var parts = path.split("/").filter(Boolean);
+    return {
+      view: parts[0] || "fleet",
+      selection: parts.slice(1),
+      at: atMatch ? parseInt(atMatch[1], 10) : null,
+    };
+  }
+
+  function updateHash() {
+    var path = "#/" + [STATE.view].concat(STATE.selection).join("/");
+    var query = STATE.live ? "" : "?at=" + STATE.cursor;
+    var next = path + query;
+    if (location.hash !== next) {
+      history.replaceState(null, "", next);
+    }
+  }
+
+  // View-only restore, run BEFORE the core/snapshot load: click the matching tab so
+  // the shell's own show/hide logic (above) runs unduplicated. The position half of
+  // the hash is resolved once the snapshot's head is known, in boot() below.
+  function restoreViewFromHash() {
+    var parsed = parseHash();
+    STATE.view = parsed.view;
+    STATE.selection = parsed.selection;
+    var btn = document.querySelector(
+      'nav.tabs button[data-view="' + STATE.view + '"]'
+    );
+    if (btn) btn.click();
+  }
+
+  function connectStream(since) {
+    var source = new EventSource("/api/console/stream?since=" + since);
+    source.addEventListener("event", function (evt) {
+      var wire = JSON.parse(evt.data);
+      callOp("fold_push", wire);
+      STATE.head = Math.max(STATE.head, wire.position);
+      if (STATE.positions.indexOf(wire.position) === -1) {
+        STATE.positions.push(wire.position);
+        STATE.positions.sort(function (a, b) {
+          return a - b;
+        });
+      }
+      if (STATE.live) {
+        goTo(STATE.head, true);
+      } else {
+        renderTrack();
+      }
+    });
+    // THE STREAM's own reconnect-with-since= contract (spec 94 criterion 2):
+    // EventSource retries automatically at the connection it was opened with, so no
+    // page-side reconnect call is needed here; the health strip's disconnected signal
+    // is specs 95-98's own paint, out of this criterion's scope.
+    source.onerror = function () {};
+  }
+
+  function wireControls() {
+    var range = document.getElementById("range");
+    if (range) {
+      range.addEventListener("input", function () {
+        stopPlaying();
+        var pos = parseInt(range.value, 10);
+        goTo(pos, pos >= STATE.head);
+      });
+    }
+    var play = document.getElementById("play");
+    if (play) {
+      play.addEventListener("click", togglePlay);
+    }
+    document.addEventListener("keydown", function (e) {
+      var tag = (document.activeElement && document.activeElement.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === " " || e.code === "Space") {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === "ArrowLeft") {
+        stepEvent(-1);
+      } else if (e.key === "ArrowRight") {
+        stepEvent(1);
+      } else if (e.key === "End") {
+        jumpToLive();
+      }
+    });
+    document.querySelectorAll("nav.tabs button[data-view]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        STATE.view = btn.getAttribute("data-view");
+        STATE.selection = [];
+        updateHash();
+      });
+    });
+  }
+
+  function boot() {
+    restoreViewFromHash();
+    loadCore()
+      .then(function () {
+        return fetch("/api/console/snapshot");
+      })
+      .then(function (r) {
+        return r.json();
+      })
+      .then(function (snapshot) {
+        var events = snapshot.events || [];
+        callOp("fold_reset", { events: events });
+        STATE.head = snapshot.head || 0;
+        STATE.positions = events
+          .map(function (e) {
+            return e.position;
+          })
+          .sort(function (a, b) {
+            return a - b;
+          });
+        wireControls();
+        connectStream(STATE.head);
+        var parsed = parseHash();
+        if (parsed.at !== null) {
+          goTo(Math.min(parsed.at, STATE.head), false);
+        } else {
+          goTo(STATE.head, true);
+        }
+      })
+      .catch(function (err) {
+        var statusEl = document.getElementById("statusline");
+        if (statusEl) {
+          statusEl.textContent = "console core failed to load: " + err;
+        }
+      });
+  }
+
+  boot();
 })();
 </script>
 </body>

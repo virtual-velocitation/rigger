@@ -293,6 +293,13 @@ pub struct Adjudication {
     /// The rejection `cause`, present only on a reject verdict (`None` on approve or when
     /// the adjudicator declared none).
     pub cause: Option<String>,
+    /// The raw `verdict` literal itself (`"approve"` or `"reject"`), `None` when the parsed
+    /// line carried no `verdict` field at all (an old-contract line naming only `upheld`/
+    /// `discarded`). Kept alongside [`cause`](Self::cause) rather than folded away: a
+    /// consumer that needs approve-vs-reject (spec 94 c3's `console::scrub_track` mark
+    /// colour) reads this directly instead of inferring it from `cause`'s presence, which
+    /// is silent on a reject that declared no cause.
+    pub verdict: Option<String>,
 }
 
 /// A single spawn request: one agent to run, plus the deterministic id that names it
@@ -652,10 +659,12 @@ impl SpawnResult {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .filter(|s| !s.is_empty());
+            let verdict = v.get("verdict").and_then(Value::as_str).map(str::to_owned);
             return Some(Adjudication {
                 upheld: str_array("upheld"),
                 discarded: str_array("discarded"),
                 cause,
+                verdict,
             });
         }
         None
@@ -935,6 +944,10 @@ mod tests {
         // independently of `upheld` (never its complement).
         assert_eq!(adj.discarded, vec!["f2".to_string()]);
         assert_eq!(adj.cause.as_deref(), Some("genuine-defect"));
+        // The raw `verdict` literal itself (spec 94 c3, THE POSITION MODEL: `scrub_track`'s
+        // own red/green mark colour reads this, never re-deriving approve/reject from
+        // `cause`'s presence, which is silent on a reject that declared none).
+        assert_eq!(adj.verdict.as_deref(), Some("reject"));
 
         // The SAME output on a NON-adjudicator (lens) result yields None - only an
         // adjudicator disposes findings, even if a lens echoed a verdict-shaped line.
@@ -965,6 +978,7 @@ mod tests {
         // of `upheld`; an approve that upholds one finding discards nothing.
         assert_eq!(approve.discarded, Vec::<String>::new());
         assert_eq!(approve.cause, None);
+        assert_eq!(approve.verdict.as_deref(), Some("approve"));
     }
 
     #[test]

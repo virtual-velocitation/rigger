@@ -11693,7 +11693,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "80b87e3d68629367"
+    "content_hash": "072259bf776690b7"
   },
   {
     "file": "src/dash.rs",
@@ -12286,6 +12286,14 @@
     "proposed_module": "dash::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "dfe843c703bff94a"
+  },
+  {
+    "file": "src/dash.rs",
+    "name": "console_event_wire_carries_recorded_at",
+    "is_test": true,
+    "proposed_module": "dash::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1196c17c18a98d47"
   },
   {
     "file": "src/dash.rs",

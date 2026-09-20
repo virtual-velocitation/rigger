@@ -820,9 +820,14 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// `graph_query` kind, lives outside `src/`); `kind_colour`, this criterion's other new pub fn,
 /// is NOT a candidate - `legend` calls it directly, a same-file production call this scanner's
 /// in-src/ sweep already sees. Candidates +1 (38 -> 39), keep-public-surface +1 (12 -> 13),
-/// delete and keep-pending unchanged.
+/// delete and keep-pending unchanged. Now 40/21/14/5 (was 39/21/13/5) after spec 94 criterion 3's
+/// THE POSITION MODEL: `console::scrub_track` (src/console/mod.rs) lands as a fresh
+/// `keep-public-surface` candidate, the SAME cross-crate shape every console::map entry above
+/// carries (its one real caller, console-core's `scrub_track` op, lives outside `src/`).
+/// Candidates +1 (39 -> 40), keep-public-surface +1 (13 -> 14), delete and keep-pending
+/// unchanged.
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_13_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_14_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -839,7 +844,7 @@ fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_13
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (39, 21, 13, 5),
+        (40, 21, 14, 5),
         "the committed disposition split has changed since this criterion's research"
     );
 }

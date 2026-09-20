@@ -92,6 +92,15 @@ struct WireEvent {
     data: Option<Box<serde_json::value::RawValue>>,
     #[serde(default)]
     position: u64,
+    // ADDITIVE to `d-u94c2-wire-event-shape` (d-u94c3-wire-event-recorded-at): the wall
+    // clock second this event was originally recorded, needed by `console::scrub_track`'s
+    // hour ticks (`Event::mint_time`'s own core-lane doc names exactly this: "a caller that
+    // needs a real timestamp on a core-built Event... reads it off the wire it decoded the
+    // event from"). Optional and defaulted so a caller that omits it - every snapshot
+    // recorded before this criterion, and every existing test above - still folds
+    // correctly; `scrub_track` degrades to no ticks rather than erroring on its absence.
+    #[serde(default)]
+    recorded_at: Option<u64>,
 }
 
 impl WireEvent {
@@ -102,6 +111,10 @@ impl WireEvent {
             .unwrap_or_else(|| b"null".to_vec());
         let mut e = Event::new(self.type_, bytes);
         e.position = self.position;
+        if let Some(secs) = self.recorded_at {
+            e.recorded_at =
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+        }
         e
     }
 }
@@ -213,6 +226,15 @@ struct ViewInput {
 /// 94-98") is a documented `{"error": ...}` reply, the same "not yet available" disposition
 /// this crate uses for the map ops (see [`dispatch`]'s own doc), never a stall or a stub
 /// return shaped like real data.
+/// `scrub_track()` (spec 94 c3, THE POSITION MODEL): the session's accumulated event log's
+/// marks and hour ticks, straight from `console::scrub_track` - not a second, independently
+/// derived copy. Takes no input (like `map_legend`) and never errors: an empty/fresh session
+/// answers the empty track, since no event log is a legitimate state, not a caller mistake.
+fn op_scrub_track(session: &ConsoleSession) -> Vec<u8> {
+    let track = console::scrub_track(&session.events);
+    ok_json(serde_json::json!({ "marks": track.marks, "ticks": track.ticks }))
+}
+
 fn op_view(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
     let v: ViewInput = match serde_json::from_slice(input) {
         Ok(v) => v,
@@ -600,9 +622,10 @@ fn op_map_hit(session: &ConsoleSession, input: &[u8]) -> Vec<u8> {
 /// ... adds map_hit on top of c1's entity model" - real data now, not the stubs spec 93/c1 left
 /// them as. Criterion 2 also adds five `map_*` `kind`s to `graph_query` (the Explore rail's four
 /// candidate lists plus search - see [`MAP_QUERY_KINDS`]'s own doc for why they ride `graph_query`
-/// rather than a new op). `scrub_track`/`palette_commands` (view models no unit in this spec's DAG
-/// builds - see `view`'s own doc) still answer the documented error-reply stub rather than
-/// fabricated data.
+/// rather than a new op). `scrub_track` (spec 94 criterion 3, THE POSITION MODEL) answers real
+/// marks/ticks now, straight from [`console::scrub_track`] - not the spec-93 stub any more.
+/// `palette_commands` (criterion 4's own territory) still answers the documented error-reply
+/// stub rather than fabricated data.
 fn dispatch(session: &mut ConsoleSession, op: &str, input: &[u8]) -> Vec<u8> {
     match op {
         "fold_reset" => op_fold_reset(session, input),
@@ -614,7 +637,7 @@ fn dispatch(session: &mut ConsoleSession, op: &str, input: &[u8]) -> Vec<u8> {
         "map_build" => op_map_build(session, input),
         "map_frame" => op_map_frame(session, input),
         "map_hit" => op_map_hit(session, input),
-        "scrub_track" => error_reply("scrub_track: not yet available"),
+        "scrub_track" => op_scrub_track(session),
         "statusline" => ok_json(serde_json::json!({ "statusline": session.current.statusline })),
         "palette_commands" => error_reply("palette_commands: not yet available"),
         other => error_reply(format!("unknown op: {other}")),
@@ -1471,14 +1494,120 @@ mod dispatch_tests {
         assert!(frame.get("error").is_some(), "{frame:?}");
     }
 
-    /// `scrub_track` and `palette_commands` - view models no unit in this spec's DAG builds
-    /// - likewise answer with an error reply rather than fabricated data.
+    /// `palette_commands` - a view model no unit in this spec's DAG builds yet (spec 94
+    /// criterion 4's own territory) - answers with an error reply rather than fabricated
+    /// data. `scrub_track` graduated out of this stub set (spec 94 criterion 3, THE
+    /// POSITION MODEL) - see its own tests below.
     #[test]
-    fn scrub_track_and_palette_commands_answer_with_a_not_yet_available_error_reply() {
+    fn palette_commands_answers_with_a_not_yet_available_error_reply() {
         let mut s = ConsoleSession::new();
-        for op in ["scrub_track", "palette_commands"] {
-            let v = call(&mut s, op, "{}");
-            assert!(v.get("error").is_some(), "op {op:?}: {v:?}");
+        let v = call(&mut s, "palette_commands", "{}");
+        assert!(v.get("error").is_some(), "{v:?}");
+    }
+
+    /// `scrub_track` (spec 94 c3) answers the SAME marks/ticks `console::scrub_track`
+    /// itself returns for the session's accumulated event log - not a second,
+    /// independently-derived copy - proven with a real `UnitIntegrated` mark. Malformed
+    /// input is accepted (`scrub_track` takes none): the op ignores its `input` entirely,
+    /// like the map/legend ops that need no argument.
+    #[test]
+    fn scrub_track_answers_console_scrub_tracks_own_marks() {
+        let mut s = ConsoleSession::new();
+        call(
+            &mut s,
+            "fold_reset",
+            r#"{"events":[
+                {"type":"UnitIntegrated","data":{"id":"u1","commit":"abc"},"position":1}
+            ]}"#,
+        );
+        let v = call(&mut s, "scrub_track", "{}");
+        let marks = v["marks"].as_array().expect("{v:?}");
+        assert_eq!(marks.len(), 1, "{v:?}");
+        assert_eq!(marks[0]["kind"], "integration", "{v:?}");
+        assert_eq!(marks[0]["color"], "accent", "{v:?}");
+        assert_eq!(marks[0]["tall"], true, "{v:?}");
+        assert_eq!(marks[0]["position"], 1, "{v:?}");
+        assert_eq!(v["ticks"], serde_json::json!([]), "{v:?}");
+    }
+
+    /// `fold_reset`'s wire events carry an OPTIONAL `recorded_at` (unix seconds) - additive
+    /// to `d-u94c2-wire-event-shape`'s `{"type":..,"data":..,"position":..}` (never
+    /// required: a caller that omits it, exactly like every snapshot recorded before this
+    /// criterion, still folds and answers `scrub_track` with no ticks, never an error) - and
+    /// `scrub_track`'s hour ticks read it straight through, proving the wire value actually
+    /// reaches `Event::recorded_at`, not just a field this crate parses and discards.
+    #[test]
+    fn fold_reset_recorded_at_feeds_scrub_tracks_hour_ticks() {
+        let mut s = ConsoleSession::new();
+        call(
+            &mut s,
+            "fold_reset",
+            r#"{"events":[
+                {"type":"UnitStarted","data":{"id":"u1"},"position":1,"recorded_at":100},
+                {"type":"UnitIntegrated","data":{"id":"u1","commit":"abc"},"position":2,"recorded_at":4000}
+            ]}"#,
+        );
+        let v = call(&mut s, "scrub_track", "{}");
+        let ticks = v["ticks"].as_array().expect("{v:?}");
+        assert_eq!(ticks.len(), 1, "{v:?}");
+        assert_eq!(ticks[0]["position"], 2, "{v:?}");
+    }
+
+    /// `scrub_track` on a completely fresh session (no `fold_reset` yet) answers an empty
+    /// track, never an error - mirroring `map_legend`'s "needs nothing loaded" shape rather
+    /// than the map ops' "call the loader first" error contract, since an empty event log
+    /// is a legitimate (if boring) state, not a caller mistake.
+    #[test]
+    fn scrub_track_on_a_fresh_session_answers_an_empty_track() {
+        let mut s = ConsoleSession::new();
+        let v = call(&mut s, "scrub_track", "{}");
+        assert_eq!(v, serde_json::json!({"marks": [], "ticks": []}), "{v:?}");
+    }
+
+    /// `fold_at` answers the fold as of position N for EVERY N the session's log spans
+    /// (spec 94 c3's own "for every N" wording) - not just one hand-picked position -
+    /// proven by scrubbing every position from 0 through the head and comparing each
+    /// answer against an independent `console::fold` over the same prefix.
+    #[test]
+    fn fold_at_answers_every_position_from_zero_through_the_head() {
+        let mut s = ConsoleSession::new();
+        let events_json = r#"{"events":[
+            {"type":"UnitStarted","data":{"id":"u1"},"position":2},
+            {"type":"UnitStarted","data":{"id":"u2"},"position":5},
+            {"type":"UnitIntegrated","data":{"id":"u1","commit":"abc"},"position":7},
+            {"type":"UnitEscalated","data":{"id":"u2"},"position":9}
+        ]}"#;
+        call(&mut s, "fold_reset", events_json);
+        let full_events: Vec<rigger::eventstore::Event> = vec![
+            rigger::eventstore::Event::new("UnitStarted", br#"{"id":"u1"}"#.to_vec()),
+            rigger::eventstore::Event::new("UnitStarted", br#"{"id":"u2"}"#.to_vec()),
+            rigger::eventstore::Event::new(
+                "UnitIntegrated",
+                br#"{"id":"u1","commit":"abc"}"#.to_vec(),
+            ),
+            rigger::eventstore::Event::new("UnitEscalated", br#"{"id":"u2"}"#.to_vec()),
+        ];
+        let positions = [2u64, 5, 7, 9];
+        let mut with_positions: Vec<rigger::eventstore::Event> = full_events;
+        for (e, p) in with_positions.iter_mut().zip(positions.iter()) {
+            e.position = *p;
+        }
+        for n in 0..=10u64 {
+            let want_events: Vec<&rigger::eventstore::Event> =
+                with_positions.iter().filter(|e| e.position <= n).collect();
+            let want_events: Vec<rigger::eventstore::Event> =
+                want_events.into_iter().cloned().collect();
+            let want = console::fold(&want_events, 0).unwrap();
+            let got = call(&mut s, "fold_at", &format!(r#"{{"position":{n}}}"#));
+            assert_eq!(
+                got["units"],
+                serde_json::to_value(&want.units).unwrap(),
+                "fold_at({n}) units mismatch: {got:?}"
+            );
+            assert_eq!(
+                got["statusline"], want.statusline,
+                "fold_at({n}) statusline mismatch: {got:?}"
+            );
         }
     }
 

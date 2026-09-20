@@ -1438,3 +1438,41 @@ fn console_call_wires_graph_query_map_legend_through_the_public_abi_before_any_m
          answer"
     );
 }
+
+/// `scrub_track` (spec 94 criterion 3, THE POSITION MODEL) wires through the exported ABI to
+/// `console::scrub_track`'s own marks/ticks - proven crossing the real FFI boundary, not merely
+/// through this crate's own private `dispatch_tests` (already covered in `src/lib.rs`). Like
+/// `map_legend` above, needs no prior `graph_load`/`map_build`: only a `fold_reset`'d session.
+#[test]
+fn console_call_wires_scrub_track_through_the_public_abi() {
+    use rigger::console;
+    use rigger::eventstore::Event;
+
+    let events_json = r#"{"events":[
+        {"type":"UnitIntegrated","data":{"id":"u1","commit":"abc"},"position":1}
+    ]}"#;
+    let reset = unsafe { call("fold_reset", events_json) };
+    assert!(
+        reply_len(reset) > 0,
+        "fold_reset must answer a non-empty reply through the exported ABI"
+    );
+
+    let queried = unsafe { call("scrub_track", "{}") };
+
+    let mut event = Event::new("UnitIntegrated", br#"{"id":"u1","commit":"abc"}"#.to_vec());
+    event.position = 1;
+    let direct = console::scrub_track(&[event]);
+    let expected_len = serde_json::to_vec(&serde_json::json!({
+        "marks": direct.marks,
+        "ticks": direct.ticks
+    }))
+    .unwrap()
+    .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "scrub_track's reply through the exported ABI must be the same length as \
+         console::scrub_track's own direct answer for the identical event log"
+    );
+}

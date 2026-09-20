@@ -25,8 +25,9 @@ pub mod map;
 use std::collections::BTreeMap;
 
 use crate::blocker::{self, Blocker};
-use crate::eventstore::Event;
+use crate::eventstore::{Event, Position};
 use crate::ledger::{self, AttentionEntry, RunState, Status};
+use crate::spawn;
 
 /// One unit's status word, as the console renders it: the projected
 /// [`Status`]'s wire string, keyed by unit id. [`RunState::units`] is already
@@ -204,12 +205,184 @@ pub fn fold(
     })
 }
 
+/// The conventional unit id this codebase's own injected DAG-critique / plan-critique
+/// gate carries (mirrors `conductor::critique_gate_name`'s ROLE-based recognition,
+/// which `console` cannot reach - `conductor` is not a `core` module, only its own
+/// hardcoded default stage name is stable across this codebase's runs). A workflow
+/// that names its own critique gate differently is out of scope for the `"plan"` mark:
+/// its round simply reads as an ordinary per-unit `"verdict"` mark instead, never a
+/// crash or a misattributed mark.
+const PLAN_CRITIQUE_UNIT: &str = "plan-critique";
+
+/// One mark on the scrubber's track (spec 94 c3 Design, "6.9 The scrubber, replay and
+/// the palette": "its marks are verdicts (red reject, green approve), integrations
+/// (accent, taller) and the plan approval, each with a tooltip"). `kind` is
+/// `"verdict"` (a per-unit review round's adjudicator disposition), `"integration"`
+/// (a unit landed), or `"plan"` (the SAME adjudicator-disposition shape as
+/// `"verdict"`, but for [`PLAN_CRITIQUE_UNIT`] - the plan-critique's own round, kept
+/// as its own kind so a page renders it with the plan-review colour rather than an
+/// ordinary unit's).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ScrubMark {
+    pub position: Position,
+    pub kind: &'static str,
+    pub color: &'static str,
+    pub tall: bool,
+    pub tooltip: String,
+}
+
+/// One wall-clock hour boundary the run's recorded events crossed (Design, "6.9": "its
+/// ticks are wall-clock hours"), pinned to the position of the first event AT OR AFTER
+/// that boundary - never the boundary's own (unrecorded) position, so dragging to a
+/// tick always lands on a position the fold can actually render.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ScrubTick {
+    pub position: Position,
+    pub label: String,
+}
+
+/// The scrubber's whole track for a recorded stream (spec 94 c3: `scrub_track`): the
+/// marks and the hour ticks, both already position-ordered - a page renders this list
+/// directly, with no fold or sort of its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ScrubTrack {
+    pub marks: Vec<ScrubMark>,
+    pub ticks: Vec<ScrubTick>,
+}
+
+/// One adjudicator `SpawnResult`'s mark, or `None` for every other event: not a
+/// `SpawnResult`, not an adjudicator (`SpawnResult::is_adjudicator`'s own self-gate -
+/// only an adjudicator disposes, mirroring `SpawnResult::adjudication`), or a verdict
+/// line whose literal this codebase's vocabulary does not recognize - never a guessed
+/// colour for an unrecognized token.
+fn verdict_mark(e: &Event) -> Option<ScrubMark> {
+    if e.type_ != spawn::TYPE_SPAWN_RESULT {
+        return None;
+    }
+    let res = spawn::SpawnResult::from_event(e).ok()?;
+    if !res.is_adjudicator() {
+        return None;
+    }
+    let verdict = res.adjudication()?.verdict?;
+    let unit = spawn::unit_of(&res.id).unwrap_or("").to_string();
+    let color = match verdict.as_str() {
+        "approve" => "green",
+        "reject" => "red",
+        _ => return None,
+    };
+    if unit == PLAN_CRITIQUE_UNIT {
+        Some(ScrubMark {
+            position: e.position,
+            kind: "plan",
+            color: "review",
+            tall: false,
+            tooltip: format!("plan critique: {verdict}"),
+        })
+    } else {
+        Some(ScrubMark {
+            position: e.position,
+            kind: "verdict",
+            color,
+            tall: false,
+            tooltip: format!("{unit}: {verdict}"),
+        })
+    }
+}
+
+/// A `UnitIntegrated` event's mark, or `None` for every other event / a malformed one
+/// (never fabricating an id for a body that carries none).
+fn integration_mark(e: &Event) -> Option<ScrubMark> {
+    if e.type_ != ledger::TYPE_UNIT_INTEGRATED {
+        return None;
+    }
+    let id = serde_json::from_slice::<serde_json::Value>(&e.data)
+        .ok()?
+        .get("id")?
+        .as_str()?
+        .to_string();
+    Some(ScrubMark {
+        position: e.position,
+        kind: "integration",
+        color: "accent",
+        tall: true,
+        tooltip: format!("{id}: integrated"),
+    })
+}
+
+/// [`Event::recorded_at`] as Unix seconds, `0` on a pre-epoch time (never produced by a
+/// real store, but never trusted blindly) - the same degrade-not-panic conversion
+/// [`crate::dash::unix_seconds`] keeps for the identical field, kept as this module's
+/// own copy because `dash` is a `store`-gated module `console` (a `core` one) cannot
+/// depend on.
+fn unix_seconds(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Wall-clock hour ticks: one per HOUR BOUNDARY the run's events cross, pinned to the
+/// position of the first event at/after that boundary. Walks `events` in POSITION
+/// order regardless of input order (pure, no dependence on caller discipline). An
+/// event whose `recorded_at` converts to `0` (the sentinel [`Event::mint_time`]'s own
+/// core-lane epoch fallback returns when a caller never set a real time - see its own
+/// doc) contributes no boundary crossing, so a wasm-decoded stream carrying no wire
+/// timestamp degrades to no ticks rather than a wall of spurious ones piled at the
+/// epoch. The very first REAL timestamp seen only seeds the baseline hour - it never
+/// ticks itself, since it crosses nothing yet.
+fn hour_ticks(events: &[Event]) -> Vec<ScrubTick> {
+    const HOUR_SECS: u64 = 3600;
+    const HOURS_PER_DAY: u64 = 24;
+    let mut ordered: Vec<&Event> = events.iter().collect();
+    ordered.sort_by_key(|e| e.position);
+    let mut ticks = Vec::new();
+    let mut last_hour: Option<u64> = None;
+    for e in ordered {
+        let secs = unix_seconds(e.recorded_at);
+        if secs == 0 {
+            continue;
+        }
+        let hour = secs / HOUR_SECS;
+        if last_hour.is_some_and(|prev| hour > prev) {
+            let hour_of_day = (hour % HOURS_PER_DAY) as u32;
+            ticks.push(ScrubTick {
+                position: e.position,
+                label: format!("{hour_of_day:02}:00"),
+            });
+        }
+        last_hour = Some(hour);
+    }
+    ticks
+}
+
+/// The scrubber's whole track for a recorded stream (spec 94 c3: `scrub_track`):
+/// verdict/integration/plan marks plus the wall-clock hour ticks, both position-
+/// ordered. Pure over `events` - no clock, no store, no process (`core`'s own purity
+/// rule): every time it needs is already on [`Event::recorded_at`], never read fresh.
+pub fn scrub_track(events: &[Event]) -> ScrubTrack {
+    let mut marks: Vec<ScrubMark> = events
+        .iter()
+        .filter_map(|e| verdict_mark(e).or_else(|| integration_mark(e)))
+        .collect();
+    marks.sort_by_key(|m| m.position);
+    ScrubTrack {
+        marks,
+        ticks: hour_ticks(events),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn ev(type_: &str, json: &str) -> Event {
         Event::new(type_, json.as_bytes().to_vec())
+    }
+
+    /// An adjudicator `SpawnResult` event for `id`, its verdict line `output`, at `position`.
+    fn adjudicator_result(id: &str, output: &str, position: Position) -> Event {
+        let mut e = spawn::SpawnResult::ok(id, output).to_event().unwrap();
+        e.position = position;
+        e
     }
 
     /// ONE FOLD, unit statuses: `console::fold`'s `units` map is exactly
@@ -478,5 +651,145 @@ mod tests {
             ev(blocker::TYPE_BUDGET_EXHAUSTED, r#"{"budget":5,"spawns":5}"#),
         ];
         assert_eq!(fold(&events, 3).unwrap(), fold(&events, 3).unwrap());
+    }
+
+    /// SCRUB_TRACK, integration marks (spec 94 c3 Design, "6.9"): a `UnitIntegrated` event
+    /// is an "accent, taller" mark naming the landed unit - mutation-discriminating (dropping
+    /// the `tall`/`color` literals, or the id, changes this assertion).
+    #[test]
+    fn scrub_track_marks_an_integration_accent_and_tall() {
+        let mut e0 = ev(
+            ledger::TYPE_UNIT_INTEGRATED,
+            r#"{"id":"u1","commit":"abc"}"#,
+        );
+        e0.position = 5;
+        let track = scrub_track(&[e0]);
+        assert_eq!(track.marks.len(), 1, "{:?}", track.marks);
+        let m = &track.marks[0];
+        assert_eq!(m.position, 5);
+        assert_eq!(m.kind, "integration");
+        assert_eq!(m.color, "accent");
+        assert!(m.tall, "an integration mark is taller than a verdict");
+        assert_eq!(m.tooltip, "u1: integrated");
+    }
+
+    /// SCRUB_TRACK, verdict marks: a per-unit adjudicator APPROVE is green, a REJECT is red -
+    /// the exact "verdicts (red reject, green approve)" wording, read from the SAME
+    /// `Adjudication::verdict` a review-quality/finding-expiry consumer already reads (never a
+    /// second, re-derived approve/reject classification).
+    #[test]
+    fn scrub_track_marks_unit_verdicts_red_and_green() {
+        let events = vec![
+            adjudicator_result(
+                "u1/adjudicator#0",
+                r#"{"verdict":"reject","cause":"genuine-defect"}"#,
+                3,
+            ),
+            adjudicator_result("u1/adjudicator#1", r#"{"verdict":"approve"}"#, 9),
+        ];
+        let track = scrub_track(&events);
+        assert_eq!(track.marks.len(), 2, "{:?}", track.marks);
+        assert_eq!(track.marks[0].position, 3);
+        assert_eq!(track.marks[0].kind, "verdict");
+        assert_eq!(track.marks[0].color, "red");
+        assert!(!track.marks[0].tall);
+        assert_eq!(track.marks[0].tooltip, "u1: reject");
+        assert_eq!(track.marks[1].position, 9);
+        assert_eq!(track.marks[1].kind, "verdict");
+        assert_eq!(track.marks[1].color, "green");
+        assert_eq!(track.marks[1].tooltip, "u1: approve");
+    }
+
+    /// SCRUB_TRACK, the plan approval: an adjudicator result for the `plan-critique` unit is
+    /// its OWN mark kind (`"plan"`), distinct from an ordinary per-unit `"verdict"` mark even
+    /// though it rides the identical event shape - proven by mixing one of each in one stream.
+    #[test]
+    fn scrub_track_marks_the_plan_critique_approval_distinctly() {
+        let events = vec![
+            adjudicator_result("plan-critique/adjudicator#0", r#"{"verdict":"approve"}"#, 1),
+            adjudicator_result("u1/adjudicator#0", r#"{"verdict":"approve"}"#, 4),
+        ];
+        let track = scrub_track(&events);
+        assert_eq!(track.marks.len(), 2, "{:?}", track.marks);
+        assert_eq!(track.marks[0].kind, "plan");
+        assert_eq!(track.marks[0].tooltip, "plan critique: approve");
+        assert_eq!(track.marks[1].kind, "verdict");
+    }
+
+    /// SCRUB_TRACK never marks a non-adjudicator result even when its output is
+    /// verdict-shaped (a lens echoing the vocabulary) - only an adjudicator disposes,
+    /// mirroring `SpawnResult::adjudication`'s own self-gate.
+    #[test]
+    fn scrub_track_ignores_a_non_adjudicator_result() {
+        let events = vec![adjudicator_result(
+            "u1/sdet#0",
+            r#"{"verdict":"approve"}"#,
+            2,
+        )];
+        let track = scrub_track(&events);
+        assert!(track.marks.is_empty(), "{:?}", track.marks);
+    }
+
+    /// SCRUB_TRACK, hour ticks: consecutive events whose `recorded_at` crosses an hour
+    /// boundary produce one tick per crossing, pinned to the position of the first event
+    /// AT OR AFTER that boundary, labelled by the UTC hour - never a tick at the very first
+    /// event (which only seeds the baseline, crossing nothing yet).
+    #[test]
+    fn scrub_track_ticks_one_per_hour_boundary_crossed() {
+        use std::time::{Duration, SystemTime};
+        let based = |secs: u64, pos: Position| {
+            let mut e = ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#);
+            e.position = pos;
+            e.recorded_at = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+            e
+        };
+        let events = vec![
+            based(0, 1),        // 00:00 - baseline, no tick
+            based(30 * 60, 2),  // 00:30 - same hour, no tick
+            based(70 * 60, 3),  // 01:10 - crosses into hour 1: tick at position 3
+            based(3 * 3600, 4), // 03:00 - crosses straight through hour 2 into hour 3
+        ];
+        let track = scrub_track(&events);
+        assert_eq!(
+            track.ticks,
+            vec![
+                ScrubTick {
+                    position: 3,
+                    label: "01:00".to_string()
+                },
+                ScrubTick {
+                    position: 4,
+                    label: "03:00".to_string()
+                },
+            ],
+            "{:?}",
+            track.ticks
+        );
+    }
+
+    /// An event with the sentinel `recorded_at = UNIX_EPOCH` (`Event::mint_time`'s own
+    /// core-lane fallback when a caller never set a real time - see its doc) contributes no
+    /// boundary crossing: a wasm-decoded stream with no wire timestamp degrades to no ticks,
+    /// never a wall of spurious ones all piled at the epoch.
+    #[test]
+    fn scrub_track_ticks_are_silent_on_events_with_no_real_timestamp() {
+        let events = vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#)];
+        let track = scrub_track(&events);
+        assert!(track.ticks.is_empty(), "{:?}", track.ticks);
+    }
+
+    /// SCRUB_TRACK's marks are position-ordered regardless of the input slice's own order -
+    /// a page renders this list directly, with no sort of its own.
+    #[test]
+    fn scrub_track_marks_are_position_ordered_regardless_of_input_order() {
+        let mut later = ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u2","commit":"d"}"#);
+        later.position = 8;
+        let mut earlier = ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"u1","commit":"c"}"#);
+        earlier.position = 2;
+        let track = scrub_track(&[later, earlier]);
+        assert_eq!(
+            track.marks.iter().map(|m| m.position).collect::<Vec<_>>(),
+            vec![2, 8]
+        );
     }
 }

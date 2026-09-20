@@ -2686,16 +2686,24 @@ fn is_console_event(e: &Event) -> bool {
 }
 
 /// One console event as console-core's own `WireEvent` (`crates/console-core/src/lib.rs`)
-/// deserializes it: `{"type":..,"data":..,"position":..}` (`d-u94c2-wire-event-shape`). `data`
-/// is the event's own JSON body embedded whole (parsed once here, never re-derived into a
-/// truncated summary like [`event_view`]'s `EventView`) so the served page hands this value
+/// deserializes it: `{"type":..,"data":..,"position":..,"recorded_at":..}` (the first three
+/// fields are `d-u94c2-wire-event-shape`; `recorded_at` is `d-u94c3-wire-event-recorded-at`'s
+/// additive fourth - the wall-clock second `console::scrub_track`'s hour ticks need, since a
+/// core-built `Event` has no clock of its own and reads its time off exactly this wire field).
+/// `data` is the event's own JSON body embedded whole (parsed once here, never re-derived into
+/// a truncated summary like [`event_view`]'s `EventView`) so the served page hands this value
 /// straight to `fold_reset`/`fold_push` with zero reshaping. A malformed body (never produced
 /// by this codebase's own writers, but never trusted blindly either) degrades to `null`
 /// rather than failing the whole feed.
 fn console_event_wire(e: &Event) -> serde_json::Value {
     let data: serde_json::Value =
         serde_json::from_slice(&e.data).unwrap_or(serde_json::Value::Null);
-    serde_json::json!({ "type": e.type_, "data": data, "position": e.position })
+    serde_json::json!({
+        "type": e.type_,
+        "data": data,
+        "position": e.position,
+        "recorded_at": unix_seconds(e.recorded_at),
+    })
 }
 
 /// One progress-store event as the stream's `progress` frame / the snapshot's `progress`
@@ -5293,6 +5301,20 @@ mod tests {
         assert_eq!(v["position"], 42);
         assert_eq!(v["data"]["id"], "u1");
         assert_eq!(v["data"]["commit"], "abc123");
+    }
+
+    /// `console_event_wire` also carries `recorded_at` (unix seconds) - additive to
+    /// `d-u94c2-wire-event-shape` (d-u94c3-wire-event-recorded-at), the wall-clock second
+    /// `console::scrub_track`'s hour ticks need, threaded through console-core's `WireEvent`
+    /// on the page side. Additive means the ORIGINAL three fields are unchanged (proven by
+    /// the test above still passing verbatim); this test pins the fourth.
+    #[test]
+    fn console_event_wire_carries_recorded_at() {
+        let mut e = ev("UnitIntegrated", r#"{"id":"u1","commit":"abc123"}"#);
+        e.position = 42;
+        e.recorded_at = UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let v = console_event_wire(&e);
+        assert_eq!(v["recorded_at"], 1_700_000_000);
     }
 
     /// `console_event_wire`'s documented degrade-not-fail sentinel: a body that is not valid
