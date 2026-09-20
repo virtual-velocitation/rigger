@@ -1645,6 +1645,100 @@ fn console_call_palette_commands_keeps_a_valid_spawn_alongside_a_malformed_one_t
     );
 }
 
+/// `palette_commands` scopes its agent section to the SAME `fold_at` scrub cursor as its
+/// courtroom section, THROUGH THE EXPORTED ABI (spec 94 criterion 3, THE POSITION MODEL;
+/// adv-u94c4-r3-palette-agent-list-ignores-scrub-cursor-courtroom-list-does-not). Before the
+/// round-3 fix, `op_palette_commands` always read `session.events` (the full, unscoped log)
+/// while the courtroom section read `session.current.units` (scoped to whatever `fold_at`
+/// last scrubbed to), so the two disagreed after any backward scrub - a real boundary bug
+/// that shipped past every previous exported-ABI test in this file, since none of them ever
+/// called `fold_at` before `palette_commands`. The fix's own regression proof landed only as
+/// an in-process `dispatch_tests` test
+/// (`palette_commands_after_fold_at_scopes_courtroom_and_agents_to_the_same_cursor`,
+/// `src/lib.rs`), which calls `dispatch` directly and never crosses `console_call`'s
+/// pointer-packing marshaling. This native host's packed reply pointer is unreadable (see
+/// this file's own header), so the proof is a length match against
+/// `console::palette_commands`'s own direct answer over the SAME truncated event window
+/// `fold_at` scrubbed to - and, so the match is not vacuous, the direct answer is built from
+/// an events slice that explicitly EXCLUDES u2 and its spawn (asserted below before the
+/// length is even computed), so a regressed cursor (the agent section falling back to the
+/// full unscoped log, which would also include u2's agent row) would answer a LONGER reply
+/// through the real ABI than this scrubbed-window length, not merely the same one by
+/// coincidence.
+#[test]
+fn console_call_palette_commands_scopes_to_the_fold_at_cursor_through_the_public_abi() {
+    use rigger::console;
+    use rigger::eventstore::Event;
+
+    let events_json = r#"{"events":[
+        {"type":"UnitStarted","data":{"id":"u1"},"position":1},
+        {"type":"SpawnRequested","data":{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"},"position":2},
+        {"type":"UnitStarted","data":{"id":"u2"},"position":3},
+        {"type":"SpawnRequested","data":{"id":"u2/implementer#0","unit":"u2","stage":"implement","prompt":"do it"},"position":4}
+    ]}"#;
+    let reset = unsafe { call("fold_reset", events_json) };
+    assert!(
+        reply_len(reset) > 0,
+        "fold_reset must fold the four-event stream cleanly through the real ABI"
+    );
+
+    // Scrub back to right after u1's own spawn, through the real ABI - before u2 ever
+    // appears.
+    let scrubbed = unsafe { call("fold_at", r#"{"position":2}"#) };
+    assert!(
+        reply_len(scrubbed) > 0,
+        "fold_at must answer a non-empty reply through the exported ABI"
+    );
+
+    let queried = unsafe { call("palette_commands", "{}") };
+
+    // The scrubbed prefix only: u1's own two events. u2 and its spawn are past the cursor
+    // and must be absent from BOTH the courtroom and the agent sections.
+    let mut e1 = Event::new("UnitStarted", br#"{"id":"u1"}"#.to_vec());
+    e1.position = 1;
+    let mut e2 = Event::new(
+        "SpawnRequested",
+        br#"{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"}"#.to_vec(),
+    );
+    e2.position = 2;
+    let events = [e1, e2];
+    let state = console::fold(&events, 0).unwrap();
+    let direct = console::palette_commands(&events, &state.units);
+    let courtrooms: Vec<&str> = direct
+        .iter()
+        .filter(|c| c.kind == "courtroom")
+        .map(|c| c.id.as_str())
+        .collect();
+    let agents: Vec<&str> = direct
+        .iter()
+        .filter(|c| c.kind == "agent")
+        .map(|c| c.id.as_str())
+        .collect();
+    assert_eq!(
+        courtrooms,
+        vec!["u1"],
+        "test setup must scrub the courtroom section to u1 only, excluding u2: {direct:?}"
+    );
+    assert_eq!(
+        agents,
+        vec!["u1/implementer#0"],
+        "test setup must scrub the agent section to u1's own spawn only, excluding u2's: \
+         {direct:?}"
+    );
+    let expected_len = serde_json::to_vec(&serde_json::json!({ "commands": direct }))
+        .unwrap()
+        .len();
+
+    assert_eq!(
+        reply_len(queried),
+        expected_len,
+        "palette_commands must scope its agent section to the SAME fold_at cursor as its \
+         courtroom section through the exported ABI - a regression (the agent section \
+         falling back to the full unscoped log) would answer a longer reply than this \
+         scrubbed-window length, not the same one"
+    );
+}
+
 /// `scrub_track`'s VERDICT marks read [`rigger::spawn::Adjudication::verdict`] - spec 94
 /// criterion 3's additive FIELD on the already-`pub` `Adjudication` struct (a plain
 /// `pub fn`/`struct`/`enum`/`trait`/`const`/`type` grep misses a new field on an existing

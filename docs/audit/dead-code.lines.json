@@ -1801,6 +1801,26 @@
         "line": 177
       },
       {
+        "file": "tests/spawn_recorded_lenient_periphery.rs",
+        "line": 45
+      },
+      {
+        "file": "tests/spawn_recorded_lenient_periphery.rs",
+        "line": 76
+      },
+      {
+        "file": "tests/spawn_recorded_lenient_periphery.rs",
+        "line": 77
+      },
+      {
+        "file": "tests/spawn_recorded_lenient_periphery.rs",
+        "line": 98
+      },
+      {
+        "file": "tests/spawn_recorded_lenient_periphery.rs",
+        "line": 99
+      },
+      {
         "file": "tests/spawn_timing_periphery.rs",
         "line": 109
       },
