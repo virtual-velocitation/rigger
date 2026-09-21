@@ -1939,6 +1939,10 @@
         "content_hash": "50cd3c1e51affeb1"
       },
       {
+        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
+        "content_hash": "06b0e53aaffbd37d"
+      },
+      {
         "file": "tests/mcp_activity_liveness_age_periphery.rs",
         "content_hash": "572defa6902d294e"
       },

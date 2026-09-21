@@ -1813,6 +1813,10 @@
         "line": 916
       },
       {
+        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
+        "line": 515
+      },
+      {
         "file": "tests/mcp_activity_liveness_age_periphery.rs",
         "line": 105
       },
