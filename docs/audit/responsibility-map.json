@@ -1409,11 +1409,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "template_gates",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "2c58955ea6dc8aaf"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "harvest_proposed",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "ebb2a407e6cc5964"
+    "content_hash": "1a380195b641f034"
   },
   {
     "file": "src/conductor.rs",
@@ -1430,6 +1438,14 @@
     "proposed_module": "conductor::gate",
     "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
     "content_hash": "1d229d7b04d1072c"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "union_gates",
+    "is_test": false,
+    "proposed_module": "conductor::gate",
+    "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
+    "content_hash": "6777206a043f15eb"
   },
   {
     "file": "src/conductor.rs",
@@ -2622,6 +2638,30 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "ed1201eeeee9cb77"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "harvest_proposed_gates_every_case_with_the_templates_list_unioned",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "71fbb9923f1eedae"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "harvest_proposed_gate_inheritance_survives_a_resumed_window",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "f7886af29bf3d2b7"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "plan_protocol_tells_the_planner_gates_come_from_the_template",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "5ae0c0e81ac18ddd"
   },
   {
     "file": "src/conductor.rs",

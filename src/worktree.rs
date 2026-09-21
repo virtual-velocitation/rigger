@@ -36,9 +36,10 @@ pub struct Worktree {
     /// `ensure_present` independently before its own spawn - `create`'s own doc comment
     /// above states its `git worktree add`/adopt path does not support concurrent
     /// callers. This lock is per-WORKTREE (not per-run), so it serializes only concurrent
-    /// re-asserts of THIS SAME instance - it never adds contention across different
-    /// units racing in `run_batch`, a separate, already-known, wider admin-directory race
-    /// this unit does not own. `()` payload: only mutual exclusion is needed.
+    /// re-asserts of THIS SAME instance - it never adds contention across different units
+    /// racing in `run_batch`; that WIDER admin-directory race is `repo_create_lock`'s
+    /// (per-repository, spec 103 criterion 4), a separate lock this instance-scoped one
+    /// composes with rather than duplicates. `()` payload: only mutual exclusion is needed.
     reassert_mu: std::sync::Mutex<()>,
 }
 
@@ -154,6 +155,12 @@ impl Worktree {
         branch: &str,
         authorized_root: &str,
     ) -> Result<Self, Error> {
+        // Serialize this WHOLE call - heal scan through the `git worktree add` below -
+        // against every other `create` call this process makes for the SAME repository
+        // (spec 103 criterion 4: see `repo_create_lock`'s doc comment for the race this
+        // closes and what it does not).
+        let repo_lock = repo_create_lock(repo);
+        let _repo_guard = repo_lock.lock().unwrap();
         // SELF-HEAL before any `git worktree add` (spec 51): a lifecycle killed mid
         // `git worktree remove` can leave a corrupt admin entry (a zero-length `commondir`)
         // that makes EVERY add below hard-fail; prune the provably-corrupt entry first so
@@ -169,13 +176,19 @@ impl Worktree {
             // worktree, adopt it directly - a check on the dir's own HEAD, with no
             // `git worktree list` porcelain parse and no re-`add` (which git refuses for a
             // branch already checked out). (This handles sequential resume/supersede, not
-            // a true create-race: two INDEPENDENT `Worktree::create` calls - two separate
-            // processes, or two units' own worktrees within one `run_batch` - that both see
-            // the branch absent still race the underlying `git worktree add -b`; rigger
-            // drives unit-worktree creation single-threaded within one `rigger step`, so
-            // that shape is not a first-class case. [`Self::ensure_present`]'s OWN repeat
-            // calls on the SAME instance are a different shape - N threads that already
-            // share one `&Worktree` - and that one IS serialized, by `reassert_mu`.)
+            // a true create-race for the SAME branch name: two INDEPENDENT `Worktree::create`
+            // calls that both see one particular branch absent still race the underlying
+            // `git worktree add -b` for THAT branch - rigger never asks two units to create
+            // the same branch concurrently, so that shape is not a first-class case. The
+            // WIDER admin-directory race - two units' own DIFFERENT worktrees within one
+            // `run_batch`, whose heal scans and adds could interleave and corrupt each
+            // other's admin entries - is now closed in-process by `repo_create_lock` above
+            // (spec 103 criterion 4); it does not cover a second SEPARATE process adding
+            // worktrees against this same repository, which only the `locked`/grace-period
+            // guards in `worktree_admin_is_corrupt` defend against.
+            // [`Self::ensure_present`]'s OWN repeat calls on the SAME instance are a
+            // different shape - N threads that already share one `&Worktree` - and that one
+            // IS serialized, by `reassert_mu`.)
             if worktree_on_branch(dir, branch) {
                 return Ok(Worktree {
                     dir: dir.to_string(),
@@ -2310,11 +2323,82 @@ fn heal_corrupt_worktree_admin(repo: &str) {
     }
 }
 
-/// Whether a worktree admin-entry directory is PROVABLY corrupt: its `commondir` or `gitdir`
-/// marker file is MISSING or ZERO-LENGTH - the exact residue a killed `git worktree remove`
-/// leaves, and precisely what makes git's up-front admin-entry read fail. A healthy entry
-/// always has both markers present and non-empty, so this never flags a live worktree.
+/// Per-repository in-process mutual exclusion across [`heal_corrupt_worktree_admin`] and
+/// the `git worktree add` it guards (spec 103 criterion 4). [`Worktree::create`] is a plain
+/// associated function with no owning instance - `run_batch` spawns one real OS thread per
+/// concurrent unit in a wave and each calls `create` independently against the SAME shared
+/// repository, so nothing before this serialized one thread's heal scan against a sibling
+/// thread's in-flight `git worktree add` writing into that same admin directory (the exact
+/// shape the Goal names: "a batch-mate's add on a concurrent thread... is deleted mid-write").
+/// [`Worktree::ensure_present`]'s own `reassert_mu` is a DIFFERENT, narrower lock -
+/// per-worktree instance, serializing only concurrent re-asserts of ONE already-created
+/// `Worktree`; this one is per-REPOSITORY, serializing every `create` call this process
+/// makes against that repo, whichever unit or instance it is for.
+///
+/// This is defense IN ADDITION TO the heal predicate's own `locked`/grace-period guards
+/// above, never a replacement for them: a lock held by THIS process cannot serialize
+/// against a `git worktree add` some OTHER process runs against the same repository (a
+/// second `rigger step`, or an operator's own `git` invocation) - only the marker git
+/// itself writes into the entry is authoritative across process boundaries.
+///
+/// Keyed by the repo path exactly as the caller spells it (never canonicalized): every
+/// caller in this codebase already resolves and passes one consistent spelling for a given
+/// repository across a process's lifetime, so two different spellings of the same physical
+/// path never legitimately arise here; two DIFFERENT repositories simply get two different
+/// map entries and never contend on each other's lock. Mirrors the existing
+/// `static TMP_NONCE: AtomicU64` synchronization primitive in `src/registry.rs` - an
+/// internal concurrency detail, not an injected dependency.
+fn repo_create_lock(repo: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let registry = LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    registry
+        .lock()
+        .unwrap()
+        .entry(repo.to_string())
+        .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
+        .clone()
+}
+
+/// An admin entry must sit unwritten-to for this long before the heal will touch it (spec
+/// 103 criterion 4). git's own five-file write (mkdir, `locked`, `gitdir`, `HEAD`,
+/// `commondir`) is not atomic, so a scan landing mid-write sees the SAME missing-marker
+/// shape as a genuinely abandoned entry; only age tells the two apart.
+const HEAL_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether a worktree admin-entry directory is PROVABLY corrupt AND SAFE TO HEAL RIGHT NOW:
+/// its `commondir` or `gitdir` marker file is MISSING or ZERO-LENGTH - the exact residue a
+/// killed `git worktree remove` leaves, and precisely what makes git's up-front admin-entry
+/// read fail - AND it carries neither of the two signs of a live, in-flight `git worktree
+/// add` (spec 103 criterion 4, gap 57 third hit: `checkin94-gap57-root-fix-moves-to-
+/// spec-103`):
+///
+/// - a `locked` marker: git writes this into an entry mid-add and its OWN `worktree prune`
+///   already refuses to touch a locked entry for exactly this reason - an entry carrying it
+///   is honored the same way here, never healed regardless of its other markers' state.
+/// - younger than [`HEAL_GRACE_PERIOD`]: git's five-file write is not atomic, so a scan
+///   landing between two of those writes sees a legitimately in-flight add as
+///   indistinguishable from an abandoned one; the entry directory's own mtime (bumped by
+///   every file git writes into it) is the recency signal, and metadata this fresh survives
+///   even with a marker missing. A metadata read that fails outright (the entry vanished
+///   mid-scan, or a permissions race) is treated the same as "too young to prove" - never
+///   healed on an unprovable age.
+///
+/// A healthy entry always has both markers present and non-empty, so this never flags a
+/// live worktree regardless of age or lock state.
 fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
+    if admin.join("locked").exists() {
+        return false;
+    }
+    let old_enough = std::fs::metadata(admin)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|mtime| std::time::SystemTime::now().duration_since(mtime).ok())
+        .is_some_and(|age| age >= HEAL_GRACE_PERIOD);
+    if !old_enough {
+        return false;
+    }
     ["commondir", "gitdir"]
         .iter()
         .any(|marker| std::fs::metadata(admin.join(marker)).map_or(true, |m| m.len() == 0))
@@ -2515,6 +2599,18 @@ mod tests {
             run_git(p, args).unwrap();
         }
         dir
+    }
+
+    /// Set `path`'s mtime to `secs_ago` seconds in the past (spec 103 criterion 4), so a
+    /// heal grace-period check reads it as old without the test actually sleeping. Works on
+    /// a directory too: `File::open` succeeds read-only on a directory on Unix, and
+    /// `set_modified` only needs an open handle, never write access to its contents.
+    fn backdate(path: &std::path::Path, secs_ago: u64) {
+        let target = std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago);
+        std::fs::File::open(path)
+            .unwrap()
+            .set_modified(target)
+            .unwrap();
     }
 
     #[test]
@@ -6725,6 +6821,10 @@ mod tests {
             0,
             "precondition: the doomed entry's commondir is zero-length"
         );
+        // Past the heal grace period (spec 103 criterion 4): a freshly-corrupted entry
+        // this young now survives the heal on purpose (it could be a live in-flight add),
+        // so this test backdates it to prove the genuinely-abandoned case still heals.
+        backdate(&doomed_admin, 120);
         // The corruption blocks git entirely: even enumerating worktrees fails now, which
         // is why git's own prune cannot recover and self-healing on disk is required.
         assert!(
@@ -6809,6 +6909,9 @@ mod tests {
             doomed_admin.is_dir(),
             "precondition: the doomed admin entry is present before the heal"
         );
+        // Past the heal grace period (spec 103 criterion 4) - see the commondir test's
+        // identical comment for why this is required now.
+        backdate(&doomed_admin, 120);
 
         // `create` on a fresh branch must prune the gitdir-corrupt entry and SUCCEED.
         let new_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fresh");
@@ -6875,6 +6978,9 @@ mod tests {
             doomed_admin.is_dir(),
             "precondition: the doomed admin entry is present before the heal"
         );
+        // Past the heal grace period (spec 103 criterion 4) - see the commondir test's
+        // identical comment for why this is required now.
+        backdate(&doomed_admin, 120);
 
         // `create` on a fresh branch must prune the marker-missing entry and SUCCEED.
         let new_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}fresh");
@@ -6904,6 +7010,113 @@ mod tests {
             list.contains(&healthy_dir),
             "the healthy worktree stays registered after healing"
         );
+    }
+
+    #[test]
+    fn heal_never_prunes_a_locked_admin_entry() {
+        // Spec 103 criterion 4: git itself writes an admin entry as mkdir, `locked`,
+        // `gitdir`, `HEAD`, `commondir` (NOT atomically), so a scan landing mid-write can
+        // observe `locked` present with `commondir` still missing - indistinguishable from
+        // the OLD provably-corrupt-and-abandoned shape unless the heal honors the SAME
+        // marker git's own `worktree prune` already refuses to touch. Without this guard a
+        // batch-mate's in-flight `git worktree add` gets deleted out from under it mid-write
+        // (the production signature: `fatal: failed to read .git/worktrees/<name>/
+        // commondir`, gap 57, `checkin94-gap57-root-fix-moves-to-spec-103`).
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let admin = repo.path().join(".git").join("worktrees");
+
+        let doomed_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}inflight");
+        Worktree::create(&repo_path, &doomed_dir, "rigger/u/inflight", "").unwrap();
+        let doomed_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}inflight"));
+        // Simulate the mid-write window: `locked` present, `commondir` gone - exactly what
+        // a real in-flight `git worktree add` looks like before its own last write, and
+        // backdated well past the grace period so ONLY the lock, not the age, saves it.
+        std::fs::write(doomed_admin.join("locked"), b"").unwrap();
+        std::fs::remove_file(doomed_admin.join("commondir")).unwrap();
+        backdate(&doomed_admin, 120);
+        assert!(
+            doomed_admin.join("locked").exists(),
+            "precondition: the entry carries git's own locked marker"
+        );
+
+        heal_corrupt_worktree_admin(&repo_path);
+
+        assert!(
+            doomed_admin.is_dir(),
+            "a locked admin entry must survive the heal even though its commondir marker \
+             is missing and it is well past the grace period - git's own worktree prune \
+             honors the same marker"
+        );
+    }
+
+    #[test]
+    fn heal_never_prunes_an_admin_entry_younger_than_the_grace_period() {
+        // Spec 103 criterion 4: an admin entry with no `locked` marker can still be a live
+        // add observed between two of git's non-atomic writes (an unlucky read right after
+        // `locked` is removed but before `commondir` lands), so a freshly-touched entry
+        // survives even with a missing marker - only an entry that has sat corrupt for a
+        // while is provably abandoned.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let admin = repo.path().join(".git").join("worktrees");
+
+        let doomed_dir = format!("{root}/{UNIT_WORKTREE_PREFIX}toosoon");
+        Worktree::create(&repo_path, &doomed_dir, "rigger/u/toosoon", "").unwrap();
+        let doomed_admin = admin.join(format!("{UNIT_WORKTREE_PREFIX}toosoon"));
+        std::fs::remove_file(doomed_admin.join("commondir")).unwrap();
+        // Left exactly as `Worktree::create` just touched it - fresh, well inside the
+        // grace period. No `backdate` call: that is the whole point of this scenario.
+
+        heal_corrupt_worktree_admin(&repo_path);
+
+        assert!(
+            doomed_admin.is_dir(),
+            "an admin entry younger than the grace period must survive the heal even \
+             though its commondir marker is missing"
+        );
+    }
+
+    #[test]
+    fn concurrent_worktree_creates_in_one_repository_all_succeed_across_50_rounds() {
+        // Spec 103 criterion 4: the ORIGINAL race this whole mechanism exists to close.
+        // `run_batch` spawns one real OS thread per concurrent unit in a wave and each
+        // calls `Worktree::create` independently against the SAME shared repository - a
+        // heal scan on one thread could delete a sibling's in-flight `git worktree add`
+        // admin entry mid-write. Drive that EXACT shape directly: two threads, 50 rounds,
+        // disjoint branches/dirs, one shared repo, and require every round to succeed on
+        // both threads with none tripping the corrupt-admin-read failure.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+
+        for round in 0..50 {
+            let dir_a = format!("{root}/{UNIT_WORKTREE_PREFIX}race-a-{round}");
+            let dir_b = format!("{root}/{UNIT_WORKTREE_PREFIX}race-b-{round}");
+            let branch_a = format!("rigger/u/race-a-{round}");
+            let branch_b = format!("rigger/u/race-b-{round}");
+
+            let (ra, rb) = std::thread::scope(|s| {
+                let ha = s.spawn(|| Worktree::create(&repo_path, &dir_a, &branch_a, ""));
+                let hb = s.spawn(|| Worktree::create(&repo_path, &dir_b, &branch_b, ""));
+                (ha.join().unwrap(), hb.join().unwrap())
+            });
+
+            assert!(
+                ra.is_ok(),
+                "round {round}: thread A's create must never lose the admin-directory \
+                 race: {:?}",
+                ra.err()
+            );
+            assert!(
+                rb.is_ok(),
+                "round {round}: thread B's create must never lose the admin-directory \
+                 race: {:?}",
+                rb.err()
+            );
+        }
     }
 
     #[test]
