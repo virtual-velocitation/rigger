@@ -7277,6 +7277,11 @@
         "content_hash": "d0e8d82f9118e243"
       },
       {
+        "file": "tests/validate_advisories.rs",
+        "name": "\".rigger\"",
+        "content_hash": "c2dfa05b7c5ac948"
+      },
+      {
         "file": "tests/validate_behind_the_tree_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "e81bbf9e8453f5be"
@@ -7393,7 +7398,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 751 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 752 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0063",
@@ -21063,9 +21068,14 @@
         "file": "tests/run_scoping_survives_periphery.rs",
         "name": "spawn",
         "content_hash": "25c74f309a64a362"
+      },
+      {
+        "file": "tests/ungated_fanout_template_wiring_periphery.rs",
+        "name": "spawn",
+        "content_hash": "25c74f309a64a362"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: tests/confidence_tier_blast_radius.rs, tests/criteria_delivery_periphery.rs, tests/gate_store_fence_periphery.rs, tests/run_scoping_survives_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: tests/confidence_tier_blast_radius.rs, tests/criteria_delivery_periphery.rs, tests/gate_store_fence_periphery.rs, tests/run_scoping_survives_periphery.rs, tests/ungated_fanout_template_wiring_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

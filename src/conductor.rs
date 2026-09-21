@@ -10613,6 +10613,12 @@ impl RunCtx<'_> {
             // resolves just below - an empty coverage or a genuinely-new unmatched
             // proposal never gets one, exactly like a non-baseline stage always has.
             let mut resolved_criterion_id = String::new();
+            // Spec 103, criterion 2 (adv-u103c2-guard-blind-to-unmatched-subunit): set
+            // ONLY in the unmatched-proposal branch just below, so
+            // `assert_no_ungated_fanout_unit` can tell a genuinely-new sub-unit apart
+            // from every other empty-`criterion_id` stage. See the field's own doc
+            // comment on `Stage`.
+            let mut unmatched_fanout_proposal = false;
             if !u.coverage.trim().is_empty() {
                 // Resolve the served criterion through `resolve_served_criterion`: the
                 // echoed stable id FIRST, then a whitespace-normalized prose fallback
@@ -10722,6 +10728,13 @@ impl RunCtx<'_> {
                     // decision surface (no new event type, per the global constraint), so
                     // the extra unit shows up in the current-blocker line (§4) instead of
                     // appearing unexplained.
+                    //
+                    // Stamp the positive marker (spec 103, criterion 2) so
+                    // `assert_no_ungated_fanout_unit` can hold THIS stage to its fan-out
+                    // template's gates without also catching the plan/plan-critique
+                    // infrastructure or an unrelated authored stage, both of which share
+                    // this same empty `criterion_id` but are never a fan-out proposal.
+                    unmatched_fanout_proposal = true;
                     self.emit(
                         contextgraph::TYPE_DECISION_MADE,
                         json!({
@@ -10763,6 +10776,7 @@ impl RunCtx<'_> {
                     // episode's own supersede scan can compare against it - the read half
                     // of the same rank this proposal was just ranked by above.
                     episode: u.episode,
+                    unmatched_fanout_proposal,
                     ..Default::default()
                 },
             );
@@ -12810,14 +12824,26 @@ fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option
 /// that SAME template's captured `gates` (`fanout_template_gates`) is non-empty, is a
 /// defect a future edit introduced - never a normal outcome - so the step fails loudly,
 /// naming both the unit and the template, rather than letting the unit spawn ungated.
+/// The SAME check also catches a genuinely-new unmatched-proposal sub-unit
+/// (`st.unmatched_fanout_proposal`, spec 18 §3.3c): its `criterion_id` is always empty
+/// (it names no baseline criterion, by definition), so it can never match a
+/// `fanout_criteria` entry the loop above resolves against - it is checked separately,
+/// against whichever template `fanout_template_gates` tracks (a run tracks at most
+/// one, per [`fan_out_template_name`]'s single `.find`), so it is unambiguous which
+/// template's gates it was meant to inherit.
 ///
 /// Criterion 1 owns gate INHERITANCE (`harvest_proposed`'s union of a proposal's gates
 /// with its template's), which is supposed to make this violation unreachable in
 /// practice; this guard is the backstop that keeps a future regression in that path
-/// loud instead of silent. A stage whose `criterion_id` names no tracked template (the
-/// plan/plan-critique infrastructure, or a genuinely-new unmatched-proposal sub-unit
-/// under a template that itself declares no gates) is out of scope entirely - an
-/// authored ungated workflow keeps running ungated (the Design's own carve-out).
+/// loud instead of silent. A stage whose `criterion_id` names no tracked template AND
+/// is not an unmatched-proposal sub-unit (the plan/plan-critique infrastructure, or
+/// any other workflow-authored stage outside the fan-out mechanism entirely) is out of
+/// scope regardless of gates - it was never a fan-out unit to begin with, so it is
+/// never this guard's business. An unmatched-proposal sub-unit under a template that
+/// itself declares no gates is ALSO out of scope - an authored ungated workflow keeps
+/// running ungated (the Design's own carve-out) - which is exactly why the check below
+/// only ever fires against a template `fanout_template_gates` records NON-empty gates
+/// for.
 fn assert_no_ungated_fanout_unit(
     stages: &BTreeMap<String, Stage>,
     ready: &[String],
@@ -12847,6 +12873,19 @@ fn assert_no_ungated_fanout_unit(
                  to spawn it ungated",
                 template_gates.join(", ")
             )));
+        }
+        if st.unmatched_fanout_proposal {
+            if let Some((template_name, template_gates)) =
+                fanout_template_gates.iter().find(|(_, g)| !g.is_empty())
+            {
+                return Err(Error(format!(
+                    "conductor invariant violated: fan-out unit '{name}' (an unmatched-\
+                     proposal sub-unit) has an empty gate list but its template \
+                     '{template_name}' declares gates ({}) - refusing to spawn it \
+                     ungated",
+                    template_gates.join(", ")
+                )));
+            }
         }
     }
     Ok(())
@@ -17160,6 +17199,55 @@ mod tests {
             !events.iter().any(|e| e.type_ == TYPE_SCOPE_CREEP
                 && String::from_utf8_lossy(&e.data).contains("new-subunit")),
             "a genuinely-new sub-unit with real coverage must not be refused as scope creep"
+        );
+    }
+
+    #[test]
+    fn a_genuinely_new_proposal_with_no_gates_refuses_to_spawn_ungated() {
+        // adv-u103c2-guard-blind-to-unmatched-subunit, end to end through the real
+        // `harvest_proposed` -> `assert_no_ungated_fanout_unit` wiring (not the
+        // hand-built-stages unit tests above): a genuinely-new sub-unit that omits
+        // `gates` entirely resolves no criterion, so `criterion_id` stays empty and
+        // the OLD guard would have let it spawn silently under the gated `implement`
+        // template (`supersede_cfg`'s `gates: ["ok"]`). The step must fail loudly
+        // instead, naming the unit and the template, before the unit ever spawns.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "new-subunit",
+                    "agent": "worker",
+                    "criterion": "an entirely separate concern the spec never lists",
+                    // `gates` omitted entirely - the defect shape.
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string()],
+        };
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!("an ungated genuinely-new sub-unit must refuse to spawn"),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("new-subunit"),
+            "the failure must name the ungated unit; got {:?}",
+            err.0
+        );
+        assert!(
+            err.0.contains("implement"),
+            "the failure must name the gated template; got {:?}",
+            err.0
         );
     }
 
@@ -29268,11 +29356,31 @@ mod tests {
     // result unreachable from that path); this criterion owns only the runtime guard
     // and must keep proving it independently of whatever inheritance does.
 
+    /// Shared harness for the six cases below: puts `stage` alone into a `stages` map
+    /// keyed by its own name, marks it the lone `ready` entry, and runs
+    /// `assert_no_ungated_fanout_unit` against it with `fanout_criteria` and
+    /// `fanout_template_gates`. Every case differs only in the stage shape, the
+    /// template map, and the expected outcome, so the repeated wiring lives here once
+    /// instead of six times over (the operator's strict-DRY convention).
+    fn run_ungated_fanout_guard(
+        stage: Stage,
+        fanout_criteria: HashMap<String, HashSet<String>>,
+        fanout_template_gates: HashMap<String, Vec<String>>,
+    ) -> Result<(), Error> {
+        let ready = vec![stage.name.clone()];
+        let mut stages = BTreeMap::new();
+        stages.insert(stage.name.clone(), stage);
+        assert_no_ungated_fanout_unit(&stages, &ready, &fanout_criteria, &fanout_template_gates)
+    }
+
     #[test]
     fn ungated_fanout_unit_under_a_gated_template_fails_the_step() {
-        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
-        stages.insert(
-            "u-a".into(),
+        let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        fanout_criteria.insert("implement".into(), ["crit-1".into()].into_iter().collect());
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), vec!["fmt".into(), "test".into()]);
+
+        let err = run_ungated_fanout_guard(
             Stage {
                 name: "u-a".into(),
                 agent: "worker".into(),
@@ -29280,18 +29388,8 @@ mod tests {
                 gates: Vec::new(),
                 ..Default::default()
             },
-        );
-        let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
-        fanout_criteria.insert("implement".into(), ["crit-1".into()].into_iter().collect());
-        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
-        fanout_template_gates.insert("implement".into(), vec!["fmt".into(), "test".into()]);
-
-        let ready = vec!["u-a".to_string()];
-        let err = assert_no_ungated_fanout_unit(
-            &stages,
-            &ready,
-            &fanout_criteria,
-            &fanout_template_gates,
+            fanout_criteria,
+            fanout_template_gates,
         )
         .expect_err("an empty gate list under a gated template must fail the step");
         assert!(
@@ -29310,9 +29408,12 @@ mod tests {
     fn ungated_fanout_unit_under_an_ungated_template_is_not_flagged() {
         // Empty template gates is a legitimate, authored, ungated workflow (a Design
         // constraint) - the guard must stay silent, not invent a violation.
-        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
-        stages.insert(
-            "u-a".into(),
+        let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        fanout_criteria.insert("implement".into(), ["crit-1".into()].into_iter().collect());
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), Vec::new());
+
+        let outcome = run_ungated_fanout_guard(
             Stage {
                 name: "u-a".into(),
                 agent: "worker".into(),
@@ -29320,30 +29421,23 @@ mod tests {
                 gates: Vec::new(),
                 ..Default::default()
             },
+            fanout_criteria,
+            fanout_template_gates,
         );
-        let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
-        fanout_criteria.insert("implement".into(), ["crit-1".into()].into_iter().collect());
-        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
-        fanout_template_gates.insert("implement".into(), Vec::new());
-
-        let ready = vec!["u-a".to_string()];
         assert!(
-            assert_no_ungated_fanout_unit(
-                &stages,
-                &ready,
-                &fanout_criteria,
-                &fanout_template_gates,
-            )
-            .is_ok(),
+            outcome.is_ok(),
             "a template that itself declares no gates keeps running ungated"
         );
     }
 
     #[test]
     fn gated_fanout_unit_passes() {
-        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
-        stages.insert(
-            "u-a".into(),
+        let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        fanout_criteria.insert("implement".into(), ["crit-1".into()].into_iter().collect());
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), vec!["fmt".into()]);
+
+        let outcome = run_ungated_fanout_guard(
             Stage {
                 name: "u-a".into(),
                 agent: "worker".into(),
@@ -29351,21 +29445,11 @@ mod tests {
                 gates: vec!["fmt".into()],
                 ..Default::default()
             },
+            fanout_criteria,
+            fanout_template_gates,
         );
-        let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
-        fanout_criteria.insert("implement".into(), ["crit-1".into()].into_iter().collect());
-        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
-        fanout_template_gates.insert("implement".into(), vec!["fmt".into()]);
-
-        let ready = vec!["u-a".to_string()];
         assert!(
-            assert_no_ungated_fanout_unit(
-                &stages,
-                &ready,
-                &fanout_criteria,
-                &fanout_template_gates,
-            )
-            .is_ok(),
+            outcome.is_ok(),
             "a unit that inherited its template's gates must spawn"
         );
     }
@@ -29376,9 +29460,11 @@ mod tests {
         // criterion_id names no `fanout_criteria` entry) - e.g. the plan or
         // plan-critique infrastructure stages - is out of this guard's scope
         // entirely, gated or not.
-        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
-        stages.insert(
-            "plan".into(),
+        let fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), vec!["fmt".into()]);
+
+        let outcome = run_ungated_fanout_guard(
             Stage {
                 name: "plan".into(),
                 agent: "planner".into(),
@@ -29386,21 +29472,77 @@ mod tests {
                 gates: Vec::new(),
                 ..Default::default()
             },
+            fanout_criteria,
+            fanout_template_gates,
         );
+        assert!(
+            outcome.is_ok(),
+            "a stage outside every tracked fan-out template's criteria must never be flagged"
+        );
+    }
+
+    #[test]
+    fn unmatched_fanout_proposal_under_a_gated_template_fails_the_step() {
+        // adv-u103c2-guard-blind-to-unmatched-subunit: a genuinely-new sub-unit
+        // `harvest_proposed` adds resolves no baseline criterion, so its
+        // `criterion_id` is empty and it can never match a `fanout_criteria` entry -
+        // the loop above alone would silently pass it, gated template or not. The
+        // positive `unmatched_fanout_proposal` marker closes exactly that hole.
         let fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
         let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
-        fanout_template_gates.insert("implement".into(), vec!["fmt".into()]);
+        fanout_template_gates.insert("implement".into(), vec!["fmt".into(), "test".into()]);
 
-        let ready = vec!["plan".to_string()];
+        let err = run_ungated_fanout_guard(
+            Stage {
+                name: "new-subunit".into(),
+                agent: "worker".into(),
+                gates: Vec::new(),
+                unmatched_fanout_proposal: true,
+                ..Default::default()
+            },
+            fanout_criteria,
+            fanout_template_gates,
+        )
+        .expect_err(
+            "an unmatched-proposal sub-unit with an empty gate list under a gated \
+             template must fail the step",
+        );
         assert!(
-            assert_no_ungated_fanout_unit(
-                &stages,
-                &ready,
-                &fanout_criteria,
-                &fanout_template_gates,
-            )
-            .is_ok(),
-            "a stage outside every tracked fan-out template's criteria must never be flagged"
+            err.0.contains("new-subunit"),
+            "the failure must name the ungated unit; got {:?}",
+            err.0
+        );
+        assert!(
+            err.0.contains("implement"),
+            "the failure must name the template that declared gates; got {:?}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn unmatched_fanout_proposal_under_an_ungated_template_is_not_flagged() {
+        // The Design's own carve-out applies to an unmatched-proposal sub-unit exactly
+        // as it does to a matched one: a template that itself declares no gates keeps
+        // running ungated, so the check must never fire against it.
+        let fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), Vec::new());
+
+        let outcome = run_ungated_fanout_guard(
+            Stage {
+                name: "new-subunit".into(),
+                agent: "worker".into(),
+                gates: Vec::new(),
+                unmatched_fanout_proposal: true,
+                ..Default::default()
+            },
+            fanout_criteria,
+            fanout_template_gates,
+        );
+        assert!(
+            outcome.is_ok(),
+            "an unmatched-proposal sub-unit under a template that itself declares no \
+             gates keeps running ungated"
         );
     }
 

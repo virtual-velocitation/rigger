@@ -656,7 +656,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 19250
+        "line": 19338
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -1243,15 +1243,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 38703
+        "line": 38845
       },
       {
         "file": "src/conductor.rs",
-        "line": 38770
+        "line": 38912
       },
       {
         "file": "src/conductor.rs",
-        "line": 39545
+        "line": 39687
       },
       {
         "file": "src/ledger.rs",
@@ -1334,35 +1334,35 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 21565
+        "line": 21653
       },
       {
         "file": "src/conductor.rs",
-        "line": 21642
+        "line": 21730
       },
       {
         "file": "src/conductor.rs",
-        "line": 21736
+        "line": 21824
       },
       {
         "file": "src/conductor.rs",
-        "line": 21823
+        "line": 21911
       },
       {
         "file": "src/conductor.rs",
-        "line": 21918
+        "line": 22006
       },
       {
         "file": "src/conductor.rs",
-        "line": 29052
+        "line": 29140
       },
       {
         "file": "src/conductor.rs",
-        "line": 29057
+        "line": 29145
       },
       {
         "file": "src/conductor.rs",
-        "line": 29120
+        "line": 29208
       },
       {
         "file": "src/console/mod.rs",
@@ -2006,15 +2006,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 29050
+        "line": 29138
       },
       {
         "file": "src/conductor.rs",
-        "line": 29055
+        "line": 29143
       },
       {
         "file": "src/conductor.rs",
-        "line": 29118
+        "line": 29206
       },
       {
         "file": "src/driver/replay.rs",
@@ -2093,7 +2093,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 13807
+        "line": 13846
       },
       {
         "file": "src/worktree.rs",
