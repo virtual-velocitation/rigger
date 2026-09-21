@@ -973,7 +973,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "d824668e0d44e705"
+    "content_hash": "ed0fb6659e8eb90e"
   },
   {
     "file": "src/conductor.rs",
@@ -1029,7 +1029,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "1181dac83c69a86d"
+    "content_hash": "7a48ebb730bcfdea"
   },
   {
     "file": "src/conductor.rs",
@@ -1726,6 +1726,22 @@
     "proposed_module": "conductor::review",
     "reason": "name contains \"review\" (review orchestration); grouped under `conductor::review`.",
     "content_hash": "9384d99b450afeae"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "postmerge_worktree_dir",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "371bb04ac8026baf"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "postmerge_branch",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "44caa98e6eaa272c"
   },
   {
     "file": "src/conductor.rs",
@@ -5353,11 +5369,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "the_post_merge_re_gate_gets_the_units_mutants_root_though_it_runs_in_the_repo",
+    "name": "the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e217ea801d595abf"
+    "content_hash": "4b990153d7b1db3f"
   },
   {
     "file": "src/conductor.rs",

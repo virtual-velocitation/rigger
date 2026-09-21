@@ -3161,9 +3161,19 @@
         "file": "src/conductor.rs",
         "name": "review_branch",
         "content_hash": "8595d6a2857484c5"
+      },
+      {
+        "file": "src/conductor.rs",
+        "name": "postmerge_worktree_dir",
+        "content_hash": "1160aaf7b5268442"
+      },
+      {
+        "file": "src/conductor.rs",
+        "name": "postmerge_branch",
+        "content_hash": "8595d6a2857484c5"
       }
     ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "conductor::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

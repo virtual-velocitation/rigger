@@ -7364,36 +7364,47 @@ impl RunCtx<'_> {
         // A `rigger-review-*` review worktree or the worktree-less path (`dir` "", e.g. an
         // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
         // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
-        let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        //
+        // EXCEPT the POST-MERGE re-gate (spec 12, unit 5 / spec 103, criterion 7): it runs in
+        // its OWN throwaway `rigger-postmerge-<slug>-<attempt>` worktree (never the repo, and
+        // never the unit's own `rigger-wt-<slug>` dir, which the merge already landed out of),
+        // whose basename is no `rigger-wt-<slug>` either, so the plain sibling derivation below
+        // yields nothing there - yet the merged tree it certifies is still THIS unit's, and (a)
+        // a `checkin` stage's `mutation` gate must sweep it into a real root (`mkdir -p ""`
+        // fails the gate before cargo-mutants ever runs, blocking the integration of a green
+        // unit - spec 89's own check-in, 2026-09-13) and (b) the re-gate should build into the
+        // SAME warm cache the pre-merge sweep already populated, not a cold shared one. Both
+        // fall back to the path the unit's OWN worktree occupies - `unit_worktree_dir(&scratch,
+        // &st.name)`, the SAME derivation `stage_worktree` used to create it - computed ONCE
+        // here and shared by `target` and `mutants` below, so the one terminus reap
+        // (`Worktree::remove` / `sweep_terminal`) still reclaims exactly what both point at.
+        let postmerge_unit_dir = matches!(selection, GateSelection::PostMerge).then(|| {
+            let scratch = crate::worktree::scratch_root_from_env(
+                &self.deps.repo,
+                &self.cfg.workflow.defaults.workdir,
+            );
+            unit_worktree_dir(&scratch, &st.name)
+        });
+        let target = crate::worktree::unit_cache_sibling(dir)
+            .or_else(|| {
+                postmerge_unit_dir
+                    .as_deref()
+                    .and_then(crate::worktree::unit_cache_sibling)
+            })
+            .unwrap_or_default();
         // The unit-keyed mutants root (spec 91, THE GATE ENVIRONMENT): derived from the
         // SAME `dir` and the SAME sibling shape as `target` immediately above (Gap 19's own
         // precedent) - a `checkin` stage's `mutation` gate command creates/wipes/repopulates
         // this dir itself each run (`rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`), never this
         // crate. Empty for anything that owns no per-unit `target` either (a review/plan
         // worktree-less run), mirroring `target`'s own empty case; harmless for every OTHER
-        // gate, whose command never reads `$MUTANTS`.
-        //
-        // EXCEPT the POST-MERGE re-gate (spec 12, unit 5): it runs in the repo's OWN checkout,
-        // whose basename is no `rigger-wt-<slug>`, so the sibling derivation yields nothing
-        // there - yet the merged tree it certifies is still THIS unit's, and a `checkin`
-        // stage's `mutation` gate must sweep it into a real root (`mkdir -p ""` fails the gate
-        // before cargo-mutants ever runs, blocking the integration of a green unit - spec 89's
-        // own check-in, 2026-09-13). The root is the SAME unit-keyed sibling the pre-merge
-        // sweep used, derived from the SAME `unit_worktree_dir` the unit's worktree was cut
-        // at, so the one terminus reap (`Worktree::remove` / `sweep_terminal`) removes both.
+        // gate, whose command never reads `$MUTANTS`. Shares `postmerge_unit_dir`'s fallback
+        // with `target` immediately above for the post-merge re-gate.
         let mutants = crate::worktree::unit_mutants_sibling(dir)
             .or_else(|| {
-                matches!(selection, GateSelection::PostMerge)
-                    .then(|| {
-                        let scratch = crate::worktree::scratch_root_from_env(
-                            &self.deps.repo,
-                            &self.cfg.workflow.defaults.workdir,
-                        );
-                        crate::worktree::unit_mutants_sibling(&unit_worktree_dir(
-                            &scratch, &st.name,
-                        ))
-                    })
-                    .flatten()
+                postmerge_unit_dir
+                    .as_deref()
+                    .and_then(crate::worktree::unit_mutants_sibling)
             })
             .unwrap_or_default();
         // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
@@ -8668,15 +8679,42 @@ impl RunCtx<'_> {
         // NOTHING lands (no UnitIntegrated over a broken tree) and the caller re-enters
         // remediation fed the merge-break evidence, exactly like a pre-merge gate failure.
         if !commit.is_empty() {
-            let merged = self.run_gates(st, &self.deps.repo, attempt, GateSelection::PostMerge)?;
+            // Spec 103, criterion 7 (POST-MERGE GATES RUN ON THE LANDED TREE): the re-gate
+            // NEVER runs in `self.deps.repo` - an untracked or locally-modified file sitting
+            // in the operator's own checkout must never be able to change this verdict (it
+            // used to run there, and it did - 2026-09, an untracked operator file failed a
+            // whole-tree test and an approved unit escalated). It runs instead in its own
+            // throwaway, scratch-rooted worktree checked out AT `commit` (the exact tree that
+            // is about to land) via a deterministic throwaway branch, sharing the unit's own
+            // warm build cache (`run_gates`'s PostMerge fallback derives it the same way it
+            // already derives the mutants root), and that worktree - dir and branch both - is
+            // reaped the moment the gate suite ends, pass or fail, never left for a later step
+            // to find.
+            let scratch = crate::worktree::scratch_root_from_env(
+                &self.deps.repo,
+                &self.cfg.workflow.defaults.workdir,
+            );
+            let pm_dir = postmerge_worktree_dir(&scratch, &st.name, attempt);
+            let pm_branch = postmerge_branch(&st.name, attempt);
+            // This dir/branch carry no durable checkpoint (unlike the unit's own `rigger/u/*`
+            // branch): a prior process may have crashed between creating them and reaping
+            // them, leaving a leftover pinned at a now-stale sha. The safe resume is always
+            // discard-then-recreate, exactly like a standalone review's
+            // `review_only_worktree` - never adopt a leftover post-merge checkout.
+            Worktree::discard(&self.deps.repo, &pm_dir, &pm_branch, &scratch)?;
+            Worktree::create_branch_at(&self.deps.repo, &pm_branch, &commit)?;
+            let pm_wt = Worktree::create(&self.deps.repo, &pm_dir, &pm_branch, &scratch)?;
+            let merged = self.run_gates(st, &pm_wt.dir, attempt, GateSelection::PostMerge)?;
+            let _ = pm_wt.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
             if !merged.pass {
                 Worktree::reset_to(&self.deps.repo, &pre_merge)?;
                 // Defense in depth (spec 64 criterion 3), same as every other post-gate touch
                 // of `wt` in this function: the post-merge gate just above is real wall-clock
-                // time IN THE BASE REPO, not `wt.dir` - a window in which an out-of-band actor
-                // (or, as spec 88 criterion 1's own fixture drives, the gate command's own side
-                // effect) can delete the unit's worktree dir before this reset consumes it. A
-                // no-op fast path when nothing disturbed the tree.
+                // time - a window in which an out-of-band actor (or, as spec 88 criterion 1's
+                // own fixture drives, the gate command's own side effect) can delete the
+                // unit's worktree dir before this reset consumes it. A no-op fast path when
+                // nothing disturbed the tree.
                 wt.ensure_present()?;
                 wt.reset_branch_to(&unit_head_before_merge)?;
                 return Ok(Integration {
@@ -12301,6 +12339,33 @@ fn review_worktree_dir(scratch_root: &str, stage_id: &str, attempt: u32) -> Stri
 /// from stage + attempt (no uuid) lets a resumed step recompute and reclaim it.
 fn review_branch(stage_id: &str, attempt: u32) -> String {
     format!("rigger/review/{}-{attempt}", sanitize_for_path(stage_id))
+}
+
+/// The DETERMINISTIC dir for a unit's THROWAWAY post-merge re-gate worktree (spec 12,
+/// unit 5 / spec 103, criterion 7): `<scratch-root>/rigger-postmerge-<unit-slug>-<attempt>`,
+/// derived from the unit id and the integrate attempt, no per-process uuid. The post-merge
+/// re-gate certifies the MERGED run-branch tree right before `UnitIntegrated` - running it in
+/// the operator's own checkout let a stray untracked file there change the verdict, and
+/// running it in the unit's own (already-landed-out-of) `rigger-wt-<slug>` dir would race
+/// whatever that worktree does next - so it gets its own scratch-rooted, throwaway location
+/// instead, the exact same shape as a standalone review's [`review_worktree_dir`]. Carries no
+/// durable checkpoint: [`RunCtx::integrate_and_emit`] discards any leftover before creating it
+/// fresh at the landed sha, and removes both the dir and its [`postmerge_branch`] the instant
+/// its gate suite ends, pass or fail.
+fn postmerge_worktree_dir(scratch_root: &str, unit_id: &str, attempt: u32) -> String {
+    format!(
+        "{scratch_root}/rigger-postmerge-{}-{attempt}",
+        sanitize_for_path(unit_id)
+    )
+}
+
+/// The DETERMINISTIC throwaway branch for a post-merge re-gate worktree (spec 103,
+/// criterion 7): `rigger/postmerge/<unit-slug>-<attempt>`. [`RunCtx::integrate_and_emit`]
+/// points it at the exact landed sha via [`Worktree::create_branch_at`], so the worktree
+/// checks out precisely the tree `UnitIntegrated` is about to certify - never the unit's own
+/// durable `rigger/u/*` checkpoint, and never surviving past its own gate run.
+fn postmerge_branch(unit_id: &str, attempt: u32) -> String {
+    format!("rigger/postmerge/{}-{attempt}", sanitize_for_path(unit_id))
 }
 
 /// Whether two filesystem paths name the same location. Used by the cwd-isolation
@@ -37650,16 +37715,18 @@ mod tests {
     }
 
     #[test]
-    fn the_post_merge_re_gate_gets_the_units_mutants_root_though_it_runs_in_the_repo() {
-        // Spec 91, THE GATE ENVIRONMENT, at the post-merge re-gate (spec 12, unit 5): the
-        // second of two batch-mates merges into a tree its own gate never saw, so its re-gate
-        // MISSES the content cache and RUNS - in the repo's own checkout, never a
-        // `rigger-wt-<slug>` worktree. A `checkin` stage's `mutation` gate there runs
-        // `rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`, so an EMPTY `$MUTANTS` fails the gate
-        // (`mkdir: cannot create directory ''`) and blocks the integration of a green unit -
-        // exactly what spec 89's own check-in hit (2026-09-13). The re-gate must export the
-        // SAME unit-keyed root the pre-merge sweep used: keyed by the unit's worktree name,
-        // not by the directory the gate happens to run in.
+    fn the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo() {
+        // Spec 103, criterion 7 (POST-MERGE GATES RUN ON THE LANDED TREE): the second of two
+        // batch-mates merges into a tree its own gate never saw, so its re-gate MISSES the
+        // content cache and RUNS for real - and it must run in its OWN throwaway,
+        // scratch-rooted worktree, NEVER `self.deps.repo` (the operator's own checkout, where a
+        // stray untracked file used to be able to flip the verdict) and never a bare/empty
+        // root: a `checkin` stage's `mutation` gate there runs `rm -rf "$MUTANTS" && mkdir -p
+        // "$MUTANTS"`, so an EMPTY `$MUTANTS` fails the gate (`mkdir: cannot create directory
+        // ''`) and blocks the integration of a green unit - exactly what spec 89's own
+        // check-in hit (2026-09-13). It must still export the SAME unit-keyed `$MUTANTS` root
+        // AND `$CARGO_TARGET_DIR` the pre-merge sweep already warmed, and its own worktree must
+        // be gone once its gate suite ends.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
@@ -37674,10 +37741,20 @@ mod tests {
                 .output()
                 .unwrap();
         }
-        // Every gate run appends "<physical cwd> <$MUTANTS>" to a log OUTSIDE the repo (an
-        // untracked file inside it would dirty the very tree the integrate lock guards).
+        // An UNTRACKED file sitting in the operator's own checkout for the whole run - never
+        // `git add`ed. A gate command whose cwd is the repo would see it on disk; a gate
+        // running in a real git worktree checkout of the landed sha never can, because a
+        // worktree holds only git-tracked content.
+        std::fs::write(
+            Path::new(&repo_path).join("operator-only.marker"),
+            "must never be visible to a gate\n",
+        )
+        .unwrap();
+        // Every gate run appends "<physical cwd> <$MUTANTS> <$CARGO_TARGET_DIR> <marker>" to a
+        // log OUTSIDE the repo (an untracked file inside it would dirty the very tree the
+        // integrate lock guards).
         let log_dir = tempfile::tempdir().unwrap();
-        let log = log_dir.path().join("mutants-seen.log");
+        let log = log_dir.path().join("gate-runs.log");
 
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_retries = 2;
@@ -37687,7 +37764,8 @@ mod tests {
         cfg.workflow.gates.insert(
             "g".into(),
             gate_def(&format!(
-                "printf '%s %s\\n' \"$(pwd -P)\" \"$MUTANTS\" >> '{}'",
+                "printf '%s %s %s %s\\n' \"$(pwd -P)\" \"$MUTANTS\" \"$CARGO_TARGET_DIR\" \
+                 \"$([ -f operator-only.marker ] && echo present || echo absent)\" >> '{}'",
                 log.display()
             )),
         );
@@ -37732,31 +37810,77 @@ mod tests {
 
         let seen = std::fs::read_to_string(&log).unwrap();
         let repo_physical = std::fs::canonicalize(&repo_path).unwrap();
-        let in_repo: Vec<&str> = seen
-            .lines()
-            .filter(|l| l.split(' ').next() == repo_physical.to_str())
-            .collect();
-        assert!(
-            !in_repo.is_empty(),
-            "the second integrator's post-merge re-gate must RUN in the repo checkout (a \
-             content-cache miss over the merged two-MARK tree); gate runs seen:\n{seen}"
-        );
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let unit_roots: HashSet<String> = ["unit-a", "unit-b"]
+        let mutants_roots: HashSet<String> = ["unit-a", "unit-b"]
             .iter()
             .map(|u| {
                 crate::worktree::unit_mutants_sibling(&unit_worktree_dir(&scratch, u)).unwrap()
             })
             .collect();
-        for line in &in_repo {
-            let root = line.split_once(' ').map(|(_, r)| r).unwrap_or_default();
-            assert!(
-                unit_roots.contains(root),
-                "a post-merge re-gate in the repo must get the integrating unit's own \
-                 unit-keyed $MUTANTS root (one of {unit_roots:?}), never an empty or \
-                 foreign one; got {root:?} in:\n{seen}"
+        let cache_roots: HashSet<String> = ["unit-a", "unit-b"]
+            .iter()
+            .map(|u| crate::worktree::unit_cache_sibling(&unit_worktree_dir(&scratch, u)).unwrap())
+            .collect();
+
+        // The post-merge worktree's own basename prefix (`postmerge_worktree_dir`) is the
+        // ONLY thing that distinguishes its log line from a unit's ordinary pre-merge run in
+        // its own `rigger-wt-<slug>` worktree - both live under the same scratch root.
+        let is_postmerge_cwd = |cwd: &str| {
+            Path::new(cwd)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("rigger-postmerge-"))
+        };
+        let mut postmerge_lines: Vec<(&str, &str, &str)> = Vec::new();
+        for line in seen.lines() {
+            let mut fields = line.split(' ');
+            let cwd = fields.next().unwrap_or_default();
+            let mutants = fields.next().unwrap_or_default();
+            let target = fields.next().unwrap_or_default();
+            let marker = fields.next().unwrap_or_default();
+            // No gate run - pre-merge OR post-merge - may ever use the operator's own
+            // checkout as its cwd, or see its untracked file.
+            assert_ne!(
+                cwd,
+                repo_physical.to_str().unwrap(),
+                "no gate run may use the operator's own checkout as its cwd; log:\n{seen}"
             );
+            assert_eq!(
+                marker, "absent",
+                "no gate run may see the operator's untracked file; cwd={cwd}, log:\n{seen}"
+            );
+            if is_postmerge_cwd(cwd) {
+                postmerge_lines.push((cwd, mutants, target));
+            }
         }
+        assert_eq!(
+            postmerge_lines.len(),
+            1,
+            "exactly one post-merge re-gate should have run for real (a content-cache miss \
+             over the merged two-MARK tree); gate runs seen:\n{seen}"
+        );
+        let (pm_cwd, pm_mutants, pm_target) = postmerge_lines[0];
+        assert!(
+            pm_cwd.starts_with(&scratch),
+            "the post-merge re-gate must run under the scratch root, got {pm_cwd:?}"
+        );
+        assert!(
+            mutants_roots.contains(pm_mutants),
+            "the post-merge re-gate must get the integrating unit's own unit-keyed $MUTANTS \
+             root (one of {mutants_roots:?}), never an empty or foreign one; got \
+             {pm_mutants:?} in:\n{seen}"
+        );
+        assert!(
+            cache_roots.contains(pm_target),
+            "the post-merge re-gate must build into the integrating unit's own warm \
+             $CARGO_TARGET_DIR (one of {cache_roots:?}), never an empty or foreign one; got \
+             {pm_target:?} in:\n{seen}"
+        );
+        assert!(
+            !Path::new(pm_cwd).exists(),
+            "the post-merge re-gate's own throwaway worktree must be reaped once its gate \
+             suite ends; {pm_cwd} still exists"
+        );
     }
 
     #[test]
