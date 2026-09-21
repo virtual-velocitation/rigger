@@ -480,6 +480,94 @@ fn a_declared_units_dirty_worktree_survives_the_step_start_sweep_backstops() {
     );
 }
 
+/// Spec 103, THE HALTED-SPAWN CHECKPOINT's THIRD guard condition, through the real binary:
+/// even when the named spawn itself was genuinely requested and carries no result (by itself
+/// a halt, per the first test above), the checkpoint must not fire while ANOTHER spawn of the
+/// SAME unit - any role, any attempt - is still LIVE (its own liveness marker touched more
+/// recently than its own wall-clock bound). `conductor.rs`'s own in-process
+/// `a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live`
+/// proves the algorithm with one `run(&cfg, &deps)` call and a `Stub` driver; it cannot prove
+/// the seam actually composes across a real process boundary, reading back the exact
+/// `liveness::marker_path` a separate, real spawned agent would be touching. This closes that
+/// gap: process 1 dispatches `solo/implementer#0` for real and it is halted exactly as the
+/// first test above builds it; a SIBLING spawn of "solo" (attempt 1) is then seeded directly
+/// into the same real on-disk store `seed_run_events` already appends to (mirroring that
+/// helper's own precedent for a conductor-owned event type `rigger emit` refuses to mint) and
+/// its marker is planted, fresh, at the exact path `rigger::liveness::marker_path` derives for
+/// the run a real prior `rigger step` process actually started - never a guessed or
+/// hand-duplicated path. Process 2 must then leave the tree exactly as process 1's halt left
+/// it: no recovery commit, still parked, still dirty.
+#[test]
+fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_solo_unit_workflow(root);
+
+    // Process 1 (priming, inside the helper): dispatches solo/implementer#0 for real, then
+    // the agent dies mid-edit - dirtying the SAME worktree, no `rigger result` ever recorded.
+    // By itself (the first test above) this is a genuine halt the checkpoint would capture.
+    let wt_dir =
+        seed_and_halt_a_dispatched_spawn(root, "solo", "halted-work.txt", "abandoned mid-edit\n");
+
+    // A SIBLING spawn of the SAME unit "solo" - attempt 1, bounded, requested and STILL
+    // LIVE - seeded directly into the real store the priming step just wrote to, at the SAME
+    // run the priming step started (appended after its `RunStarted`, before any later one).
+    let mut sibling = rigger::spawn::SpawnRequest::new(
+        "solo",
+        "solo",
+        rigger::spawn::ROLE_IMPLEMENTER,
+        1,
+        "task",
+    );
+    sibling.max_wall_clock = Some(3600);
+    seed_run_events(
+        root,
+        &[(
+            rigger::spawn::TYPE_SPAWN_REQUESTED,
+            serde_json::to_value(&sibling).unwrap(),
+        )],
+    );
+    // The sibling's own liveness marker, touched right now - well inside its 3600s bound -
+    // at the EXACT path production derives (same scratch root [`unit_worktree_dir`]'s own doc
+    // comment already asserts against, same run id the priming step just minted).
+    let scratch = common::default_scratch_root(root);
+    let run_id = current_run_id(root);
+    let marker = rigger::liveness::marker_path(scratch.to_str().unwrap(), &run_id, &sibling.id)
+        .expect("a non-degenerate spawn id always encodes a marker path");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"heartbeat").unwrap();
+
+    // Process 2: re-adopts the dirty worktree. `solo/implementer#0` alone would be a genuine
+    // halt, but the live sibling must suppress the capture.
+    let (out1, err1, ok1) = run_rigger(root, &["step"]);
+    assert!(ok1, "the step must succeed; stderr: {err1}");
+    assert!(
+        out1.contains(r#""id":"solo/implementer#0""#),
+        "the same still-unanswered implementer must still be the reported wave entry; \
+         got: {out1:?}"
+    );
+
+    let expected_subject = "wip(solo): tree of halted spawn solo/implementer#0";
+    let log = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
+    assert!(
+        !log.lines().any(|l| l == expected_subject),
+        "a live sibling spawn of the same unit must suppress the wip recovery commit even \
+         though the named spawn is itself genuinely requested and resultless; got:\n{log}\n\
+         step stderr: {err1}"
+    );
+    let tree_status = git_out(&wt_dir, &["status", "--porcelain"]);
+    assert!(
+        !tree_status.is_empty(),
+        "the tree is uncaptured while the sibling is live, so it must still be dirty: \
+         {tree_status:?}"
+    );
+    let content = std::fs::read_to_string(wt_dir.join("halted-work.txt")).unwrap();
+    assert_eq!(
+        content, "abandoned mid-edit\n",
+        "the un-owned content itself must be completely unaffected on disk"
+    );
+}
+
 /// The `project_identity` a fresh, real `rigger` process resolves for `root` - mirrors
 /// `tests/cli.rs`'s identically-named helper (the tracked `.rigger/project.id` at the git
 /// top-level when present, else the git top-level basename, else `root`'s own basename), so a
@@ -531,6 +619,25 @@ fn seed_run_events(root: &Path, events: &[(&str, serde_json::Value)]) {
             )
             .unwrap();
     }
+}
+
+/// The run id `rigger::run::current_run_id` resolves for the events a real `rigger step`
+/// process against `root` has already written - read back from the SAME on-disk store, at the
+/// SAME project identity, [`seed_run_events`] appends to. Lets a test plant a liveness marker
+/// at the EXACT path production derives for a spawn of the run a separate, real prior process
+/// just started, without hardcoding or guessing the run id that process minted.
+fn current_run_id(root: &Path) -> String {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+
+    let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    let events = store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    rigger::run::current_run_id(&events)
+        .expect("a real prior `rigger step` process must already have minted a run id")
 }
 
 /// Round 2 fix, defect (b): a resumed `ResumePhase::Reviewed` unit whose worktree ALREADY
