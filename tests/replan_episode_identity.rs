@@ -194,6 +194,7 @@ impl AgentDriver for TwoEpisodeDriver {
                     "id": unit_id,
                     "agent": self.worker,
                     "criterion": self.criterion,
+                    "gates": ["ok"],
                 }),
             )?;
             return Ok(AgentResult {
@@ -435,6 +436,7 @@ impl AgentDriver for ThreeEpisodeDriver {
                     "id": unit_id,
                     "agent": self.worker,
                     "criterion": self.criterion,
+                    "gates": ["ok"],
                 }),
             )?;
             return Ok(AgentResult {
@@ -658,6 +660,7 @@ impl AgentDriver for RefineWithSiblingDriver {
                         "id": unit_id,
                         "agent": self.worker,
                         "criterion": self.criterion,
+                        "gates": ["ok"],
                     }),
                 )?;
             } else {
@@ -696,6 +699,7 @@ impl AgentDriver for RefineWithSiblingDriver {
                             "id": sibling_id,
                             "agent": self.worker,
                             "criterion": sibling_criterion,
+                            "gates": ["ok"],
                         }),
                     )
                 };
