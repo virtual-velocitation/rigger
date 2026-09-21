@@ -397,6 +397,23 @@ impl Worktree {
         Ok(())
     }
 
+    /// Restores THIS worktree's TRACKED and UNTRACKED state to `sha` (spec 103, criterion
+    /// 6): a review round's own tiers must never leave residue in the unit worktree - the
+    /// review protocol tells every lens, adversary and adjudicator to reproduce a suspected
+    /// failure in its OWN scratch worktree, never this one - so a worktree a round leaves
+    /// dirty, or whose tip has moved off the sha it actually judged, is residue, never
+    /// legitimate work. [`Self::reset_branch_to`] alone rewinds only tracked content; an
+    /// untracked file dropped against protocol would otherwise survive the hard reset and
+    /// keep the tree dirty for the caller's very next check, so this also runs `git clean`
+    /// (respecting `.gitignore`, never `-x`) to clear it. The caller PROVES the worktree is
+    /// dirty or its tip has moved, and records a lesson naming what, before calling this -
+    /// it does not check either itself.
+    pub fn restore_reviewed_sha(&self, sha: &str) -> Result<(), Error> {
+        self.reset_branch_to(sha)?;
+        git(&self.dir, &["clean", "-fd"])?;
+        Ok(())
+    }
+
     /// Discard any leftover worktree at `dir` AND any existing `branch`, so a following
     /// [`Self::create`] checks out a FRESH worktree off the repo's CURRENT HEAD.
     ///
@@ -4368,6 +4385,55 @@ mod tests {
         assert!(
             repo.path().join("feature.txt").exists(),
             "the pre-committed work must land in the repo"
+        );
+        wt.remove().unwrap();
+    }
+
+    #[test]
+    fn restore_reviewed_sha_discards_both_tracked_and_untracked_residue() {
+        // Spec 103, criterion 6: `reset_branch_to` alone only rewinds TRACKED content - an
+        // untracked file (e.g. a reviewer's own scratch droppings, against protocol) would
+        // survive a plain `git reset --hard` and keep the tree dirty. This proves
+        // `restore_reviewed_sha` clears both: a committed change past `sha` AND an
+        // untracked file are both gone, and the worktree is exactly `sha` again.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/residue", "").unwrap();
+
+        std::fs::write(wt_path.join("reviewed.txt"), "the reviewed work\n").unwrap();
+        let reviewed_sha = wt.commit("rigger: reviewed work").unwrap();
+
+        // Residue: a committed change AND an untracked file, both past `reviewed_sha`.
+        std::fs::write(wt_path.join("reviewed.txt"), "tampered\n").unwrap();
+        wt.commit("wip: residue commit").unwrap();
+        std::fs::write(wt_path.join("untracked-residue.txt"), "leftover\n").unwrap();
+        assert!(
+            wt.is_dirty().unwrap(),
+            "premise: the tree must be dirty before restore"
+        );
+
+        wt.restore_reviewed_sha(&reviewed_sha).unwrap();
+
+        assert_eq!(
+            head_sha_of(wt_path.to_str().unwrap()),
+            reviewed_sha,
+            "the branch tip must be back at exactly the reviewed sha"
+        );
+        assert!(
+            !wt.is_dirty().unwrap(),
+            "the worktree must be clean - both the tracked residue commit and the \
+             untracked file must be gone"
+        );
+        assert!(
+            !wt_path.join("untracked-residue.txt").exists(),
+            "an untracked file left by the residue must not survive the restore"
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt_path.join("reviewed.txt")).unwrap(),
+            "the reviewed work\n",
+            "the tracked file must be back at its reviewed content"
         );
         wt.remove().unwrap();
     }

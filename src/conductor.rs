@@ -4399,6 +4399,11 @@ impl RunCtx<'_> {
         if panel.is_empty() {
             return Ok(ReviewOutcome::approved(String::new()));
         }
+        // A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): the sha
+        // `dir` carries right NOW, before any tier's spawn, is the sha every tier below is
+        // about to judge - captured here, once, as the one ground truth `guard_review_
+        // round_tree` restores to if a tier's spawn leaves residue behind.
+        let round_start_sha = worktree::head_sha_of(dir);
         let lenses = panel.lenses.clone();
         let adversary = panel.adversary.clone();
         let adjudicator = panel.adjudicator.clone();
@@ -4418,12 +4423,20 @@ impl RunCtx<'_> {
             self.run_adversary(st, &adversary, dir, attempt, wt, &lenses)?;
         }
         if adjudicator.is_empty() {
+            // The round's last real result was the adversary's (or the lenses', if the
+            // adversary is empty too) - guard the tree here, at ITS end, before returning.
+            self.guard_review_round_tree(wt, dir, &st.name, &round_start_sha)?;
             return Ok(ReviewOutcome::approved(String::new()));
         }
         // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
         // findings from the graph, and renders the gating verdict.
         let (approved, reason, adj_resolved) =
             self.run_adjudicator(st, &adjudicator, dir, attempt, wt, &lenses, &adversary)?;
+        // The round's last result is now recorded (the adjudicator's own spawn, the last
+        // tier that can run): guard the tree BEFORE acting on the verdict either way, so a
+        // reject sees the judged sha too (`failed_sha` below reads `dir` after this
+        // returns) and an approve's own stamp (right below) never has to re-derive it.
+        self.guard_review_round_tree(wt, dir, &st.name, &round_start_sha)?;
         // A COMPENSATION target (spec 12, unit 4): the verdict may name a PRIOR integrated
         // unit as the real defect source, INDEPENDENTLY of whether it approves this unit.
         // Carried on the outcome so the run loop can roll that unit back after the wave.
@@ -4448,11 +4461,11 @@ impl RunCtx<'_> {
             // `run_reviewer` re-asserted before the adjudicator's OWN spawn above, but
             // that spawn is itself real wall-clock time in which its OWN side effect (or
             // an out-of-band actor) could delete the tree AFTER it returns approved and
-            // BEFORE the sha read immediately below - the identical bug class round 2
-            // already fixed for the `verified` stamp (the re-assert right before ITS own
-            // `head_sha_of` read, in `run_single_stage`), mirrored here right before this
-            // stamp's own read, never relying on a spawn-time re-assert to still be valid
-            // by the time this line runs.
+            // BEFORE the sha read immediately below. `guard_review_round_tree` above
+            // already re-asserted presence AND restored the tree to `round_start_sha` if
+            // the adjudicator's own spawn left it dirty or moved its tip (spec 103,
+            // criterion 6) - re-assert once more anyway, never relying on either of those
+            // to still be valid by the time this line runs.
             if let Some(w) = wt {
                 w.ensure_present()?;
             }
@@ -4474,8 +4487,12 @@ impl RunCtx<'_> {
                     (META_MODEL_ALIAS, &self.agent_model(&adjudicator, attempt)),
                     (META_MODEL_RESOLVED, &adj_resolved),
                     // The approved worktree sha (spec 11, unit 1): pairs with a prior
-                    // reject on the SAME sha to surface reviewer flip-flop.
-                    (META_WORKTREE_SHA, &worktree::head_sha_of(dir)),
+                    // reject on the SAME sha to surface reviewer flip-flop. THE sha the
+                    // round judged (spec 103, criterion 6) - never a fresh `head_sha_of`
+                    // read here, which could silently pick up residue `guard_review_
+                    // round_tree` missed by a hair; `round_start_sha` is the one ground
+                    // truth, and the guard above already made `dir` match it again.
+                    (META_WORKTREE_SHA, &round_start_sha),
                 ],
             )?;
             let mut outcome = ReviewOutcome::approved(reason);
@@ -4486,6 +4503,75 @@ impl RunCtx<'_> {
             outcome.compensate = compensate;
             Ok(outcome)
         }
+    }
+
+    /// A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): reviewers never
+    /// write the unit worktree - [`review_protocol`] tells every lens, the adversary and the
+    /// adjudicator to reproduce a suspected failure in their OWN scratch worktree instead -
+    /// so a worktree the round leaves dirty, or whose tip has moved off `round_start_sha`
+    /// (the sha [`Self::review_unit`] captured before spawning ANY tier), is residue: a
+    /// reviewer's own tooling breaking protocol, or an out-of-band actor, never legitimate
+    /// implementer work (the implementer already committed and gated before the round
+    /// began). Called from `review_unit` exactly at each point the round's LAST tier result
+    /// is recorded (whichever of the adjudicator, the adversary, or the lenses actually ran
+    /// last), before the verdict is acted on either way. The overwhelmingly common case - a
+    /// clean worktree still at `round_start_sha` - is a cheap no-op (one `ensure_present`,
+    /// one `git status`). Residue is never silently discarded: it is named in a lesson
+    /// FIRST (the dirty paths, plus, when the tip moved, the committed diff since
+    /// `round_start_sha`), and only then are the worktree and its branch hard-restored to
+    /// `round_start_sha` - so the caller's OWN later reads of `dir` (the `reviewed` stamp,
+    /// the reject arm's `failed_sha`, and eventually `integrate_and_emit`) all address
+    /// exactly the sha the round judged, never the residue. This never charges a
+    /// remediation attempt: it is infrastructure hygiene, not a gate failure or a review
+    /// verdict, so it never touches the caller's `attempts` counter - it only ever returns
+    /// `Err` for a genuine infra fault (e.g. `ensure_present` failing to restore a deleted
+    /// worktree), exactly like every other guard in this function.
+    fn guard_review_round_tree(
+        &self,
+        wt: Option<&Worktree>,
+        dir: &str,
+        unit: &str,
+        round_start_sha: &str,
+    ) -> Result<(), Error> {
+        let Some(w) = wt else {
+            // Repo-less / `isolation: none` unit: no worktree to guard.
+            return Ok(());
+        };
+        if round_start_sha.is_empty() {
+            // No resolvable sha at round start (mirrors every other empty-sha no-op in this
+            // file) - nothing to compare against, nothing to restore to.
+            return Ok(());
+        }
+        w.ensure_present()?;
+        let dirty = w.changed_files()?;
+        let tip = worktree::head_sha_of(dir);
+        let moved = !tip.is_empty() && tip != round_start_sha;
+        if dirty.is_empty() && !moved {
+            return Ok(());
+        }
+        let mut residue = dirty;
+        if moved {
+            residue.extend(w.committed_diff_names(round_start_sha).unwrap_or_default());
+            residue.sort();
+            residue.dedup();
+        }
+        let where_at = if moved {
+            format!("its tip moved to {tip}")
+        } else {
+            "it is dirty".to_string()
+        };
+        self.emit_lesson(
+            wt,
+            unit,
+            &format!(
+                "a review round left unit {unit:?}'s worktree as residue after judging \
+                 {round_start_sha} - {where_at}: {}. Restored to the reviewed sha; no \
+                 attempt charged.",
+                residue.join(", ")
+            ),
+        );
+        w.restore_reviewed_sha(round_start_sha)?;
+        Ok(())
     }
 
     /// The SDET-author build seam (spec 33): spawn the operator-provided `sdet-author`
@@ -6715,7 +6801,15 @@ impl RunCtx<'_> {
         // here (not discarded). `run_reviewer` guarantees it is non-degenerate before it
         // is judged (Gap 18): an empty/whitespace-only verdict is an infrastructure fault
         // that respawns or halts, never a silent reject.
-        let prompt = self.build_prompt(st);
+        //
+        // The adjudicator never calls `build_review_prompt` (it emits a verdict, not a
+        // ReviewFinding, so the finding-recording half of `review_protocol` would be
+        // noise) but it DOES run `isolation: false` in the unit's own real worktree
+        // exactly like a lens or the adversary, and its own spawn is the historically
+        // riskiest one (spec 64 c3's own worktree-deletion tests are all adjudicator-
+        // driven) - so it carries the SAME worktree-discipline sentence those two tiers
+        // get via `review_protocol` (spec 103, criterion 6), appended directly here.
+        let prompt = format!("{}{REVIEWER_WORKTREE_DISCIPLINE}", self.build_prompt(st));
         let result = self.run_reviewer(
             st,
             "adjudicator",
@@ -11107,9 +11201,20 @@ pub(crate) fn review_protocol(actor: &str) -> String {
         "Record each review finding you raise by calling the rigger_emit tool the moment you raise it, with type \"ReviewFinding\" and data:\n\
          {{\"id\":\"<short-id>\",\"by\":\"{actor}\",\"summary\":\"<one line>\",\"about\":[\"<file>\"]}}\n\
          The `by` field ATTRIBUTES the finding to you - keep it EXACTLY as \"{actor}\" so the review-quality metrics can measure your findings' survival even when you run out-of-process (where the conductor stamps no actor for you). \
-         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it."
+         This writes the finding to the shared context graph live, so the adversary, the adjudicator, and your fellow reviewers see it immediately (via grounding and rigger_peers) and address or refute it.{REVIEWER_WORKTREE_DISCIPLINE}"
     )
 }
+
+/// A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): the ONE sentence
+/// every review-tier prompt carries, spelling out in prose what [`RunCtx::
+/// guard_review_round_tree`] enforces at runtime - a reviewer that behaves like an
+/// implementer and edits the unit's own worktree leaves exactly the residue that guard
+/// exists to catch, name in a lesson, and restore. Shared by [`review_protocol`] (the lens
+/// and adversary tiers, which also record findings through it) and [`RunCtx::
+/// run_adjudicator`] (whose stdout is a verdict, never a finding, so its prompt never
+/// reaches `review_protocol` at all) - ONE string, so all three tiers carry identical
+/// wording rather than three hand-copied near-duplicates.
+const REVIEWER_WORKTREE_DISCIPLINE: &str = " Never write to this unit's own worktree - it is the tree being judged, not yours to edit. To reproduce a suspected failure, create your own throwaway scratch worktree and run it there; leave the unit's worktree exactly as you found it.";
 
 /// Gap-15 prompt budget: the most-recent governing decisions kept VERBATIM in a
 /// prompt. Older ones collapse into a single visible elision note. The store keeps
@@ -31232,6 +31337,207 @@ mod tests {
              adjudicator's own spawn deleted the tree as its side effect - it must be \
              stamped AFTER a re-assert restores it, not a snapshot taken during the \
              deletion window"
+        );
+    }
+
+    #[test]
+    fn a_review_rounds_dirty_residue_is_restored_named_and_never_merged() {
+        // Spec 103, criterion 6 (A REVIEW ROUND LEAVES THE TREE IT REVIEWED): the review
+        // protocol tells the adjudicator to reproduce any suspected failure in its OWN
+        // scratch worktree, never the unit's - so this drives it to break that protocol
+        // and drop an UNTRACKED file into the unit's own worktree as its side effect while
+        // still approving, then proves the residue never reaches integration: it is named
+        // in a lesson, the worktree is restored to the sha the round actually judged, and
+        // the `reviewed` stamp carries THAT sha - never a later read that could pick up
+        // the residue.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            write_file_by_agent: HashMap::from([(
+                "judge".to_string(),
+                "reviewer-residue.txt".to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("judge"),
+            "premise: the adjudicator must have run, or this test proves nothing"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let verified_sha = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            })
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+            .unwrap_or_default();
+        assert_eq!(
+            verified_sha.len(),
+            40,
+            "premise: the verified stamp must carry a real sha - the sha the review round \
+             actually judged, before the adjudicator's own residue: {verified_sha:?}"
+        );
+
+        let reviewed_sha = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+            })
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+            .unwrap_or_default();
+        assert_eq!(
+            reviewed_sha, verified_sha,
+            "the `reviewed` stamp must carry the sha the round actually JUDGED, never a \
+             later read that could pick up the adjudicator's own dirty residue: \
+             reviewed={reviewed_sha:?} verified={verified_sha:?}"
+        );
+
+        let lesson = events
+            .iter()
+            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .expect("the residue must be named in a lesson, never silently discarded");
+        assert!(
+            String::from_utf8_lossy(&lesson.data).contains("reviewer-residue.txt"),
+            "the lesson must name the residue path: {:?}",
+            String::from_utf8_lossy(&lesson.data)
+        );
+
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "the residue must charge NO remediation attempt - the round's own verdict \
+             (approve) is the only outcome ever recorded, never an extra UnitFailed"
+        );
+
+        assert!(
+            Path::new(&repo_path).join("work.rs").exists(),
+            "the implementer's real, reviewed work must still land"
+        );
+        assert!(
+            !Path::new(&repo_path).join("reviewer-residue.txt").exists(),
+            "the adjudicator's own residue must NEVER reach integration - the round \
+             restores the worktree to the sha it judged before merging"
+        );
+    }
+
+    #[test]
+    fn a_review_rounds_moved_tip_is_restored_to_the_reviewed_sha_before_merging() {
+        // Spec 103, criterion 6, the second residue shape: a reviewer whose side effect
+        // COMMITS (not merely dirties) moves the unit branch's tip. This drives the
+        // adjudicator to add a real commit on top of the reviewed tip while still
+        // approving, and proves the round restores the branch to the sha it judged before
+        // integration ever runs - so the adjudicator's own extra commit never merges.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            output_by_agent: HashMap::from([(
+                "judge".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            commits_by_agent: HashMap::from([(
+                "judge".to_string(),
+                vec![("tip-moved-residue.rs".to_string(), "junk\n".to_string())],
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("judge"),
+            "premise: the adjudicator must have run, or this test proves nothing"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let lesson = events
+            .iter()
+            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .expect("the moved tip must be named in a lesson, never silently discarded");
+        assert!(
+            String::from_utf8_lossy(&lesson.data).contains("tip-moved-residue.rs"),
+            "the lesson must name the committed residue path: {:?}",
+            String::from_utf8_lossy(&lesson.data)
+        );
+
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "a moved tip charges NO remediation attempt - infrastructure hygiene, not a \
+             gate failure or a review verdict"
+        );
+
+        assert!(
+            Path::new(&repo_path).join("work.rs").exists(),
+            "the implementer's real, reviewed work must still land"
+        );
+        assert!(
+            !Path::new(&repo_path).join("tip-moved-residue.rs").exists(),
+            "the adjudicator's own extra commit must NEVER reach integration - the round \
+             resets the branch to the sha it judged before merging"
         );
     }
 

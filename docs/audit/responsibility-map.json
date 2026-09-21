@@ -733,7 +733,15 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "f7e2c9f635e8b372"
+    "content_hash": "85a17a5834464324"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "guard_review_round_tree",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "1d77b2dddada764b"
   },
   {
     "file": "src/conductor.rs",
@@ -885,7 +893,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "d8f0f5cc176fb6b1"
+    "content_hash": "93a5d7cf40486d38"
   },
   {
     "file": "src/conductor.rs",
@@ -1525,7 +1533,7 @@
     "is_test": false,
     "proposed_module": "conductor::review",
     "reason": "name contains \"review\" (review orchestration); grouped under `conductor::review`.",
-    "content_hash": "946a7d6857716598"
+    "content_hash": "9625e1e0403b8cd4"
   },
   {
     "file": "src/conductor.rs",
@@ -4470,6 +4478,22 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "53d36d7be7dc19a6"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "a_review_rounds_dirty_residue_is_restored_named_and_never_merged",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "cc7f5c0c1cb8cf43"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "a_review_rounds_moved_tip_is_restored_to_the_reviewed_sha_before_merging",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "3d9bd87753f147b2"
   },
   {
     "file": "src/conductor.rs",

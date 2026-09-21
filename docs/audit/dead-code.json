@@ -2268,6 +2268,14 @@
       {
         "file": "src/worktree.rs",
         "content_hash": "fab60fab5f09efe3"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "5d6d3db4ae2ef1ac"
+      },
+      {
+        "file": "src/worktree.rs",
+        "content_hash": "dc00505c458a3b7e"
       }
     ],
     "disposition": "delete",
