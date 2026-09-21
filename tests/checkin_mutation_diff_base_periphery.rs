@@ -18,8 +18,8 @@
 //! just a human's re-reading of the YAML.
 //!
 //! A THIRD, independent defect shape once lived in the same shipped command:
-//! `GateSelection::PostMerge` (spec 12, unit 5) re-runs the checkin stage's whole gate
-//! list - `mutation` included - against `self.deps.repo`, which owns no per-unit
+//! `GateSelection::PostMerge` (spec 12, unit 5) re-ran the checkin stage's whole gate
+//! list - `mutation` included - against `self.deps.repo`, which owned no per-unit
 //! worktree of its own, so this command's `$MUTANTS` used to arrive empty there and
 //! crash `mkdir -p ""` outright, every single postmerge re-gate, deterministically
 //! (first observed live on the spec-89 run's checkin stage: event-store position
@@ -28,10 +28,16 @@
 //! the unit's own worktree name whenever the sibling-of-`dir` derivation every other
 //! selection uses comes back empty, so this command's own `$MUTANTS` is never left
 //! empty and needs no gate-side guard - covered by conductor.rs's own
-//! `the_post_merge_re_gate_gets_the_units_mutants_root_though_it_runs_in_the_repo` test,
+//! `the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo` test,
 //! not this file (an earlier config-only skip-when-empty guard here traded away real
 //! postmerge coverage - the merged tree a batch-mate's own pre-merge gate can miss - for
-//! a crash workaround, and was retired once the real fix landed).
+//! a crash workaround, and was retired once the real fix landed). Spec 103 criterion 7
+//! later moved the re-gate itself off `self.deps.repo` entirely, into its own throwaway
+//! scratch-rooted worktree of the landed sha (`RunCtx::integrate_and_emit`), so this
+//! `$MUTANTS`-root derivation is now defense in depth rather than the only guard against
+//! an empty root; `tests/postmerge_gate_modified_file_periphery.rs` covers the half of
+//! that criterion - a locally modified tracked file in the operator's checkout - this
+//! file's own scope never reached.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
