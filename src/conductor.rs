@@ -1048,6 +1048,33 @@ fn conflict_regenerate_key(unit: &str, attempt: u32) -> String {
     format!("{unit}#{attempt}")
 }
 
+/// The common parse-and-match prefix every spec 88 criterion 1 round 4 TABLE row fold
+/// shares: a `TYPE_UNIT_STATUS` marker whose own `status` field, `(unit, attempt)` key
+/// ([`conflict_regenerate_key`]), and `pass` (recovered from the event's own `replay_key`
+/// meta - never a second evidence field, so a fold and the live writer that wrote it can
+/// never drift onto two different sources for the same number) this hands back alongside
+/// the event's full parsed JSON body, for the caller to pull its own row-specific fields
+/// (typically `evidence`) from. Factored out so [`pending_landing_from_log`] and
+/// [`landed_from_log`] share ONE JSON walk instead of two near-identical copies - the
+/// project's own simplification audit flags the duplication otherwise.
+fn integrate_row(e: &Event) -> Option<(String, String, u32, Value)> {
+    if e.type_ != ledger::TYPE_UNIT_STATUS {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&e.data).ok()?;
+    let status = v.get("status").and_then(Value::as_str)?.to_string();
+    let id = v.get("id").and_then(Value::as_str)?;
+    let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let key = conflict_regenerate_key(id, attempt);
+    let pass = e
+        .meta
+        .get("replay_key")
+        .and_then(|k| k.rsplit_once('~'))
+        .and_then(|(_, p)| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((key, status, pass, v))
+}
+
 /// Re-derive [`RunCtx::pending_landing`]: per `(unit, attempt)` ([`conflict_regenerate_key`]'s
 /// shape), the `(pass, unit_tip, run_tip)` of the LATEST [`STATUS_INTEGRATE_LANDING_INTENT`]
 /// (row 4's before-record) not yet matched by a [`STATUS_INTEGRATE_LANDED`] (its after-
@@ -1060,27 +1087,13 @@ fn conflict_regenerate_key(unit: &str, attempt: u32) -> String {
 /// from a stage that never had anything to land at all. `run_tip` (the OLDER base this
 /// landing merged FROM) is carried so a resumed `integrate_and_emit` can recompute the
 /// files this landing touched via [`Worktree::committed_diff_names`] against it, since the
-/// CURRENT base has already absorbed them. `pass` is recovered from the recording event's
-/// own `replay_key` meta (`{unit}/landing-intent#{attempt}~{pass}`, the exact key
-/// [`RunCtx::record_landing_intent`] already stamps) rather than a second field, so the fold
-/// and the live writer can never drift onto two different sources for the same number.
+/// CURRENT base has already absorbed them.
 fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, String, String)> {
     let mut pending: HashMap<String, (u32, String, String)> = HashMap::new();
     for e in prior_events {
-        if e.type_ != ledger::TYPE_UNIT_STATUS {
-            continue;
-        }
-        let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+        let Some((key, status, pass, v)) = integrate_row(e) else {
             continue;
         };
-        let Some(status) = v.get("status").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(id) = v.get("id").and_then(Value::as_str) else {
-            continue;
-        };
-        let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0) as u32;
-        let key = conflict_regenerate_key(id, attempt);
         if status == STATUS_INTEGRATE_LANDING_INTENT {
             let Some(evidence) = v.get("evidence") else {
                 continue;
@@ -1091,18 +1104,52 @@ fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, Str
             ) else {
                 continue;
             };
-            let pass = e
-                .meta
-                .get("replay_key")
-                .and_then(|k| k.rsplit_once('~'))
-                .and_then(|(_, p)| p.parse::<u32>().ok())
-                .unwrap_or(0);
             pending.insert(key, (pass, unit_tip.to_string(), run_tip.to_string()));
         } else if status == STATUS_INTEGRATE_LANDED {
             pending.remove(&key);
         }
     }
     pending
+}
+
+/// Re-derive [`RunCtx::landed`] (spec 103, criterion 3 - RE-GATE WHAT LANDED): per
+/// `(unit, attempt)`, the `(pass, sha, pre_merge)` of the LATEST durably-recorded
+/// `integrate-landed` row - [`RunCtx::pending_landing`]'s own after-record, kept here
+/// too because the moment it closes a pending landing-intent, [`pending_landing_from_log`]
+/// stops seeing that landing at all. A resumed [`integrate_and_emit`](RunCtx::integrate_and_emit)
+/// call whose `files` read empty and whose `pending_landing_for` found nothing PENDING
+/// still cannot tell "genuinely nothing to land" apart from "landed for real, but the
+/// post-merge re-gate that must follow never completed" from git state alone - this map
+/// is the one durable fact that can: a unit with an entry here landed something real and
+/// must still be re-gated on resume; a unit with none here never landed anything at all.
+/// Never removed once inserted (unlike `pending_landing`) - there is no "un-landing"
+/// event, and a later attempt keys its own landing under a different `attempt`, never
+/// retracting an earlier one's row.
+fn landed_from_log(prior_events: &[Event]) -> HashMap<String, (u32, String, String)> {
+    let mut landed: HashMap<String, (u32, String, String)> = HashMap::new();
+    for e in prior_events {
+        let Some((key, status, pass, v)) = integrate_row(e) else {
+            continue;
+        };
+        if status != STATUS_INTEGRATE_LANDED {
+            continue;
+        }
+        // Older logs recorded this row before `pre_merge` rode along in its evidence
+        // (spec 103, criterion 3) - such a row cannot be resolved by this fold, so it
+        // is skipped rather than guessed; a unit whose ONLY landed row predates the fix
+        // keeps taking the true no-op short circuit it always did, no regression.
+        let Some(evidence) = v.get("evidence") else {
+            continue;
+        };
+        let (Some(sha), Some(pre_merge)) = (
+            evidence.get("sha").and_then(Value::as_str),
+            evidence.get("pre_merge").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        landed.insert(key, (pass, sha.to_string(), pre_merge.to_string()));
+    }
+    landed
 }
 
 /// Re-derive [`RunCtx::integrate_attempted`]: the `(unit, attempt)` keys for which `prior_events`
@@ -1912,6 +1959,10 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // with no matching landed record yet - `Worktree::land` may have already fast-forwarded
     // the run branch onto the unit's own tip before this process crashed.
     let pending_landing = pending_landing_from_log(prior_events);
+    // Spec 103, criterion 3 (RE-GATE WHAT LANDED): every durably-recorded landing, kept
+    // even after `pending_landing` stops tracking it, so a resumed call can still tell a
+    // real, already-landed merge apart from a unit that never landed anything at all.
+    let landed = landed_from_log(prior_events);
 
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
@@ -1975,6 +2026,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         conflict_regenerate_pending: Mutex::new(conflict_regenerate_pending),
         integrate_attempted,
         pending_landing: Mutex::new(pending_landing),
+        landed: Mutex::new(landed),
         // The failure taxonomy is built ONCE here from the same validated config the run
         // loads (its regexes were compiled and classes checked at `Config::validate`), so
         // every gate-failure classification this run makes reads one rule set.
@@ -2831,6 +2883,18 @@ struct RunCtx<'a> {
     /// contribute. `run_tip` lets the resumed call recompute the actual touched-files set via
     /// [`Worktree::committed_diff_names`] against the OLDER base this landing merged from.
     pending_landing: Mutex<HashMap<String, (u32, String, String)>>,
+    /// Every durably-recorded `integrate-landed` row (spec 103, criterion 3 - RE-GATE WHAT
+    /// LANDED), per `(unit, attempt)`: `(pass, sha, pre_merge)`. Seeded ONCE at run start
+    /// from the prior log ([`landed_from_log`]) and never removed - unlike
+    /// [`pending_landing`](RunCtx::pending_landing), which stops tracking a landing the
+    /// instant it closes. Consulted at the TOP of
+    /// [`integrate_and_emit`](RunCtx::integrate_and_emit) exactly when `pending_landing_for`
+    /// finds nothing pending and nothing is owed: that combination alone cannot distinguish
+    /// "never landed anything" from "landed for real, crashed before the post-merge re-gate
+    /// that must follow it ever ran" - this map is the durable fact that can, so a real
+    /// merge's re-gate still runs on resume instead of the unit silently reaching
+    /// `UnitIntegrated` ungated.
+    landed: Mutex<HashMap<String, (u32, String, String)>>,
     /// The declarative failure taxonomy (spec 10, unit 2): the SINGLE authority the
     /// conductor folds its gate-failure classification from, built once from
     /// `defaults.failure_rules` (or the shipped spec-07-preserving default when none are
@@ -2889,6 +2953,7 @@ impl<'a> RunCtx<'a> {
             conflict_regenerate_pending: Mutex::new(HashMap::new()),
             integrate_attempted: HashSet::new(),
             pending_landing: Mutex::new(HashMap::new()),
+            landed: Mutex::new(HashMap::new()),
             // The pure-helper test context builds no gates through the taxonomy; the
             // shipped default is a harmless placeholder. The gate-behavior tests drive the
             // full `run`, which builds the taxonomy from the config under test.
@@ -8330,15 +8395,38 @@ impl RunCtx<'_> {
                     // further to merge - so check it before declaring the unit done, exactly
                     // mirroring the merge/land loop's own post-land owed-check below.
                     if !self.catch_up_owed_regeneration(wt, &st.name, attempt)? {
-                        return Ok(Integration::default());
+                        // Spec 103, criterion 3 (RE-GATE WHAT LANDED): row 4 fully closed
+                        // and nothing owed is NOT by itself proof there is nothing left to
+                        // GATE. `pending_landing_for` stops seeing a landing the instant
+                        // `record_landed` closes it - so a crash between that append and
+                        // the post-merge re-gate which must follow it (or during that
+                        // re-gate) leaves the identical "nothing new" git-state signature
+                        // as a unit that never had anything to land at all, and this arm
+                        // alone cannot tell the two apart. Consult the durably-recorded
+                        // LANDED row itself (never process state, never a re-derived git
+                        // heuristic): when one exists, resolve `commit`/`pre_merge` from
+                        // it and fall into the SAME shared finalization the crash-before-
+                        // `record_landed` path below uses, so the post-merge gate still
+                        // runs for real (or content-cache-hits, exactly as a live pass
+                        // would) before `UnitIntegrated` is ever emitted. Only a unit with
+                        // NO landed row at all - genuinely never landed anything - keeps
+                        // the true no-op short circuit.
+                        match self.landed_sha_for(&st.name, attempt) {
+                            Some((landed_pass, sha, pre_merge)) => {
+                                files = wt.committed_diff_names(&pre_merge)?;
+                                already_landed = Some((landed_pass, sha, pre_merge));
+                            }
+                            None => return Ok(Integration::default()),
+                        }
+                    } else {
+                        // The catch-up made a real regenerate commit on the worktree's own
+                        // branch, still unlanded - recompute `files` and fall through to the
+                        // ordinary merge/land loop below (`already_landed` stays `None`),
+                        // which will merge and land this commit for real (a trivial fast-
+                        // forward, since nothing else changed base-side) and re-check owed
+                        // once more (now empty) before breaking.
+                        files = wt.changed_since_base()?;
                     }
-                    // The catch-up made a real regenerate commit on the worktree's own
-                    // branch, still unlanded - recompute `files` and fall through to the
-                    // ordinary merge/land loop below (`already_landed` stays `None`), which
-                    // will merge and land this commit for real (a trivial fast-forward,
-                    // since nothing else changed base-side) and re-check owed once more
-                    // (now empty) before breaking.
-                    files = wt.changed_since_base()?;
                 }
                 Some((pass, unit_tip, run_tip)) => {
                     // Recompute the ACTUAL files this already-landed merge touched from the
@@ -8365,7 +8453,7 @@ impl RunCtx<'_> {
                     if self.regenerate_pending_for(&st.name, attempt).is_empty() {
                         already_landed = Some((pass, unit_tip, run_tip));
                     } else {
-                        self.record_landed(&st.name, attempt, pass, &unit_tip)?;
+                        self.record_landed(&st.name, attempt, pass, &unit_tip, &run_tip)?;
                         self.clear_pending_landing(&st.name, attempt);
                         self.catch_up_owed_regeneration(wt, &st.name, attempt)?;
                         files = wt.changed_since_base()?;
@@ -8433,7 +8521,7 @@ impl RunCtx<'_> {
         // `None`, and this loop runs for real - it durably re-records row 4 itself once
         // `land` actually succeeds, same as any other resumed pass.
         let (commit, pre_merge) = if let Some((landed_pass, unit_tip, run_tip)) = already_landed {
-            self.record_landed(&st.name, attempt, landed_pass, &unit_tip)?;
+            self.record_landed(&st.name, attempt, landed_pass, &unit_tip, &run_tip)?;
             self.clear_pending_landing(&st.name, attempt);
             (unit_tip, run_tip)
         } else {
@@ -8505,7 +8593,7 @@ impl RunCtx<'_> {
                             }
                             continue;
                         }
-                        self.record_landed(&st.name, attempt, pass, &c)?;
+                        self.record_landed(&st.name, attempt, pass, &c, &pre_merge)?;
                         // Spec 88, criterion 1 round 2 (adv-u88c1r1-crash-resume-permanently-
                         // skips-regeneration): a MIXED conflict's source side can clear (the
                         // implementer's own commit lands, bundling in the ALREADY-staged
@@ -9218,6 +9306,19 @@ impl RunCtx<'_> {
             .remove(&conflict_regenerate_key(unit, attempt));
     }
 
+    /// The `(pass, sha, pre_merge)` of `unit`'s durably-recorded `integrate-landed` row at
+    /// `attempt`, if any (spec 103, criterion 3 - RE-GATE WHAT LANDED; see [`landed_from_log`]'s
+    /// own doc for the crash window this closes: a resumed call whose landing-intent is
+    /// already matched, closed, and gone from [`Self::pending_landing_for`] can still recover
+    /// what actually landed from here, never guessing from live git state alone).
+    fn landed_sha_for(&self, unit: &str, attempt: u32) -> Option<(u32, String, String)> {
+        self.landed
+            .lock()
+            .unwrap()
+            .get(&conflict_regenerate_key(unit, attempt))
+            .cloned()
+    }
+
     /// [`Self::regenerate_pending_for`] unioned with `fresh` (this round's own regenerable
     /// partition) - the full set [`Self::regenerate_conflicted_paths`] must cover once a
     /// mixed conflict's source side finally clears, so a path a PRIOR round staged (whose
@@ -9411,14 +9512,26 @@ impl RunCtx<'_> {
 
     /// Durably record (spec 88, criterion 1 round 4, TABLE row 4's after-record, "the landed
     /// sha") that `sha` landed on the run branch for `unit`'s `attempt`/`pass` - the mutation
-    /// [`Self::record_landing_intent`]'s before-record brackets.
-    fn record_landed(&self, unit: &str, attempt: u32, pass: u32, sha: &str) -> Result<(), Error> {
+    /// [`Self::record_landing_intent`]'s before-record brackets. `pre_merge` (spec 103,
+    /// criterion 3) is the run branch's tip BEFORE this landing - the SAME value the paired
+    /// `integrate-landing-intent` recorded as `run_tip` - carried here too so a LATER resume,
+    /// after `pending_landing_for` has stopped seeing this landing (matched, no longer
+    /// pending), can still recover both the landed sha AND the pre-landing tip from this row
+    /// alone via [`Self::landed_sha_for`], never from live process state.
+    fn record_landed(
+        &self,
+        unit: &str,
+        attempt: u32,
+        pass: u32,
+        sha: &str,
+        pre_merge: &str,
+    ) -> Result<(), Error> {
         self.record_integrate_row(
             &format!("{unit}/landed#{attempt}~{pass}"),
             STATUS_INTEGRATE_LANDED,
             unit,
             attempt,
-            json!({"sha": sha}),
+            json!({"sha": sha, "pre_merge": pre_merge}),
         )
     }
 
@@ -22816,6 +22929,7 @@ mod tests {
             conflict_regenerate_pending: Mutex::new(HashMap::new()),
             integrate_attempted: HashSet::new(),
             pending_landing: Mutex::new(HashMap::new()),
+            landed: Mutex::new(HashMap::new()),
             taxonomy: failure::Taxonomy::default(),
         };
 
@@ -29842,6 +29956,7 @@ mod tests {
             conflict_regenerate_pending: Mutex::new(HashMap::new()),
             integrate_attempted: HashSet::new(),
             pending_landing: Mutex::new(HashMap::new()),
+            landed: Mutex::new(HashMap::new()),
             taxonomy: failure::Taxonomy::default(),
         };
         ctx.record_gate("ok", gate::Kind::Core, GateRatchet::CleanPass, "silent");
@@ -31567,6 +31682,154 @@ mod tests {
             json!("integrate-conflict"),
             "a resumed-reviewed merge break must be stamped 'integrate-conflict', not a \
              plain gate cause: {v:?}"
+        );
+    }
+
+    #[test]
+    fn a_resumed_landed_but_ungated_unit_regates_the_landed_tree() {
+        // Spec 103, criterion 3 (RE-GATE WHAT LANDED): a prior window's `integrate_and_emit`
+        // already fast-forwarded the run branch onto the unit's own tip and durably recorded
+        // the landing (`record_landed`, the `integrate-landed` row), but crashed before the
+        // post-merge re-gate that must follow it ever ran. On resume, `changed_since_base`
+        // reads empty (the content is already on the run branch) and `pending_landing_for`
+        // finds nothing PENDING (the landed row already exists, matching whatever intent
+        // preceded it) - so the resumed call must not mistake "nothing left to land" for
+        // "nothing left to gate": it must resolve `commit` from the durably-recorded landed
+        // sha and actually run the post-merge gate before ever emitting `UnitIntegrated`,
+        // never take the true-no-op short circuit a unit that genuinely landed nothing takes.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let base_sha = git_head(&repo_path);
+
+        // The prior window's approved diff, on the unit's own durable branch.
+        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+        let branch = unit_branch("s");
+        let unit_sha = {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(["rev-parse", &branch])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        // Simulate `Worktree::land`'s fast-forward already having happened: the checked-out
+        // repo (the run branch) is ALREADY at the unit's own tip.
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["merge", "--ff-only", &branch])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "test setup: the fast-forward must succeed: {out:?}"
+        );
+        assert_eq!(
+            git_head(&repo_path),
+            unit_sha,
+            "test setup premise: the run branch must already carry the unit's landed tip"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(&json!({"id": "s", "agent": "worker", "branch": branch}))
+                        .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+                // The durably-recorded LANDED row a real prior process's `record_landed`
+                // wrote right after `Worktree::land` succeeded - before it ever reached the
+                // post-merge re-gate that must follow it.
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({
+                        "id": "s",
+                        "status": "integrate-landed",
+                        "attempt": 0,
+                        "evidence": {"sha": unit_sha, "pre_merge": base_sha},
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_REPLAY_KEY, "s/landed#0~0"),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            !driver.spawned("worker") && !driver.spawned("lens") && !driver.spawned("judge"),
+            "premise: an already-approved, already-landed unit must resume straight through \
+             integrate with no lifecycle spawns, or this test is not exercising the resumed \
+             already-landed path"
+        );
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let postmerge_key = postmerge_gate_verdict_key("s", 0, "ok");
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&postmerge_key)),
+            "a real-merge landing recorded before this resume must still run its post-merge \
+             re-gate for real, keyed {postmerge_key:?} - never skip it as if nothing had \
+             landed"
+        );
+
+        let integrated = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+            .expect("the resumed already-landed unit must emit UnitIntegrated");
+        let v: Value = serde_json::from_slice(&integrated.data).unwrap();
+        assert_eq!(
+            v["commit"],
+            json!(unit_sha),
+            "UnitIntegrated must carry the actual landed sha, never an empty/stale commit: \
+             {v:?}"
         );
     }
 

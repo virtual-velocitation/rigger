@@ -209,11 +209,27 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "integrate_row",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "5bef3fb863a2f6fc"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "pending_landing_from_log",
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"from_\" (conversion helper); grouped under `conductor::support`.",
-    "content_hash": "9e4e5eb2d690a6f4"
+    "content_hash": "1b486f947ac25ed4"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "landed_from_log",
+    "is_test": false,
+    "proposed_module": "conductor::support",
+    "reason": "name contains \"from_\" (conversion helper); grouped under `conductor::support`.",
+    "content_hash": "c8fd38ba41528178"
   },
   {
     "file": "src/conductor.rs",
@@ -357,7 +373,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "5847651874c89c39"
+    "content_hash": "39aa33c7aeb85b1d"
   },
   {
     "file": "src/conductor.rs",
@@ -381,7 +397,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "618f1c35e6f8a6b0"
+    "content_hash": "a85eb78bb4cea4bd"
   },
   {
     "file": "src/conductor.rs",
@@ -1029,7 +1045,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "1181dac83c69a86d"
+    "content_hash": "f682be83456a02ef"
   },
   {
     "file": "src/conductor.rs",
@@ -1137,6 +1153,14 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "landed_sha_for",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "bd8be5a15c00a864"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "union_regenerate_pending",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
@@ -1197,7 +1221,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "92f08a73b8ab491f"
+    "content_hash": "d13888d9081ae652"
   },
   {
     "file": "src/conductor.rs",
@@ -3373,7 +3397,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "19da11b10afe51d8"
+    "content_hash": "8ecbd293fb1e78df"
   },
   {
     "file": "src/conductor.rs",
@@ -4301,7 +4325,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ad9d8d8123effed6"
+    "content_hash": "fa7ad5869c0e735b"
   },
   {
     "file": "src/conductor.rs",
@@ -4494,6 +4518,14 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "314088fc002a8dd2"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "a_resumed_landed_but_ungated_unit_regates_the_landed_tree",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "2bc595fafa7fd9e1"
   },
   {
     "file": "src/conductor.rs",
