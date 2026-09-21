@@ -70,6 +70,14 @@ pub enum LandOutcome {
     /// The run branch moved after the worktree merge, so a fast-forward was impossible; the
     /// repo is untouched. Merge the new tip into the worktree and land again.
     TipMoved,
+    /// The fast-forward was refused because LOCAL content in the repo checkout - untracked,
+    /// or a tracked file dirtied but never committed - sits at one of these paths and would
+    /// be clobbered (spec 103, criterion 8: A REFUSED LANDING NAMES ITS PATHS). The repo is
+    /// untouched, exactly like [`Self::TipMoved`]; unlike a genuine content conflict this
+    /// never touches the unit's own branch either - the paths are sorted and deduplicated.
+    /// The caller decides what the blocked local content means (operator debris to clear,
+    /// or content some unit branch already carries, so nothing is actually lost).
+    Blocked(Vec<String>),
 }
 
 /// The outcome of [`Worktree::merge_into_worktree`] (spec 88, criterion 1 round 4, TABLE row
@@ -940,6 +948,13 @@ impl Worktree {
             {
                 Ok(LandOutcome::TipMoved)
             }
+            // Git's two local-changes refusals ("The following untracked working tree files
+            // would be overwritten by merge" and "Your local changes to the following files
+            // would be overwritten by merge") share this one tail wording and the same
+            // tab-indented path-list shape that follows it - see `parse_blocking_paths`.
+            Err(out) if out.contains("would be overwritten by merge") => {
+                Ok(LandOutcome::Blocked(parse_blocking_paths(&out)))
+            }
             Err(out) => Err(Error(format!("git merge --ff-only {}: {out}", self.branch))),
         }
     }
@@ -1422,6 +1437,77 @@ pub fn ref_resolves(repo: &str, r: &str) -> bool {
 /// an unresolvable ref every path reads as absent.
 pub fn path_in_ref(repo: &str, base_ref: &str, path: &str) -> bool {
     run_git(repo, &["cat-file", "-e", &format!("{base_ref}:{path}")]).is_ok()
+}
+
+/// Parse the blocking-path list out of git's own local-changes refusal text (see
+/// [`Worktree::land`]'s [`LandOutcome::Blocked`]). Both refusal wordings share the same
+/// shape: one header line ending "would be overwritten by merge:", followed by one
+/// tab-indented path per line, up to the first line that is not tab-indented (git's
+/// "Please ..." follow-up). Sorted and deduplicated so a caller's report is deterministic
+/// regardless of git's own listing order; text carrying no such header names nothing.
+fn parse_blocking_paths(out: &str) -> Vec<String> {
+    let mut in_list = false;
+    let mut paths: Vec<String> = Vec::new();
+    for line in out.lines() {
+        if in_list {
+            match line.strip_prefix('\t') {
+                Some(path) => {
+                    paths.push(path.trim().to_string());
+                    continue;
+                }
+                None => in_list = false,
+            }
+        }
+        if line.trim_end().ends_with("would be overwritten by merge:") {
+            in_list = true;
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// The raw bytes `path` holds in the tree of `git_ref` within `repo`, or `None` when
+/// `git_ref` does not resolve or does not carry that path. Implemented as `git show
+/// <ref>:<path>`, reading ONLY its stdout - unlike the [`run_git`]/[`git`] primitives this
+/// module mostly builds on (which fold stdout and stderr together for diagnostics), a
+/// caller here wants a file's real content, never diagnostic text mixed into it. Used by the
+/// conductor's land-refused lesson (spec 103 criterion 8) to find any unit branch whose tip
+/// already carries byte-identical content at a path a refused landing was blocked by.
+pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["show", &format!("{git_ref}:{path}")])
+        .output()
+        .ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
+/// Every unit branch (`rigger/u/*`) currently present in `repo`, sorted for determinism.
+/// Used by the conductor's land-refused lesson (spec 103 criterion 8) to search every unit's
+/// branch - not just the currently-live/ready set - for one whose tip already carries the
+/// exact content a refused landing was blocked by, proof the blocked local content is not
+/// lost work.
+pub fn unit_branches(repo: &str) -> Vec<String> {
+    let out = match run_git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/heads/rigger/u/",
+        ],
+    ) {
+        Ok(out) => out,
+        Err(_) => return Vec::new(),
+    };
+    let mut branches: Vec<String> = out
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    branches.sort();
+    branches
 }
 
 /// The name of the branch currently checked out in `repo`, or None on a detached
@@ -2794,6 +2880,138 @@ mod tests {
             git(&repo_path, &["rev-parse", "HEAD"]).unwrap(),
             git(wt_path.to_str().unwrap(), &["rev-parse", "HEAD"]).unwrap(),
             "the run branch fast-forwarded to the unit branch"
+        );
+    }
+
+    #[test]
+    fn land_reports_untracked_blocking_paths_and_leaves_the_repo_untouched() {
+        // Spec 103 criterion 8 (A REFUSED LANDING NAMES ITS PATHS): a `git merge --ff-only`
+        // refusal because untracked local content in the repo checkout would be overwritten
+        // is a DISTINCT, recognized outcome - not the generic `Err` every other non-content
+        // git failure falls through to - so the caller (the conductor) can name the exact
+        // paths in its lesson instead of just relaying git's raw text.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(
+            &repo_path,
+            wt_path.to_str().unwrap(),
+            "rigger/land-blocked",
+            "",
+        )
+        .unwrap();
+        std::fs::write(wt_path.join("new.txt"), "unit work\n").unwrap();
+        wt.commit("rigger: unit work").unwrap();
+
+        // Untracked local content sits in the repo checkout at the exact path the unit's
+        // branch newly introduces - never committed, so `git status` in the repo never even
+        // names it as a change to reconcile.
+        std::fs::write(repo.path().join("new.txt"), "stray local content\n").unwrap();
+        let tip_before = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+
+        let paths = match wt.land().unwrap() {
+            LandOutcome::Blocked(paths) => paths,
+            other => panic!("expected Blocked(_), got {other:?}"),
+        };
+        assert_eq!(paths, vec!["new.txt".to_string()]);
+        assert!(
+            !repo.path().join(".git").join("MERGE_HEAD").exists(),
+            "a refused landing never leaves the repo mid-merge"
+        );
+        assert_eq!(
+            git(&repo_path, &["rev-parse", "HEAD"]).unwrap(),
+            tip_before,
+            "the run branch is untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("new.txt")).unwrap(),
+            "stray local content\n",
+            "the blocking local content itself is untouched"
+        );
+    }
+
+    #[test]
+    fn land_reports_locally_modified_tracked_blocking_paths() {
+        // The sibling shape of the untracked case above: a TRACKED file the repo checkout has
+        // dirtied (never committed) blocks the identical fast-forward with git's OTHER local-
+        // changes wording ("Your local changes to the following files..."). Both must resolve
+        // to the same `LandOutcome::Blocked` - the caller does not care which git wording fired.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        std::fs::write(repo.path().join("tracked.txt"), "base\n").unwrap();
+        git(&repo_path, &["add", "tracked.txt"]).unwrap();
+        git(&repo_path, &["commit", "-q", "-m", "add tracked.txt"]).unwrap();
+
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt = Worktree::create(
+            &repo_path,
+            wt_path.to_str().unwrap(),
+            "rigger/land-blocked-tracked",
+            "",
+        )
+        .unwrap();
+        std::fs::write(wt_path.join("tracked.txt"), "feature version\n").unwrap();
+        wt.commit("rigger: modify tracked.txt").unwrap();
+
+        std::fs::write(repo.path().join("tracked.txt"), "dirty local edit\n").unwrap();
+
+        let paths = match wt.land().unwrap() {
+            LandOutcome::Blocked(paths) => paths,
+            other => panic!("expected Blocked(_), got {other:?}"),
+        };
+        assert_eq!(paths, vec!["tracked.txt".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("tracked.txt")).unwrap(),
+            "dirty local edit\n",
+            "the blocking local edit itself is untouched"
+        );
+    }
+
+    #[test]
+    fn parse_blocking_paths_reads_every_tab_indented_line_sorted_and_deduped() {
+        let untracked = "error: The following untracked working tree files would be overwritten by merge:\n\tb.txt\n\ta.txt\nPlease move or remove them before you merge.\nAborting\n";
+        assert_eq!(
+            parse_blocking_paths(untracked),
+            vec!["a.txt".to_string(), "b.txt".to_string()]
+        );
+
+        let local_changes = "error: Your local changes to the following files would be overwritten by merge:\n\tc.txt\nPlease commit your changes or stash them before you merge.\nAborting\n";
+        assert_eq!(
+            parse_blocking_paths(local_changes),
+            vec!["c.txt".to_string()]
+        );
+
+        assert_eq!(
+            parse_blocking_paths("fatal: not a git repository\n"),
+            Vec::<String>::new(),
+            "text with no blocking-path header names nothing"
+        );
+    }
+
+    #[test]
+    fn blob_at_reads_committed_content_and_none_when_absent_or_unresolvable() {
+        let repo = init_repo();
+        let p = repo.path().to_str().unwrap();
+        std::fs::write(repo.path().join("f.txt"), "hello\n").unwrap();
+        run_git(p, &["add", "f.txt"]).unwrap();
+        run_git(p, &["commit", "-q", "-m", "add f.txt"]).unwrap();
+
+        assert_eq!(blob_at(p, "HEAD", "f.txt"), Some(b"hello\n".to_vec()));
+        assert_eq!(blob_at(p, "HEAD", "missing.txt"), None);
+        assert_eq!(blob_at(p, "no-such-ref", "f.txt"), None);
+    }
+
+    #[test]
+    fn unit_branches_lists_only_rigger_u_branches_sorted() {
+        let repo = init_repo();
+        let p = repo.path().to_str().unwrap();
+        for name in ["rigger/u/zeta", "rigger/u/alpha", "rigger/review/panel-0"] {
+            run_git(p, &["branch", name]).unwrap();
+        }
+        assert_eq!(
+            unit_branches(p),
+            vec!["rigger/u/alpha".to_string(), "rigger/u/zeta".to_string()],
+            "sorted, and never a non-unit branch like rigger/review/*"
         );
     }
 

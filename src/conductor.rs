@@ -1630,6 +1630,29 @@ fn is_plan_landing_failed(e: &Error) -> bool {
     e.0.contains(PLAN_LANDING_MARKER)
 }
 
+/// The sentinel a LAND-REFUSED-FOR-LOCAL-CHANGES failure ([`RunCtx::land_refused`], spec 103
+/// criterion 8: A REFUSED LANDING NAMES ITS PATHS) embeds in its error so
+/// [`run_wave`](RunCtx::run_wave) recognizes it through its own error wrapping and routes it
+/// through a DEDICATED arm - like [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`] and
+/// [`PLAN_LANDING_MARKER`] it uses control characters no real error text carries.
+/// `Worktree::land`'s `LandOutcome::Blocked` means `git merge --ff-only` in the RUN
+/// checkout refused because local content (untracked, or a tracked file dirtied but never
+/// committed) sits at one of the landed paths - a CONDUCTOR-SIDE fault around the run
+/// checkout's own local state, never a defect in the unit's own code: its branch is
+/// untouched and still fast-forwardable the moment the blocking paths are cleared. Routed
+/// exactly like the other conductor-side infra faults: the dedicated arm propagates the loud
+/// halt but emits NO per-unit lesson of its own (the specific, path-naming lesson is already
+/// recorded by [`RunCtx::land_refused`] itself, before this marker is even minted) and
+/// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`).
+const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
+
+/// Whether `e` is a land-refused-for-local-changes infra-fault HALT (see
+/// [`RunCtx::land_refused`]) rather than a real unit failure. Robust to callers' own error
+/// wrapping, since the [`LAND_REFUSED_MARKER`] survives as a substring.
+fn is_land_refused(e: &Error) -> bool {
+    e.0.contains(LAND_REFUSED_MARKER)
+}
+
 /// The conductor's injected ports.
 pub struct Deps<'a> {
     pub store: &'a dyn EventStore,
@@ -3832,6 +3855,20 @@ impl RunCtx<'_> {
                     Err(e) if is_plan_landing_failed(&e) => {
                         if first_err.is_none() {
                             first_err = Some(Error(e.0.replace(PLAN_LANDING_MARKER, "")));
+                        }
+                    }
+                    // A land-refused-for-local-changes infra fault (spec 103 criterion 8):
+                    // `Worktree::land` found local content in the run checkout blocking the
+                    // fast-forward, a CONDUCTOR-SIDE fault around the run checkout's own
+                    // state, never the unit's fault - its branch is untouched. Route it
+                    // through its OWN arm exactly like the other conductor-side infra faults
+                    // above: propagate the loud hard error (marker stripped) but emit NO
+                    // per-unit lesson here - [`Self::land_refused`] already recorded the
+                    // real, path-naming one before minting this marker - and charge no
+                    // attempt (no UnitFailed/UnitEscalated is written on this path).
+                    Err(e) if is_land_refused(&e) => {
+                        if first_err.is_none() {
+                            first_err = Some(Error(e.0.replace(LAND_REFUSED_MARKER, "")));
                         }
                     }
                     Err(e) => {
@@ -8482,28 +8519,44 @@ impl RunCtx<'_> {
                         // conflict's placeholder-staged version lands now; the real regeneration,
                         // if any, lands as a SEPARATE, later pass's own row 4).
                         self.record_landing_intent(&st.name, attempt, pass, &c, &pre_merge)?;
-                        if wt.land()? == worktree::LandOutcome::TipMoved {
-                            // The run branch moved after the worktree merge (an operator
-                            // commit, a sibling's landing): a fast-forward is impossible and
-                            // a real merge would only re-resolve in the wrong place. Record
-                            // it and go around again - the next pass merges the NEW tip into
-                            // the worktree (regenerable conflicts resolve themselves there)
-                            // and lands as a fast-forward. Bounded like every other pass.
-                            self.record_integrate_row(
-                                &format!("{}/tip-moved#{attempt}~{pass}", st.name),
-                                STATUS_INTEGRATE_TIP_MOVED,
-                                &st.name,
-                                attempt,
-                                json!({"run_tip": pre_merge, "unit_tip": c}),
-                            )?;
-                            if pass >= TIP_MOVED_PASS_BOUND {
-                                return Err(Error(format!(
-                                    "integrate {}: the run branch moved under every one of \
-                                     {pass} landing passes",
-                                    st.name
-                                )));
+                        match wt.land()? {
+                            worktree::LandOutcome::TipMoved => {
+                                // The run branch moved after the worktree merge (an operator
+                                // commit, a sibling's landing): a fast-forward is impossible
+                                // and a real merge would only re-resolve in the wrong place.
+                                // Record it and go around again - the next pass merges the NEW
+                                // tip into the worktree (regenerable conflicts resolve
+                                // themselves there) and lands as a fast-forward. Bounded like
+                                // every other pass.
+                                self.record_integrate_row(
+                                    &format!("{}/tip-moved#{attempt}~{pass}", st.name),
+                                    STATUS_INTEGRATE_TIP_MOVED,
+                                    &st.name,
+                                    attempt,
+                                    json!({"run_tip": pre_merge, "unit_tip": c}),
+                                )?;
+                                if pass >= TIP_MOVED_PASS_BOUND {
+                                    return Err(Error(format!(
+                                        "integrate {}: the run branch moved under every one of \
+                                         {pass} landing passes",
+                                        st.name
+                                    )));
+                                }
+                                continue;
                             }
-                            continue;
+                            // Spec 103, criterion 8 (A REFUSED LANDING NAMES ITS PATHS): local
+                            // content in the run checkout (untracked, or a tracked file
+                            // dirtied but never committed) blocked the fast-forward. This is
+                            // NEVER the unit's fault - its own branch is untouched and still
+                            // fast-forwardable once the blocking paths are cleared - so it is
+                            // recorded as its own lesson (naming every blocking path and any
+                            // unit branch that already carries identical content there) and
+                            // surfaced through the dedicated infra-fault arm ([`run_wave`]),
+                            // which charges no remediation attempt.
+                            worktree::LandOutcome::Blocked(paths) => {
+                                return Err(self.land_refused(&st.name, wt, &paths));
+                            }
+                            worktree::LandOutcome::Landed => {}
                         }
                         self.record_landed(&st.name, attempt, pass, &c)?;
                         // Spec 88, criterion 1 round 2 (adv-u88c1r1-crash-resume-permanently-
@@ -10003,6 +10056,60 @@ impl RunCtx<'_> {
             contextgraph::TYPE_LESSON_LEARNED,
             json!({"id": id, "summary": summary, "about": about}),
         );
+    }
+
+    /// Handle [`worktree::LandOutcome::Blocked`] (spec 103, criterion 8: A REFUSED LANDING
+    /// NAMES ITS PATHS): `Worktree::land` refused `unit`'s fast-forward because local content
+    /// in the run checkout sits at `paths`. For each path, read the LOCAL blocking bytes
+    /// straight off `self.deps.repo`'s own working tree and cross-reference them against
+    /// every unit branch's tip ([`worktree::unit_branches`] + [`worktree::blob_at`]) - a
+    /// match means the blocked content is not lost work, it is already durably captured on
+    /// that branch. Records ONE lesson (through the shared [`Self::emit_lesson`] authority,
+    /// same as every other lesson this conductor emits) whose summary names every blocking
+    /// path and any matching branch, then returns the [`LAND_REFUSED_MARKER`]-tagged
+    /// infra-fault [`run_wave`](RunCtx::run_wave) routes through its own no-attempt-charged
+    /// arm.
+    fn land_refused(&self, unit: &str, wt: &Worktree, paths: &[String]) -> Error {
+        let repo = &self.deps.repo;
+        let branches = worktree::unit_branches(repo);
+        let named: Vec<String> = paths
+            .iter()
+            .map(|p| {
+                // A blocking path is git's report of what SITS there, never a promise of what
+                // KIND of thing it is: a FIFO, socket, or device blocks a merge exactly like a
+                // regular file does, and `std::fs::read` on one of those blocks the calling
+                // thread until some other process opens the other end - which for a stray FIFO
+                // left in the checkout is NEVER, hanging this lesson (and the whole conductor)
+                // forever. Reading is only ever meaningful for a REGULAR file's byte content
+                // against a branch's blob, so every other kind is reported un-matched without
+                // opening it at all.
+                let full = std::path::Path::new(repo).join(p);
+                let is_regular_file = std::fs::metadata(&full)
+                    .map(|m| m.is_file())
+                    .unwrap_or(false);
+                let local = is_regular_file.then(|| std::fs::read(&full).ok()).flatten();
+                let matching_branch = local.as_ref().and_then(|local| {
+                    branches
+                        .iter()
+                        .find(|b| worktree::blob_at(repo, b, p).as_ref() == Some(local))
+                });
+                match matching_branch {
+                    Some(b) => format!("{p} (identical to {b}'s tip)"),
+                    None => p.clone(),
+                }
+            })
+            .collect();
+        let summary = format!(
+            "landing {unit:?} was refused: local content at {} would be overwritten by the \
+             merge - clear it (or confirm it is already captured on the named branch) and \
+             the unit's own branch lands unchanged",
+            named.join(", ")
+        );
+        self.emit_lesson(Some(wt), unit, &summary);
+        Error(format!(
+            "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for local changes at {}",
+            paths.join(", ")
+        ))
     }
 
     /// Whether the named agent runs in an isolated worktree (its `isolation` is

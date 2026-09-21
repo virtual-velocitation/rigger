@@ -345,6 +345,14 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "is_land_refused",
+    "is_test": false,
+    "proposed_module": "conductor::support",
+    "reason": "name contains \"is_\" (predicate helper); grouped under `conductor::support`.",
+    "content_hash": "c3cdfa74bedb37d5"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "replay_trajectory",
     "is_test": false,
     "proposed_module": null,
@@ -637,7 +645,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "47f8ad05fcfe1ecc"
+    "content_hash": "dc04fb1df5e954e0"
   },
   {
     "file": "src/conductor.rs",
@@ -1029,7 +1037,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "1181dac83c69a86d"
+    "content_hash": "ed0f4c1880924ea0"
   },
   {
     "file": "src/conductor.rs",
@@ -1350,6 +1358,14 @@
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
     "content_hash": "79b6a5b29f07259a"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "land_refused",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "682a269e612077cd"
   },
   {
     "file": "src/conductor.rs",
