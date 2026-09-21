@@ -10381,6 +10381,23 @@ impl RunCtx<'_> {
         Ok(Some(wt))
     }
 
+    /// The fan-out implement template's gate list, read from the ORIGINAL workflow
+    /// definition (`self.cfg.workflow.stages`, mirroring [`implementer_agent`]'s
+    /// rationale: the template itself is removed from the live runtime `stages` once
+    /// expanded into per-criterion baseline units, so the pinned static definition is
+    /// the only place left carrying it). GATE INHERITANCE (spec 103, decided): this is
+    /// THE base list [`harvest_proposed`] unions every proposal's own named gates onto,
+    /// never the reverse. Re-derived fresh from `self.cfg` on every call (never cached
+    /// on `self` or on a `Stage`), so a resumed window's fresh `RunCtx` reaches the
+    /// identical list a live window already recorded. Empty when the workflow has no
+    /// fan-out template.
+    fn template_gates(&self) -> Vec<String> {
+        fan_out_template_name(&self.cfg.workflow.stages)
+            .and_then(|name| self.cfg.workflow.stages.get(&name))
+            .map(|st| st.gates.clone())
+            .unwrap_or_default()
+    }
+
     fn harvest_proposed(
         &self,
         stages: &mut BTreeMap<String, Stage>,
@@ -10389,6 +10406,13 @@ impl RunCtx<'_> {
         terminal: &HashSet<String>,
     ) -> Result<(), Error> {
         let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        // GATE INHERITANCE (spec 103, decided): the fan-out template's gates are the
+        // base every proposed unit's stage carries below - a proposal's own `gates`
+        // field is accepted for compatibility and UNIONED in ([`union_gates`]), so a
+        // proposal can ADD a gate but never remove one the template already runs.
+        // Computed once per call (like `gate` just below): a proposal's coverage never
+        // changes which fan-out it belongs to within one harvest pass.
+        let template_gates = self.template_gates();
         // The plan-critique gate (Unit 1, spec 10) that HOLDS the fan-out until it
         // releases, if the workflow wires one. Computed once over the static gate stage
         // (always present) so it is stable as the loop mutates `stages`; None when no
@@ -10526,6 +10550,15 @@ impl RunCtx<'_> {
                     let refined_needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
                     if let Some(existing) = stages.get_mut(&u.id) {
                         existing.needs = refined_needs;
+                        // GATE INHERITANCE (spec 103, decided): a same-id refine is one
+                        // of the three ways a proposal reaches the DAG, so its own
+                        // named gates (if any) are unioned onto the existing list too -
+                        // never overwritten, never dropped. `existing.gates` already
+                        // carries the template's list (stamped by the add path below on
+                        // this unit's FIRST proposal), so unioning onto IT rather than
+                        // a freshly-read `template_gates` preserves every earlier
+                        // proposal's additions as well - monotonic growth only.
+                        existing.gates = union_gates(&existing.gates, &u.gates);
                         // spec 72 round-2 REJECT fix (sdet-c1-refine-branch-never-
                         // restamps-episode / adv-u72c1-refine-staleness-order-
                         // independent-confirmed): without this, a stage refined in a
@@ -10736,7 +10769,12 @@ impl RunCtx<'_> {
                     agent: u.agent,
                     needs,
                     coverage: u.coverage,
-                    gates: u.gates,
+                    // GATE INHERITANCE (spec 103, decided): the template's gates are
+                    // the base for BOTH branches that reach this insert - a proposal
+                    // that supersedes a baseline (`resolved_criterion_id` set above)
+                    // and a genuinely-new unmatched sub-unit (left empty) - unioned
+                    // with any the proposal itself names, never overwritten by them.
+                    gates: union_gates(&template_gates, &u.gates),
                     criterion_id: resolved_criterion_id,
                     // Record the episode that proposed this stage (spec 72), so a LATER
                     // episode's own supersede scan can compare against it - the read half
@@ -10809,6 +10847,22 @@ fn with_gate_hold(mut needs: Vec<String>, id: &str, gate: Option<&String>) -> Ve
         }
     }
     needs
+}
+
+/// GATE INHERITANCE (spec 103, decided): `base` (the fan-out template's gate list, or
+/// an already-unioned existing stage's) unioned with `additional` (a proposal's own
+/// named gates) - `base`'s order preserved, then any of `additional` not already
+/// present appended in the order given. Never drops an entry of `base`, so a proposal
+/// can ADD a gate but never remove one: "a `gates` field on a proposal is accepted for
+/// compatibility and unioned in."
+fn union_gates(base: &[String], additional: &[String]) -> Vec<String> {
+    let mut gates = base.to_vec();
+    for g in additional {
+        if !gates.contains(g) {
+            gates.push(g.clone());
+        }
+    }
+    gates
 }
 
 /// Normalize a criterion string for the supersede match (the duplication fix): trim,
@@ -11035,7 +11089,7 @@ const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger
 /// unit that maps to NO criterion is scope creep and is refused. The `{criteria}`
 /// placeholder is filled with the run's actual acceptance criteria, and
 /// `{implementer}` with the implementer agent id the conductor assigned the baseline.
-const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still citing that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
+const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still citing that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
 
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
@@ -16697,6 +16751,229 @@ mod tests {
                 stages["u-a"].needs
             );
         }
+    }
+
+    #[test]
+    fn harvest_proposed_gates_every_case_with_the_templates_list_unioned() {
+        // spec 103 criterion 1 (GATE INHERITANCE). The fan-out template's gates - not a
+        // proposal's own `gates` field alone - are the base every proposed unit's stage
+        // carries, in the THREE ways a proposal reaches the DAG: superseding a baseline
+        // (u-a), a same-id refine (u-a re-emitted), and a genuinely-new unmatched
+        // sub-unit (u-new). A proposal's own `gates` is accepted and UNIONED in (never
+        // removes the template's), so `harvest_proposed` must union, not overwrite
+        // (conductor.rs:10739 pre-fix: `gates: u.gates` dropped the template's list
+        // entirely the moment a proposal named its own, or left the unit UNGATED
+        // whenever a hand-authored proposal named none). RED against `gates: u.gates`.
+        let crit_a = "criterion A: the alpha module is implemented";
+        let cfg = supersede_cfg(); // template "implement" carries gates: ["ok"]
+        let st = Store::open(":memory:").unwrap();
+
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-a",
+                    "agent": "worker",
+                    "criterion": crit_a,
+                    "criterion_id": criterion_stable_id(1, crit_a),
+                    "gates": ["extra"],
+                    "needs": [],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        // (a) Supersedes-a-baseline: the template's own gate survives even though the
+        // proposal named a DIFFERENT one - the template's list is the base, never
+        // dropped.
+        assert_eq!(
+            stages["u-a"].gates,
+            vec!["ok".to_string(), "extra".to_string()],
+            "a proposal superseding a baseline must carry the template's gates UNIONED \
+             with its own named gate, never overwritten; got {:?}",
+            stages["u-a"].gates
+        );
+
+        // (b) Same-id refine: re-emit u-a naming a THIRD gate. The template's gate and
+        // the first proposal's own gate must both SURVIVE - a refine only ever ADDS.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-a",
+                    "agent": "worker",
+                    "criterion": crit_a,
+                    "criterion_id": criterion_stable_id(1, crit_a),
+                    "gates": ["extra2"],
+                    "needs": [],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+        assert_eq!(
+            stages["u-a"].gates,
+            vec!["ok".to_string(), "extra".to_string(), "extra2".to_string()],
+            "a same-id refine must UNION its own named gate onto the existing list, \
+             never dropping the template's or the earlier proposal's; got {:?}",
+            stages["u-a"].gates
+        );
+
+        // (c) A genuinely-new unmatched sub-unit (maps to no criterion) STILL gets the
+        // template's gates, unioned with its own.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-new",
+                    "agent": "worker",
+                    "criterion": "an entirely separate concern the spec never lists",
+                    "gates": ["extra3"],
+                    "needs": [],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+        assert_eq!(
+            stages["u-new"].gates,
+            vec!["ok".to_string(), "extra3".to_string()],
+            "a genuinely-new unmatched sub-unit must still carry the template's gates \
+             unioned with its own named gate; got {:?}",
+            stages["u-new"].gates
+        );
+    }
+
+    #[test]
+    fn harvest_proposed_gate_inheritance_survives_a_resumed_window() {
+        // spec 103 criterion 1: "a resumed window re-derives the same list." The
+        // template's gates are read fresh from `self.cfg.workflow.stages` (the PINNED
+        // workflow definition, never the runtime `stages` map the template is removed
+        // from once expanded) on EVERY call - so a second `RunCtx` over a freshly-seeded
+        // `stages` map (exactly what a fresh process replaying the log on resume starts
+        // from) derives the identical gate list a live window already recorded, from
+        // the same proposals already in the log.
+        let crit_a = "criterion A: the alpha module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-a",
+                    "agent": "worker",
+                    "criterion": crit_a,
+                    "criterion_id": criterion_stable_id(1, crit_a),
+                    "gates": ["extra"],
+                    "needs": [],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string()],
+        };
+
+        // Window 1 (the live window): harvest over a freshly-seeded DAG.
+        let ctx1 = RunCtx::for_test(&cfg, &deps);
+        let mut stages1 = seed_refine_dag(&deps.criteria);
+        let mut proposed1: HashSet<String> = HashSet::new();
+        ctx1.harvest_proposed(
+            &mut stages1,
+            &mut proposed1,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        // Window 2 (a RESUMED window): a brand new `RunCtx` and a brand new,
+        // freshly-seeded `stages` map - exactly the state a fresh `rigger step`
+        // process starts from - over the SAME store, which already holds the same
+        // `UnitProposed` the live window read.
+        let ctx2 = RunCtx::for_test(&cfg, &deps);
+        let mut stages2 = seed_refine_dag(&deps.criteria);
+        let mut proposed2: HashSet<String> = HashSet::new();
+        ctx2.harvest_proposed(
+            &mut stages2,
+            &mut proposed2,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            stages1["u-a"].gates, stages2["u-a"].gates,
+            "a resumed window must re-derive the EXACT SAME gate list the live window \
+             did; live: {:?}, resumed: {:?}",
+            stages1["u-a"].gates, stages2["u-a"].gates
+        );
+        assert_eq!(
+            stages2["u-a"].gates,
+            vec!["ok".to_string(), "extra".to_string()],
+            "the resumed window's list must still be the template's gates unioned with \
+             the proposal's own; got {:?}",
+            stages2["u-a"].gates
+        );
+    }
+
+    #[test]
+    fn plan_protocol_tells_the_planner_gates_come_from_the_template() {
+        // spec 103 criterion 1 ("THE PROTOCOL STAYS SILENT ON GATES", decided):
+        // PLAN_PROTOCOL keeps its JSON proposal shape exactly as documented - id,
+        // agent, criterion, criterion_id, needs - but states in prose that every
+        // proposed unit runs the fan-out template's own gates automatically, so the
+        // planner never needs to (though a `gates` field is still accepted for
+        // compatibility, per the harvest-side union proven above).
+        assert!(
+            PLAN_PROTOCOL.to_lowercase().contains("gate"),
+            "PLAN_PROTOCOL must tell the planner that every proposed unit runs the \
+             fan-out template's own gates automatically; got:\n{PLAN_PROTOCOL}"
+        );
+        assert!(
+            !PLAN_PROTOCOL.contains("\"gates\""),
+            "PLAN_PROTOCOL's JSON proposal shape must stay silent on gates - the \
+             planner never authors them; got:\n{PLAN_PROTOCOL}"
+        );
     }
 
     /// Whether the run stream carries an `unmatched-proposal` signal for `unit` -
