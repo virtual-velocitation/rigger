@@ -1,6 +1,7 @@
 //! Periphery for spec 103, criterion 2 (NO UNGATED FAN-OUT UNIT): the runtime invariant's
-//! authored-ungated-workflow carve-out, driven through the REAL production wiring
-//! `conductor::run` itself performs - never through the private
+//! authored-ungated-workflow carve-out AND its unmatched-sub-unit blind spot
+//! (`adv-u103c2-guard-blind-to-unmatched-subunit`), both driven through the REAL production
+//! wiring `conductor::run` itself performs - never through the private
 //! `assert_no_ungated_fanout_unit` function the implementer's own `mod tests` call directly
 //! with hand-built `stages`/`fanout_criteria`/`fanout_template_gates` maps.
 //!
@@ -17,25 +18,38 @@
 //! point - the capture keyed on the wrong name, the map never threaded through to the second
 //! call site, the check firing before the real per-criterion decomposition it depends on -
 //! would leave the implementer's own isolated test green while a REAL authored-ungated
-//! fan-out spec could no longer run to completion at all. This file drives the real
-//! `conductor::run` entry, real `deps.criteria`, and real criterion-driven baseline-unit
+//! fan-out spec could no longer run to completion at all. The first test below drives the
+//! real `conductor::run` entry, real `deps.criteria`, and real criterion-driven baseline-unit
 //! synthesis (`baseline_units`, never a hand-set `Stage.criterion_id`) end to end, proving the
 //! genuine article: an authored fan-out template with NO gates at all still decomposes,
 //! spawns, and integrates every one of its baseline units, through the actual
 //! capture-then-check code path, not a stand-in for it.
 //!
+//! The SAME structural gap applies to the blind-spot fix (`Stage::unmatched_fanout_proposal`):
+//! the implementer's own new white-box test
+//! (`a_genuinely_new_proposal_with_no_gates_refuses_to_spawn_ungated`, src/conductor.rs `mod
+//! tests`) already drives `run()` end to end and proves the fix from INSIDE the module the
+//! code under test lives in - but it cannot attest to the fix surviving the real crate
+//! boundary, since it can see (and could accidentally depend on) `conductor`'s private
+//! internals. The second test below proves the identical scenario - a worker proposing a
+//! genuinely-new sub-unit with no `gates` of its own, under a GATED fan-out template - from
+//! this external, black-box test crate, through only `rigger`'s public API.
+//!
 //! NOT owned: the guard's decision-table logic itself (which combination of gated/ungated
 //! template and gated/ungated unit fails vs. passes) - that is the implementer's own `mod
 //! tests` in src/conductor.rs, proven directly against the pure function. This file owns only
-//! whether the REAL wiring reaches the same (correct) answer for the one carve-out scenario a
-//! real spec can actually produce on the production path.
+//! whether the REAL wiring reaches the same (correct) answer for the two scenarios a real
+//! spec can actually produce on the production path: the authored-ungated carve-out, and the
+//! unmatched-sub-unit blind spot the fix closes.
 
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
-use rigger::config::{AgentDef, Config, Stage};
+use rigger::conductor::{
+    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM, TYPE_UNIT_PROPOSED,
+};
+use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::ledger::{Status, TYPE_UNIT_STARTED};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// A driver that does nothing and reports nothing - this criterion is about whether a unit
 /// under an ungated fan-out template SPAWNS and INTEGRATES at all (the invariant's carve-out),
@@ -151,5 +165,114 @@ fn a_real_ungated_fanout_template_decomposes_and_every_baseline_unit_still_integ
         started_ids.len(),
         2,
         "one UnitStarted per baseline unit; got {started_ids:?}"
+    );
+}
+
+/// A driver whose every spawn ALSO emits one real `TYPE_UNIT_PROPOSED` event for a
+/// brand-new sub-unit ("new-subunit") whose criterion matches none of the run's baseline
+/// criteria, and whose JSON payload OMITS `gates` entirely - the real shape a proposing
+/// worker's own JSON can take, never a hand-built `Stage`. Mirrors the driver-per-spawn
+/// convention the implementer's own `Stub` test double already establishes for this exact
+/// scenario (`a_genuinely_new_proposal_with_no_gates_refuses_to_spawn_ungated`,
+/// src/conductor.rs `mod tests`).
+#[derive(Default)]
+struct UnmatchedProposalWorker;
+
+impl AgentDriver for UnmatchedProposalWorker {
+    fn spawn(
+        &self,
+        _agent: &AgentDef,
+        _prompt: &str,
+        _opts: &SpawnOpts,
+        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        emit(
+            TYPE_UNIT_PROPOSED,
+            json!({
+                "id": "new-subunit",
+                "agent": "worker",
+                "criterion": "an entirely separate concern the spec never lists",
+                // `gates` omitted entirely - the defect shape adv-u103c2-guard-blind-to-
+                // unmatched-subunit found.
+            }),
+        )?;
+        Ok(AgentResult {
+            output: String::new(),
+            resolved_model: String::new(),
+        })
+    }
+}
+
+/// THE BLIND SPOT ITSELF (spec 103, criterion 2,
+/// `adv-u103c2-guard-blind-to-unmatched-subunit`): a genuinely-new sub-unit a worker
+/// proposes mid-run, under a GATED fan-out template, with no `gates` of its own, must be
+/// refused before it ever spawns ungated - proven here through the REAL `conductor::run`
+/// entry, the REAL `harvest_proposed` ADD path, and the REAL
+/// `assert_no_ungated_fanout_unit` wiring, driven from this external (black-box) test
+/// crate through only the crate's public API - completing, at the periphery, the coverage
+/// the adversary's finding demanded once the implementer closed the code gap
+/// (`Stage::unmatched_fanout_proposal`).
+#[test]
+fn a_genuinely_new_unmatched_proposal_under_a_gated_template_refuses_to_spawn_ungated() {
+    let mut cfg = Config::default();
+    cfg.agents.insert(
+        "worker".into(),
+        AgentDef {
+            id: "worker".into(),
+            ..Default::default()
+        },
+    );
+    // A gated template this time - the OPPOSITE of the carve-out test above - so the
+    // guard has a non-empty template gate list to hold an ungated unit to.
+    cfg.workflow.gates.insert(
+        "ok".into(),
+        Gate {
+            run: "true".into(),
+            kind: "core".into(),
+            inputs: Vec::new(),
+        },
+    );
+    cfg.workflow.stages.insert(
+        "implement".into(),
+        Stage {
+            name: "implement".into(),
+            agent: "worker".into(),
+            strategy: "fan-out".into(),
+            gates: vec!["ok".into()],
+            on_pass: "merge".into(),
+            coverage: "each unit is implemented and gated".into(),
+            ..Default::default()
+        },
+    );
+
+    let store = Store::open(":memory:").unwrap();
+    let driver = UnmatchedProposalWorker;
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &rigger::gate::ExecRunner,
+        repo: String::new(),
+        grounder: None,
+        graph: None,
+        criteria: vec!["the auth module lands".to_string()],
+    };
+
+    let err = match run(&cfg, &deps) {
+        Ok(rs) => panic!(
+            "a genuinely-new unmatched sub-unit with no gates under a GATED fan-out \
+             template must refuse to spawn ungated, not integrate; got units: {:?}",
+            rs.units.keys().collect::<Vec<_>>()
+        ),
+        Err(e) => e,
+    };
+    assert!(
+        err.0.contains("new-subunit"),
+        "the failure must name the ungated unmatched sub-unit; got {:?}",
+        err.0
+    );
+    assert!(
+        err.0.contains("implement"),
+        "the failure must name the gated template it should have inherited from; got {:?}",
+        err.0
     );
 }
