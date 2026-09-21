@@ -8704,9 +8704,20 @@ impl RunCtx<'_> {
             Worktree::discard(&self.deps.repo, &pm_dir, &pm_branch, &scratch)?;
             Worktree::create_branch_at(&self.deps.repo, &pm_branch, &commit)?;
             let pm_wt = Worktree::create(&self.deps.repo, &pm_dir, &pm_branch, &scratch)?;
-            let merged = self.run_gates(st, &pm_wt.dir, attempt, GateSelection::PostMerge)?;
+            // Captured into a local instead of `?`-ed directly (round 2 fix for
+            // adv-u103c7-postmerge-worktree-branch-leak-on-run-gates-err), mirroring
+            // `run_fan_out_stage`'s own identical shape around `run_fan_out_review_loop`
+            // one function away: a `?` here would skip the two cleanup lines right below
+            // it on any Err, permanently leaking this throwaway worktree dir and branch.
+            // Unlike that sibling (which keeps its review worktree alive across a PARKED
+            // unwind so an out-of-process reviewer can resume in it), this post-merge
+            // re-gate never parks - reap it UNCONDITIONALLY before propagating any Err,
+            // exactly as this function's own doc comment and spec 103 criterion 7's
+            // Design text both already (unconditionally) promise.
+            let gate_result = self.run_gates(st, &pm_wt.dir, attempt, GateSelection::PostMerge);
             let _ = pm_wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
+            let merged = gate_result?;
             if !merged.pass {
                 Worktree::reset_to(&self.deps.repo, &pre_merge)?;
                 // Defense in depth (spec 64 criterion 3), same as every other post-gate touch
@@ -37880,6 +37891,149 @@ mod tests {
             !Path::new(pm_cwd).exists(),
             "the post-merge re-gate's own throwaway worktree must be reaped once its gate \
              suite ends; {pm_cwd} still exists"
+        );
+    }
+
+    /// An `EventStore` decorator, the META-matching counterpart to `FailingStore` above
+    /// (which matches an event's JSON `data`): forwards every call to `inner` unchanged
+    /// except `append`, which refuses (a real `Backend` error, indistinguishable from a
+    /// genuine backend fault) if any event in the batch carries a metadata VALUE
+    /// containing `needle`. Needed because a `GateVerdict`'s pre-merge-vs-post-merge
+    /// identity lives in its `META_REPLAY_KEY` metadata (`gate:` vs `postmerge-gate:`),
+    /// never in its `data` (which carries only `gate`/`pass`/`flaky`/`evidence`,
+    /// identical either way) - so a caller that needs to fail specifically the
+    /// post-merge re-gate's own verdict write, and nothing else, cannot use
+    /// `FailingStore`'s data match at all.
+    struct FailAppendMetaContaining<'a> {
+        inner: &'a dyn EventStore,
+        needle: &'static str,
+    }
+    impl EventStore for FailAppendMetaContaining<'_> {
+        fn append(
+            &self,
+            stream: &str,
+            expected: ExpectedRevision,
+            events: &[Event],
+        ) -> Result<Appended, crate::eventstore::Error> {
+            if events
+                .iter()
+                .any(|e| e.meta.values().any(|v| v.contains(self.needle)))
+            {
+                return Err(crate::eventstore::Error::Backend(format!(
+                    "simulated store failure appending an event whose metadata contains {:?}",
+                    self.needle
+                )));
+            }
+            self.inner.append(stream, expected, events)
+        }
+        fn read_stream(
+            &self,
+            stream: &str,
+            from: crate::eventstore::Revision,
+            dir: Direction,
+        ) -> Result<Vec<Event>, crate::eventstore::Error> {
+            self.inner.read_stream(stream, from, dir)
+        }
+        fn read_all(
+            &self,
+            from: crate::eventstore::Position,
+            dir: Direction,
+            filter: &Filter,
+        ) -> Result<Vec<Event>, crate::eventstore::Error> {
+            self.inner.read_all(from, dir, filter)
+        }
+        fn subscribe_all(
+            &self,
+            from: crate::eventstore::Position,
+            filter: &Filter,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            self.inner.subscribe_all(from, filter)
+        }
+        fn subscribe_stream(
+            &self,
+            stream: &str,
+            from: crate::eventstore::Revision,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            self.inner.subscribe_stream(stream, from)
+        }
+    }
+
+    #[test]
+    fn postmerge_run_gates_err_still_reaps_the_throwaway_worktree_and_branch() {
+        // adv-u103c7-postmerge-worktree-branch-leak-on-run-gates-err: `integrate_and_emit`
+        // used to `?` the post-merge `run_gates` call directly (the `if !commit.is_empty()`
+        // block above), so an Err out of it - a real infra fault, e.g. a transient
+        // event-store write failure under this run's own concurrent multi-unit load - was
+        // propagated immediately, SKIPPING the two cleanup lines right below it
+        // (`pm_wt.remove()` / `Worktree::delete_branch`) and permanently leaking the
+        // throwaway `rigger-postmerge-<unit>-<attempt>` worktree dir and its
+        // `rigger/postmerge/<unit>-<attempt>` branch. Forced here via a store double that
+        // fails specifically the post-merge `GateVerdict` write (its `replay_key` META
+        // carries the `postmerge-gate:` infix the pre-merge write's key never does, so the
+        // pre-merge gate - and every other store write this run makes - is unaffected,
+        // proving the leak is specific to the post-merge re-gate's own error path, not
+        // merely "the run failed somewhere").
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+
+        let real_store = Store::open(":memory:").unwrap();
+        let store = FailAppendMetaContaining {
+            inner: &real_store,
+            needle: "postmerge-gate:",
+        };
+        let driver = Stub {
+            write_file: Some("f.txt".into()),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let pm_dir = postmerge_worktree_dir(&scratch, "unit-a", 0);
+        let pm_branch = postmerge_branch("unit-a", 0);
+
+        assert!(
+            run(&cfg, &deps).is_err(),
+            "a genuine post-merge gate infra Err must propagate out of run(), never be \
+             swallowed as a passing/failing gate verdict"
+        );
+
+        assert!(
+            !Path::new(&pm_dir).exists(),
+            "the post-merge re-gate's own throwaway worktree must be reaped even when its \
+             gate suite errors, never leaked for a later step to find; {pm_dir} still exists"
+        );
+        let branches = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["branch", "--list", &pm_branch])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted \
+             even when its gate suite errors, never left behind"
         );
     }
 
