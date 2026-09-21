@@ -442,6 +442,19 @@ pub fn spawn_is_halted(
         if req.unit != unit {
             continue;
         }
+        // Mirror the named-spawn check above: a sibling carrying a real, non-liveness-fault
+        // result already ENDED - it is not LIVE, whatever its marker's age says. Markers are
+        // never reclaimed, so trusting marker freshness alone here would let one finished
+        // sibling permanently mask the checkpoint for the rest of the unit's run (an
+        // unbounded sibling's zero bound never goes stale) or temporarily mask it (a bounded
+        // sibling still inside its own wall-clock window).
+        if let Some(res) =
+            spawn::result_of(events, &req.id).map_err(|e| Error::Backend(e.to_string()))?
+        {
+            if !res.is_liveness_fault() {
+                continue;
+            }
+        }
         let Some(path) = marker_path(scratch_root, run_id, &req.id) else {
             continue;
         };
@@ -1292,5 +1305,60 @@ mod tests {
         let now = SystemTime::now() + Duration::from_secs(10);
         // The other unit's spawn is live, but it is not THIS unit's - must not block.
         assert!(spawn_is_halted(&events, root, TEST_RUN, "u", &named.id, now).unwrap());
+    }
+
+    #[test]
+    fn spawn_is_halted_is_true_when_an_unbounded_sibling_already_has_a_real_result() {
+        // adv-u103c5-uphold-unbounded-sibling-empirically-confirmed: an UNBOUNDED sibling
+        // (`max_wall_clock: None`) maps to `Duration::ZERO`, and `is_stale` never calls a
+        // zero bound stale - so a sibling's stale marker alone can NEVER unblock the
+        // checkpoint. The sibling's own RESULT must be checked (mirroring the named-spawn
+        // check), or a sibling that finished long ago permanently masks every future halt
+        // of this unit.
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        // The named spawn (attempt 0) is genuinely silent - no marker, no result.
+        let named = park_bounded_attempt(&store, "u", 0, 300);
+        // A sibling (attempt 1) was UNBOUNDED and finished normally long ago; its marker
+        // was never reclaimed (markers are never reclaimed - a standing finding), so it
+        // still sits on disk.
+        let mut unbounded = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 1, "task");
+        unbounded.max_wall_clock = None;
+        park(&store, &unbounded).unwrap();
+        plant_marker(root, &unbounded.id);
+        spawn_store::record_result(&store, &SpawnResult::ok(&unbounded.id, "done long ago"))
+            .unwrap();
+        let events = read(&store);
+        // Evaluated a full day later - the finished sibling's stale marker must not matter;
+        // only its REAL result does.
+        let now = SystemTime::now() + Duration::from_secs(86_400);
+        assert!(
+            spawn_is_halted(&events, root, TEST_RUN, "u", &named.id, now).unwrap(),
+            "a sibling that already finished with a real result must never block the \
+             checkpoint, regardless of how old or fresh its own marker is"
+        );
+    }
+
+    #[test]
+    fn spawn_is_halted_is_true_when_a_bounded_sibling_completed_moments_ago() {
+        // The temporary-mask shape: a BOUNDED sibling whose marker is still fresh (within
+        // its own wall-clock window) but which has ALREADY recorded a real result. Marker
+        // freshness alone must not mask the checkpoint once the sibling's own result says
+        // it is done.
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let named = park_bounded_attempt(&store, "u", 0, 300);
+        let finished = park_bounded_attempt(&store, "u", 1, 300);
+        plant_marker(root, &finished.id);
+        spawn_store::record_result(&store, &SpawnResult::ok(&finished.id, "done")).unwrap();
+        let events = read(&store);
+        // Only 10s later - well inside the 300s bound, so the marker alone reads "fresh".
+        let now = SystemTime::now() + Duration::from_secs(10);
+        assert!(
+            spawn_is_halted(&events, root, TEST_RUN, "u", &named.id, now).unwrap(),
+            "a sibling with a real result is not live even while its marker is still fresh"
+        );
     }
 }
