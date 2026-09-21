@@ -1638,43 +1638,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 4718
+        "line": 4814
       },
       {
         "file": "src/worktree.rs",
-        "line": 4741
+        "line": 4837
       },
       {
         "file": "src/worktree.rs",
-        "line": 4777
+        "line": 4873
       },
       {
         "file": "src/worktree.rs",
-        "line": 4809
+        "line": 4905
       },
       {
         "file": "src/worktree.rs",
-        "line": 4844
+        "line": 4940
       },
       {
         "file": "src/worktree.rs",
-        "line": 4860
+        "line": 4956
       },
       {
         "file": "src/worktree.rs",
-        "line": 4887
+        "line": 4983
       },
       {
         "file": "src/worktree.rs",
-        "line": 4917
+        "line": 5013
       },
       {
         "file": "src/worktree.rs",
-        "line": 4924
+        "line": 5020
       },
       {
         "file": "src/worktree.rs",
-        "line": 4932
+        "line": 5028
       },
       {
         "file": "tests/cli.rs",
@@ -2089,7 +2089,7 @@
   {
     "file": "src/worktree.rs",
     "name": "is_dirty",
-    "line": 679,
+    "line": 692,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
@@ -2097,15 +2097,15 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 4285
+        "line": 4381
       },
       {
         "file": "src/worktree.rs",
-        "line": 4295
+        "line": 4391
       },
       {
         "file": "src/worktree.rs",
-        "line": 4361
+        "line": 4457
       }
     ]
   }
