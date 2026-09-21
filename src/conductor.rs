@@ -8690,7 +8690,23 @@ impl RunCtx<'_> {
             // already derives the mutants root), and that worktree - dir and branch both - is
             // reaped the moment the gate suite ends, pass or fail, never left for a later step
             // to find.
-            let merged = self.run_gates(st, &self.deps.repo, attempt, GateSelection::PostMerge)?;
+            let scratch = crate::worktree::scratch_root_from_env(
+                &self.deps.repo,
+                &self.cfg.workflow.defaults.workdir,
+            );
+            let pm_dir = postmerge_worktree_dir(&scratch, &st.name, attempt);
+            let pm_branch = postmerge_branch(&st.name, attempt);
+            // This dir/branch carry no durable checkpoint (unlike the unit's own `rigger/u/*`
+            // branch): a prior process may have crashed between creating them and reaping
+            // them, leaving a leftover pinned at a now-stale sha. The safe resume is always
+            // discard-then-recreate, exactly like a standalone review's
+            // `review_only_worktree` - never adopt a leftover post-merge checkout.
+            Worktree::discard(&self.deps.repo, &pm_dir, &pm_branch, &scratch)?;
+            Worktree::create_branch_at(&self.deps.repo, &pm_branch, &commit)?;
+            let pm_wt = Worktree::create(&self.deps.repo, &pm_dir, &pm_branch, &scratch)?;
+            let merged = self.run_gates(st, &pm_wt.dir, attempt, GateSelection::PostMerge)?;
+            let _ = pm_wt.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
             if !merged.pass {
                 Worktree::reset_to(&self.deps.repo, &pre_merge)?;
                 // Defense in depth (spec 64 criterion 3), same as every other post-gate touch
