@@ -51,6 +51,11 @@
 >   inference) and runs a world reconciler that converges the filesystem toward a
 >   desired state derived from the event log; git is the retention system, disk holds
 >   only what is live, and the command line (and the workflow's couriers) are clients.
+> - [Native Claude Code integration](architecture-addendum-claude-code-integration.md) -
+>   rigger owns the run as a supervised process, hosts every agent as a headless Claude
+>   Code session it reads through the typed message stream, holds the run through an API
+>   or credential outage and resumes it by itself, and meets the operator's session
+>   through a plugin; every seam is a documented Claude Code surface.
 
 ---
 

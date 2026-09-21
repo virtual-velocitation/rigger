@@ -1076,7 +1076,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          a recall regression; got: {f4_hits:?}"
     );
     assert_eq!(
-        f1_total, 209,
+        f1_total, 212,
         "F1 ownership's corpus-wide total is pinned to sdet's round-5 independently \
          cross-checked count (194), minus the 3 hits removed by giving specs/66's own \
          criteria 4/5/6 an OWNS sentence (`u66c3-self-clean-ownership-gap-fix`, required by \
@@ -1113,7 +1113,9 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          specs/102-a-wave-has-a-width-and-a-config-has-no-silent-keys.md (operator review \
          2026-09-15: same closing-checkbox class, one each), plus 1 hit added by \
          specs/103-planner-refined-units-keep-their-gates.md (operator review 2026-09-19: \
-         same closing-checkbox class), reviewed \
+         same closing-checkbox class), plus 3 hits added by the Claude Code integration \
+         set specs/104 through specs/106 (operator review 2026-09-21: same \
+         closing-checkbox class, one each), reviewed \
          directly against the advisory text, not a heuristic regression; a changed total means \
          either a real spec edit (update this pin after reviewing the new/removed hits) \
          or a regression in the heuristic"
