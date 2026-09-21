@@ -4415,12 +4415,25 @@ impl RunCtx<'_> {
             // back after `run_single_stage` returns, so the unit's own worktree survives a
             // lens park even when a co-chunked sibling's genuine error is what this call's
             // `?` propagates below.
-            self.run_review_agents_concurrently(st, &lenses, dir, attempt, any_parked, wt)?;
+            //
+            // A REVIEW ROUND LEAVES THE TREE IT REVIEWED even on a genuine crash here
+            // (spec 103, criterion 6, adv-u103c6-guard-skipped-on-tier-err): a lens tier
+            // has no LATER tier to guard the tree on its behalf if ITS OWN spawn is what
+            // errors, so this site guards itself via `map_err` before the `?` unwinds.
+            self.run_review_agents_concurrently(st, &lenses, dir, attempt, any_parked, wt)
+                .map_err(|e| {
+                    self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
+                })?;
         }
         // TIER 2: the adversary grounds AFTER the lenses, so `graph_context` surfaces
         // their findings; it tries to prove them wrong and emits its own findings.
         if !adversary.is_empty() {
-            self.run_adversary(st, &adversary, dir, attempt, wt, &lenses)?;
+            // Same guard-on-crash discipline as tier 1 above: residue the (already
+            // completed) lens tier committed must not outlive an adversary crash either.
+            self.run_adversary(st, &adversary, dir, attempt, wt, &lenses)
+                .map_err(|e| {
+                    self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
+                })?;
         }
         if adjudicator.is_empty() {
             // The round's last real result was the adversary's (or the lenses', if the
@@ -4430,8 +4443,11 @@ impl RunCtx<'_> {
         }
         // TIER 3: the adjudicator grounds last, reads the lenses' and adversary's
         // findings from the graph, and renders the gating verdict.
-        let (approved, reason, adj_resolved) =
-            self.run_adjudicator(st, &adjudicator, dir, attempt, wt, &lenses, &adversary)?;
+        let (approved, reason, adj_resolved) = self
+            .run_adjudicator(st, &adjudicator, dir, attempt, wt, &lenses, &adversary)
+            .map_err(|e| {
+                self.guard_review_round_tree_on_tier_err(wt, dir, &st.name, &round_start_sha, e)
+            })?;
         // The round's last result is now recorded (the adjudicator's own spawn, the last
         // tier that can run): guard the tree BEFORE acting on the verdict either way, so a
         // reject sees the judged sha too (`failed_sha` below reads `dir` after this
@@ -4512,20 +4528,26 @@ impl RunCtx<'_> {
     /// (the sha [`Self::review_unit`] captured before spawning ANY tier), is residue: a
     /// reviewer's own tooling breaking protocol, or an out-of-band actor, never legitimate
     /// implementer work (the implementer already committed and gated before the round
-    /// began). Called from `review_unit` exactly at each point the round's LAST tier result
-    /// is recorded (whichever of the adjudicator, the adversary, or the lenses actually ran
-    /// last), before the verdict is acted on either way. The overwhelmingly common case - a
-    /// clean worktree still at `round_start_sha` - is a cheap no-op (one `ensure_present`,
-    /// one `git status`). Residue is never silently discarded: it is named in a lesson
-    /// FIRST (the dirty paths, plus, when the tip moved, the committed diff since
-    /// `round_start_sha`), and only then are the worktree and its branch hard-restored to
-    /// `round_start_sha` - so the caller's OWN later reads of `dir` (the `reviewed` stamp,
-    /// the reject arm's `failed_sha`, and eventually `integrate_and_emit`) all address
-    /// exactly the sha the round judged, never the residue. This never charges a
-    /// remediation attempt: it is infrastructure hygiene, not a gate failure or a review
-    /// verdict, so it never touches the caller's `attempts` counter - it only ever returns
-    /// `Err` for a genuine infra fault (e.g. `ensure_present` failing to restore a deleted
-    /// worktree), exactly like every other guard in this function.
+    /// began). Called from `review_unit` on EVERY exit (spec 103 criterion 6, round 2,
+    /// adv-u103c6-guard-skipped-on-tier-err): directly, at each point the round's LAST
+    /// tier result is recorded on the SUCCESS path (whichever of the adjudicator, the
+    /// adversary, or the lenses actually ran last), before the verdict is acted on either
+    /// way; and via [`Self::guard_review_round_tree_on_tier_err`] on the ERROR path, when
+    /// any tier's own spawn returns a genuine (non-parked) error - so residue an EARLIER
+    /// tier left behind before a LATER tier's crash is still named and restored rather than
+    /// surviving on the kept branch for the next attempt to silently inherit. The
+    /// overwhelmingly common case - a clean worktree still at `round_start_sha` - is a
+    /// cheap no-op (one `ensure_present`, one `git status`). Residue is never silently
+    /// discarded: it is named in a lesson FIRST (the dirty paths, plus, when the tip moved,
+    /// the committed diff since `round_start_sha`), and only then are the worktree and its
+    /// branch hard-restored to `round_start_sha` - so the caller's OWN later reads of `dir`
+    /// (the `reviewed` stamp, the reject arm's `failed_sha`, and eventually
+    /// `integrate_and_emit`) all address exactly the sha the round judged, never the
+    /// residue. This never charges a remediation attempt: it is infrastructure hygiene, not
+    /// a gate failure or a review verdict, so it never touches the caller's `attempts`
+    /// counter - it only ever returns `Err` for a genuine infra fault (e.g. `ensure_present`
+    /// failing to restore a deleted worktree), exactly like every other guard in this
+    /// function.
     fn guard_review_round_tree(
         &self,
         wt: Option<&Worktree>,
@@ -4551,7 +4573,12 @@ impl RunCtx<'_> {
         }
         let mut residue = dirty;
         if moved {
-            residue.extend(w.committed_diff_names(round_start_sha).unwrap_or_default());
+            // Two-dot, never `committed_diff_names`' three-dot: `round_start_sha` is
+            // THIS worktree's own prior tip, not a possibly-diverged base branch, and a
+            // non-ancestor moved tip (residue that rewrote history rather than just
+            // adding to it) must not have its named paths inflated by merge-base
+            // anchoring (sdet-u103c6-committed-diff-names-triple-dot-non-ancestor).
+            residue.extend(w.diff_names_since(round_start_sha).unwrap_or_default());
             residue.sort();
             residue.dedup();
         }
@@ -4572,6 +4599,51 @@ impl RunCtx<'_> {
         );
         w.restore_reviewed_sha(round_start_sha)?;
         Ok(())
+    }
+
+    /// The ERROR-path twin of [`Self::guard_review_round_tree`] (spec 103, criterion 6,
+    /// round 2, adv-u103c6-guard-skipped-on-tier-err): `review_unit` calls the three tiers
+    /// (lenses, adversary, adjudicator) through `?`, so a genuine tier-spawn crash used to
+    /// propagate straight out, BEFORE either of that function's own call sites (which only
+    /// sit on the SUCCESS path, after a tier returns `Ok`) ever ran. That let residue an
+    /// EARLIER tier committed by breaking protocol survive - unrestored, unnamed in any
+    /// lesson - on the branch a later attempt resumes from, which then treats it as the
+    /// implementer's own committed work: exactly the failure this criterion exists to
+    /// prevent.
+    ///
+    /// Called from every tier call site in `review_unit` via `.map_err(...)`, so it sees
+    /// EVERY tier error, parked or not - and only acts on the genuine ones. A PARKED exit
+    /// (`is_parked`) is not a crash: the driver has not resolved this spawn yet (an
+    /// unrecorded stepwise/replay frontier), so THIS call could not have left new residue,
+    /// and the caller must unwind with the tree untouched for a later step to resume - the
+    /// guard is skipped entirely rather than risk disturbing a still in-flight round. Every
+    /// other error (a genuine crash, or a budget refusal - neither of which is "parked")
+    /// guards the tree exactly like the success path does, restoring it to
+    /// `round_start_sha` and naming any residue in a lesson first.
+    ///
+    /// Returns the error to propagate: `e` unchanged when the guard runs clean (the
+    /// overwhelmingly common case - the tree was already at `round_start_sha`), or the
+    /// guard's OWN error when IT is what fails (a fresh infra fault, e.g. `ensure_present`
+    /// failing to restore a deleted worktree, takes precedence over the tier error that
+    /// triggered the guard).
+    fn guard_review_round_tree_on_tier_err(
+        &self,
+        wt: Option<&Worktree>,
+        dir: &str,
+        unit: &str,
+        round_start_sha: &str,
+        e: Error,
+    ) -> Error {
+        if is_parked(&e) {
+            return e;
+        }
+        if let Err(guard_err) = self.guard_review_round_tree(wt, dir, unit, round_start_sha) {
+            return Error(format!(
+                "{} (guard_review_round_tree also failed to restore residue: {guard_err})",
+                e.0
+            ));
+        }
+        e
     }
 
     /// The SDET-author build seam (spec 33): spawn the operator-provided `sdet-author`
@@ -31538,6 +31610,149 @@ mod tests {
             !Path::new(&repo_path).join("tip-moved-residue.rs").exists(),
             "the adjudicator's own extra commit must NEVER reach integration - the round \
              resets the branch to the sha it judged before merging"
+        );
+    }
+
+    #[test]
+    fn a_review_rounds_lens_residue_survives_a_later_tiers_genuine_crash_and_is_restored() {
+        // Spec 103, criterion 6, round 2 (adv-u103c6-guard-skipped-on-tier-err, UPHELD):
+        // the two tests above only ever crash the SAME tier whose own spawn committed the
+        // residue (the adjudicator, both times) - and only on its SUCCESS path. Neither
+        // covers the shape the adversary actually caught: an EARLIER tier (the lens)
+        // commits residue and returns `Ok`, then a LATER tier (the adversary) hits a
+        // genuine (non-parked) crash. Before this round, `review_unit` propagated that
+        // crash straight out through its bare `?` - never reaching either
+        // `guard_review_round_tree` call site, both of which sit strictly after a tier
+        // returns `Ok`. The lens's residue then survived, unrestored and unnamed in any
+        // lesson, on the unit's own kept branch (a non-parked crash keeps the branch;
+        // `run_stage` deletes only the worktree DIR). This drives exactly that shape and
+        // proves `guard_review_round_tree_on_tier_err` closes it: the crash still halts
+        // the run loudly (spec 19c), but the branch is restored to the sha the round
+        // actually started from and the residue is named in a lesson, never silently
+        // inherited by whatever attempt resumes next.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adv".into(), agent("adv"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adversary: "adv".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("work.rs".into()),
+            // A real (non-empty) output for the lens, or its degenerate empty result
+            // would trip the UNRELATED Gap-18 respawn machinery before the adversary
+            // ever gets a chance to crash - this test is about a later tier's crash,
+            // not a degenerate lens result.
+            output: "reviewed the diff".into(),
+            // TIER 1 (lens): breaks protocol and COMMITS residue to the unit's own
+            // worktree - a real commit, so the branch tip moves, not just a dirty file.
+            commits_by_agent: HashMap::from([(
+                "lens".to_string(),
+                vec![("lens-residue.rs".to_string(), "leftover\n".to_string())],
+            )]),
+            // TIER 2 (adversary): a genuine (non-parked) crash on its OWN spawn, AFTER
+            // the lens already committed residue and returned Ok.
+            fail_spawn_ids: [spawn_id("solo", ROLE_ADVERSARY, 0)].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        let err = match run(&cfg, &deps) {
+            Ok(_) => panic!(
+                "the adversary's genuine crash must still halt the run loudly (spec 19c), \
+                 not be swallowed by the new guard-on-error path"
+            ),
+            Err(e) => e,
+        };
+        assert!(
+            err.0.contains("simulated mid-spawn crash"),
+            "the propagated error must still be the adversary's own genuine crash: {}",
+            err.0
+        );
+        assert!(
+            driver.spawned("lens") && driver.spawned("adv"),
+            "premise: both the residue-committing lens and the crashing adversary must \
+             actually have run, or this test proves nothing about an EARLIER tier's \
+             residue surviving a LATER tier's crash"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let round_start_sha = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            })
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+            .unwrap_or_default();
+        assert_eq!(
+            round_start_sha.len(),
+            40,
+            "premise: the verified stamp must carry the real sha the review round started \
+             from, before the lens's own residue: {round_start_sha:?}"
+        );
+
+        let lesson = events
+            .iter()
+            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .expect(
+                "the lens's residue must be named in a lesson even though a LATER tier is \
+                 what crashed - never silently discarded",
+            );
+        assert!(
+            String::from_utf8_lossy(&lesson.data).contains("lens-residue.rs"),
+            "the lesson must name the residue the lens committed: {:?}",
+            String::from_utf8_lossy(&lesson.data)
+        );
+
+        // The BRANCH (not only the worktree dir) must be restored: a non-parked crash
+        // keeps the unit's branch (only a successful integrate deletes it), so read its
+        // tip directly and prove it is back at `round_start_sha` - the lens's residue
+        // commit must not survive on it for the next attempt to inherit as if it were
+        // the implementer's own committed work.
+        let branch_tip = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &unit_branch("solo")])
+            .output()
+            .unwrap();
+        assert!(
+            branch_tip.status.success(),
+            "the unit's branch must survive the crash (only integration deletes it): {}",
+            String::from_utf8_lossy(&branch_tip.stderr)
+        );
+        let branch_tip = String::from_utf8_lossy(&branch_tip.stdout)
+            .trim()
+            .to_string();
+        assert_eq!(
+            branch_tip, round_start_sha,
+            "the branch tip must be restored to the sha the round started from - the \
+             lens's residue commit must not survive a later tier's crash on the kept \
+             branch"
         );
     }
 

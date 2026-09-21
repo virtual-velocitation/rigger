@@ -733,7 +733,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "85a17a5834464324"
+    "content_hash": "59610025302f4061"
   },
   {
     "file": "src/conductor.rs",
@@ -741,7 +741,15 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "1d77b2dddada764b"
+    "content_hash": "0a45ddc362c82eed"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "guard_review_round_tree_on_tier_err",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "aacc9c76d96143e5"
   },
   {
     "file": "src/conductor.rs",
@@ -4494,6 +4502,14 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "3d9bd87753f147b2"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "a_review_rounds_lens_residue_survives_a_later_tiers_genuine_crash_and_is_restored",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "136b58a4b53a1a76"
   },
   {
     "file": "src/conductor.rs",
