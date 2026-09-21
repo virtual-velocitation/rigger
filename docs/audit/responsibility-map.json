@@ -745,11 +745,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "halted_spawn_checkpoint_permitted",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "4064ed4c238c26fd"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "run_single_stage",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "55f29c50e73d27ff"
+    "content_hash": "2e4f3d03c55b45b4"
   },
   {
     "file": "src/conductor.rs",
@@ -2173,7 +2181,31 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5c128e131bd980ee"
+    "content_hash": "ab1eaea9356c7a4a"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "a_dirty_tree_whose_named_spawn_was_never_requested_gets_no_wip_recovery_commit",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "0277afa21fe8e1ce"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "ad11c6dab4837f11"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "a_prior_runs_leftover_spawn_request_for_a_same_named_unit_never_halts_a_new_run",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b3802d903142d868"
   },
   {
     "file": "src/conductor.rs",

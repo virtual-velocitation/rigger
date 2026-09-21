@@ -205,13 +205,14 @@ fn unit_branch(unit: &str) -> String {
 
 /// Pre-create unit `unit`'s durable worktree exactly as `Worktree::create`'s
 /// branch-does-not-exist-yet path would (`git worktree add -b <branch> <dir> HEAD`), then
-/// leave `file` uncommitted in it with `content` - simulating a PRIOR incarnation of this
-/// unit's implementer spawn that edited the tree and was halted (a liveness sweep, the
-/// outer wall clock, a crash) before it could ever commit or report. This is the real-git
-/// stand-in for `conductor.rs`'s own `Worktree::create` + `std::fs::write` setup, one layer
-/// further out: a `rigger step` that has NEVER YET RUN in this project is about to adopt a
-/// worktree that nonetheless already exists, dirty, on disk - the "first entry to THIS
-/// process's handling of the unit" case the fix's own doc comment names.
+/// leave `file` uncommitted in it with `content` - a worktree that already exists, dirty,
+/// on disk (a restored snapshot, a desynced store) with NO spawn EVER recorded for it in
+/// the log at all. Spec 103, THE HALTED-SPAWN CHECKPOINT, decided this shape is NOT a
+/// genuine halt (the named spawn must itself carry a real `SpawnRequested`) - kept, under
+/// its own name, for the tests below that exercise the step-start SWEEP authorities'
+/// (`sweep_terminal`/`reclaim_orphan_scratch`, `main.rs`) own sparing behavior for exactly
+/// this no-spawn-recorded shape, independent of whether the checkpoint itself goes on to
+/// capture it. See [`seed_and_halt_a_dispatched_spawn`] for the genuine-halt shape.
 fn seed_halted_worktree(root: &Path, unit: &str, file: &str, content: &str) -> std::path::PathBuf {
     let dir = unit_worktree_dir(root, unit);
     let branch = unit_branch(unit);
@@ -235,31 +236,84 @@ fn seed_halted_worktree(root: &Path, unit: &str, file: &str, content: &str) -> s
     dir
 }
 
-/// The full end-to-end proof: a unit's worktree exists, dirty, from a halted prior
-/// incarnation before this project's very first `rigger step`. That step must (1) capture
-/// the abandoned edit as its own `wip` commit on the unit's durable branch before spawning
-/// the fresh implementer, (2) leave the abandoned file's content intact inside that commit,
-/// and (3) hand the fresh implementer - reachable only through the REAL `rigger prompt`
-/// command, reading the SAME on-disk store a separate process wrote - a prompt naming the
-/// exact recovery commit and saying "finish and report; do not start over". A second,
-/// independent `rigger step` while the spawn is still parked must not repeat the capture:
-/// the branch keeps exactly one such commit and its tip does not move.
+/// Genuinely halt unit `unit`'s implementer spawn (spec 103, THE HALTED-SPAWN CHECKPOINT):
+/// run a REAL priming `rigger step` first, so its worktree is created and its own
+/// `SpawnRequested` (attempt 0) lands in the log exactly as production dispatch would, then
+/// leave `file` uncommitted in that SAME worktree with `content` directly on disk - never
+/// through `rigger result` - simulating the agent editing the tree and then being halted (a
+/// liveness sweep, the outer wall clock, a crash) before it could ever commit or report.
+/// This is the real-binary, real-git, two-process stand-in for `conductor.rs`'s own
+/// in-process `Worktree::create` + `park` + `std::fs::write` setup: the checkpoint's own
+/// guard requires the named spawn to carry a real `SpawnRequested` before any dirty tree is
+/// ever captured, so a genuine halt can only be built ACROSS a real prior dispatch, never
+/// materialized on a worktree that has never been adopted by any `rigger step` at all.
+fn seed_and_halt_a_dispatched_spawn(
+    root: &Path,
+    unit: &str,
+    file: &str,
+    content: &str,
+) -> std::path::PathBuf {
+    let (prime_out, prime_err, prime_ok) = run_rigger(root, &["step"]);
+    assert!(
+        prime_ok,
+        "the priming step (the halted spawn's own real dispatch) must succeed; \
+         stderr: {prime_err}"
+    );
+    assert!(
+        prime_out.contains(&format!(r#""id":"{unit}/implementer#0""#)),
+        "the priming step must park {unit}/implementer#0 fresh, giving it a real \
+         SpawnRequested to halt later; got: {prime_out:?}"
+    );
+    let dir = unit_worktree_dir(root, unit);
+    std::fs::write(dir.join(file), content).unwrap();
+    let status = git_out(&dir, &["status", "--porcelain"]);
+    assert!(
+        !status.is_empty(),
+        "setup must leave the primed worktree genuinely dirty: {status:?}"
+    );
+    dir
+}
+
+/// The full end-to-end proof, across TWO real `rigger step` processes (spec 103, THE
+/// HALTED-SPAWN CHECKPOINT: the checkpoint fires only for a spawn the log already shows was
+/// requested): the first process dispatches `solo/implementer#0` for real; between the two
+/// processes, its worktree is dirtied directly on disk with no `rigger result` ever
+/// recorded - the halt. The SECOND process must (1) capture the abandoned edit as its own
+/// `wip` commit on the unit's durable branch, (2) leave the abandoned file's content intact
+/// inside that commit, and (3) still report `solo/implementer#0` as the (still parked, still
+/// unanswered) wave entry. A THIRD, independent `rigger step` while the spawn is still
+/// parked must not repeat the capture: the branch keeps exactly one such commit and its tip
+/// does not move.
+///
+/// NOT covered here: the ORIGINAL `rigger prompt` claim this test made before spec 103 (that
+/// the fresh implementer's prompt names the recovery commit) required the checkpoint and the
+/// spawn's OWN first dispatch to land in the SAME process - the exact "dirty tree, nothing
+/// ever requested" shape spec 103 now refuses to capture at all (see
+/// `seed_halted_worktree`'s own doc comment and the tests below that exercise it). Across two
+/// real, independent `rigger step` processes, the spawn's prompt is fixed by its own
+/// dispatch in the FIRST process and the replay driver never re-emits a refreshed one for an
+/// id that already has a request and no result - a pre-existing driver characteristic this
+/// criterion's own guard did not create and does not own (recorded as
+/// `d-u103c5-cross-window-prompt-not-refreshed`).
 #[test]
 fn a_halted_units_worktree_is_recovered_as_a_wip_commit_and_the_real_prompt_names_it() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_solo_unit_workflow(root);
 
-    let wt_dir = seed_halted_worktree(root, "solo", "halted-work.txt", "abandoned mid-edit\n");
+    // Process 1 (priming, inside the helper): dispatches solo/implementer#0 for real, then
+    // the agent dies mid-edit - dirtying the SAME worktree the priming step just adopted,
+    // with no `rigger result` ever recorded.
+    let wt_dir =
+        seed_and_halt_a_dispatched_spawn(root, "solo", "halted-work.txt", "abandoned mid-edit\n");
 
-    // Step 1: this project's FIRST EVER `rigger step`. Nothing has been recorded for "solo"
-    // yet, so this is attempt 0's Fresh-phase adoption - and the worktree it adopts, by a
-    // deterministic path lookup alone, already carries the dirt seeded above.
+    // Process 2: the recovery step. `solo/implementer#0` already has a real `SpawnRequested`
+    // and no result - a genuine halt - so the checkpoint must fire this time.
     let (out1, err1, ok1) = run_rigger(root, &["step"]);
-    assert!(ok1, "the first step must succeed; stderr: {err1}");
+    assert!(ok1, "the recovery step must succeed; stderr: {err1}");
     assert!(
         out1.contains(r#""id":"solo/implementer#0""#),
-        "the implementer must park at attempt 0 despite the pre-existing dirty tree; \
+        "the same still-unanswered implementer must still be the reported wave entry; \
          got: {out1:?}"
     );
 
@@ -273,8 +327,8 @@ fn a_halted_units_worktree_is_recovered_as_a_wip_commit_and_the_real_prompt_name
         .unwrap_or_else(|| {
             panic!(
                 "the branch must carry a wip commit recovering the halted tree; wanted a \
-                 line ending {expected_subject:?}, got:\n{log}\nstep 1 stderr (evidence of \
-                 what actually happened to the pre-seeded worktree before recovery could \
+                 line ending {expected_subject:?}, got:\n{log}\nrecovery step stderr (evidence \
+                 of what actually happened to the halted worktree before recovery could \
                  run):\n{err1}"
             )
         });
@@ -294,31 +348,12 @@ fn a_halted_units_worktree_is_recovered_as_a_wip_commit_and_the_real_prompt_name
         "the halted spawn's own file must survive, byte-for-byte, inside the recovery commit"
     );
 
-    // The fresh implementer's prompt - fetched through the REAL `rigger prompt` command,
-    // reading back the SAME store a separate `rigger step` process just wrote to - names
-    // this exact recovery commit and tells the agent to finish rather than start over.
-    let (prompt_out, prompt_err, prompt_ok) = run_rigger(root, &["prompt", "solo/implementer#0"]);
-    assert!(
-        prompt_ok,
-        "rigger prompt must succeed for the parked implementer; stderr: {prompt_err}"
-    );
-    assert!(
-        prompt_out.contains(&recovery_sha),
-        "the real prompt must name the recovery commit {recovery_sha}; got:\n{prompt_out}"
-    );
-    assert!(
-        prompt_out.contains("finish and report; do not start over")
-            || prompt_out.contains("Finish and report; do not start over"),
-        "the real prompt must tell the agent to finish and report rather than start over; \
-         got:\n{prompt_out}"
-    );
-
-    // A second, independent step process - the spawn is still parked, nothing has resulted
+    // A THIRD, independent step process - the spawn is still parked, nothing has resulted
     // it - must NOT repeat the capture: no second wip commit, and the branch tip is exactly
-    // where step 1 left it (the ordinary, overwhelmingly common no-op path).
+    // where the recovery step left it (the ordinary, overwhelmingly common no-op path).
     let tip_after_step1 = git_out(root, &["rev-parse", &unit_branch("solo")]);
     let (out2, err2, ok2) = run_rigger(root, &["step"]);
-    assert!(ok2, "the second step must succeed; stderr: {err2}");
+    assert!(ok2, "the third step must succeed; stderr: {err2}");
     assert!(
         out2.contains(r#""id":"solo/implementer#0""#),
         "the same still-parked implementer must still be the reported wave entry; \
@@ -377,16 +412,25 @@ fn an_ordinary_freshly_created_worktree_never_gains_a_halt_recovery_commit_or_pr
     );
 }
 
-/// Round 2 fix, defect (a): a unit's worktree can be dirty, genuinely halted, at the exact
-/// "branch tip is an ancestor of `rigger-run`, no spawn ever recorded" shape on THIS
-/// project's very first `rigger step` - `ensure_run_branch` mints `rigger-run` at the current
-/// HEAD before the step-start sweeps ever run, and a worktree seeded (by a restored snapshot,
-/// or a prior incarnation of this exact process) off that SAME HEAD is trivially an ancestor
-/// of it from the first instant. `sweep_terminal` and `reclaim_orphan_scratch` (`main.rs`)
-/// both run BEFORE `run_single_stage`'s halted-commit capture ever gets a chance - so either
-/// one discarding this candidate outright, before the capture runs, destroys the abandoned
-/// edit permanently rather than merely deferring its capture by one step. This proves BOTH
-/// authorities spare it, in the SAME real `cmd_step` invocation, through the compiled binary.
+/// Round 2 fix, defect (a): a unit's worktree can be dirty at the exact "branch tip is an
+/// ancestor of `rigger-run`, no spawn ever recorded" shape on THIS project's very first
+/// `rigger step` - `ensure_run_branch` mints `rigger-run` at the current HEAD before the
+/// step-start sweeps ever run, and a worktree seeded (by a restored snapshot, or external
+/// tampering) off that SAME HEAD is trivially an ancestor of it from the first instant.
+/// `sweep_terminal` and `reclaim_orphan_scratch` (`main.rs`) both run BEFORE
+/// `run_single_stage`'s halted-commit capture ever gets a chance - so either one discarding
+/// this candidate outright, before the capture runs, destroys the content permanently rather
+/// than merely deferring its capture by one step. This proves BOTH authorities still spare
+/// it, in the SAME real `cmd_step` invocation, through the compiled binary.
+///
+/// Spec 103, THE HALTED-SPAWN CHECKPOINT: this exact shape - NO spawn ever recorded for the
+/// unit - is precisely the one the checkpoint's own guard now refuses to treat as a genuine
+/// halt (see `seed_halted_worktree`'s own doc comment), so unlike before spec 103, the sweep
+/// sparing this candidate no longer implies `run_single_stage` goes on to capture it as a wip
+/// commit. What this test still owns and proves: the sweep authorities themselves must never
+/// discard un-owned dirty content outright - they still spare it, log that they did, and the
+/// content still survives on disk, uncommitted, exactly as it would for ANY unrecognized
+/// dirty worktree they must not destroy.
 #[test]
 fn a_declared_units_dirty_worktree_survives_the_step_start_sweep_backstops() {
     let dir = temp_git_project_with_commit();
@@ -404,13 +448,14 @@ fn a_declared_units_dirty_worktree_survives_the_step_start_sweep_backstops() {
     );
     assert!(
         err1.contains("worktree sweep: kept") && err1.contains("halt-recovery commit"),
-        "the sweep must explicitly log that it kept this declared, dirty candidate for the \
-         halt-recovery capture rather than silently doing nothing; stderr: {err1}"
+        "the sweep must explicitly log that it kept this declared, dirty candidate rather \
+         than silently doing nothing; stderr: {err1}"
     );
 
-    // The abandoned edit survived BOTH backstops and was then captured as this process's own
-    // wip commit - the SAME recovery this file's first test already proves in the simpler
-    // (no pre-existing `rigger-run`) case.
+    // The content survived BOTH backstops - never discarded - but since no spawn was EVER
+    // recorded for this unit, the checkpoint's own guard (spec 103) correctly refuses to
+    // capture it as a wip recovery commit: it stays exactly where the sweep left it,
+    // uncommitted.
     assert!(
         wt_dir.join("halted-work.txt").exists(),
         "the abandoned edit must survive both step-start sweep backstops untouched"
@@ -418,14 +463,20 @@ fn a_declared_units_dirty_worktree_survives_the_step_start_sweep_backstops() {
     let expected_subject = "wip(solo): tree of halted spawn solo/implementer#0";
     let log = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
     assert!(
-        log.lines().any(|l| l == expected_subject),
-        "the branch must still carry the halt-recovery wip commit despite the sweeps having \
-         run first; got:\n{log}"
+        !log.lines().any(|l| l == expected_subject),
+        "no spawn was ever requested for this unit, so the checkpoint's guard (spec 103) \
+         must refuse to fabricate a halt-recovery commit even though the sweeps spared the \
+         content; got:\n{log}"
     );
-    let survived = git_out(&wt_dir, &["show", "HEAD:halted-work.txt"]);
+    let status = git_out(&wt_dir, &["status", "--porcelain"]);
+    assert!(
+        !status.is_empty(),
+        "the content is uncaptured, so the worktree is still dirty: {status:?}"
+    );
+    let content = std::fs::read_to_string(wt_dir.join("halted-work.txt")).unwrap();
     assert_eq!(
-        survived, "abandoned mid-edit",
-        "the halted spawn's own file must survive, byte-for-byte, inside the recovery commit"
+        content, "abandoned mid-edit\n",
+        "the un-owned content itself must be completely unaffected on disk"
     );
 }
 
@@ -790,10 +841,11 @@ exec "$SDET_REAL_GIT" "$@"
 /// `git` shim on `PATH` fails the underlying `status --porcelain -z` READ itself (never
 /// merely reporting dirty CONTENT) for exactly the first two real invocations against this
 /// worktree - one budget slot per authority - then passes every later matching call straight
-/// through to the genuine git, so the rest of the pipeline (the halted-commit capture, which
-/// reads this SAME candidate's real, genuinely-dirty status once adoption begins) completes
-/// exactly as it does without the shim. The shim's own counter file, read back after the
-/// step, independently confirms BOTH real call sites actually reached the shared primitive
+/// through to the genuine git, so the rest of the pipeline completes exactly as it does
+/// without the shim (spec 103: since no spawn was ever recorded for this unit, that "rest of
+/// the pipeline" no longer includes a halt-recovery commit - see this test's own body). The
+/// shim's own counter file, read back after the step, independently confirms BOTH real call
+/// sites actually reached the shared primitive
 /// and actually hit the simulated failure - a count other than 2 means one of them stopped
 /// sharing it (round 2's own duplicated-and-diverges defect returning) or the fail-closed
 /// budget leaked into a later, unrelated read; content-only dirtiness (the round-2 test above)
@@ -855,9 +907,11 @@ fn both_step_start_backstops_share_path_is_dirty_and_fail_closed_on_an_unreadabl
          leaked into a later, unrelated status read; got {hits} matching shim invocations"
     );
 
-    // Neither authority force-removed the candidate: the abandoned edit is still on disk, and
-    // the halt-recovery capture - reached once adoption proceeds, its OWN status read now past
-    // the shim's budget and answered by the genuine, unmodified git - still committed it.
+    // Neither authority force-removed the candidate: the abandoned edit is still on disk.
+    // Spec 103, THE HALTED-SPAWN CHECKPOINT: no spawn was ever recorded for this unit (the
+    // same `seed_halted_worktree` shape as the test above), so the checkpoint's own guard
+    // correctly refuses to fabricate a recovery commit here even once adoption proceeds past
+    // the shim's budget - it stays exactly where the sweep left it, uncommitted.
     assert!(
         wt_dir.join("halted-work.txt").exists(),
         "the abandoned edit must survive both backstops despite the simulated read failures"
@@ -865,13 +919,13 @@ fn both_step_start_backstops_share_path_is_dirty_and_fail_closed_on_an_unreadabl
     let expected_subject = "wip(solo): tree of halted spawn solo/implementer#0";
     let log = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
     assert!(
-        log.lines().any(|l| l == expected_subject),
-        "the branch must still carry the halt-recovery wip commit once the shim's budget is \
-         spent and the real status read resumes; got:\n{log}"
+        !log.lines().any(|l| l == expected_subject),
+        "no spawn was ever requested for this unit, so no halt-recovery commit must appear \
+         even once the shim's budget is spent and the real status read resumes; got:\n{log}"
     );
-    let survived = git_out(&wt_dir, &["show", "HEAD:halted-work.txt"]);
+    let content = std::fs::read_to_string(wt_dir.join("halted-work.txt")).unwrap();
     assert_eq!(
-        survived, "abandoned mid-edit",
-        "the halted spawn's own file must survive, byte-for-byte, inside the recovery commit"
+        content, "abandoned mid-edit\n",
+        "the un-owned content itself must be completely unaffected on disk"
     );
 }

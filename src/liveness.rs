@@ -391,6 +391,74 @@ pub fn sweep(
     Ok(stale)
 }
 
+/// Whether the named spawn is genuinely HALTED (spec 103, THE HALTED-SPAWN CHECKPOINT
+/// decision) - the sole guard `run_single_stage`'s own per-window recovery commit
+/// (`wip(<unit>): tree of halted spawn <id>`) checks before it captures a dirty unit
+/// worktree as that commit. ALL three hold, or the caller leaves the tree and the branch
+/// alone:
+///
+/// 1. `named_spawn_id` itself carries a recorded [`crate::spawn::TYPE_SPAWN_REQUESTED`] -
+///    a spawn that was never requested has nothing to have halted.
+/// 2. it carries no REAL recorded result - a liveness fault does not count (the sweep's
+///    own stale-marker classification is a diagnosis of the hang, not a genuine outcome,
+///    so the SAME attempt is still presumed to resume against this tree).
+/// 3. no spawn belonging to the SAME `unit` (any role, any attempt) is still LIVE: its own
+///    liveness marker ([`marker_path`]) touched more recently than its own
+///    `max_wall_clock` bound ([`is_stale`]) - an unbounded spawn (`max_wall_clock: None`)
+///    is never stale, so a marker it still touches always counts as live, mirroring
+///    [`is_stale`]'s own zero-bound convention. A live spawn elsewhere in the unit means
+///    the dirty tree is a sibling attempt's (or a later-stage spawn's) ACTIVE work, never
+///    abandoned.
+///
+/// Reuses [`crate::spawn::recorded`] / [`crate::spawn::result_of`] (the same
+/// request/result authority every other liveness reader folds) and [`marker_path`] /
+/// [`is_stale`] (the same per-spawn freshness primitives [`sweep`] and [`any_marker_fresh`]
+/// already use) rather than standing up a second, divergent notion of "still working".
+/// Distinct from [`crate::worktree::spawn_fence`] (spec 83): that fence answers a coarser
+/// question (may a worktree be RECLAIMED - "no result yet" alone keeps it, missing and
+/// fresh markers indistinguishable) for a destructive removal; capturing a checkpoint
+/// commit is reversible, so this predicate affords the sharper, marker-based answer spec
+/// 103 asks for instead.
+pub fn spawn_is_halted(
+    events: &[Event],
+    scratch_root: &str,
+    run_id: &str,
+    unit: &str,
+    named_spawn_id: &str,
+    now: SystemTime,
+) -> Result<bool, Error> {
+    let requested = spawn::recorded(events).map_err(|e| Error::Backend(e.to_string()))?;
+    if !requested.contains_key(named_spawn_id) {
+        return Ok(false);
+    }
+    if let Some(res) =
+        spawn::result_of(events, named_spawn_id).map_err(|e| Error::Backend(e.to_string()))?
+    {
+        if !res.is_liveness_fault() {
+            return Ok(false);
+        }
+    }
+    for req in requested.values() {
+        if req.unit != unit {
+            continue;
+        }
+        let Some(path) = marker_path(scratch_root, run_id, &req.id) else {
+            continue;
+        };
+        let Ok(last_seen) = std::fs::metadata(&path).and_then(|m| m.modified()) else {
+            continue;
+        };
+        let bound = req
+            .max_wall_clock
+            .map(Duration::from_secs)
+            .unwrap_or(Duration::ZERO);
+        if !is_stale(now, last_seen, bound) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Every spawn whose LATEST recorded result is a liveness fault (spec 10, unit 3): the
 /// hung, not-yet-recovered spawns. `rigger step` folds this from the post-sweep stream to
 /// SURFACE hung agents (a halt reason) every step until they recover, so a stall is never
@@ -788,7 +856,14 @@ mod tests {
 
     /// Park a spawn carrying a wall-clock bound, so the sweep considers it.
     fn park_bounded(store: &Store, unit: &str, secs: u64) -> SpawnRequest {
-        let mut req = SpawnRequest::new(unit, unit, ROLE_IMPLEMENTER, 0, "task");
+        park_bounded_attempt(store, unit, 0, secs)
+    }
+
+    /// Like [`park_bounded`], but at an explicit attempt so a test can park two DISTINCT
+    /// spawns of the same unit (same `ROLE_IMPLEMENTER`, different attempts never collide
+    /// on the deterministic id, unlike two calls at attempt 0).
+    fn park_bounded_attempt(store: &Store, unit: &str, attempt: u32, secs: u64) -> SpawnRequest {
+        let mut req = SpawnRequest::new(unit, unit, ROLE_IMPLEMENTER, attempt, "task");
         req.max_wall_clock = Some(secs);
         park(store, &req).unwrap();
         req
@@ -1086,5 +1161,136 @@ mod tests {
             SystemTime::now(),
             Duration::from_secs(900)
         ));
+    }
+
+    // --- spawn_is_halted tests (spec 103, THE HALTED-SPAWN CHECKPOINT) ---
+
+    #[test]
+    fn spawn_is_halted_is_false_when_the_named_spawn_was_never_requested() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let events = read(&store);
+        // The store is empty: the named spawn has no SpawnRequested at all - nothing has
+        // halted, so the checkpoint must not fire.
+        assert!(!spawn_is_halted(
+            &events,
+            root,
+            TEST_RUN,
+            "u",
+            &spawn::spawn_id("u", ROLE_IMPLEMENTER, 0),
+            SystemTime::now(),
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn spawn_is_halted_is_true_for_a_requested_spawn_with_no_result_and_no_live_marker() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let req = park_bounded(&store, "u", 300);
+        // No marker was ever planted for this spawn - genuinely silent, the classic halt.
+        let events = read(&store);
+        assert!(
+            spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, SystemTime::now(),).unwrap()
+        );
+    }
+
+    #[test]
+    fn spawn_is_halted_is_true_once_the_named_spawns_own_marker_has_gone_stale() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let req = park_bounded(&store, "u", 300);
+        plant_marker(root, &req.id);
+        let events = read(&store);
+        // Evaluated 400s later, 100s past the 300s bound: the marker is stale, so the
+        // spawn is halted.
+        let now = SystemTime::now() + Duration::from_secs(400);
+        assert!(spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, now).unwrap());
+    }
+
+    #[test]
+    fn spawn_is_halted_is_false_when_the_named_spawns_own_marker_is_still_fresh() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let req = park_bounded(&store, "u", 300);
+        plant_marker(root, &req.id);
+        let events = read(&store);
+        // Evaluated only 10s later, well inside the 300s bound: still actively working.
+        let now = SystemTime::now() + Duration::from_secs(10);
+        assert!(!spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, now).unwrap());
+    }
+
+    #[test]
+    fn spawn_is_halted_is_false_when_the_named_spawn_already_has_a_real_result() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let req = park_bounded(&store, "u", 300);
+        spawn_store::record_result(&store, &SpawnResult::ok(&req.id, "done")).unwrap();
+        let events = read(&store);
+        // A real result means the spawn ended normally - the tree's dirt (if any) belongs
+        // to whatever runs next, never a halt this spawn left behind.
+        assert!(
+            !spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, SystemTime::now(),).unwrap()
+        );
+    }
+
+    #[test]
+    fn spawn_is_halted_is_true_when_the_named_spawns_only_result_is_its_own_liveness_fault() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let req = park_bounded(&store, "u", 300);
+        // The sweep's own stale-marker classification is a diagnosis of the hang, not a
+        // real outcome - the same attempt is still presumed to resume against this tree.
+        spawn_store::record_result(
+            &store,
+            &SpawnResult::liveness_fault(&req.id, "hung", "infra"),
+        )
+        .unwrap();
+        let events = read(&store);
+        assert!(
+            spawn_is_halted(&events, root, TEST_RUN, "u", &req.id, SystemTime::now(),).unwrap()
+        );
+    }
+
+    #[test]
+    fn spawn_is_halted_is_false_when_a_sibling_spawn_of_the_same_unit_is_still_live() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        // The named spawn (attempt 0) is silent - no marker at all - but a later attempt
+        // spawn of the SAME unit is actively touching its own marker right now.
+        let named = park_bounded_attempt(&store, "u", 0, 300);
+        let live = park_bounded_attempt(&store, "u", 1, 300);
+        assert_ne!(
+            named.id, live.id,
+            "two attempts of the same unit have distinct ids"
+        );
+        plant_marker(root, &live.id);
+        let events = read(&store);
+        let now = SystemTime::now() + Duration::from_secs(10);
+        assert!(
+            !spawn_is_halted(&events, root, TEST_RUN, "u", &named.id, now).unwrap(),
+            "a live sibling spawn of the same unit means the tree is active work, not a halt"
+        );
+    }
+
+    #[test]
+    fn spawn_is_halted_ignores_a_live_spawn_belonging_to_a_different_unit() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let named = park_bounded(&store, "u", 300);
+        let other_unit = park_bounded(&store, "v", 300);
+        plant_marker(root, &other_unit.id);
+        let events = read(&store);
+        let now = SystemTime::now() + Duration::from_secs(10);
+        // The other unit's spawn is live, but it is not THIS unit's - must not block.
+        assert!(spawn_is_halted(&events, root, TEST_RUN, "u", &named.id, now).unwrap());
     }
 }

@@ -21,6 +21,7 @@ use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder};
 use crate::ledger::{self, RunState};
+use crate::liveness;
 use crate::safety;
 use crate::spawn::{
     self, lens_role, spawn_id, spawn_retry_id, speculation_group_id, ROLE_ADJUDICATOR,
@@ -4586,6 +4587,41 @@ impl RunCtx<'_> {
         }
     }
 
+    /// THE HALTED-SPAWN CHECKPOINT's guard (spec 103): whether `named_spawn_id` (the
+    /// implementer spawn `run_single_stage`'s recovery commit below would name) is
+    /// genuinely halted right now, per [`liveness::spawn_is_halted`] - requested, carrying
+    /// no real result, and no spawn of `unit` still touching a marker inside its own
+    /// wall-clock bound. Reads the log fresh (the same pattern this file's other
+    /// resume-time reads already use, e.g. [`Self::resume_phase`]) and derives the SAME
+    /// scratch root every other `Worktree::create`/reclaim call site in this file computes,
+    /// so a re-derivation can never diverge from where the driver-framed worker actually
+    /// touches its marker.
+    fn halted_spawn_checkpoint_permitted(
+        &self,
+        unit: &str,
+        named_spawn_id: &str,
+    ) -> Result<bool, Error> {
+        let all = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        // Scoped to THIS run alone (mirrors `run()`'s own `prior_events` fold and every
+        // `liveness::sweep`/`hung_spawns` call site): an unscoped whole-stream read would let
+        // a PRIOR run's leftover `SpawnRequested` for a same-named unit (a re-run that reuses
+        // a slug) satisfy this guard for a unit this run has never touched - the same Gap 11
+        // zombie class `crate::run::current_run`'s own doc comment names.
+        let events = crate::run::current_run(&all);
+        let scratch = crate::worktree::scratch_root_from_env(
+            &self.deps.repo,
+            &self.cfg.workflow.defaults.workdir,
+        );
+        Ok(liveness::spawn_is_halted(
+            events,
+            &scratch,
+            &self.run_id,
+            unit,
+            named_spawn_id,
+            std::time::SystemTime::now(),
+        )?)
+    }
+
     /// `any_parked` (spec 64 c1 round 4) is threaded straight through, unread, to the
     /// [`Self::review_unit`] call below - it is `run_stage`'s out-of-band any-parked
     /// signal, read there AFTER this function returns, independently of whatever `Result`
@@ -4634,16 +4670,28 @@ impl RunCtx<'_> {
         // for an abandoned edit, but a false alarm for a legitimate in-progress merge) and
         // turns a resumable state into a hard, no-attempt-charged error instead of ever
         // reaching the idempotent path built to handle exactly this.
+        let named_halt_spawn = spawn_id(
+            &st.name,
+            ROLE_IMPLEMENTER,
+            self.effective_attempts(&st.name),
+        );
         let halted_commit = match wt {
-            Some(w) if !w.merge_in_progress() => w.commit_checkpoint(&format!(
-                "wip({}): tree of halted spawn {}",
-                st.name,
-                spawn_id(
-                    &st.name,
-                    ROLE_IMPLEMENTER,
-                    self.effective_attempts(&st.name)
-                )
-            ))?,
+            // THE HALTED-SPAWN CHECKPOINT (spec 103), decided: capturing a dirty tree as
+            // this recovery commit is reserved for a GENUINE halt - the named spawn was
+            // requested, carries no real result, and no spawn of this unit is still live
+            // (`halted_spawn_checkpoint_permitted`, backed by `liveness::spawn_is_halted`).
+            // Otherwise the tree and the branch are left exactly as found: a live reviewer
+            // or sibling attempt's in-progress edit, or a spawn that already answered, is
+            // never mistaken for abandoned work.
+            Some(w)
+                if !w.merge_in_progress()
+                    && self.halted_spawn_checkpoint_permitted(&st.name, &named_halt_spawn)? =>
+            {
+                w.commit_checkpoint(&format!(
+                    "wip({}): tree of halted spawn {}",
+                    st.name, named_halt_spawn
+                ))?
+            }
             _ => String::new(),
         };
         // Resume-continuity, Reviewed phase: the unit's review was APPROVED in a prior
@@ -13719,6 +13767,23 @@ mod tests {
         );
 
         let store = Store::open(":memory:").unwrap();
+        // Establish the SAME run boundary `run()`'s own `ensure_started(store, &[])` call
+        // below will adopt (empty criteria, matching `deps.criteria` below) BEFORE parking
+        // the halted incarnation's own `SpawnRequested` - the checkpoint's guard reads the
+        // log scoped to `current_run` (spec 103), so a request parked before ANY RunStarted
+        // exists would sit outside every run's scope and never satisfy it, the same Gap 11
+        // zombie shape every other liveness reader in this file already guards against.
+        crate::run_store::ensure_started(&store, &[]).unwrap();
+        // The halted incarnation's own `SpawnRequested` (spec 103, THE HALTED-SPAWN
+        // CHECKPOINT): a genuine halt means an EARLIER process actually dispatched this
+        // exact spawn before leaving the tree dirty above - never recording its own
+        // `SpawnResult` or a fresh liveness marker (neither exists in this fresh store),
+        // exactly the shape the recovery guard requires before it will fire.
+        spawn_store::park(
+            &store,
+            &spawn::SpawnRequest::new("u-halt", "u-halt", ROLE_IMPLEMENTER, 0, "task"),
+        )
+        .unwrap();
         let driver = Stub::new();
         let runner = ExecRunner;
         let deps = Deps {
@@ -13804,6 +13869,284 @@ mod tests {
             "the re-park prompt must tell the agent to finish and report, not start \
              over; got:\n{}",
             worker_prompts[0]
+        );
+    }
+
+    #[test]
+    fn a_dirty_tree_whose_named_spawn_was_never_requested_gets_no_wip_recovery_commit() {
+        // Spec 103, THE HALTED-SPAWN CHECKPOINT: the recovery commit fires only for a
+        // GENUINE halt - the named spawn must itself carry a `SpawnRequested`. A dirty
+        // worktree with no such request behind it (stray content, never a rigger spawn's
+        // own abandoned edit) is left alone by this guard; the ordinary flow still runs
+        // and may sweep the file into its own, differently-named commit, but never
+        // fabricates a "tree of halted spawn" recovery for a spawn that never happened.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "u-halt-unrequested".into(),
+            Stage {
+                name: "u-halt-unrequested".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "u-halt-unrequested");
+        let wt = Worktree::create(
+            &repo_path,
+            &dir,
+            &unit_branch("u-halt-unrequested"),
+            &scratch,
+        )
+        .unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("stray.txt"),
+            "never a recorded spawn's edit\n",
+        )
+        .unwrap();
+        assert!(wt.is_dirty().unwrap(), "the setup must leave it dirty");
+
+        // No `SpawnRequested` is parked for this unit anywhere in the store - the
+        // deliberate contrast with the positive-path test above.
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["u-halt-unrequested"].status,
+            ledger::Status::Verified
+        );
+
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s", &unit_branch("u-halt-unrequested")])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout).to_string();
+        let unwanted_subject = format!(
+            "wip(u-halt-unrequested): tree of halted spawn {}",
+            spawn_id("u-halt-unrequested", ROLE_IMPLEMENTER, 0)
+        );
+        assert!(
+            !log.lines().any(|l| l == unwanted_subject),
+            "no spawn was ever requested for this unit, so no wip recovery commit must \
+             appear; got:\n{log}"
+        );
+    }
+
+    #[test]
+    fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live() {
+        // Spec 103, THE HALTED-SPAWN CHECKPOINT: even when the named spawn itself has a
+        // `SpawnRequested` and no result, the recovery commit must not fire while ANOTHER
+        // spawn of the SAME unit (a later attempt, a reviewer, ...) is still actively
+        // touching its own liveness marker - the dirty tree is that spawn's live work, not
+        // an abandoned edit.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "u-halt-live-sibling".into(),
+            Stage {
+                name: "u-halt-live-sibling".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "u-halt-live-sibling");
+        let wt = Worktree::create(
+            &repo_path,
+            &dir,
+            &unit_branch("u-halt-live-sibling"),
+            &scratch,
+        )
+        .unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("halted-work.txt"),
+            "abandoned mid-edit\n",
+        )
+        .unwrap();
+        assert!(wt.is_dirty().unwrap(), "the setup must leave it dirty");
+
+        let store = Store::open(":memory:").unwrap();
+        // Learn the run id `run()` will adopt (same store, same empty criteria) so the
+        // sibling's marker is planted under the exact path production derives.
+        let run_id = crate::run_store::ensure_started(&store, &[]).unwrap();
+
+        // The named spawn (attempt 0) was requested and carries no result of its own -
+        // by itself, a genuine halt.
+        spawn_store::park(
+            &store,
+            &spawn::SpawnRequest::new(
+                "u-halt-live-sibling",
+                "u-halt-live-sibling",
+                ROLE_IMPLEMENTER,
+                0,
+                "task",
+            ),
+        )
+        .unwrap();
+        // A SIBLING spawn of the same unit (attempt 1), bounded, whose marker is touched
+        // RIGHT NOW - still well inside its wall-clock bound.
+        let mut live = spawn::SpawnRequest::new(
+            "u-halt-live-sibling",
+            "u-halt-live-sibling",
+            ROLE_IMPLEMENTER,
+            1,
+            "task",
+        );
+        live.max_wall_clock = Some(3600);
+        spawn_store::park(&store, &live).unwrap();
+        let marker = liveness::marker_path(&scratch, &run_id, &live.id)
+            .expect("a non-degenerate spawn id always encodes");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"heartbeat").unwrap();
+
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["u-halt-live-sibling"].status,
+            ledger::Status::Verified
+        );
+
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s", &unit_branch("u-halt-live-sibling")])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout).to_string();
+        let unwanted_subject = format!(
+            "wip(u-halt-live-sibling): tree of halted spawn {}",
+            spawn_id("u-halt-live-sibling", ROLE_IMPLEMENTER, 0)
+        );
+        assert!(
+            !log.lines().any(|l| l == unwanted_subject),
+            "a live sibling spawn of the same unit must suppress the wip recovery \
+             commit; got:\n{log}"
+        );
+    }
+
+    #[test]
+    fn a_prior_runs_leftover_spawn_request_for_a_same_named_unit_never_halts_a_new_run() {
+        // The checkpoint's guard reads the log scoped to THIS run alone (`current_run`),
+        // exactly like `run()`'s own `prior_events` fold: a PRIOR, unrelated run's leftover
+        // `SpawnRequested` for a same-named unit (a re-run that reuses a slug, or an
+        // unrelated workflow that happens to name a stage identically) must never satisfy
+        // "the named spawn has a SpawnRequested" for a unit THIS run has never touched -
+        // the same Gap 11 zombie class every other liveness reader in this file already
+        // guards against by scoping to `current_run`.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "u-halt-prior-run".into(),
+            Stage {
+                name: "u-halt-prior-run".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        // A PRIOR, unrelated run: its own RunStarted, then a real SpawnRequested (no
+        // result) for a unit of the SAME name this test's own run will also use.
+        crate::run_store::ensure_started(&store, &["old criteria".to_string()]).unwrap();
+        spawn_store::park(
+            &store,
+            &spawn::SpawnRequest::new(
+                "u-halt-prior-run",
+                "u-halt-prior-run",
+                ROLE_IMPLEMENTER,
+                0,
+                "task",
+            ),
+        )
+        .unwrap();
+
+        // THIS run's own dirty worktree for the same-named unit - nothing has been
+        // requested for it in THIS run yet.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "u-halt-prior-run");
+        let wt =
+            Worktree::create(&repo_path, &dir, &unit_branch("u-halt-prior-run"), &scratch).unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("stray.txt"),
+            "never requested in THIS run\n",
+        )
+        .unwrap();
+        assert!(wt.is_dirty().unwrap(), "the setup must leave it dirty");
+
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            // Empty, like every other test in this module - differs from the seeded prior
+            // run's non-empty criteria, so `run()` mints a FRESH RunStarted rather than
+            // adopting the old one, and bypasses the (unrelated) coverage-gap check.
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["u-halt-prior-run"].status,
+            ledger::Status::Verified
+        );
+
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s", &unit_branch("u-halt-prior-run")])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout).to_string();
+        let unwanted_subject = format!(
+            "wip(u-halt-prior-run): tree of halted spawn {}",
+            spawn_id("u-halt-prior-run", ROLE_IMPLEMENTER, 0)
+        );
+        assert!(
+            !log.lines().any(|l| l == unwanted_subject),
+            "a PRIOR run's leftover SpawnRequested for a same-named unit must never satisfy \
+             THIS run's own halted-spawn checkpoint; got:\n{log}"
         );
     }
 
