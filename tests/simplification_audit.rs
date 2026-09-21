@@ -9676,8 +9676,8 @@ mod tests {
         assert!(rendered.contains("dup-0006"));
         assert!(rendered.contains("dup-0056"));
         assert!(rendered.contains("dup-0110"));
-        assert!(rendered.contains("dup-0174"));
         assert!(rendered.contains("dup-0175"));
+        assert!(rendered.contains("dup-0176"));
         assert!(rendered.contains("dup-0221"));
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("src/conductor.rs"));
