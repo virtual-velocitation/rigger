@@ -274,6 +274,37 @@ const STATUS_REVIEW_TIER: &str = "review-tier";
 const TIER_LIGHT: &str = "light";
 const TIER_FULL: &str = "full";
 
+/// The `UnitStatus.status` token a durable REVIEW-ROUND-START mark carries (spec 103,
+/// criterion 6, round 3, closing
+/// sdet-u103c6-r3-round-start-sha-live-not-log-derived-across-a-park): [`RunCtx::
+/// review_round_start_sha`] stamps this the FIRST time [`RunCtx::review_unit`] is entered
+/// for a given `(unit, attempt)` - `attempt` already lane-keyed on the speculation path,
+/// exactly like the `verified`/`green` keys it shares the format with - carrying the sha
+/// `dir` holds at THAT moment, in [`META_WORKTREE_SHA`], before any tier has run. A LATER
+/// re-entry for the SAME `(unit, attempt)` - a resumed step after a tier parked, or a
+/// same-call sibling park in a concurrent chunk that leaves the whole round unresolved -
+/// finds this mark already durable and reads the stamped sha back
+/// ([`recorded_review_round_start_sha`]) instead of re-deriving it live from `dir`, which
+/// may by then carry an EARLIER tier's own committed residue: `guard_review_round_tree_
+/// on_tier_err` deliberately skips restoring that residue while ANY tier is still parked
+/// (an in-flight park has not resolved yet, so it could not have left new residue to
+/// guard against - see that function's own doc comment), so a live re-read would silently
+/// adopt the residue as the round's own new baseline the moment a later entry recomputed
+/// it. Like [`STATUS_ADOPTION_RECORDED`] this is deliberately NOT a [`ledger::Status`]
+/// variant, so `Status::parse` returns `None` and both the ledger and metrics folds
+/// ignore it - the mark exists purely as log-derived ground truth for this one read.
+const STATUS_REVIEW_ROUND_START: &str = "review-round-start";
+
+/// The replay key for a durable [`STATUS_REVIEW_ROUND_START`] mark, keyed by the exact
+/// `(unit, attempt)` coordinate [`RunCtx::review_unit`] entered under - `attempt` is
+/// already the candidate's `lane` on the speculation path, mirroring the `{unit}/
+/// verified#{attempt}` / `{unit}/green#{lane}` key format those share (a given unit runs
+/// EITHER the single-lane OR the speculation path, never both, so the two attempt
+/// namespaces never collide in practice).
+fn review_round_start_key(unit: &str, attempt: u32) -> String {
+    format!("{unit}/review-round-start#{attempt}")
+}
+
 /// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
 /// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
 /// verdict instead of re-running the command (spec 04, criterion 4). Distinct attempts
@@ -4300,6 +4331,58 @@ impl RunCtx<'_> {
         })
     }
 
+    /// A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6, round 3,
+    /// closing sdet-u103c6-r3-round-start-sha-live-not-log-derived-across-a-park): the
+    /// round-start sha every guard in [`Self::review_unit`] restores residue against must
+    /// itself be LOG-DERIVED, never a live `worktree::head_sha_of` read repeated on every
+    /// entry into that function. A live re-read silently adopts an EARLIER tier's already-
+    /// committed residue as the round's own new baseline the instant that tier's park -
+    /// crossing tiers within one call (an earlier tier commits residue and returns `Ok`,
+    /// a later tier parks), or a same-call SIBLING park in a concurrent chunk (one lens
+    /// commits residue and returns `Ok` while a co-chunked sibling parks, so the chunk's
+    /// own aggregated `Err` is the park, not a genuine error - see
+    /// `run_review_agents_concurrently`) - makes `guard_review_round_tree_on_tier_err`
+    /// skip its restore (correctly: an in-flight park has not resolved yet, so THIS call
+    /// could not have left new residue) and this exact `(unit, attempt)` is entered again,
+    /// either later in the SAME process's next step or by a wholly resumed process.
+    ///
+    /// Stamps a NEW dedicated, replay-keyed [`STATUS_REVIEW_ROUND_START`] mark
+    /// ([`review_round_start_key`]) the FIRST time `review_unit` is entered for this
+    /// `(unit, attempt)` - `attempt` is already lane-keyed on the speculation path
+    /// (`review_unit`'s own `attempt` parameter IS the candidate's `lane` there) - carrying
+    /// the sha `dir` holds at THAT moment, before any tier has run. A later re-entry for
+    /// the SAME `(unit, attempt)` finds the key already in
+    /// [`replayed_keys`](RunCtx::replayed_keys) (seeded from this run's own history at
+    /// construction, or inserted by an earlier entry this same process) and reads the
+    /// stamped value back via [`recorded_review_round_start_sha`] instead of re-deriving
+    /// it, so a tier's residue from the FIRST entry never becomes a later entry's baseline.
+    ///
+    /// Deliberately never repurposes the `verified` stamp (round 3,
+    /// adv-u103c6-r3-fix-direction-fails-on-speculation-path): on the single-lane path
+    /// `verified` is emitted immediately before this same call and would be self-consistent
+    /// there, but the speculation phase-B call site (`run_speculation`) runs `review_unit`
+    /// BEFORE that lane's own `verified`/`green` are ever emitted - they are deferred to
+    /// [`Self::emit_speculation_winner_status`], which runs only for the WINNING lane,
+    /// strictly after `review_unit` already returned. `verified` has no durable value yet
+    /// at the speculation call site's entry, so reading it there would silently
+    /// reintroduce the exact live-read bug this function exists to close.
+    fn review_round_start_sha(&self, unit: &str, attempt: u32, dir: &str) -> Result<String, Error> {
+        let key = review_round_start_key(unit, attempt);
+        if self.replayed_keys.lock().unwrap().contains(&key) {
+            let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+            let events = crate::run::current_run(&events);
+            return Ok(recorded_review_round_start_sha(events, unit, attempt).unwrap_or_default());
+        }
+        let sha = worktree::head_sha_of(dir);
+        self.emit_keyed_meta(
+            &key,
+            ledger::TYPE_UNIT_STATUS,
+            json!({"id": unit, "status": STATUS_REVIEW_ROUND_START, "attempt": attempt}),
+            &[(META_WORKTREE_SHA, &sha)],
+        )?;
+        Ok(sha)
+    }
+
     /// Run the three-tier review of THIS unit's diff and return the outcome (whether
     /// it is approved, plus the adjudicator's verdict reasoning) (§3.2). The three
     /// tiers communicate THROUGH THE CONTEXT GRAPH - the system's actual cross-agent
@@ -4400,10 +4483,13 @@ impl RunCtx<'_> {
             return Ok(ReviewOutcome::approved(String::new()));
         }
         // A REVIEW ROUND LEAVES THE TREE IT REVIEWED (spec 103, criterion 6): the sha
-        // `dir` carries right NOW, before any tier's spawn, is the sha every tier below is
-        // about to judge - captured here, once, as the one ground truth `guard_review_
-        // round_tree` restores to if a tier's spawn leaves residue behind.
-        let round_start_sha = worktree::head_sha_of(dir);
+        // `dir` carries at THIS unit+attempt's first entry, before any tier's spawn, is
+        // the sha every tier below is about to judge - the one ground truth
+        // `guard_review_round_tree` restores to if a tier's spawn leaves residue behind.
+        // LOG-DERIVED on a later re-entry (round 3): see `review_round_start_sha`'s own
+        // doc comment for why a live re-read here would silently adopt an earlier tier's
+        // already-committed residue as this round's new baseline.
+        let round_start_sha = self.review_round_start_sha(&st.name, attempt, dir)?;
         let lenses = panel.lenses.clone();
         let adversary = panel.adversary.clone();
         let adjudicator = panel.adjudicator.clone();
@@ -12354,6 +12440,29 @@ fn quarantine_branch_name(unit_id: &str, tip: &str) -> String {
         sanitize_for_path(unit_id),
         &tip[..tip.len().min(12)]
     )
+}
+
+/// The durable [`STATUS_REVIEW_ROUND_START`] sha [`RunCtx::review_round_start_sha`]
+/// stamped the FIRST time `review_unit` was entered for this EXACT `(unit, attempt)`, if
+/// any (spec 103, criterion 6, round 3) - mirrors [`recorded_adoption`]'s own read shape
+/// (whole-stream-scoped find, matching on the event's own `id`/`status`/`attempt` fields
+/// rather than trusting the caller's replay key alone). `None` when this exact
+/// `(unit, attempt)` was never stamped - the caller's own first-entry path handles that
+/// case by stamping fresh rather than calling this at all.
+fn recorded_review_round_start_sha(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
+    events.iter().find_map(|e| {
+        if e.type_ != ledger::TYPE_UNIT_STATUS {
+            return None;
+        }
+        let v: Value = serde_json::from_slice(&e.data).ok()?;
+        if v.get("id").and_then(Value::as_str) != Some(unit)
+            || v.get("status").and_then(Value::as_str) != Some(STATUS_REVIEW_ROUND_START)
+            || v.get("attempt").and_then(Value::as_u64) != Some(u64::from(attempt))
+        {
+            return None;
+        }
+        e.meta.get(META_WORKTREE_SHA).cloned()
+    })
 }
 
 /// The adoption decision [`RunCtx::adopt_prior_criterion_branch`] already recorded for
@@ -31753,6 +31862,577 @@ mod tests {
             "the branch tip must be restored to the sha the round started from - the \
              lens's residue commit must not survive a later tier's crash on the kept \
              branch"
+        );
+    }
+
+    #[test]
+    fn a_review_rounds_log_derived_start_sha_survives_a_cross_call_resume_after_a_later_tiers_park()
+    {
+        // Spec 103, criterion 6, round 3 (closing
+        // sdet-u103c6-r3-round-start-sha-live-not-log-derived-across-a-park): the sibling
+        // of the crash test above, with a PARK instead of a genuine crash - the shape the
+        // round-3 review actually caught. A crash propagates loudly and this same file's
+        // round-2 test already proves the branch is restored WITHIN that one process; a
+        // park is swallowed cleanly (the round unwinds with the residue still on the
+        // branch and NOTHING restored yet - `guard_review_round_tree_on_tier_err` skips by
+        // design while the adversary is still in flight) and the SAME `(unit, attempt)` is
+        // entered again from a SECOND, wholly separate process sharing only the durable
+        // store. A live `worktree::head_sha_of` re-read at that second entry would read
+        // the residue-laden tip the first window's parked round left behind and silently
+        // adopt it as the round's own new baseline - exactly the failure this criterion
+        // exists to prevent.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("adv".into(), agent("adv"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adversary: "adv".into(),
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+
+        // WINDOW 1: TIER 1 (lens) breaks protocol and COMMITS residue, returning Ok; TIER 2
+        // (adversary) PARKS before the guard on tier 1's own `Ok` ever runs (that guard
+        // sits on the SUCCESS path, strictly after a LATER tier resolves) - so the round
+        // unwinds with the lens's residue still on the branch, unrestored.
+        let driver1 = Stub {
+            write_file: Some("feature.rs".into()),
+            output: "reviewed the diff".into(),
+            commits_by_agent: HashMap::from([(
+                "lens".to_string(),
+                vec![("lens-residue.rs".to_string(), "leftover\n".to_string())],
+            )]),
+            park_spawn_ids: [spawn_id("solo", ROLE_ADVERSARY, 0)].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps1 = Deps {
+            store: &store,
+            driver: &driver1,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps1).unwrap();
+
+        assert!(
+            driver1.spawned("lens") && driver1.spawned("adv"),
+            "premise: both the residue-committing lens and the parking adversary must \
+             actually have run this window, or this test proves nothing"
+        );
+        assert!(
+            !driver1.spawned("judge"),
+            "premise: the adjudicator must never be reached while the adversary is still \
+             parked"
+        );
+
+        let branch = unit_branch("solo");
+        let residue_tip = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &branch])
+            .output()
+            .unwrap();
+        assert!(residue_tip.status.success());
+        let residue_tip = String::from_utf8_lossy(&residue_tip.stdout)
+            .trim()
+            .to_string();
+
+        // WINDOW 2: a SECOND, separate process (a fresh driver, this Stub-based harness
+        // re-spawns every reviewer tier fresh each entry into `review_unit` - only the
+        // IMPLEMENTER is skipped on resume). The lens runs again but commits NOTHING this
+        // time (no `commits_by_agent` on this driver), so the residue present at this
+        // entry is entirely window 1's own commit; the adversary now resolves normally and
+        // the adjudicator approves.
+        let driver2 = Stub {
+            output_by_agent: HashMap::from([
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+                ("adv".to_string(), "reviewed: no blocker".to_string()),
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps2 = Deps {
+            store: &store,
+            driver: &driver2,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps2).unwrap();
+
+        assert!(
+            driver2.spawned("lens") && driver2.spawned("adv") && driver2.spawned("judge"),
+            "premise: the resumed window must actually finish the round, or this test \
+             proves nothing"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let verified_sha = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            })
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+            .unwrap_or_default();
+        assert_eq!(
+            verified_sha.len(),
+            40,
+            "premise: the verified stamp (window 1's real round-start) must carry a real \
+             sha: {verified_sha:?}"
+        );
+        assert_ne!(
+            verified_sha, residue_tip,
+            "premise: the true round-start sha must differ from the residue-laden tip, or \
+             this test cannot distinguish a log-derived read from a live re-read"
+        );
+
+        let round_start_marks = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data)
+                        .contains("\"status\":\"review-round-start\"")
+            })
+            .count();
+        assert_eq!(
+            round_start_marks, 1,
+            "the round-start mark must be stamped exactly once, on window 1's first entry \
+             - window 2's re-entry must READ it back, never emit a second one"
+        );
+
+        let reviewed_sha = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+            })
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+            .unwrap_or_default();
+        assert_eq!(
+            reviewed_sha, verified_sha,
+            "the resumed round must judge against WINDOW 1's real round-start sha, \
+             log-derived - never a live re-read of the residue-laden tip the parked \
+             window left on the branch: reviewed={reviewed_sha:?} verified={verified_sha:?} \
+             residue_tip={residue_tip:?}"
+        );
+
+        let lesson = events
+            .iter()
+            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .expect(
+                "the lens's window-1 residue must be named in a lesson once the resumed \
+                 round finishes - never silently adopted as the new baseline",
+            );
+        assert!(
+            String::from_utf8_lossy(&lesson.data).contains("lens-residue.rs"),
+            "the lesson must name the residue the lens committed: {:?}",
+            String::from_utf8_lossy(&lesson.data)
+        );
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "reviewer residue hygiene across a cross-call resume charges NO remediation \
+             attempt"
+        );
+
+        assert!(
+            Path::new(&repo_path).join("feature.rs").exists(),
+            "the implementer's real, reviewed work must still land"
+        );
+        assert!(
+            !Path::new(&repo_path).join("lens-residue.rs").exists(),
+            "the lens's own residue must NEVER reach integration, even after surviving a \
+             cross-call resume"
+        );
+    }
+
+    #[test]
+    fn a_review_rounds_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume() {
+        // Spec 103, criterion 6, round 3 (closing
+        // adv-u103c6-r3-same-chunk-sibling-park-also-triggers): the shape neither the
+        // crash test nor the cross-tier-park test above drives - a SAME-CHUNK sibling
+        // park. Lenses "a" and "b" run CONCURRENTLY in ONE chunk: "a" breaks protocol and
+        // commits residue, returning Ok; "b" PARKS. `run_review_agents_concurrently`
+        // collects `[Ok, Err(parked)]` - no genuine error to swap to front - so the
+        // trailing `?` propagates "b"'s parked `Err` unchanged, and
+        // `guard_review_round_tree_on_tier_err` skips by design (this fires WITHIN the
+        // SAME `review_unit` call that already correctly captured `round_start_sha` before
+        // either lens ran - the bug is never THIS call, only a LATER re-entry). A second,
+        // separate process resumes: "b" now finishes normally and the adjudicator
+        // approves. A live re-read at that second entry would see "a"'s residue-laden tip
+        // and silently adopt it as the round's own new baseline.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.agents.insert("b".into(), agent("b"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "solo".into(),
+            Stage {
+                name: "solo".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["a".into(), "b".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+
+        // WINDOW 1: "a" and "b" run in the SAME concurrent chunk. "a" commits residue and
+        // returns Ok; "b" parks. Neither the adversary nor the adjudicator is ever reached
+        // this window - the lens tier itself is what errors (parked).
+        let driver1 = Stub {
+            write_file: Some("feature.rs".into()),
+            output: "reviewed the diff".into(),
+            commits_by_agent: HashMap::from([(
+                "a".to_string(),
+                vec![("a-residue.rs".to_string(), "leftover\n".to_string())],
+            )]),
+            park_spawn_ids: [spawn_id("solo", &lens_role("b"), 0)].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps1 = Deps {
+            store: &store,
+            driver: &driver1,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps1).unwrap();
+
+        assert!(
+            driver1.spawned("a") && driver1.spawned("b"),
+            "premise: both the residue-committing lens and its parked co-chunked sibling \
+             must actually have run this window, or this test proves nothing"
+        );
+        assert!(
+            !driver1.spawned("judge"),
+            "premise: the adjudicator must never be reached while a same-chunk sibling is \
+             still parked"
+        );
+
+        let branch = unit_branch("solo");
+        let residue_tip = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &branch])
+            .output()
+            .unwrap();
+        assert!(residue_tip.status.success());
+        let residue_tip = String::from_utf8_lossy(&residue_tip.stdout)
+            .trim()
+            .to_string();
+
+        // WINDOW 2: a SECOND, separate process (this Stub-based harness re-spawns every
+        // reviewer tier fresh each entry - only the IMPLEMENTER is skipped on resume). "a"
+        // runs again but commits NOTHING this time (no `commits_by_agent` on this driver),
+        // so the residue present at this entry is entirely window 1's own commit; "b" now
+        // resolves normally and the adjudicator approves.
+        let driver2 = Stub {
+            output_by_agent: HashMap::from([
+                ("a".to_string(), "reviewed: no blocker".to_string()),
+                ("b".to_string(), "reviewed: no blocker".to_string()),
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps2 = Deps {
+            store: &store,
+            driver: &driver2,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps2).unwrap();
+
+        assert!(
+            driver2.spawned("a") && driver2.spawned("b") && driver2.spawned("judge"),
+            "premise: the resumed window must actually finish the round, or this test \
+             proves nothing"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let verified_sha = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            })
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+            .unwrap_or_default();
+        assert_eq!(verified_sha.len(), 40, "premise: {verified_sha:?}");
+        assert_ne!(
+            verified_sha, residue_tip,
+            "premise: the true round-start sha must differ from the residue-laden tip, or \
+             this test cannot distinguish a log-derived read from a live re-read"
+        );
+
+        let round_start_marks = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data)
+                        .contains("\"status\":\"review-round-start\"")
+            })
+            .count();
+        assert_eq!(
+            round_start_marks, 1,
+            "the round-start mark must be stamped exactly once, on window 1's first entry \
+             (BEFORE either lens ran) - window 2's re-entry must READ it back"
+        );
+
+        let reviewed_sha = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+            })
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+            .unwrap_or_default();
+        assert_eq!(
+            reviewed_sha, verified_sha,
+            "the resumed round must judge against WINDOW 1's real round-start sha - never \
+             a live re-read of the residue \"a\" left on the branch before \"b\" parked: \
+             reviewed={reviewed_sha:?} verified={verified_sha:?} residue_tip={residue_tip:?}"
+        );
+
+        let lesson = events
+            .iter()
+            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .expect(
+                "\"a\"'s window-1 residue must be named in a lesson once the resumed round \
+                 finishes - never silently adopted as the new baseline",
+            );
+        assert!(
+            String::from_utf8_lossy(&lesson.data).contains("a-residue.rs"),
+            "the lesson must name the residue \"a\" committed: {:?}",
+            String::from_utf8_lossy(&lesson.data)
+        );
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "reviewer residue hygiene across a same-chunk sibling park charges NO \
+             remediation attempt"
+        );
+
+        assert!(
+            Path::new(&repo_path).join("feature.rs").exists(),
+            "the implementer's real, reviewed work must still land"
+        );
+        assert!(
+            !Path::new(&repo_path).join("a-residue.rs").exists(),
+            "\"a\"'s own residue must NEVER reach integration, even after surviving a \
+             same-chunk sibling park across a resume"
+        );
+    }
+
+    #[test]
+    fn a_speculation_lanes_log_derived_start_sha_survives_a_cross_call_resume_after_a_park() {
+        // Spec 103, criterion 6, round 3 (closing
+        // adv-u103c6-r3-fix-direction-fails-on-speculation-path): the SPECULATION twin of
+        // the cross-tier-park test above, through `run_speculation`'s own phase-B call
+        // site - which runs BEFORE the winning lane's `verified`/`green` are ever emitted
+        // (deferred to `emit_speculation_winner_status`, strictly AFTER `review_unit`
+        // returns), so repurposing the `verified` stamp (the single-lane fix direction)
+        // cannot work here: there is no durable `verified` yet at this call site's entry.
+        // Lane 0's lens commits residue and returns Ok; lane 0's adjudicator PARKS. A
+        // second, separate process resumes: the adjudicator now approves. A live re-read
+        // at that second entry would adopt the lens's residue as lane 0's new baseline.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                speculation_width: 2,
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+
+        // WINDOW 1: both candidates implement and gate green (phase A). Phase B evaluates
+        // lane 0 first: its lens commits residue and returns Ok, then its adjudicator
+        // PARKS - `review_unit`'s `?` propagates the parked error straight out of
+        // `run_speculation` (its own doc comment: no candidate worktree is torn down on
+        // ANY error from `review_unit`), so lane 1 is never even reached this window.
+        let driver1 = Stub {
+            write_file: Some("feature.rs".into()),
+            output: "reviewed the diff".into(),
+            commits_by_agent: HashMap::from([(
+                "lens".to_string(),
+                vec![("lens-residue.rs".to_string(), "leftover\n".to_string())],
+            )]),
+            park_spawn_ids: [spawn_id("s", ROLE_ADJUDICATOR, 0)].into_iter().collect(),
+            ..Stub::new()
+        };
+        let deps1 = Deps {
+            store: &store,
+            driver: &driver1,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        run(&cfg, &deps1).unwrap();
+
+        assert!(
+            driver1.spawned("lens") && driver1.spawned("judge"),
+            "premise: both lane 0's residue-committing lens and its parked adjudicator \
+             must actually have run this window, or this test proves nothing"
+        );
+
+        // Lane 0 is special-cased by `speculation_lane_worktree` to reuse the SAME branch
+        // and dir a single-lane unit would (`unit_branch`/`unit_worktree_dir` on the bare
+        // unit name) - only lane > 0 gets a `-spec{lane}` suffix. Using lane 0 as the
+        // winner below lets this premise check reuse the exact same helpers the
+        // single-lane test above does.
+        let branch = unit_branch("s");
+        let residue_tip = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["rev-parse", &branch])
+            .output()
+            .unwrap();
+        assert!(residue_tip.status.success());
+        let residue_tip = String::from_utf8_lossy(&residue_tip.stdout)
+            .trim()
+            .to_string();
+
+        // WINDOW 2: a SECOND, separate process (this Stub-based harness re-spawns every
+        // tier fresh each entry, including both candidates' implementers again in phase
+        // A - harmless here, since neither candidate's worktree has any new content to
+        // write). Lane 0's lens runs again but commits NOTHING this time (no
+        // `commits_by_agent` on this driver), so the residue present at lane 0's review
+        // entry is entirely window 1's own commit; the adjudicator now approves.
+        let driver2 = Stub {
+            output_by_agent: HashMap::from([
+                ("lens".to_string(), "reviewed: no blocker".to_string()),
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            ..Stub::new()
+        };
+        let deps2 = Deps {
+            store: &store,
+            driver: &driver2,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps2).unwrap();
+
+        assert!(
+            driver2.spawned("lens") && driver2.spawned("judge"),
+            "premise: the resumed window must actually finish lane 0's round"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "lane 0 must win and integrate once the resumed round approves it"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let round_start_marks = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data)
+                        .contains("\"status\":\"review-round-start\"")
+            })
+            .count();
+        assert_eq!(
+            round_start_marks, 1,
+            "lane 0's round-start mark must be stamped exactly once, on window 1's first \
+             entry - window 2's re-entry must READ it back, never emit a second one"
+        );
+
+        // Lane 0's deferred `verified`/`reviewed` are both emitted only once it WINS
+        // (`emit_speculation_winner_status`), strictly after this resumed `review_unit`
+        // call returns - so both carry the SAME sha, and it must be the log-derived
+        // round-start sha, never the residue-laden tip the parked window left behind.
+        let verified_sha = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"verified\"")
+            })
+            .and_then(|e| e.meta.get(META_WORKTREE_SHA).cloned())
+            .unwrap_or_default();
+        assert_eq!(verified_sha.len(), 40, "premise: {verified_sha:?}");
+        assert_ne!(
+            verified_sha, residue_tip,
+            "the winner's stamped sha must be lane 0's TRUE round-start, log-derived - \
+             never a live re-read of the lens's residue-laden tip: \
+             verified={verified_sha:?} residue_tip={residue_tip:?}"
+        );
+
+        let lesson = events
+            .iter()
+            .find(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .expect(
+                "lane 0's window-1 lens residue must be named in a lesson once the resumed \
+                 round finishes - never silently adopted as the winner's new baseline",
+            );
+        assert!(
+            String::from_utf8_lossy(&lesson.data).contains("lens-residue.rs"),
+            "the lesson must name the residue the lens committed: {:?}",
+            String::from_utf8_lossy(&lesson.data)
+        );
+
+        assert!(
+            Path::new(&repo_path).join("feature.rs").exists(),
+            "the winning candidate's real, reviewed work must still land"
+        );
+        assert!(
+            !Path::new(&repo_path).join("lens-residue.rs").exists(),
+            "the lens's own residue must NEVER reach integration, even after surviving a \
+             cross-call resume through the speculation path"
         );
     }
 
