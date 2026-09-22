@@ -600,11 +600,11 @@
       },
       {
         "file": "tests/cli.rs",
-        "line": 23583
+        "line": 23587
       },
       {
         "file": "tests/cli.rs",
-        "line": 23598
+        "line": 23602
       }
     ]
   },
@@ -1678,35 +1678,35 @@
       },
       {
         "file": "tests/cli.rs",
-        "line": 11126
+        "line": 11130
       },
       {
         "file": "tests/cli.rs",
-        "line": 11127
+        "line": 11131
       },
       {
         "file": "tests/cli.rs",
-        "line": 11128
+        "line": 11132
       },
       {
         "file": "tests/cli.rs",
-        "line": 11129
+        "line": 11133
       },
       {
         "file": "tests/cli.rs",
-        "line": 11214
+        "line": 11218
       },
       {
         "file": "tests/cli.rs",
-        "line": 11274
+        "line": 11278
       },
       {
         "file": "tests/cli.rs",
-        "line": 11275
+        "line": 11279
       },
       {
         "file": "tests/cli.rs",
-        "line": 11276
+        "line": 11280
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
