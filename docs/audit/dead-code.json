@@ -1855,6 +1855,18 @@
         "content_hash": "572defa6902d294e"
       },
       {
+        "file": "tests/cli.rs",
+        "content_hash": "50cd3c1e51affeb1"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "50cd3c1e51affeb1"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "50cd3c1e51affeb1"
+      },
+      {
         "file": "tests/dash_run_tree_spine.rs",
         "content_hash": "0234522ff60b9638"
       },
@@ -2285,6 +2297,22 @@
       {
         "file": "src/spawn_store.rs",
         "content_hash": "bcd7620b2f61753c"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "55c217ebb3bbfd1b"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "446ab234af65a4ac"
       }
     ],
     "disposition": "delete",

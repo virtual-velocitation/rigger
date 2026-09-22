@@ -1729,6 +1729,18 @@
         "line": 11276
       },
       {
+        "file": "tests/cli.rs",
+        "line": 24949
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24985
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24988
+      },
+      {
         "file": "tests/dash_run_tree_spine.rs",
         "line": 145
       },
@@ -2127,6 +2139,22 @@
       {
         "file": "src/spawn_store.rs",
         "line": 491
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24925
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24951
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24987
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24990
       }
     ]
   },
