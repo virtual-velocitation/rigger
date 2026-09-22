@@ -499,6 +499,84 @@ fn validate_is_silent_on_graph_index_lag_when_the_graph_has_recorded_nothing() {
 }
 
 // ---------------------------------------------------------------------------------------
+// (d) NO UNGATED FAN-OUT TEMPLATE (spec 103, criterion 2)
+// ---------------------------------------------------------------------------------------
+
+/// Strip the scaffolded `implement` template's `gates: [build, test, lint]` down to
+/// `gates: []` in the REAL persisted `.rigger/workflow.yml` `rigger init` just wrote - the
+/// exact on-disk edit an author makes to (deliberately or accidentally) declare a gate-less
+/// fan-out template. Matches on the closing `]` immediately after `lint` so it can only ever
+/// hit the `implement` stage's own gate list, never `checkin`'s
+/// `gates: [build, test, lint, mutation]` (`lint` there is followed by `,`, not `]`).
+fn strip_implement_gates(root: &Path) {
+    let path = root.join(".rigger").join("workflow.yml");
+    let raw = std::fs::read_to_string(&path).expect("read the scaffolded workflow");
+    let needle = "gates: [build, test, lint]";
+    assert!(
+        raw.contains(needle),
+        "fixture bug: the scaffolded workflow's `implement` gate list has drifted from what \
+         this test edits; workflow.yml:\n{raw}"
+    );
+    std::fs::write(&path, raw.replacen(needle, "gates: []", 1))
+        .expect("rewrite workflow.yml with an ungated implement template");
+}
+
+#[test]
+fn validate_warns_of_an_ungated_fanout_template_and_names_it() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    strip_implement_gates(root);
+
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(
+        ok,
+        "an advisory must never fail validate's exit status; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("fan-out template 'implement' declares no gates"),
+        "validate must warn of the ungated fan-out template, naming it; stderr:\n{err}"
+    );
+    assert!(
+        err.contains("gates:"),
+        "the warning must name the fix (adding a `gates:` list); stderr:\n{err}"
+    );
+    // The scaffold's OTHER gate-less stages - `plan` (a producer: `produces: dag`) and
+    // `plan-critique` (review-only: no `agent`) - are not fan-out templates at all and must
+    // draw no warning of their own. Proven against the REAL, multi-stage scaffolded config
+    // (never a synthetic single-stage fixture), so this is the only place `is_fan_out_template`'s
+    // full predicate is exercised against real coexisting stage shapes that could plausibly be
+    // confused for a fan-out template.
+    assert_eq!(
+        err.matches("declares no gates").count(),
+        1,
+        "only the one genuine ungated fan-out template may be named; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("template 'plan'") && !err.contains("template 'plan-critique'"),
+        "a non-fan-out stage with no gates must never be misidentified as an ungated fan-out \
+         template; stderr:\n{err}"
+    );
+}
+
+#[test]
+fn validate_is_silent_on_the_scaffolded_gated_fanout_template() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let (_out, err, ok) = run_rigger(root, &["validate"]);
+    assert!(ok, "validate must succeed; stderr:\n{err}");
+    assert!(
+        !err.contains("declares no gates"),
+        "the scaffolded `implement` template declares gates and must draw no warning; \
+         stderr:\n{err}"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
 // A CLEAN store draws neither advisory, and the exit status is unchanged either way
 // ---------------------------------------------------------------------------------------
 
@@ -531,5 +609,10 @@ fn a_clean_store_with_no_symbols_index_and_no_duplication_draws_neither_advisory
     assert!(
         !err.to_lowercase().contains("fallen behind"),
         "a project the graph has never indexed must draw no graph-index-lag warning; stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("declares no gates"),
+        "the freshly-scaffolded `implement` template declares gates and must draw no \
+         ungated-fan-out-template warning; stderr:\n{err}"
     );
 }
