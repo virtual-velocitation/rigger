@@ -568,6 +568,94 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is
     );
 }
 
+/// Spec 103, THE HALTED-SPAWN CHECKPOINT's SECOND guard condition, through the real binary and
+/// the exact shape the spec's own Problem statement names: "`run_single_stage` commits whatever
+/// the unit worktree holds ... even when the named spawn already has a result and reviewers are
+/// live in the shared worktree; it committed a reviewer's temporary red-repro edit above an
+/// approved tip". `src/liveness.rs`'s own
+/// `spawn_is_halted_is_false_when_the_named_spawn_already_has_a_real_result` proves the guard
+/// white-box, on the pure function alone; nothing before this test wires it through
+/// `run_single_stage` at all - the sibling round-trip test above only ever runs `rigger step`
+/// a SECOND time BEFORE any result exists. This drives it end to end: process 1 dispatches
+/// `solo/implementer#0` for real, its real work is recorded with a real `rigger result` (so
+/// the named spawn now carries an ordinary, non-fault result), and only THEN does something
+/// else dirty the SAME worktree again - unrelated to the implementer's own committed diff,
+/// mirroring a reviewer's own edit landing after the spawn already answered. Process 2 must
+/// never mistake that later dirt for the named spawn's own halt.
+#[test]
+fn a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_real_result() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_solo_unit_workflow(root);
+
+    // Process 1: dispatches solo/implementer#0 for real.
+    let (out1, err1, ok1) = run_rigger(root, &["step"]);
+    assert!(ok1, "the first step must succeed; stderr: {err1}");
+    assert!(
+        out1.contains(r#""id":"solo/implementer#0""#),
+        "the implementer must park at attempt 0; got: {out1:?}"
+    );
+
+    // The implementer's own real edit, then its real, non-fault result - recorded through the
+    // real `rigger result` command, exactly like an ordinary successful attempt.
+    let wt_dir = unit_worktree_dir(root, "solo");
+    std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
+    let (_out, result_err, result_ok) =
+        run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
+    assert!(
+        result_ok,
+        "recording the implementer's real result must succeed; stderr: {result_err}"
+    );
+
+    // Between this window and the next, something else dirties the SAME worktree with content
+    // the implementer never wrote - the reviewer's own temporary repro edit, left uncommitted,
+    // landing above an already-answered spawn.
+    std::fs::write(wt_dir.join("reviewer-repro.txt"), "temporary red repro\n").unwrap();
+    let status = git_out(&wt_dir, &["status", "--porcelain"]);
+    assert!(
+        !status.is_empty(),
+        "setup must leave the tree dirty: {status:?}"
+    );
+
+    // Process 2: `solo/implementer#0` already has a real result - guard 2 - so no matter how
+    // dirty the tree is when this window starts, the checkpoint must not mistake it for a halt.
+    let (out2, err2, ok2) = run_rigger(root, &["step"]);
+    assert!(ok2, "the second step must succeed; stderr: {err2}");
+    assert!(
+        out2.contains(r#""done":true"#),
+        "the unit (a single-gate, unreviewed, on_pass: none stage) must still reach its \
+         terminal verified state once the real result is in; got: {out2:?}"
+    );
+
+    let expected_subject = "wip(solo): tree of halted spawn solo/implementer#0";
+    let log = git_out(root, &["log", "--pretty=%s", &unit_branch("solo")]);
+    assert!(
+        !log.lines().any(|l| l == expected_subject),
+        "the named spawn already carries a real result, so a dirty tree at the start of the \
+         next window must never be captured as its own halt-recovery commit; got:\n{log}\n\
+         step 2 stderr: {err2}"
+    );
+
+    // The content is never lost - it still lands, through the ordinary per-attempt checkpoint
+    // this criterion does not own, just never under the halt-recovery message above.
+    let committed_work = git_out(root, &["show", &format!("{}:work.rs", unit_branch("solo"))]);
+    assert_eq!(
+        committed_work, "pub fn work() {}",
+        "the implementer's own real edit must still land in the committed tree"
+    );
+    let committed_extra = git_out(
+        root,
+        &[
+            "show",
+            &format!("{}:reviewer-repro.txt", unit_branch("solo")),
+        ],
+    );
+    assert_eq!(
+        committed_extra, "temporary red repro",
+        "the post-result dirt must still land in the committed tree, never silently discarded"
+    );
+}
+
 /// The `project_identity` a fresh, real `rigger` process resolves for `root` - mirrors
 /// `tests/cli.rs`'s identically-named helper (the tracked `.rigger/project.id` at the git
 /// top-level when present, else the git top-level basename, else `root`'s own basename), so a

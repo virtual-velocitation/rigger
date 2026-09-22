@@ -24902,6 +24902,110 @@ fn any_marker_fresh_public_contract_holds_at_the_crate_boundary() {
     );
 }
 
+/// Spec 103, THE HALTED-SPAWN CHECKPOINT - the PUBLIC contract of
+/// [`rigger::liveness::spawn_is_halted`] at the CRATE BOUNDARY, mirroring
+/// `any_marker_fresh_public_contract_holds_at_the_crate_boundary` above for this criterion's own
+/// new pub fn. `src/liveness.rs`'s own module tests prove it white-box, inside the module
+/// (including the bounded/unbounded-sibling and same-run-scoping edge cases);
+/// `tests/halted_spawn_wip_recovery_periphery.rs` proves the cross-module seam - `conductor.rs`'s
+/// `RunCtx::halted_spawn_checkpoint_permitted` calling into it - end to end through the real
+/// compiled binary. Neither calls the function directly from OUTSIDE the module the way an
+/// external caller does - this test does, pinning that `rigger::liveness::spawn_is_halted` is
+/// exported and its three-part truth table (recorded request, no real result, no live sibling)
+/// holds at the public `rigger::liveness` boundary, built entirely from the crate's own public
+/// `spawn`/`spawn_store`/`eventstore` API - never a crate-internal privilege this external test
+/// does not have.
+#[test]
+fn spawn_is_halted_public_contract_holds_at_the_crate_boundary() {
+    use rigger::conductor::STREAM;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+    use rigger::liveness::{marker_path, spawn_is_halted};
+    use rigger::spawn::{SpawnRequest, SpawnResult, ROLE_IMPLEMENTER};
+    use rigger::spawn_store::{park, record_result};
+    use std::time::SystemTime;
+
+    const RUN_ID: &str = "run-1";
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().to_str().unwrap();
+    let store = Store::open(":memory:").unwrap();
+    let read = |store: &Store| store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+
+    // A spawn id nobody ever requested: nothing has halted, so the checkpoint must not fire.
+    assert!(
+        !spawn_is_halted(
+            &read(&store),
+            root,
+            RUN_ID,
+            "u",
+            "u/implementer#0",
+            SystemTime::now()
+        )
+        .unwrap(),
+        "an id with no recorded SpawnRequested must never read as halted"
+    );
+
+    // Requested, no result, no marker at all - the classic silent halt.
+    let mut named = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task");
+    named.max_wall_clock = Some(300);
+    park(&store, &named).unwrap();
+    assert!(
+        spawn_is_halted(
+            &read(&store),
+            root,
+            RUN_ID,
+            "u",
+            &named.id,
+            SystemTime::now()
+        )
+        .unwrap(),
+        "a requested spawn with no result and no live marker must read as halted"
+    );
+
+    // The SAME spawn, once it carries a real (non-fault) result: no longer a halt, however
+    // dirty the tree it left behind - the exact "reviewer edits above an approved tip" shape
+    // spec 103's own problem statement names.
+    record_result(&store, &SpawnResult::ok(&named.id, "done")).unwrap();
+    assert!(
+        !spawn_is_halted(
+            &read(&store),
+            root,
+            RUN_ID,
+            "u",
+            &named.id,
+            SystemTime::now()
+        )
+        .unwrap(),
+        "a spawn that already carries a real result must never read as halted"
+    );
+
+    // A DIFFERENT, still-resultless spawn of the same unit, with a SIBLING spawn's own
+    // liveness marker fresh right now: the unit has live work in flight, so this one must not
+    // read as halted either, even though it individually looks silent.
+    let mut other = SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 0, "task");
+    other.max_wall_clock = Some(300);
+    park(&store, &other).unwrap();
+    let mut sibling = SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 1, "task");
+    sibling.max_wall_clock = Some(300);
+    park(&store, &sibling).unwrap();
+    let marker = marker_path(root, RUN_ID, &sibling.id).expect("a real spawn id always encodes");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"heartbeat").unwrap();
+    assert!(
+        !spawn_is_halted(
+            &read(&store),
+            root,
+            RUN_ID,
+            "v",
+            &other.id,
+            SystemTime::now()
+        )
+        .unwrap(),
+        "a live sibling spawn of the same unit must suppress the checkpoint for a resultless \
+         named spawn"
+    );
+}
+
 /// Spec 62, criterion 5 round 2 - the PUBLIC contract of [`rigger::registry::read_all`] at the
 /// CRATE BOUNDARY, mirroring `any_marker_fresh_public_contract_holds_at_the_crate_boundary` above
 /// for this round's new pub fn. `src/registry.rs`'s own module tests prove it white-box (inside
