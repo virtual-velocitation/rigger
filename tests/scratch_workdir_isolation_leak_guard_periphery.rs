@@ -25,7 +25,6 @@
 //! before landing the fix, mirroring that finding's own "isolated fake-HOME run" method so
 //! this proof never has to touch the operator's actual `~/.cache/rigger` to make its point.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 mod common;
@@ -134,42 +133,59 @@ fn real_cache_home_rigger_dir() -> Option<PathBuf> {
     Some(rigger::driver::replay::cache_home_from(xdg, home)?.join("rigger"))
 }
 
-/// Every direct child entry currently under `dir` (non-recursive: a NEW top-level entry is
-/// exactly what a leaked worktree/scratch root would be) - `dir` not yet existing reads as
-/// empty, matching a machine that has never run a fixture against this cache home before.
-fn snapshot(dir: &Path) -> BTreeSet<PathBuf> {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect()
-}
-
 /// Ruling item 3, guard 1: a REAL in-process `conductor::run()` that creates a REAL git unit
 /// worktree, routed through [`common::isolated_workdir`] (item 2's fix), must leave the real
-/// ambient cache home exactly as it found it - the class of litter the operator ruling
-/// exists to close (`adv-u89c2r6-empty-dir-litter-empirically-reproduced`), proven absent
-/// here rather than merely argued from the code.
+/// ambient cache home exactly as it found it for THIS fixture's own repo - the class of
+/// litter the operator ruling exists to close
+/// (`adv-u89c2r6-empty-dir-litter-empirically-reproduced`), proven absent here rather than
+/// merely argued from the code.
+///
+/// Scoped to the ONE entry an isolation regression would create for this fixture's own
+/// (freshly minted, therefore never-before-seen) repo path - computed through
+/// [`rigger::worktree::cache_scratch_root_from`], the SAME production authority
+/// `real_cache_home_rigger_dir` itself reuses, never a second, independently-spelled copy of
+/// the precedence - rather than a whole-directory snapshot. The real ambient cache home is
+/// legitimately SHARED scratch space for every concurrently running test binary in the suite
+/// (`.cargo/pidns-runner.sh` pins one `XDG_CACHE_HOME` for the whole run, by design - see its
+/// own header comment): other periphery tests deliberately exercise the real ambient default
+/// themselves, so a sibling creating or reclaiming its OWN, differently-keyed entry there
+/// during this window is expected concurrent traffic, never a leak this guard should fail on
+/// (a whole-directory `before == after` snapshot flaked exactly this way under
+/// `cargo-mutants`' full-suite baseline: a concurrent sibling's own unrelated entry vanished
+/// mid-window - `sdet-checkin-scratch-leak-guard-scoped-not-snapshot`).
 #[test]
 fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_home() {
-    let Some(real_dir) = real_cache_home_rigger_dir() else {
+    if real_cache_home_rigger_dir().is_none() {
         return; // genuinely homeless host: nothing for this guard to check
-    };
-    let before = snapshot(&real_dir);
+    }
 
     let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = one_unit_cfg(repo.path());
     let store = Store::open(":memory:").unwrap();
     let deps = Deps {
         store: &store,
         driver: &NoopDriver,
         gates: &ExecRunner,
-        repo: repo.path().to_str().unwrap().to_string(),
+        repo: repo_path.clone(),
         grounder: None,
         graph: None,
         criteria: vec!["a widget exists".to_string()],
     };
+
+    let would_leak = rigger::worktree::cache_scratch_root_from(
+        &repo_path,
+        std::env::var_os("XDG_CACHE_HOME"),
+        std::env::var_os("HOME"),
+    )
+    .expect("a non-empty, non-homeless fixture always resolves a cache-home scratch root");
+    assert!(
+        !would_leak.exists(),
+        "precondition: a freshly minted fixture repo path must not already have an entry at \
+         the exact path an isolation regression would create, or this test proves nothing: \
+         {would_leak:?}"
+    );
+
     let rs = run(&cfg, &deps).expect("the isolated in-process run must complete");
     assert_eq!(
         rs.units.len(),
@@ -177,11 +193,11 @@ fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_
         "exactly one fan-out unit for the one criterion"
     );
 
-    let after = snapshot(&real_dir);
-    assert_eq!(
-        before, after,
+    assert!(
+        !would_leak.exists(),
         "an isolated in-process conductor::run() must create no new entry under the real \
-         cache home {real_dir:?}: before {before:?} after {after:?}"
+         cache home: the exact entry an isolation regression would create for this \
+         fixture's own repo now exists at {would_leak:?}"
     );
 }
 
