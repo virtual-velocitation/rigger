@@ -3668,7 +3668,7 @@ fn render_section_3() -> String {
         violation - calls `crate::grounder::design::events::project_batches` \
         directly by concrete module path for the design-doc half of the same walk. \
         These two calls are two of the three named sites of section 2's own \
-        catalogued duplicate cluster (`dup-0221`: \
+        catalogued duplicate cluster (`dup-0223`: \
         `src/grounder/design/events.rs:90-114`, \
         `src/grounder/symbols/events.rs:89-91`, and this diff's own new third site, \
         `src/grounder/workflowdef.rs:242-249` - all three named `project_batches`), \
@@ -4760,16 +4760,16 @@ fn render_section_6() -> String {
     );
     out.push_str(
         "#### 2. Close the `Grounder` port gap for whole-project batch ingest (retires \
-        dup-0212 in the same motion)\n\n",
+        dup-0214 in the same motion)\n\n",
     );
     out.push_str(
         "- Scope: section 3 violation 2 (`src/ingest.rs:187-211` `walk_batches`, reaching \
         `grounder::symbols::events::project_batches_paced` and \
         `grounder::design::events::project_batches` by concrete module path) and \
-        duplication cluster `dup-0212` (the same two modules' own twin `project_batches` \
+        duplication cluster `dup-0214` (the same two modules' own twin `project_batches` \
         functions, `src/grounder/symbols/events.rs:36-38` / \
         `src/grounder/design/events.rs:90-114`) are one root cause, not two - fix once. TWO \
-        CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): `dup-0212`'s own mechanical \
+        CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): `dup-0214`'s own mechanical \
         `proposed_home` suggests relocating into `tests/common`, but both sites are \
         production code under `src/grounder/`, not test helpers - the mechanical heuristic \
         has no \"add a port method\" category to route a production duplicate to, so it \
@@ -4779,15 +4779,15 @@ fn render_section_6() -> String {
         - Files: `src/ingest.rs`, `src/grounder/mod.rs`, `src/grounder/symbols/events.rs`, \
         `src/grounder/design/events.rs`.\n\
         - Expected line delta: roughly neutral - one new trait method plus two thin impls, \
-        minus the two duplicate bodies `dup-0212` catalogs.\n\
+        minus the two duplicate bodies `dup-0214` catalogs.\n\
         - Risk: medium. `ingest.rs`'s own module doc calls it \"the ONE walk-and-content-key \
         authority\" - a load-bearing path; needs the existing whole-project-ingest and \
         reindex-freshening coverage to stay green, not just the two duplicate-site tests.\n\
-        - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0212` \
+        - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0214` \
         together, rather than as two separately-tracked fixes.\n\n",
     );
     out.push_str(
-        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0176` + `dup-0177`)\n\n",
+        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0182` + `dup-0183`)\n\n",
     );
     out.push_str(
         "- Scope: `src/dash.rs::process_state` (`src/dash.rs:499-507`) and \
@@ -4795,19 +4795,22 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:190-207`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0177`, 15 sites: `src/dash.rs`, `src/main.rs`, \
+        capstone previously caught (`dup-0183`, 15 sites: `src/dash.rs`, `src/main.rs`, \
         `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \
         91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \
         reason `dash.rs::process_state` does, growing this already-known cluster by one site \
-        rather than opening a new one), plus 60 raw `/proc`-path string literals scattered \
-        across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four test files with no \
-        shared composer (`dup-0176`). Both clusters' own `proposed_home` agree: `src/reap.rs` \
+        rather than opening a new one; `dup-0183`'s own count in \
+        `docs/audit/duplication-catalog.json` is the one live authority, so this paragraph's \
+        number is a point-in-time snapshot, not a frozen fact), plus 60 raw `/proc`-path \
+        string literals scattered across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four \
+        test files with no shared composer (`dup-0182`). Both clusters' own `proposed_home` \
+        agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
         re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
         production server, so it is the actual active-correctness risk this tier-1 placement \
         is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:12825`) \
         and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
-        rides in this same item only because it shares `dup-0176`/`dup-0177`'s one root cause \
+        rides in this same item only because it shares `dup-0182`/`dup-0183`'s one root cause \
         and one proposed fix with `process_state`, not because retiring it retires any live \
         risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
@@ -4962,7 +4965,7 @@ fn render_section_6() -> String {
         mechanically regardless of the Jaccard pass, per spec 85's own Design.\n\n",
     );
     out.push_str(
-        "#### 10. Consolidate the 655 `.rigger`-path string-literal sites (`dup-0056`) - the \
+        "#### 10. Consolidate the 655 `.rigger`-path string-literal sites (`dup-0057`) - the \
         single largest cluster in the entire catalog by site count\n\n",
     );
     out.push_str(
@@ -4973,7 +4976,7 @@ fn render_section_6() -> String {
         `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
         `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `src/reap.rs`, \
         `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list \
-        is in the committed `docs/audit/duplication-catalog.json` under `dup-0056` for the \
+        is in the committed `docs/audit/duplication-catalog.json` under `dup-0057` for the \
         follow-up spec to consume directly, not re-enumerated here.\n\
         - Expected line delta: negative - 662 literal compositions collapse toward one \
         helper's call sites; the helper itself is small.\n\
@@ -4994,7 +4997,7 @@ fn render_section_6() -> String {
         `src/driver/cli.rs`, `src/gate.rs`, `src/main.rs`, `src/worktree.rs` plus many \
         `tests/` files - full site list in `docs/audit/duplication-catalog.json` under \
         `dup-0006`.\n\
-        - Expected line delta: negative, though smaller per-site than `dup-0056` since each \
+        - Expected line delta: negative, though smaller per-site than `dup-0057` since each \
         `Command::new` call already carries real configuration (args, env, cwd) that must \
         move with it, not just a literal.\n\
         - Risk: medium-high - several of these 333 sites sit inside `src/budget.rs`'s and \
@@ -5007,13 +5010,13 @@ fn render_section_6() -> String {
         site 334.\n\n",
     );
     out.push_str(
-        "#### 12. Consolidate the 46 sqlite `Connection::open` call sites (`dup-0110`)\n\n",
+        "#### 12. Consolidate the 46 sqlite `Connection::open` call sites (`dup-0112`)\n\n",
     );
     out.push_str(
         "- Scope: one sqlite-connection-opening adapter function (the cluster's own \
         `proposed_home`) spanning `src/contextgraph/sqlite.rs`, `src/eventstore/sqlite.rs` \
         and `src/main.rs`, plus several `tests/` files.\n\
-        - Files: full site list in `docs/audit/duplication-catalog.json` under `dup-0110`.\n\
+        - Files: full site list in `docs/audit/duplication-catalog.json` under `dup-0112`.\n\
         - Expected line delta: negative - 46 open calls collapse toward one function.\n\
         - Risk: medium - touches the event store and context graph's own \
         connection-lifecycle code; needs the store-identity and store-resolution contract \
@@ -5022,7 +5025,7 @@ fn render_section_6() -> String {
         46.\n\n",
     );
     out.push_str(
-        "#### 13. Consolidate the 5 error-shaping helper sites (`dup-0221`) - caution, \
+        "#### 13. Consolidate the 5 error-shaping helper sites (`dup-0223`) - caution, \
         confirm before merging\n\n",
     );
     out.push_str(
@@ -5037,7 +5040,7 @@ fn render_section_6() -> String {
         spec's first job is confirming by reading whether these six sites share actual \
         logic before proposing one helper, not assuming the cluster label proves it.\n\
         - Files: `src/grounder/mod.rs`, `src/worktree.rs`, plus the three test files named \
-        in `docs/audit/duplication-catalog.json` under `dup-0221`.\n\
+        in `docs/audit/duplication-catalog.json` under `dup-0223`.\n\
         - Expected line delta: unknown pending the confirmation read above - potentially \
         zero if the cluster does not survive a human read.\n\
         - Risk: low (the smallest-site-count sweep), but with the stated precondition.\n\
@@ -5146,7 +5149,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
         above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0056`, `dup-0110`, \
-        `dup-0176`, `dup-0177`, `dup-0212`, `dup-0221`); the remaining 327 clusters touching \
+        `dup-0182`, `dup-0183`, `dup-0212`, `dup-0221`); the remaining 327 clusters touching \
         `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
         section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
         exact-duplicate clusters first, consumed directly from \
@@ -9669,15 +9672,15 @@ mod tests {
         // Cites section 3's two boundary violations by name.
         assert!(rendered.contains("AgentDriver"));
         assert!(rendered.contains("Grounder"));
-        // The two-candidates-one-home resolution for dup-0212 (spec 85 CONSTRAINTS WALK).
-        assert!(rendered.contains("dup-0212"));
+        // The two-candidates-one-home resolution for dup-0214 (spec 85 CONSTRAINTS WALK).
+        assert!(rendered.contains("dup-0214"));
         assert!(rendered.contains("TWO CANDIDATES, ONE HOME"));
         // Cites the mandatory-sweep duplication clusters by id.
         assert!(rendered.contains("dup-0006"));
         assert!(rendered.contains("dup-0056"));
         assert!(rendered.contains("dup-0110"));
-        assert!(rendered.contains("dup-0176"));
-        assert!(rendered.contains("dup-0177"));
+        assert!(rendered.contains("dup-0182"));
+        assert!(rendered.contains("dup-0183"));
         assert!(rendered.contains("dup-0221"));
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("src/conductor.rs"));

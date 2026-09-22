@@ -9819,6 +9819,19 @@ fn cmd_validate(args: &[String]) -> Res {
         cfg.workflow.stages.len(),
         cfg.workflow.gates.len()
     );
+    // NO UNGATED FAN-OUT TEMPLATE advisory (spec 103, criterion 2): warn when a fan-out
+    // implement template declares no gates at all - the author-time half of the runtime
+    // invariant `conductor::run` enforces once a spec actually decomposes against the
+    // template (`conductor::assert_no_ungated_fanout_unit`). Non-fatal, like every other
+    // advisory here: an author who deliberately wants an ungated fan-out stage still gets
+    // one, just no longer by silent omission.
+    for template in conductor::ungated_fan_out_templates(&cfg.workflow.stages) {
+        eprintln!(
+            "warning: fan-out template '{template}' declares no gates - every unit it \
+             decomposes into will run ungated; add a `gates:` list to the template if this \
+             is unintended"
+        );
+    }
     // Build-environment SURFACES report (spec 65 units 2 and 5, NO SILENT DEGRADE /
     // HONEST SURFACES): a named-but-absent `build.wrapper`, or a named wrapper whose cache
     // dir cannot be created, already failed above (`config::load`'s `Config::validate`

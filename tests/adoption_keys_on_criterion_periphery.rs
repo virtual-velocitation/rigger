@@ -493,7 +493,7 @@ fn a_fresh_runs_differently_named_planner_proposal_adopts_a_prior_runs_escalated
         proposed_id: fresh_slug.to_string(),
         criterion: criterion.to_string(),
         worker_write: None,
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -617,7 +617,7 @@ fn a_fresh_runs_differently_named_planner_proposal_never_adopts_a_criterion_whos
         proposed_id: fresh_slug.to_string(),
         criterion: criterion.to_string(),
         worker_write: Some(("second-work.txt".into(), "genuinely fresh\n".into())),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -936,7 +936,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
         proposed_id: fresh_slug_b.to_string(),
         criterion: criterion.to_string(),
         worker_write: Some(("spec-b-own-work.txt".into(), "spec B's own work\n".into())),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -987,7 +987,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
             "spec-a-run3-own-work.txt".into(),
             "spec A run 3's own work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps3 = Deps {
         store: &store,
@@ -1152,7 +1152,7 @@ fn a_compensation_reverted_integration_reopens_adoption_of_its_real_still_existi
         proposed_id: fresh_slug.to_string(),
         criterion: criterion.to_string(),
         worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -1240,7 +1240,7 @@ fn a_plain_remediation_failure_after_integration_never_reopens_adoption_even_tho
         proposed_id: fresh_slug.to_string(),
         criterion: criterion.to_string(),
         worker_write: Some(("run2-own-work-2.txt".into(), "genuinely fresh\n".into())),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -1381,7 +1381,7 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
         proposed_id: fresh_slug.to_string(),
         criterion: criterion.to_string(),
         worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -1505,7 +1505,7 @@ fn a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_co
         proposed_id: fresh_slug.to_string(),
         criterion: criterion.to_string(),
         worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -1613,7 +1613,7 @@ fn a_prior_candidates_deleted_branch_starts_the_fresh_unit_genuinely_unadopted()
         proposed_id: fresh_slug.to_string(),
         criterion: criterion.to_string(),
         worker_write: Some(("run2-own-work.txt".into(), "genuinely new\n".into())),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -1742,7 +1742,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
             "run2-own-work.txt".into(),
             "reused-id's own real work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -1789,7 +1789,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
             "run3-own-work.txt".into(),
             "run 3's own unrelated work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps3 = Deps {
         store: &store,
@@ -1911,7 +1911,7 @@ fn a_legacy_adoption_mark_missing_criterion_id_and_spec_never_matches_a_reused_i
             "own-work.txt".into(),
             "genuinely new, unrelated work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps = Deps {
         store: &store,
@@ -2048,7 +2048,7 @@ fn an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_s
             "run2-own-work.txt".into(),
             "spec B's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -2175,7 +2175,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
             "run2-own-work.txt".into(),
             "spec B's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -2217,7 +2217,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
             "run3-own-work.txt".into(),
             "the retry's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps3 = Deps {
         store: &store,
@@ -2351,7 +2351,7 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
             "run2-own-work.txt".into(),
             "spec B's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -2478,7 +2478,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
             "run2-own-work.txt".into(),
             "spec B's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -2532,7 +2532,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
             "run3-own-work.txt".into(),
             "the retry's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps3 = Deps {
         store: &store,
@@ -2778,7 +2778,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
             "run2-own-work.txt".into(),
             "spec B's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &failing_store,
@@ -2829,7 +2829,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
             "run2-own-work.txt".into(),
             "spec B's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps3 = Deps {
         store: &store,
@@ -2867,7 +2867,7 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
             "run4-own-work.txt".into(),
             "the retry's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps4 = Deps {
         store: &store,
@@ -3028,7 +3028,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
             "run2-own-work.txt".into(),
             "spec B's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps2 = Deps {
         store: &store,
@@ -3086,7 +3086,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
             "run3-own-work.txt".into(),
             "the retry's own genuinely new work\n".into(),
         )),
-        gates: Vec::new(),
+        gates: vec!["gate".to_string()],
     };
     let deps3 = Deps {
         store: &store,
