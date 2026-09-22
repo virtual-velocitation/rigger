@@ -1,7 +1,8 @@
 //! Periphery (real-git, crate-boundary) tests for spec 103 criterion 4 (HEAL NEVER TOUCHES
 //! A LIVE ADD): `Worktree::create`'s heal predicate (`worktree_admin_is_corrupt` sparing a
-//! `locked` or too-young admin entry) and its per-repository `repo_create_lock`
-//! serialization.
+//! `locked` or too-young admin entry) and its per-repository admin-directory lock
+//! (`repo_admin_lock` - renamed and widened from `repo_create_lock` by the round-4 checkin
+//! fix this file's own soak test below drove; see that test's doc comment) serialization.
 //!
 //! WHY THIS FILE EXISTS. Criterion 4 landed at `9e578a8` (unit u103c4) with ONLY the
 //! implementer's own `mod tests` inside `src/worktree.rs` -
@@ -36,10 +37,10 @@
 //! exists, and extends coverage to the new discard-then-create composition their premise
 //! never had to consider.
 //!
-//! WHAT THIS FILE OWNS: the heal predicate's 3-way decision table and the create-vs-create
-//! lock, driven through `rigger::worktree::Worktree`'s PUBLIC API only (never
-//! `worktree_admin_is_corrupt`/`repo_create_lock`/`heal_corrupt_worktree_admin` directly, all
-//! crate-private) - proving the fix survives the real crate boundary, the thing the
+//! WHAT THIS FILE OWNS: the heal predicate's 3-way decision table and the admin-directory
+//! lock (`repo_admin_lock`), driven through `rigger::worktree::Worktree`'s PUBLIC API only
+//! (never `worktree_admin_is_corrupt`/`repo_admin_lock`/`heal_corrupt_worktree_admin`
+//! directly, all crate-private) - proving the fix survives the real crate boundary, the thing the
 //! implementer's own `mod tests` cannot attest to since they can see (and could accidentally
 //! depend on) `worktree.rs`'s private internals; and the NEW discard-then-create-vs-plain-
 //! create composition criterion 7 introduces. NOT OWNED: the predicate's own unit-level
@@ -176,7 +177,8 @@ fn create_at_the_crate_boundary_spares_a_locked_or_too_young_admin_entry_and_hea
 #[test]
 fn create_serializes_concurrent_sibling_creates_at_the_crate_boundary() {
     // Mirrors `src/worktree.rs`'s own `concurrent_worktree_creates_in_one_repository_all_
-    // succeed_across_50_rounds` (the original race `repo_create_lock` exists to close), but
+    // succeed_across_50_rounds` (the original race `repo_admin_lock`, formerly named
+    // `repo_create_lock`, exists to close), but
     // driven entirely through the compiled crate's public `Worktree::create`, from outside
     // the crate - proving the lock's contract holds at the real crate boundary, not merely
     // inside the module that defines it.
@@ -214,17 +216,20 @@ fn create_serializes_concurrent_sibling_creates_at_the_crate_boundary() {
 
 #[test]
 fn discard_then_create_never_corrupts_a_concurrent_siblings_admin_entry() {
-    // THE NEW composition, unreachable when u103c4 was scoped: `RunCtx::integrate_and_emit`
-    // (spec 103 criterion 7) calls `Worktree::discard` - an UNGUARDED `git worktree remove`/
-    // `git worktree prune` against the shared repo's admin directory - immediately before
+    // THE composition unreachable when u103c4 was scoped: `RunCtx::integrate_and_emit`
+    // (spec 103 criterion 7) calls `Worktree::discard` - a `git worktree remove`/`git
+    // worktree prune` against the shared repo's admin directory - immediately before
     // `Worktree::create_branch_at` + `Worktree::create` for its throwaway post-merge scratch
     // worktree, and this can run concurrently with a sibling unit's own plain `Worktree::
-    // create` in the same `run_batch` wave. `repo_create_lock` only ever serializes `create`
-    // calls against each other; it does nothing to protect a sibling's in-flight heal scan
-    // from `discard`'s unguarded admin-directory writes. This test drives exactly that
-    // shape - discard-then-create on one thread, a plain sibling create on another, both
-    // against one shared repo, across many rounds - to lock in that the composition never
-    // corrupts a concurrent sibling's admin entry.
+    // create` in the same `run_batch` wave. BEFORE the round-4 checkin fix, `repo_create_lock`
+    // (since renamed to `repo_admin_lock`) only ever serialized `create` calls against each
+    // other, leaving `discard`'s admin-directory writes unguarded - this exact test caught
+    // that gap empirically (a ~3.6% panic rate reproduced in 55 isolated runs, `fatal: could
+    // not create directory of .git/worktrees/...`) and drove the fix that widened the lock to
+    // cover every in-process admin-directory mutator (create, discard, remove, sweep,
+    // reclaim). This test now REGRESSION-LOCKS the fixed behavior: discard-then-create on one
+    // thread, a plain sibling create on another, both against one shared repo, across many
+    // rounds - the composition must never corrupt a concurrent sibling's admin entry.
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let scratch = tempfile::tempdir().unwrap();
