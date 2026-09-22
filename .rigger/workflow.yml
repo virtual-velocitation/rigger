@@ -112,24 +112,6 @@ defaults:
   #     limit: 1
   #   - match: {}                          # catch-all: any other failure is a defect
   #     class: product
-  #
-  # QUARANTINE, temporary: three fixtures run concurrent units in one repository and lose a
-  # race between the worktree self-heal and a batch-mate's `git worktree add` (one of them
-  # then waits forever on its own gate). Spec 103's heal criterion removes the race; delete
-  # the first rule below when that criterion lands. A real regression in these tests stays
-  # red through the reruns, so the gate still fails on it. The second and third rules are
-  # the shipped defaults, restated because an authored list replaces them.
-  failure_rules:
-    - match: {output_regex: "integrate_conflict_exhausted_after_the_bound|a_post_merge_red_rollback_resets_the_units_own_branch|regenerate_never_holds_integrate_mu"}
-      class: flaky
-      limit: 2
-      backoff: {duration_ms: 1000, factor: 2.0, max_ms: 30000}
-    - match: {output_regex: "(?i)(no space left on device|resource temporarily unavailable|connection refused|connection reset by peer|could not resolve host|temporary failure in name resolution|econnreset|etimedout)"}
-      class: infra
-      limit: 2
-      backoff: {duration_ms: 1000, factor: 2.0, max_ms: 30000}
-    - match: {}
-      class: product
 
 build:
   # spec 91 retires the per-round `mutation` switch entirely (an explicit value of any
