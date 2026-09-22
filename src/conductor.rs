@@ -21,6 +21,7 @@ use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder};
 use crate::ledger::{self, RunState};
+use crate::liveness;
 use crate::safety;
 use crate::spawn::{
     self, lens_role, spawn_id, spawn_retry_id, speculation_group_id, ROLE_ADJUDICATOR,
@@ -1091,6 +1092,33 @@ fn conflict_regenerate_key(unit: &str, attempt: u32) -> String {
     format!("{unit}#{attempt}")
 }
 
+/// The common parse-and-match prefix every spec 88 criterion 1 round 4 TABLE row fold
+/// shares: a `TYPE_UNIT_STATUS` marker whose own `status` field, `(unit, attempt)` key
+/// ([`conflict_regenerate_key`]), and `pass` (recovered from the event's own `replay_key`
+/// meta - never a second evidence field, so a fold and the live writer that wrote it can
+/// never drift onto two different sources for the same number) this hands back alongside
+/// the event's full parsed JSON body, for the caller to pull its own row-specific fields
+/// (typically `evidence`) from. Factored out so [`pending_landing_from_log`] and
+/// [`landed_from_log`] share ONE JSON walk instead of two near-identical copies - the
+/// project's own simplification audit flags the duplication otherwise.
+fn integrate_row(e: &Event) -> Option<(String, String, u32, Value)> {
+    if e.type_ != ledger::TYPE_UNIT_STATUS {
+        return None;
+    }
+    let v: Value = serde_json::from_slice(&e.data).ok()?;
+    let status = v.get("status").and_then(Value::as_str)?.to_string();
+    let id = v.get("id").and_then(Value::as_str)?;
+    let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0) as u32;
+    let key = conflict_regenerate_key(id, attempt);
+    let pass = e
+        .meta
+        .get("replay_key")
+        .and_then(|k| k.rsplit_once('~'))
+        .and_then(|(_, p)| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((key, status, pass, v))
+}
+
 /// Re-derive [`RunCtx::pending_landing`]: per `(unit, attempt)` ([`conflict_regenerate_key`]'s
 /// shape), the `(pass, unit_tip, run_tip)` of the LATEST [`STATUS_INTEGRATE_LANDING_INTENT`]
 /// (row 4's before-record) not yet matched by a [`STATUS_INTEGRATE_LANDED`] (its after-
@@ -1103,27 +1131,13 @@ fn conflict_regenerate_key(unit: &str, attempt: u32) -> String {
 /// from a stage that never had anything to land at all. `run_tip` (the OLDER base this
 /// landing merged FROM) is carried so a resumed `integrate_and_emit` can recompute the
 /// files this landing touched via [`Worktree::committed_diff_names`] against it, since the
-/// CURRENT base has already absorbed them. `pass` is recovered from the recording event's
-/// own `replay_key` meta (`{unit}/landing-intent#{attempt}~{pass}`, the exact key
-/// [`RunCtx::record_landing_intent`] already stamps) rather than a second field, so the fold
-/// and the live writer can never drift onto two different sources for the same number.
+/// CURRENT base has already absorbed them.
 fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, String, String)> {
     let mut pending: HashMap<String, (u32, String, String)> = HashMap::new();
     for e in prior_events {
-        if e.type_ != ledger::TYPE_UNIT_STATUS {
-            continue;
-        }
-        let Ok(v) = serde_json::from_slice::<Value>(&e.data) else {
+        let Some((key, status, pass, v)) = integrate_row(e) else {
             continue;
         };
-        let Some(status) = v.get("status").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(id) = v.get("id").and_then(Value::as_str) else {
-            continue;
-        };
-        let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0) as u32;
-        let key = conflict_regenerate_key(id, attempt);
         if status == STATUS_INTEGRATE_LANDING_INTENT {
             let Some(evidence) = v.get("evidence") else {
                 continue;
@@ -1134,18 +1148,52 @@ fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, Str
             ) else {
                 continue;
             };
-            let pass = e
-                .meta
-                .get("replay_key")
-                .and_then(|k| k.rsplit_once('~'))
-                .and_then(|(_, p)| p.parse::<u32>().ok())
-                .unwrap_or(0);
             pending.insert(key, (pass, unit_tip.to_string(), run_tip.to_string()));
         } else if status == STATUS_INTEGRATE_LANDED {
             pending.remove(&key);
         }
     }
     pending
+}
+
+/// Re-derive [`RunCtx::landed`] (spec 103, criterion 3 - RE-GATE WHAT LANDED): per
+/// `(unit, attempt)`, the `(pass, sha, pre_merge)` of the LATEST durably-recorded
+/// `integrate-landed` row - [`RunCtx::pending_landing`]'s own after-record, kept here
+/// too because the moment it closes a pending landing-intent, [`pending_landing_from_log`]
+/// stops seeing that landing at all. A resumed [`integrate_and_emit`](RunCtx::integrate_and_emit)
+/// call whose `files` read empty and whose `pending_landing_for` found nothing PENDING
+/// still cannot tell "genuinely nothing to land" apart from "landed for real, but the
+/// post-merge re-gate that must follow never completed" from git state alone - this map
+/// is the one durable fact that can: a unit with an entry here landed something real and
+/// must still be re-gated on resume; a unit with none here never landed anything at all.
+/// Never removed once inserted (unlike `pending_landing`) - there is no "un-landing"
+/// event, and a later attempt keys its own landing under a different `attempt`, never
+/// retracting an earlier one's row.
+fn landed_from_log(prior_events: &[Event]) -> HashMap<String, (u32, String, String)> {
+    let mut landed: HashMap<String, (u32, String, String)> = HashMap::new();
+    for e in prior_events {
+        let Some((key, status, pass, v)) = integrate_row(e) else {
+            continue;
+        };
+        if status != STATUS_INTEGRATE_LANDED {
+            continue;
+        }
+        // Older logs recorded this row before `pre_merge` rode along in its evidence
+        // (spec 103, criterion 3) - such a row cannot be resolved by this fold, so it
+        // is skipped rather than guessed; a unit whose ONLY landed row predates the fix
+        // keeps taking the true no-op short circuit it always did, no regression.
+        let Some(evidence) = v.get("evidence") else {
+            continue;
+        };
+        let (Some(sha), Some(pre_merge)) = (
+            evidence.get("sha").and_then(Value::as_str),
+            evidence.get("pre_merge").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        landed.insert(key, (pass, sha.to_string(), pre_merge.to_string()));
+    }
+    landed
 }
 
 /// Re-derive [`RunCtx::integrate_attempted`]: the `(unit, attempt)` keys for which `prior_events`
@@ -1673,6 +1721,29 @@ fn is_plan_landing_failed(e: &Error) -> bool {
     e.0.contains(PLAN_LANDING_MARKER)
 }
 
+/// The sentinel a LAND-REFUSED-FOR-LOCAL-CHANGES failure ([`RunCtx::land_refused`], spec 103
+/// criterion 8: A REFUSED LANDING NAMES ITS PATHS) embeds in its error so
+/// [`run_wave`](RunCtx::run_wave) recognizes it through its own error wrapping and routes it
+/// through a DEDICATED arm - like [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`] and
+/// [`PLAN_LANDING_MARKER`] it uses control characters no real error text carries.
+/// `Worktree::land`'s `LandOutcome::Blocked` means `git merge --ff-only` in the RUN
+/// checkout refused because local content (untracked, or a tracked file dirtied but never
+/// committed) sits at one of the landed paths - a CONDUCTOR-SIDE fault around the run
+/// checkout's own local state, never a defect in the unit's own code: its branch is
+/// untouched and still fast-forwardable the moment the blocking paths are cleared. Routed
+/// exactly like the other conductor-side infra faults: the dedicated arm propagates the loud
+/// halt but emits NO per-unit lesson of its own (the specific, path-naming lesson is already
+/// recorded by [`RunCtx::land_refused`] itself, before this marker is even minted) and
+/// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`).
+const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
+
+/// Whether `e` is a land-refused-for-local-changes infra-fault HALT (see
+/// [`RunCtx::land_refused`]) rather than a real unit failure. Robust to callers' own error
+/// wrapping, since the [`LAND_REFUSED_MARKER`] survives as a substring.
+fn is_land_refused(e: &Error) -> bool {
+    e.0.contains(LAND_REFUSED_MARKER)
+}
+
 /// The conductor's injected ports.
 pub struct Deps<'a> {
     pub store: &'a dyn EventStore,
@@ -1955,6 +2026,10 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // with no matching landed record yet - `Worktree::land` may have already fast-forwarded
     // the run branch onto the unit's own tip before this process crashed.
     let pending_landing = pending_landing_from_log(prior_events);
+    // Spec 103, criterion 3 (RE-GATE WHAT LANDED): every durably-recorded landing, kept
+    // even after `pending_landing` stops tracking it, so a resumed call can still tell a
+    // real, already-landed merge apart from a unit that never landed anything at all.
+    let landed = landed_from_log(prior_events);
 
     // The RunCtx is created BEFORE the coverage check so a coverage gap can be
     // flagged as a spec defect through the event log (item 2 / §4.4) instead of
@@ -2018,6 +2093,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         conflict_regenerate_pending: Mutex::new(conflict_regenerate_pending),
         integrate_attempted,
         pending_landing: Mutex::new(pending_landing),
+        landed: Mutex::new(landed),
         // The failure taxonomy is built ONCE here from the same validated config the run
         // loads (its regexes were compiled and classes checked at `Config::validate`), so
         // every gate-failure classification this run makes reads one rule set.
@@ -2071,18 +2147,27 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // and the snapshot was never patched; resolving by criterion id against the live
     // map sidesteps the staleness entirely - there is nothing to keep in sync.
     let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+    // The fan-out template's OWN gate list, captured at the exact moment it is consumed
+    // (spec 103, criterion 2 - NO UNGATED FAN-OUT UNIT): the template stage itself is
+    // removed from `stages` right below and never reappears, so this is the only point
+    // that ever holds it. `assert_no_ungated_fanout_unit` reads it, keyed by template
+    // name exactly like `fanout_criteria`, to tell "this template declared no gates" (a
+    // legitimate authored ungated workflow) apart from "inheritance dropped the gates
+    // this template declared" (the invariant violation).
+    let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
     if !deps.criteria.is_empty() {
         if let Some(template_name) = fan_out_template_name(&stages) {
             let template = stages.remove(&template_name).expect("template just found");
             let producer = producer_name(&stages);
             let units = baseline_units(&template, &deps.criteria, producer.as_deref());
             fanout_criteria.insert(
-                template_name,
+                template_name.clone(),
                 units
                     .iter()
                     .map(|(_, st)| st.criterion_id.clone())
                     .collect(),
             );
+            fanout_template_gates.insert(template_name, template.gates.clone());
             for (name, unit) in units {
                 stages.entry(name).or_insert(unit);
             }
@@ -2166,6 +2251,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             &fanout_criteria,
         );
         if !ready.is_empty() {
+            assert_no_ungated_fanout_unit(
+                &stages,
+                &ready,
+                &fanout_criteria,
+                &fanout_template_gates,
+            )?;
             ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
             ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
         }
@@ -2270,6 +2361,12 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 ctx.trip_budget_breaker()?;
                 break;
             }
+            assert_no_ungated_fanout_unit(
+                &stages,
+                &ready,
+                &fanout_criteria,
+                &fanout_template_gates,
+            )?;
             ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
             // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
             // wide wave can exhaust the budget partway through, refusing later spawns.
@@ -2874,6 +2971,18 @@ struct RunCtx<'a> {
     /// contribute. `run_tip` lets the resumed call recompute the actual touched-files set via
     /// [`Worktree::committed_diff_names`] against the OLDER base this landing merged from.
     pending_landing: Mutex<HashMap<String, (u32, String, String)>>,
+    /// Every durably-recorded `integrate-landed` row (spec 103, criterion 3 - RE-GATE WHAT
+    /// LANDED), per `(unit, attempt)`: `(pass, sha, pre_merge)`. Seeded ONCE at run start
+    /// from the prior log ([`landed_from_log`]) and never removed - unlike
+    /// [`pending_landing`](RunCtx::pending_landing), which stops tracking a landing the
+    /// instant it closes. Consulted at the TOP of
+    /// [`integrate_and_emit`](RunCtx::integrate_and_emit) exactly when `pending_landing_for`
+    /// finds nothing pending and nothing is owed: that combination alone cannot distinguish
+    /// "never landed anything" from "landed for real, crashed before the post-merge re-gate
+    /// that must follow it ever ran" - this map is the durable fact that can, so a real
+    /// merge's re-gate still runs on resume instead of the unit silently reaching
+    /// `UnitIntegrated` ungated.
+    landed: Mutex<HashMap<String, (u32, String, String)>>,
     /// The declarative failure taxonomy (spec 10, unit 2): the SINGLE authority the
     /// conductor folds its gate-failure classification from, built once from
     /// `defaults.failure_rules` (or the shipped spec-07-preserving default when none are
@@ -2932,6 +3041,7 @@ impl<'a> RunCtx<'a> {
             conflict_regenerate_pending: Mutex::new(HashMap::new()),
             integrate_attempted: HashSet::new(),
             pending_landing: Mutex::new(HashMap::new()),
+            landed: Mutex::new(HashMap::new()),
             // The pure-helper test context builds no gates through the taxonomy; the
             // shipped default is a harmless placeholder. The gate-behavior tests drive the
             // full `run`, which builds the taxonomy from the config under test.
@@ -3875,6 +3985,20 @@ impl RunCtx<'_> {
                     Err(e) if is_plan_landing_failed(&e) => {
                         if first_err.is_none() {
                             first_err = Some(Error(e.0.replace(PLAN_LANDING_MARKER, "")));
+                        }
+                    }
+                    // A land-refused-for-local-changes infra fault (spec 103 criterion 8):
+                    // `Worktree::land` found local content in the run checkout blocking the
+                    // fast-forward, a CONDUCTOR-SIDE fault around the run checkout's own
+                    // state, never the unit's fault - its branch is untouched. Route it
+                    // through its OWN arm exactly like the other conductor-side infra faults
+                    // above: propagate the loud hard error (marker stripped) but emit NO
+                    // per-unit lesson here - [`Self::land_refused`] already recorded the
+                    // real, path-naming one before minting this marker - and charge no
+                    // attempt (no UnitFailed/UnitEscalated is written on this path).
+                    Err(e) if is_land_refused(&e) => {
+                        if first_err.is_none() {
+                            first_err = Some(Error(e.0.replace(LAND_REFUSED_MARKER, "")));
                         }
                     }
                     Err(e) => {
@@ -4849,6 +4973,41 @@ impl RunCtx<'_> {
         }
     }
 
+    /// THE HALTED-SPAWN CHECKPOINT's guard (spec 103): whether `named_spawn_id` (the
+    /// implementer spawn `run_single_stage`'s recovery commit below would name) is
+    /// genuinely halted right now, per [`liveness::spawn_is_halted`] - requested, carrying
+    /// no real result, and no spawn of `unit` still touching a marker inside its own
+    /// wall-clock bound. Reads the log fresh (the same pattern this file's other
+    /// resume-time reads already use, e.g. [`Self::resume_phase`]) and derives the SAME
+    /// scratch root every other `Worktree::create`/reclaim call site in this file computes,
+    /// so a re-derivation can never diverge from where the driver-framed worker actually
+    /// touches its marker.
+    fn halted_spawn_checkpoint_permitted(
+        &self,
+        unit: &str,
+        named_spawn_id: &str,
+    ) -> Result<bool, Error> {
+        let all = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        // Scoped to THIS run alone (mirrors `run()`'s own `prior_events` fold and every
+        // `liveness::sweep`/`hung_spawns` call site): an unscoped whole-stream read would let
+        // a PRIOR run's leftover `SpawnRequested` for a same-named unit (a re-run that reuses
+        // a slug) satisfy this guard for a unit this run has never touched - the same Gap 11
+        // zombie class `crate::run::current_run`'s own doc comment names.
+        let events = crate::run::current_run(&all);
+        let scratch = crate::worktree::scratch_root_from_env(
+            &self.deps.repo,
+            &self.cfg.workflow.defaults.workdir,
+        );
+        Ok(liveness::spawn_is_halted(
+            events,
+            &scratch,
+            &self.run_id,
+            unit,
+            named_spawn_id,
+            std::time::SystemTime::now(),
+        )?)
+    }
+
     /// `any_parked` (spec 64 c1 round 4) is threaded straight through, unread, to the
     /// [`Self::review_unit`] call below - it is `run_stage`'s out-of-band any-parked
     /// signal, read there AFTER this function returns, independently of whatever `Result`
@@ -4897,16 +5056,28 @@ impl RunCtx<'_> {
         // for an abandoned edit, but a false alarm for a legitimate in-progress merge) and
         // turns a resumable state into a hard, no-attempt-charged error instead of ever
         // reaching the idempotent path built to handle exactly this.
+        let named_halt_spawn = spawn_id(
+            &st.name,
+            ROLE_IMPLEMENTER,
+            self.effective_attempts(&st.name),
+        );
         let halted_commit = match wt {
-            Some(w) if !w.merge_in_progress() => w.commit_checkpoint(&format!(
-                "wip({}): tree of halted spawn {}",
-                st.name,
-                spawn_id(
-                    &st.name,
-                    ROLE_IMPLEMENTER,
-                    self.effective_attempts(&st.name)
-                )
-            ))?,
+            // THE HALTED-SPAWN CHECKPOINT (spec 103), decided: capturing a dirty tree as
+            // this recovery commit is reserved for a GENUINE halt - the named spawn was
+            // requested, carries no real result, and no spawn of this unit is still live
+            // (`halted_spawn_checkpoint_permitted`, backed by `liveness::spawn_is_halted`).
+            // Otherwise the tree and the branch are left exactly as found: a live reviewer
+            // or sibling attempt's in-progress edit, or a spawn that already answered, is
+            // never mistaken for abandoned work.
+            Some(w)
+                if !w.merge_in_progress()
+                    && self.halted_spawn_checkpoint_permitted(&st.name, &named_halt_spawn)? =>
+            {
+                w.commit_checkpoint(&format!(
+                    "wip({}): tree of halted spawn {}",
+                    st.name, named_halt_spawn
+                ))?
+            }
             _ => String::new(),
         };
         // Resume-continuity, Reviewed phase: the unit's review was APPROVED in a prior
@@ -7647,36 +7818,47 @@ impl RunCtx<'_> {
         // A `rigger-review-*` review worktree or the worktree-less path (`dir` "", e.g. an
         // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
         // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
-        let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
+        //
+        // EXCEPT the POST-MERGE re-gate (spec 12, unit 5 / spec 103, criterion 7): it runs in
+        // its OWN throwaway `rigger-postmerge-<slug>-<attempt>` worktree (never the repo, and
+        // never the unit's own `rigger-wt-<slug>` dir, which the merge already landed out of),
+        // whose basename is no `rigger-wt-<slug>` either, so the plain sibling derivation below
+        // yields nothing there - yet the merged tree it certifies is still THIS unit's, and (a)
+        // a `checkin` stage's `mutation` gate must sweep it into a real root (`mkdir -p ""`
+        // fails the gate before cargo-mutants ever runs, blocking the integration of a green
+        // unit - spec 89's own check-in, 2026-09-13) and (b) the re-gate should build into the
+        // SAME warm cache the pre-merge sweep already populated, not a cold shared one. Both
+        // fall back to the path the unit's OWN worktree occupies - `unit_worktree_dir(&scratch,
+        // &st.name)`, the SAME derivation `stage_worktree` used to create it - computed ONCE
+        // here and shared by `target` and `mutants` below, so the one terminus reap
+        // (`Worktree::remove` / `sweep_terminal`) still reclaims exactly what both point at.
+        let postmerge_unit_dir = matches!(selection, GateSelection::PostMerge).then(|| {
+            let scratch = crate::worktree::scratch_root_from_env(
+                &self.deps.repo,
+                &self.cfg.workflow.defaults.workdir,
+            );
+            unit_worktree_dir(&scratch, &st.name)
+        });
+        let target = crate::worktree::unit_cache_sibling(dir)
+            .or_else(|| {
+                postmerge_unit_dir
+                    .as_deref()
+                    .and_then(crate::worktree::unit_cache_sibling)
+            })
+            .unwrap_or_default();
         // The unit-keyed mutants root (spec 91, THE GATE ENVIRONMENT): derived from the
         // SAME `dir` and the SAME sibling shape as `target` immediately above (Gap 19's own
         // precedent) - a `checkin` stage's `mutation` gate command creates/wipes/repopulates
         // this dir itself each run (`rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`), never this
         // crate. Empty for anything that owns no per-unit `target` either (a review/plan
         // worktree-less run), mirroring `target`'s own empty case; harmless for every OTHER
-        // gate, whose command never reads `$MUTANTS`.
-        //
-        // EXCEPT the POST-MERGE re-gate (spec 12, unit 5): it runs in the repo's OWN checkout,
-        // whose basename is no `rigger-wt-<slug>`, so the sibling derivation yields nothing
-        // there - yet the merged tree it certifies is still THIS unit's, and a `checkin`
-        // stage's `mutation` gate must sweep it into a real root (`mkdir -p ""` fails the gate
-        // before cargo-mutants ever runs, blocking the integration of a green unit - spec 89's
-        // own check-in, 2026-09-13). The root is the SAME unit-keyed sibling the pre-merge
-        // sweep used, derived from the SAME `unit_worktree_dir` the unit's worktree was cut
-        // at, so the one terminus reap (`Worktree::remove` / `sweep_terminal`) removes both.
+        // gate, whose command never reads `$MUTANTS`. Shares `postmerge_unit_dir`'s fallback
+        // with `target` immediately above for the post-merge re-gate.
         let mutants = crate::worktree::unit_mutants_sibling(dir)
             .or_else(|| {
-                matches!(selection, GateSelection::PostMerge)
-                    .then(|| {
-                        let scratch = crate::worktree::scratch_root_from_env(
-                            &self.deps.repo,
-                            &self.cfg.workflow.defaults.workdir,
-                        );
-                        crate::worktree::unit_mutants_sibling(&unit_worktree_dir(
-                            &scratch, &st.name,
-                        ))
-                    })
-                    .flatten()
+                postmerge_unit_dir
+                    .as_deref()
+                    .and_then(crate::worktree::unit_mutants_sibling)
             })
             .unwrap_or_default();
         // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
@@ -8613,15 +8795,38 @@ impl RunCtx<'_> {
                     // further to merge - so check it before declaring the unit done, exactly
                     // mirroring the merge/land loop's own post-land owed-check below.
                     if !self.catch_up_owed_regeneration(wt, &st.name, attempt)? {
-                        return Ok(Integration::default());
+                        // Spec 103, criterion 3 (RE-GATE WHAT LANDED): row 4 fully closed
+                        // and nothing owed is NOT by itself proof there is nothing left to
+                        // GATE. `pending_landing_for` stops seeing a landing the instant
+                        // `record_landed` closes it - so a crash between that append and
+                        // the post-merge re-gate which must follow it (or during that
+                        // re-gate) leaves the identical "nothing new" git-state signature
+                        // as a unit that never had anything to land at all, and this arm
+                        // alone cannot tell the two apart. Consult the durably-recorded
+                        // LANDED row itself (never process state, never a re-derived git
+                        // heuristic): when one exists, resolve `commit`/`pre_merge` from
+                        // it and fall into the SAME shared finalization the crash-before-
+                        // `record_landed` path below uses, so the post-merge gate still
+                        // runs for real (or content-cache-hits, exactly as a live pass
+                        // would) before `UnitIntegrated` is ever emitted. Only a unit with
+                        // NO landed row at all - genuinely never landed anything - keeps
+                        // the true no-op short circuit.
+                        match self.landed_sha_for(&st.name, attempt) {
+                            Some((landed_pass, sha, pre_merge)) => {
+                                files = wt.committed_diff_names(&pre_merge)?;
+                                already_landed = Some((landed_pass, sha, pre_merge));
+                            }
+                            None => return Ok(Integration::default()),
+                        }
+                    } else {
+                        // The catch-up made a real regenerate commit on the worktree's own
+                        // branch, still unlanded - recompute `files` and fall through to the
+                        // ordinary merge/land loop below (`already_landed` stays `None`),
+                        // which will merge and land this commit for real (a trivial fast-
+                        // forward, since nothing else changed base-side) and re-check owed
+                        // once more (now empty) before breaking.
+                        files = wt.changed_since_base()?;
                     }
-                    // The catch-up made a real regenerate commit on the worktree's own
-                    // branch, still unlanded - recompute `files` and fall through to the
-                    // ordinary merge/land loop below (`already_landed` stays `None`), which
-                    // will merge and land this commit for real (a trivial fast-forward,
-                    // since nothing else changed base-side) and re-check owed once more
-                    // (now empty) before breaking.
-                    files = wt.changed_since_base()?;
                 }
                 Some((pass, unit_tip, run_tip)) => {
                     // Recompute the ACTUAL files this already-landed merge touched from the
@@ -8648,7 +8853,7 @@ impl RunCtx<'_> {
                     if self.regenerate_pending_for(&st.name, attempt).is_empty() {
                         already_landed = Some((pass, unit_tip, run_tip));
                     } else {
-                        self.record_landed(&st.name, attempt, pass, &unit_tip)?;
+                        self.record_landed(&st.name, attempt, pass, &unit_tip, &run_tip)?;
                         self.clear_pending_landing(&st.name, attempt);
                         self.catch_up_owed_regeneration(wt, &st.name, attempt)?;
                         files = wt.changed_since_base()?;
@@ -8716,7 +8921,7 @@ impl RunCtx<'_> {
         // `None`, and this loop runs for real - it durably re-records row 4 itself once
         // `land` actually succeeds, same as any other resumed pass.
         let (commit, pre_merge) = if let Some((landed_pass, unit_tip, run_tip)) = already_landed {
-            self.record_landed(&st.name, attempt, landed_pass, &unit_tip)?;
+            self.record_landed(&st.name, attempt, landed_pass, &unit_tip, &run_tip)?;
             self.clear_pending_landing(&st.name, attempt);
             (unit_tip, run_tip)
         } else {
@@ -8765,30 +8970,46 @@ impl RunCtx<'_> {
                         // conflict's placeholder-staged version lands now; the real regeneration,
                         // if any, lands as a SEPARATE, later pass's own row 4).
                         self.record_landing_intent(&st.name, attempt, pass, &c, &pre_merge)?;
-                        if wt.land()? == worktree::LandOutcome::TipMoved {
-                            // The run branch moved after the worktree merge (an operator
-                            // commit, a sibling's landing): a fast-forward is impossible and
-                            // a real merge would only re-resolve in the wrong place. Record
-                            // it and go around again - the next pass merges the NEW tip into
-                            // the worktree (regenerable conflicts resolve themselves there)
-                            // and lands as a fast-forward. Bounded like every other pass.
-                            self.record_integrate_row(
-                                &format!("{}/tip-moved#{attempt}~{pass}", st.name),
-                                STATUS_INTEGRATE_TIP_MOVED,
-                                &st.name,
-                                attempt,
-                                json!({"run_tip": pre_merge, "unit_tip": c}),
-                            )?;
-                            if pass >= TIP_MOVED_PASS_BOUND {
-                                return Err(Error(format!(
-                                    "integrate {}: the run branch moved under every one of \
-                                     {pass} landing passes",
-                                    st.name
-                                )));
+                        match wt.land()? {
+                            worktree::LandOutcome::TipMoved => {
+                                // The run branch moved after the worktree merge (an operator
+                                // commit, a sibling's landing): a fast-forward is impossible
+                                // and a real merge would only re-resolve in the wrong place.
+                                // Record it and go around again - the next pass merges the NEW
+                                // tip into the worktree (regenerable conflicts resolve
+                                // themselves there) and lands as a fast-forward. Bounded like
+                                // every other pass.
+                                self.record_integrate_row(
+                                    &format!("{}/tip-moved#{attempt}~{pass}", st.name),
+                                    STATUS_INTEGRATE_TIP_MOVED,
+                                    &st.name,
+                                    attempt,
+                                    json!({"run_tip": pre_merge, "unit_tip": c}),
+                                )?;
+                                if pass >= TIP_MOVED_PASS_BOUND {
+                                    return Err(Error(format!(
+                                        "integrate {}: the run branch moved under every one of \
+                                         {pass} landing passes",
+                                        st.name
+                                    )));
+                                }
+                                continue;
                             }
-                            continue;
+                            // Spec 103, criterion 8 (A REFUSED LANDING NAMES ITS PATHS): local
+                            // content in the run checkout (untracked, or a tracked file
+                            // dirtied but never committed) blocked the fast-forward. This is
+                            // NEVER the unit's fault - its own branch is untouched and still
+                            // fast-forwardable once the blocking paths are cleared - so it is
+                            // recorded as its own lesson (naming every blocking path and any
+                            // unit branch that already carries identical content there) and
+                            // surfaced through the dedicated infra-fault arm ([`run_wave`]),
+                            // which charges no remediation attempt.
+                            worktree::LandOutcome::Blocked(paths) => {
+                                return Err(self.land_refused(&st.name, wt, &paths));
+                            }
+                            worktree::LandOutcome::Landed => {}
                         }
-                        self.record_landed(&st.name, attempt, pass, &c)?;
+                        self.record_landed(&st.name, attempt, pass, &c, &pre_merge)?;
                         // Spec 88, criterion 1 round 2 (adv-u88c1r1-crash-resume-permanently-
                         // skips-regeneration): a MIXED conflict's source side can clear (the
                         // implementer's own commit lands, bundling in the ALREADY-staged
@@ -8951,15 +9172,68 @@ impl RunCtx<'_> {
         // NOTHING lands (no UnitIntegrated over a broken tree) and the caller re-enters
         // remediation fed the merge-break evidence, exactly like a pre-merge gate failure.
         if !commit.is_empty() {
-            let merged = self.run_gates(st, &self.deps.repo, attempt, GateSelection::PostMerge)?;
+            // Spec 103, criterion 7 (POST-MERGE GATES RUN ON THE LANDED TREE): the re-gate
+            // NEVER runs in `self.deps.repo` - an untracked or locally-modified file sitting
+            // in the operator's own checkout must never be able to change this verdict (it
+            // used to run there, and it did - 2026-09, an untracked operator file failed a
+            // whole-tree test and an approved unit escalated). It runs instead in its own
+            // throwaway, scratch-rooted worktree checked out AT `commit` (the exact tree that
+            // is about to land) via a deterministic throwaway branch, sharing the unit's own
+            // warm build cache (`run_gates`'s PostMerge fallback derives it the same way it
+            // already derives the mutants root), and that worktree - dir and branch both - is
+            // reaped the moment the gate suite ends, pass or fail, never left for a later step
+            // to find.
+            let scratch = crate::worktree::scratch_root_from_env(
+                &self.deps.repo,
+                &self.cfg.workflow.defaults.workdir,
+            );
+            let pm_dir = postmerge_worktree_dir(&scratch, &st.name, attempt);
+            let pm_branch = postmerge_branch(&st.name, attempt);
+            // This dir/branch carry no durable checkpoint (unlike the unit's own `rigger/u/*`
+            // branch): a prior process may have crashed between creating them and reaping
+            // them, leaving a leftover pinned at a now-stale sha. The safe resume is always
+            // discard-then-recreate, exactly like a standalone review's
+            // `review_only_worktree` - never adopt a leftover post-merge checkout.
+            Worktree::discard(&self.deps.repo, &pm_dir, &pm_branch, &scratch)?;
+            Worktree::create_branch_at(&self.deps.repo, &pm_branch, &commit)?;
+            // Captured into a local instead of `?`-ed directly (round 3 fix for
+            // adv-u103c7-r3-createbranch-then-create-leaks-branch), mirroring the
+            // capture-then-cleanup shape `run_gates`'s own call seven lines below already
+            // uses: a `?` here would propagate immediately on any Err from `Worktree::
+            // create` (a real git operation - a transient worktree-metadata race or disk
+            // pressure can fail it) and skip the `pm_branch` this function just minted one
+            // line above via `create_branch_at`, permanently leaking that throwaway
+            // `rigger/postmerge/<unit>-<attempt>` ref. `pm_dir` is never created on this
+            // path (`Worktree::create` erred before returning a live worktree), so only
+            // the branch needs reaping here - the dir-and-branch pair `run_gates`'s own
+            // cleanup reaps below is for the LATER window, once a real `pm_wt` exists.
+            let create_result = Worktree::create(&self.deps.repo, &pm_dir, &pm_branch, &scratch);
+            if create_result.is_err() {
+                let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
+            }
+            let pm_wt = create_result?;
+            // Captured into a local instead of `?`-ed directly (round 2 fix for
+            // adv-u103c7-postmerge-worktree-branch-leak-on-run-gates-err), mirroring
+            // `run_fan_out_stage`'s own identical shape around `run_fan_out_review_loop`
+            // one function away: a `?` here would skip the two cleanup lines right below
+            // it on any Err, permanently leaking this throwaway worktree dir and branch.
+            // Unlike that sibling (which keeps its review worktree alive across a PARKED
+            // unwind so an out-of-process reviewer can resume in it), this post-merge
+            // re-gate never parks - reap it UNCONDITIONALLY before propagating any Err,
+            // exactly as this function's own doc comment and spec 103 criterion 7's
+            // Design text both already (unconditionally) promise.
+            let gate_result = self.run_gates(st, &pm_wt.dir, attempt, GateSelection::PostMerge);
+            let _ = pm_wt.remove();
+            let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
+            let merged = gate_result?;
             if !merged.pass {
                 Worktree::reset_to(&self.deps.repo, &pre_merge)?;
                 // Defense in depth (spec 64 criterion 3), same as every other post-gate touch
                 // of `wt` in this function: the post-merge gate just above is real wall-clock
-                // time IN THE BASE REPO, not `wt.dir` - a window in which an out-of-band actor
-                // (or, as spec 88 criterion 1's own fixture drives, the gate command's own side
-                // effect) can delete the unit's worktree dir before this reset consumes it. A
-                // no-op fast path when nothing disturbed the tree.
+                // time - a window in which an out-of-band actor (or, as spec 88 criterion 1's
+                // own fixture drives, the gate command's own side effect) can delete the
+                // unit's worktree dir before this reset consumes it. A no-op fast path when
+                // nothing disturbed the tree.
                 wt.ensure_present()?;
                 wt.reset_branch_to(&unit_head_before_merge)?;
                 return Ok(Integration {
@@ -9501,6 +9775,19 @@ impl RunCtx<'_> {
             .remove(&conflict_regenerate_key(unit, attempt));
     }
 
+    /// The `(pass, sha, pre_merge)` of `unit`'s durably-recorded `integrate-landed` row at
+    /// `attempt`, if any (spec 103, criterion 3 - RE-GATE WHAT LANDED; see [`landed_from_log`]'s
+    /// own doc for the crash window this closes: a resumed call whose landing-intent is
+    /// already matched, closed, and gone from [`Self::pending_landing_for`] can still recover
+    /// what actually landed from here, never guessing from live git state alone).
+    fn landed_sha_for(&self, unit: &str, attempt: u32) -> Option<(u32, String, String)> {
+        self.landed
+            .lock()
+            .unwrap()
+            .get(&conflict_regenerate_key(unit, attempt))
+            .cloned()
+    }
+
     /// [`Self::regenerate_pending_for`] unioned with `fresh` (this round's own regenerable
     /// partition) - the full set [`Self::regenerate_conflicted_paths`] must cover once a
     /// mixed conflict's source side finally clears, so a path a PRIOR round staged (whose
@@ -9694,14 +9981,26 @@ impl RunCtx<'_> {
 
     /// Durably record (spec 88, criterion 1 round 4, TABLE row 4's after-record, "the landed
     /// sha") that `sha` landed on the run branch for `unit`'s `attempt`/`pass` - the mutation
-    /// [`Self::record_landing_intent`]'s before-record brackets.
-    fn record_landed(&self, unit: &str, attempt: u32, pass: u32, sha: &str) -> Result<(), Error> {
+    /// [`Self::record_landing_intent`]'s before-record brackets. `pre_merge` (spec 103,
+    /// criterion 3) is the run branch's tip BEFORE this landing - the SAME value the paired
+    /// `integrate-landing-intent` recorded as `run_tip` - carried here too so a LATER resume,
+    /// after `pending_landing_for` has stopped seeing this landing (matched, no longer
+    /// pending), can still recover both the landed sha AND the pre-landing tip from this row
+    /// alone via [`Self::landed_sha_for`], never from live process state.
+    fn record_landed(
+        &self,
+        unit: &str,
+        attempt: u32,
+        pass: u32,
+        sha: &str,
+        pre_merge: &str,
+    ) -> Result<(), Error> {
         self.record_integrate_row(
             &format!("{unit}/landed#{attempt}~{pass}"),
             STATUS_INTEGRATE_LANDED,
             unit,
             attempt,
-            json!({"sha": sha}),
+            json!({"sha": sha, "pre_merge": pre_merge}),
         )
     }
 
@@ -10288,6 +10587,60 @@ impl RunCtx<'_> {
         );
     }
 
+    /// Handle [`worktree::LandOutcome::Blocked`] (spec 103, criterion 8: A REFUSED LANDING
+    /// NAMES ITS PATHS): `Worktree::land` refused `unit`'s fast-forward because local content
+    /// in the run checkout sits at `paths`. For each path, read the LOCAL blocking bytes
+    /// straight off `self.deps.repo`'s own working tree and cross-reference them against
+    /// every unit branch's tip ([`worktree::unit_branches`] + [`worktree::blob_at`]) - a
+    /// match means the blocked content is not lost work, it is already durably captured on
+    /// that branch. Records ONE lesson (through the shared [`Self::emit_lesson`] authority,
+    /// same as every other lesson this conductor emits) whose summary names every blocking
+    /// path and any matching branch, then returns the [`LAND_REFUSED_MARKER`]-tagged
+    /// infra-fault [`run_wave`](RunCtx::run_wave) routes through its own no-attempt-charged
+    /// arm.
+    fn land_refused(&self, unit: &str, wt: &Worktree, paths: &[String]) -> Error {
+        let repo = &self.deps.repo;
+        let branches = worktree::unit_branches(repo);
+        let named: Vec<String> = paths
+            .iter()
+            .map(|p| {
+                // A blocking path is git's report of what SITS there, never a promise of what
+                // KIND of thing it is: a FIFO, socket, or device blocks a merge exactly like a
+                // regular file does, and `std::fs::read` on one of those blocks the calling
+                // thread until some other process opens the other end - which for a stray FIFO
+                // left in the checkout is NEVER, hanging this lesson (and the whole conductor)
+                // forever. Reading is only ever meaningful for a REGULAR file's byte content
+                // against a branch's blob, so every other kind is reported un-matched without
+                // opening it at all.
+                let full = std::path::Path::new(repo).join(p);
+                let is_regular_file = std::fs::metadata(&full)
+                    .map(|m| m.is_file())
+                    .unwrap_or(false);
+                let local = is_regular_file.then(|| std::fs::read(&full).ok()).flatten();
+                let matching_branch = local.as_ref().and_then(|local| {
+                    branches
+                        .iter()
+                        .find(|b| worktree::blob_at(repo, b, p).as_ref() == Some(local))
+                });
+                match matching_branch {
+                    Some(b) => format!("{p} (identical to {b}'s tip)"),
+                    None => p.clone(),
+                }
+            })
+            .collect();
+        let summary = format!(
+            "landing {unit:?} was refused: local content at {} would be overwritten by the \
+             merge - clear it (or confirm it is already captured on the named branch) and \
+             the unit's own branch lands unchanged",
+            named.join(", ")
+        );
+        self.emit_lesson(Some(wt), unit, &summary);
+        Error(format!(
+            "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for local changes at {}",
+            paths.join(", ")
+        ))
+    }
+
     /// Whether the named agent runs in an isolated worktree (its `isolation` is
     /// not `none`). An unknown agent defaults to isolated, matching the prior
     /// repo-only behavior.
@@ -10664,6 +11017,23 @@ impl RunCtx<'_> {
         Ok(Some(wt))
     }
 
+    /// The fan-out implement template's gate list, read from the ORIGINAL workflow
+    /// definition (`self.cfg.workflow.stages`, mirroring [`implementer_agent`]'s
+    /// rationale: the template itself is removed from the live runtime `stages` once
+    /// expanded into per-criterion baseline units, so the pinned static definition is
+    /// the only place left carrying it). GATE INHERITANCE (spec 103, decided): this is
+    /// THE base list [`harvest_proposed`] unions every proposal's own named gates onto,
+    /// never the reverse. Re-derived fresh from `self.cfg` on every call (never cached
+    /// on `self` or on a `Stage`), so a resumed window's fresh `RunCtx` reaches the
+    /// identical list a live window already recorded. Empty when the workflow has no
+    /// fan-out template.
+    fn template_gates(&self) -> Vec<String> {
+        fan_out_template_name(&self.cfg.workflow.stages)
+            .and_then(|name| self.cfg.workflow.stages.get(&name))
+            .map(|st| st.gates.clone())
+            .unwrap_or_default()
+    }
+
     fn harvest_proposed(
         &self,
         stages: &mut BTreeMap<String, Stage>,
@@ -10672,6 +11042,13 @@ impl RunCtx<'_> {
         terminal: &HashSet<String>,
     ) -> Result<(), Error> {
         let events = self.deps.store.read_stream(STREAM, 0, Direction::Forward)?;
+        // GATE INHERITANCE (spec 103, decided): the fan-out template's gates are the
+        // base every proposed unit's stage carries below - a proposal's own `gates`
+        // field is accepted for compatibility and UNIONED in ([`union_gates`]), so a
+        // proposal can ADD a gate but never remove one the template already runs.
+        // Computed once per call (like `gate` just below): a proposal's coverage never
+        // changes which fan-out it belongs to within one harvest pass.
+        let template_gates = self.template_gates();
         // The plan-critique gate (Unit 1, spec 10) that HOLDS the fan-out until it
         // releases, if the workflow wires one. Computed once over the static gate stage
         // (always present) so it is stable as the loop mutates `stages`; None when no
@@ -10809,6 +11186,15 @@ impl RunCtx<'_> {
                     let refined_needs = with_gate_hold(u.needs, &u.id, gate.as_ref());
                     if let Some(existing) = stages.get_mut(&u.id) {
                         existing.needs = refined_needs;
+                        // GATE INHERITANCE (spec 103, decided): a same-id refine is one
+                        // of the three ways a proposal reaches the DAG, so its own
+                        // named gates (if any) are unioned onto the existing list too -
+                        // never overwritten, never dropped. `existing.gates` already
+                        // carries the template's list (stamped by the add path below on
+                        // this unit's FIRST proposal), so unioning onto IT rather than
+                        // a freshly-read `template_gates` preserves every earlier
+                        // proposal's additions as well - monotonic growth only.
+                        existing.gates = union_gates(&existing.gates, &u.gates);
                         // spec 72 round-2 REJECT fix (sdet-c1-refine-branch-never-
                         // restamps-episode / adv-u72c1-refine-staleness-order-
                         // independent-confirmed): without this, a stage refined in a
@@ -10875,6 +11261,12 @@ impl RunCtx<'_> {
             // resolves just below - an empty coverage or a genuinely-new unmatched
             // proposal never gets one, exactly like a non-baseline stage always has.
             let mut resolved_criterion_id = String::new();
+            // Spec 103, criterion 2 (adv-u103c2-guard-blind-to-unmatched-subunit): set
+            // ONLY in the unmatched-proposal branch just below, so
+            // `assert_no_ungated_fanout_unit` can tell a genuinely-new sub-unit apart
+            // from every other empty-`criterion_id` stage. See the field's own doc
+            // comment on `Stage`.
+            let mut unmatched_fanout_proposal = false;
             if !u.coverage.trim().is_empty() {
                 // Resolve the served criterion through `resolve_served_criterion`: the
                 // echoed stable id FIRST, then a whitespace-normalized prose fallback
@@ -10984,6 +11376,13 @@ impl RunCtx<'_> {
                     // decision surface (no new event type, per the global constraint), so
                     // the extra unit shows up in the current-blocker line (§4) instead of
                     // appearing unexplained.
+                    //
+                    // Stamp the positive marker (spec 103, criterion 2) so
+                    // `assert_no_ungated_fanout_unit` can hold THIS stage to its fan-out
+                    // template's gates without also catching the plan/plan-critique
+                    // infrastructure or an unrelated authored stage, both of which share
+                    // this same empty `criterion_id` but are never a fan-out proposal.
+                    unmatched_fanout_proposal = true;
                     self.emit(
                         contextgraph::TYPE_DECISION_MADE,
                         json!({
@@ -11019,12 +11418,18 @@ impl RunCtx<'_> {
                     agent: u.agent,
                     needs,
                     coverage: u.coverage,
-                    gates: u.gates,
+                    // GATE INHERITANCE (spec 103, decided): the template's gates are
+                    // the base for BOTH branches that reach this insert - a proposal
+                    // that supersedes a baseline (`resolved_criterion_id` set above)
+                    // and a genuinely-new unmatched sub-unit (left empty) - unioned
+                    // with any the proposal itself names, never overwritten by them.
+                    gates: union_gates(&template_gates, &u.gates),
                     criterion_id: resolved_criterion_id,
                     // Record the episode that proposed this stage (spec 72), so a LATER
                     // episode's own supersede scan can compare against it - the read half
                     // of the same rank this proposal was just ranked by above.
                     episode: u.episode,
+                    unmatched_fanout_proposal,
                     ..Default::default()
                 },
             );
@@ -11092,6 +11497,22 @@ fn with_gate_hold(mut needs: Vec<String>, id: &str, gate: Option<&String>) -> Ve
         }
     }
     needs
+}
+
+/// GATE INHERITANCE (spec 103, decided): `base` (the fan-out template's gate list, or
+/// an already-unioned existing stage's) unioned with `additional` (a proposal's own
+/// named gates) - `base`'s order preserved, then any of `additional` not already
+/// present appended in the order given. Never drops an entry of `base`, so a proposal
+/// can ADD a gate but never remove one: "a `gates` field on a proposal is accepted for
+/// compatibility and unioned in."
+fn union_gates(base: &[String], additional: &[String]) -> Vec<String> {
+    let mut gates = base.to_vec();
+    for g in additional {
+        if !gates.contains(g) {
+            gates.push(g.clone());
+        }
+    }
+    gates
 }
 
 /// Normalize a criterion string for the supersede match (the duplication fix): trim,
@@ -11318,7 +11739,7 @@ const EMIT_PROTOCOL: &str = "Record each decision you make by calling the rigger
 /// unit that maps to NO criterion is scope creep and is refused. The `{criteria}`
 /// placeholder is filled with the run's actual acceptance criteria, and
 /// `{implementer}` with the implementer agent id the conductor assigned the baseline.
-const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still citing that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
+const PLAN_PROTOCOL: &str = "You are the planner. The conductor has ALREADY created one baseline implement unit per acceptance criterion below - the spec is decomposed by construction. Your job is to REFINE that baseline, not to re-decompose it:\n- If a criterion is too large for one unit, split it into several units (each still citing that same criterion).\n- If you discover a NECESSARY sub-unit or an ordering dependency the baseline missed, propose it.\nEach criterion below is shown with a STABLE id in [brackets]. When your unit serves a criterion, your unit SUPERSEDES (replaces) that criterion's baseline - it does NOT run alongside it - so identify the criterion you serve by ECHOING its id: copy the id shown in brackets next to that criterion into the `criterion_id` field (the brackets are display delimiters - the conductor accepts the id with or without them). The conductor matches your unit to its baseline by that id, so even if you reword or truncate the criterion text in `criterion`, the correct id still supersedes the one baseline (no duplicate). A wrong or missing `criterion_id` is what makes your unit run as an EXTRA unit on top of the baseline (duplicated work). Still copy the criterion text into `criterion` (verbatim is safest). Several units echoing the SAME id (a real split) all run and replace the one baseline.\nPropose each refinement the moment you decide it by calling the rigger_emit tool with type \"UnitProposed\" and data:\n{\"id\":\"<short-id>\",\"agent\":\"{implementer}\",\"criterion\":\"<the spec criterion it serves>\",\"criterion_id\":\"<the id shown in [brackets] next to that criterion>\",\"needs\":[\"<unit ids it depends on>\"]}\nNEVER propose a unit that maps to no acceptance criterion - that is scope creep. A unit whose `criterion_id` matches none of the ids below still runs, but as a genuinely-new sub-unit that the conductor flags as unmatched - so only omit the id when you truly intend a new sub-unit. Every unit you propose - a refinement, a split, or a new sub-unit - automatically runs the fan-out template's own gates; you never need to name them. Do not write code.\n\nThe acceptance criteria to refine against (echo the [id] shown next to each criterion into that unit's `criterion_id`, and copy the text into `criterion`):\n{criteria}";
 
 /// Rigger's communication discipline, appended to EVERY spawned agent's SYSTEM
 /// prompt (after its persona) by [`RunCtx::build_system_prompt`], so every agent on
@@ -12620,6 +13041,33 @@ fn review_branch(stage_id: &str, attempt: u32) -> String {
     format!("rigger/review/{}-{attempt}", sanitize_for_path(stage_id))
 }
 
+/// The DETERMINISTIC dir for a unit's THROWAWAY post-merge re-gate worktree (spec 12,
+/// unit 5 / spec 103, criterion 7): `<scratch-root>/rigger-postmerge-<unit-slug>-<attempt>`,
+/// derived from the unit id and the integrate attempt, no per-process uuid. The post-merge
+/// re-gate certifies the MERGED run-branch tree right before `UnitIntegrated` - running it in
+/// the operator's own checkout let a stray untracked file there change the verdict, and
+/// running it in the unit's own (already-landed-out-of) `rigger-wt-<slug>` dir would race
+/// whatever that worktree does next - so it gets its own scratch-rooted, throwaway location
+/// instead, the exact same shape as a standalone review's [`review_worktree_dir`]. Carries no
+/// durable checkpoint: [`RunCtx::integrate_and_emit`] discards any leftover before creating it
+/// fresh at the landed sha, and removes both the dir and its [`postmerge_branch`] the instant
+/// its gate suite ends, pass or fail.
+fn postmerge_worktree_dir(scratch_root: &str, unit_id: &str, attempt: u32) -> String {
+    format!(
+        "{scratch_root}/rigger-postmerge-{}-{attempt}",
+        sanitize_for_path(unit_id)
+    )
+}
+
+/// The DETERMINISTIC throwaway branch for a post-merge re-gate worktree (spec 103,
+/// criterion 7): `rigger/postmerge/<unit-slug>-<attempt>`. [`RunCtx::integrate_and_emit`]
+/// points it at the exact landed sha via [`Worktree::create_branch_at`], so the worktree
+/// checks out precisely the tree `UnitIntegrated` is about to certify - never the unit's own
+/// durable `rigger/u/*` checkpoint, and never surviving past its own gate run.
+fn postmerge_branch(unit_id: &str, attempt: u32) -> String {
+    format!("rigger/postmerge/{}-{attempt}", sanitize_for_path(unit_id))
+}
+
 /// Whether two filesystem paths name the same location. Used by the cwd-isolation
 /// guard to refuse spawning an agent directly in the main repo checkout. Compares
 /// the canonicalized paths when both resolve (so `.`, `..`, symlinks, and a trailing
@@ -12765,22 +13213,42 @@ fn is_fan_out(st: &Stage) -> bool {
     st.agent.is_empty() && (!st.agents.is_empty() || st.strategy.eq_ignore_ascii_case("fan-out"))
 }
 
+/// Whether a stage is shaped like the implement fan-out TEMPLATE: it names an `agent`,
+/// sets `strategy: fan-out` ("one implementer per ready unit"), and does NOT `produces`
+/// a DAG (it is a worker, not the planner). Pulled out of [`fan_out_template_name`] so
+/// `rigger validate`'s [`ungated_fan_out_templates`] advisory checks the EXACT same
+/// shape the runtime decomposition matches - one predicate, never a second guess at it.
+fn is_fan_out_template(st: &Stage) -> bool {
+    !st.agent.is_empty() && st.strategy.eq_ignore_ascii_case("fan-out") && st.produces.is_empty()
+}
+
 /// The implement TEMPLATE stage the conductor expands into one per-criterion unit
-/// (the deterministic decomposition baseline). It is the stage that names an `agent`,
-/// sets `strategy: fan-out` ("one implementer per ready unit"), and does NOT
-/// `produces` a DAG (it is a worker, not the planner). There is normally exactly one;
-/// the FIRST in stable (BTreeMap) order is chosen. Returns its name, or None when the
+/// (the deterministic decomposition baseline). There is normally exactly one; the
+/// FIRST in stable (BTreeMap) order is chosen. Returns its name, or None when the
 /// workflow has no fan-out implementer template (a non-decomposing workflow), in which
 /// case the conductor synthesizes no baseline units and the no-spec path is unchanged.
 fn fan_out_template_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
     stages
         .iter()
-        .find(|(_, st)| {
-            !st.agent.is_empty()
-                && st.strategy.eq_ignore_ascii_case("fan-out")
-                && st.produces.is_empty()
-        })
+        .find(|(_, st)| is_fan_out_template(st))
         .map(|(name, _)| name.clone())
+}
+
+/// NO UNGATED FAN-OUT TEMPLATE advisory (spec 103, criterion 2): names every fan-out
+/// implement template ([`is_fan_out_template`]'s own shape - never a second guess at
+/// it) that declares NO gates at all, so `rigger validate` can warn on it at author
+/// time - before a spec ever decomposes against it and reaches the runtime invariant
+/// [`assert_no_ungated_fanout_unit`] enforces. A template WITH gates is never named
+/// here: an author who deliberately wrote an ungated fan-out stage gets silence, per
+/// the Design's "empty template gates - a workflow authored with no gates keeps
+/// running ungated" constraint - this only surfaces the case most likely to be an
+/// oversight (gates omitted entirely).
+pub fn ungated_fan_out_templates(stages: &BTreeMap<String, Stage>) -> Vec<String> {
+    stages
+        .iter()
+        .filter(|(_, st)| is_fan_out_template(st) && st.gates.is_empty())
+        .map(|(name, _)| name.clone())
+        .collect()
 }
 
 /// Whether a stage `produces` a DAG at runtime (the planner that decomposes the spec).
@@ -13077,6 +13545,80 @@ fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option
         "coverage gap - no stage with an LLM verifier covers: {}",
         gaps.join("; ")
     ))
+}
+
+/// NO UNGATED FAN-OUT UNIT (spec 103, criterion 2): a conductor invariant, checked
+/// against exactly the units about to spawn in THIS wave (`ready`) before `run_wave`
+/// runs them. A unit whose `criterion_id` names a criterion `fanout_criteria` records
+/// as belonging to some fan-out template, and whose OWN `gates` list is empty, while
+/// that SAME template's captured `gates` (`fanout_template_gates`) is non-empty, is a
+/// defect a future edit introduced - never a normal outcome - so the step fails loudly,
+/// naming both the unit and the template, rather than letting the unit spawn ungated.
+/// The SAME check also catches a genuinely-new unmatched-proposal sub-unit
+/// (`st.unmatched_fanout_proposal`, spec 18 §3.3c): its `criterion_id` is always empty
+/// (it names no baseline criterion, by definition), so it can never match a
+/// `fanout_criteria` entry the loop above resolves against - it is checked separately,
+/// against whichever template `fanout_template_gates` tracks (a run tracks at most
+/// one, per [`fan_out_template_name`]'s single `.find`), so it is unambiguous which
+/// template's gates it was meant to inherit.
+///
+/// Criterion 1 owns gate INHERITANCE (`harvest_proposed`'s union of a proposal's gates
+/// with its template's), which is supposed to make this violation unreachable in
+/// practice; this guard is the backstop that keeps a future regression in that path
+/// loud instead of silent. A stage whose `criterion_id` names no tracked template AND
+/// is not an unmatched-proposal sub-unit (the plan/plan-critique infrastructure, or
+/// any other workflow-authored stage outside the fan-out mechanism entirely) is out of
+/// scope regardless of gates - it was never a fan-out unit to begin with, so it is
+/// never this guard's business. An unmatched-proposal sub-unit under a template that
+/// itself declares no gates is ALSO out of scope - an authored ungated workflow keeps
+/// running ungated (the Design's own carve-out) - which is exactly why the check below
+/// only ever fires against a template `fanout_template_gates` records NON-empty gates
+/// for.
+fn assert_no_ungated_fanout_unit(
+    stages: &BTreeMap<String, Stage>,
+    ready: &[String],
+    fanout_criteria: &HashMap<String, HashSet<String>>,
+    fanout_template_gates: &HashMap<String, Vec<String>>,
+) -> Result<(), Error> {
+    for name in ready {
+        let Some(st) = stages.get(name) else {
+            continue;
+        };
+        if !st.gates.is_empty() {
+            continue;
+        }
+        for (template_name, criteria) in fanout_criteria {
+            if !criteria.contains(&st.criterion_id) {
+                continue;
+            }
+            let Some(template_gates) = fanout_template_gates.get(template_name) else {
+                continue;
+            };
+            if template_gates.is_empty() {
+                continue;
+            }
+            return Err(Error(format!(
+                "conductor invariant violated: fan-out unit '{name}' has an empty gate \
+                 list but its template '{template_name}' declares gates ({}) - refusing \
+                 to spawn it ungated",
+                template_gates.join(", ")
+            )));
+        }
+        if st.unmatched_fanout_proposal {
+            if let Some((template_name, template_gates)) =
+                fanout_template_gates.iter().find(|(_, g)| !g.is_empty())
+            {
+                return Err(Error(format!(
+                    "conductor invariant violated: fan-out unit '{name}' (an unmatched-\
+                     proposal sub-unit) has an empty gate list but its template \
+                     '{template_name}' declares gates ({}) - refusing to spawn it \
+                     ungated",
+                    template_gates.join(", ")
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The stages a WAVE may run: [`ready_stages`] minus the plan-critique gate. The gate
@@ -14036,6 +14578,23 @@ mod tests {
         );
 
         let store = Store::open(":memory:").unwrap();
+        // Establish the SAME run boundary `run()`'s own `ensure_started(store, &[])` call
+        // below will adopt (empty criteria, matching `deps.criteria` below) BEFORE parking
+        // the halted incarnation's own `SpawnRequested` - the checkpoint's guard reads the
+        // log scoped to `current_run` (spec 103), so a request parked before ANY RunStarted
+        // exists would sit outside every run's scope and never satisfy it, the same Gap 11
+        // zombie shape every other liveness reader in this file already guards against.
+        crate::run_store::ensure_started(&store, &[]).unwrap();
+        // The halted incarnation's own `SpawnRequested` (spec 103, THE HALTED-SPAWN
+        // CHECKPOINT): a genuine halt means an EARLIER process actually dispatched this
+        // exact spawn before leaving the tree dirty above - never recording its own
+        // `SpawnResult` or a fresh liveness marker (neither exists in this fresh store),
+        // exactly the shape the recovery guard requires before it will fire.
+        spawn_store::park(
+            &store,
+            &spawn::SpawnRequest::new("u-halt", "u-halt", ROLE_IMPLEMENTER, 0, "task"),
+        )
+        .unwrap();
         let driver = Stub::new();
         let runner = ExecRunner;
         let deps = Deps {
@@ -14121,6 +14680,284 @@ mod tests {
             "the re-park prompt must tell the agent to finish and report, not start \
              over; got:\n{}",
             worker_prompts[0]
+        );
+    }
+
+    #[test]
+    fn a_dirty_tree_whose_named_spawn_was_never_requested_gets_no_wip_recovery_commit() {
+        // Spec 103, THE HALTED-SPAWN CHECKPOINT: the recovery commit fires only for a
+        // GENUINE halt - the named spawn must itself carry a `SpawnRequested`. A dirty
+        // worktree with no such request behind it (stray content, never a rigger spawn's
+        // own abandoned edit) is left alone by this guard; the ordinary flow still runs
+        // and may sweep the file into its own, differently-named commit, but never
+        // fabricates a "tree of halted spawn" recovery for a spawn that never happened.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "u-halt-unrequested".into(),
+            Stage {
+                name: "u-halt-unrequested".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "u-halt-unrequested");
+        let wt = Worktree::create(
+            &repo_path,
+            &dir,
+            &unit_branch("u-halt-unrequested"),
+            &scratch,
+        )
+        .unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("stray.txt"),
+            "never a recorded spawn's edit\n",
+        )
+        .unwrap();
+        assert!(wt.is_dirty().unwrap(), "the setup must leave it dirty");
+
+        // No `SpawnRequested` is parked for this unit anywhere in the store - the
+        // deliberate contrast with the positive-path test above.
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["u-halt-unrequested"].status,
+            ledger::Status::Verified
+        );
+
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s", &unit_branch("u-halt-unrequested")])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout).to_string();
+        let unwanted_subject = format!(
+            "wip(u-halt-unrequested): tree of halted spawn {}",
+            spawn_id("u-halt-unrequested", ROLE_IMPLEMENTER, 0)
+        );
+        assert!(
+            !log.lines().any(|l| l == unwanted_subject),
+            "no spawn was ever requested for this unit, so no wip recovery commit must \
+             appear; got:\n{log}"
+        );
+    }
+
+    #[test]
+    fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live() {
+        // Spec 103, THE HALTED-SPAWN CHECKPOINT: even when the named spawn itself has a
+        // `SpawnRequested` and no result, the recovery commit must not fire while ANOTHER
+        // spawn of the SAME unit (a later attempt, a reviewer, ...) is still actively
+        // touching its own liveness marker - the dirty tree is that spawn's live work, not
+        // an abandoned edit.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "u-halt-live-sibling".into(),
+            Stage {
+                name: "u-halt-live-sibling".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "u-halt-live-sibling");
+        let wt = Worktree::create(
+            &repo_path,
+            &dir,
+            &unit_branch("u-halt-live-sibling"),
+            &scratch,
+        )
+        .unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("halted-work.txt"),
+            "abandoned mid-edit\n",
+        )
+        .unwrap();
+        assert!(wt.is_dirty().unwrap(), "the setup must leave it dirty");
+
+        let store = Store::open(":memory:").unwrap();
+        // Learn the run id `run()` will adopt (same store, same empty criteria) so the
+        // sibling's marker is planted under the exact path production derives.
+        let run_id = crate::run_store::ensure_started(&store, &[]).unwrap();
+
+        // The named spawn (attempt 0) was requested and carries no result of its own -
+        // by itself, a genuine halt.
+        spawn_store::park(
+            &store,
+            &spawn::SpawnRequest::new(
+                "u-halt-live-sibling",
+                "u-halt-live-sibling",
+                ROLE_IMPLEMENTER,
+                0,
+                "task",
+            ),
+        )
+        .unwrap();
+        // A SIBLING spawn of the same unit (attempt 1), bounded, whose marker is touched
+        // RIGHT NOW - still well inside its wall-clock bound.
+        let mut live = spawn::SpawnRequest::new(
+            "u-halt-live-sibling",
+            "u-halt-live-sibling",
+            ROLE_IMPLEMENTER,
+            1,
+            "task",
+        );
+        live.max_wall_clock = Some(3600);
+        spawn_store::park(&store, &live).unwrap();
+        let marker = liveness::marker_path(&scratch, &run_id, &live.id)
+            .expect("a non-degenerate spawn id always encodes");
+        std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+        std::fs::write(&marker, b"heartbeat").unwrap();
+
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["u-halt-live-sibling"].status,
+            ledger::Status::Verified
+        );
+
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s", &unit_branch("u-halt-live-sibling")])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout).to_string();
+        let unwanted_subject = format!(
+            "wip(u-halt-live-sibling): tree of halted spawn {}",
+            spawn_id("u-halt-live-sibling", ROLE_IMPLEMENTER, 0)
+        );
+        assert!(
+            !log.lines().any(|l| l == unwanted_subject),
+            "a live sibling spawn of the same unit must suppress the wip recovery \
+             commit; got:\n{log}"
+        );
+    }
+
+    #[test]
+    fn a_prior_runs_leftover_spawn_request_for_a_same_named_unit_never_halts_a_new_run() {
+        // The checkpoint's guard reads the log scoped to THIS run alone (`current_run`),
+        // exactly like `run()`'s own `prior_events` fold: a PRIOR, unrelated run's leftover
+        // `SpawnRequested` for a same-named unit (a re-run that reuses a slug, or an
+        // unrelated workflow that happens to name a stage identically) must never satisfy
+        // "the named spawn has a SpawnRequested" for a unit THIS run has never touched -
+        // the same Gap 11 zombie class every other liveness reader in this file already
+        // guards against by scoping to `current_run`.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "u-halt-prior-run".into(),
+            Stage {
+                name: "u-halt-prior-run".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        // A PRIOR, unrelated run: its own RunStarted, then a real SpawnRequested (no
+        // result) for a unit of the SAME name this test's own run will also use.
+        crate::run_store::ensure_started(&store, &["old criteria".to_string()]).unwrap();
+        spawn_store::park(
+            &store,
+            &spawn::SpawnRequest::new(
+                "u-halt-prior-run",
+                "u-halt-prior-run",
+                ROLE_IMPLEMENTER,
+                0,
+                "task",
+            ),
+        )
+        .unwrap();
+
+        // THIS run's own dirty worktree for the same-named unit - nothing has been
+        // requested for it in THIS run yet.
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "u-halt-prior-run");
+        let wt =
+            Worktree::create(&repo_path, &dir, &unit_branch("u-halt-prior-run"), &scratch).unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join("stray.txt"),
+            "never requested in THIS run\n",
+        )
+        .unwrap();
+        assert!(wt.is_dirty().unwrap(), "the setup must leave it dirty");
+
+        let driver = Stub::new();
+        let runner = ExecRunner;
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &runner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            // Empty, like every other test in this module - differs from the seeded prior
+            // run's non-empty criteria, so `run()` mints a FRESH RunStarted rather than
+            // adopting the old one, and bypasses the (unrelated) coverage-gap check.
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["u-halt-prior-run"].status,
+            ledger::Status::Verified
+        );
+
+        let log = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["log", "--pretty=%s", &unit_branch("u-halt-prior-run")])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout).to_string();
+        let unwanted_subject = format!(
+            "wip(u-halt-prior-run): tree of halted spawn {}",
+            spawn_id("u-halt-prior-run", ROLE_IMPLEMENTER, 0)
+        );
+        assert!(
+            !log.lines().any(|l| l == unwanted_subject),
+            "a PRIOR run's leftover SpawnRequested for a same-named unit must never satisfy \
+             THIS run's own halted-spawn checkpoint; got:\n{log}"
         );
     }
 
@@ -17016,6 +17853,229 @@ mod tests {
         }
     }
 
+    #[test]
+    fn harvest_proposed_gates_every_case_with_the_templates_list_unioned() {
+        // spec 103 criterion 1 (GATE INHERITANCE). The fan-out template's gates - not a
+        // proposal's own `gates` field alone - are the base every proposed unit's stage
+        // carries, in the THREE ways a proposal reaches the DAG: superseding a baseline
+        // (u-a), a same-id refine (u-a re-emitted), and a genuinely-new unmatched
+        // sub-unit (u-new). A proposal's own `gates` is accepted and UNIONED in (never
+        // removes the template's), so `harvest_proposed` must union, not overwrite
+        // (conductor.rs:10739 pre-fix: `gates: u.gates` dropped the template's list
+        // entirely the moment a proposal named its own, or left the unit UNGATED
+        // whenever a hand-authored proposal named none). RED against `gates: u.gates`.
+        let crit_a = "criterion A: the alpha module is implemented";
+        let cfg = supersede_cfg(); // template "implement" carries gates: ["ok"]
+        let st = Store::open(":memory:").unwrap();
+
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-a",
+                    "agent": "worker",
+                    "criterion": crit_a,
+                    "criterion_id": criterion_stable_id(1, crit_a),
+                    "gates": ["extra"],
+                    "needs": [],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string()],
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let mut proposed: HashSet<String> = HashSet::new();
+        let integrated: HashSet<String> = HashSet::new();
+        let terminal: HashSet<String> = HashSet::new();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+
+        // (a) Supersedes-a-baseline: the template's own gate survives even though the
+        // proposal named a DIFFERENT one - the template's list is the base, never
+        // dropped.
+        assert_eq!(
+            stages["u-a"].gates,
+            vec!["ok".to_string(), "extra".to_string()],
+            "a proposal superseding a baseline must carry the template's gates UNIONED \
+             with its own named gate, never overwritten; got {:?}",
+            stages["u-a"].gates
+        );
+
+        // (b) Same-id refine: re-emit u-a naming a THIRD gate. The template's gate and
+        // the first proposal's own gate must both SURVIVE - a refine only ever ADDS.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-a",
+                    "agent": "worker",
+                    "criterion": crit_a,
+                    "criterion_id": criterion_stable_id(1, crit_a),
+                    "gates": ["extra2"],
+                    "needs": [],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+        assert_eq!(
+            stages["u-a"].gates,
+            vec!["ok".to_string(), "extra".to_string(), "extra2".to_string()],
+            "a same-id refine must UNION its own named gate onto the existing list, \
+             never dropping the template's or the earlier proposal's; got {:?}",
+            stages["u-a"].gates
+        );
+
+        // (c) A genuinely-new unmatched sub-unit (maps to no criterion) STILL gets the
+        // template's gates, unioned with its own.
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-new",
+                    "agent": "worker",
+                    "criterion": "an entirely separate concern the spec never lists",
+                    "gates": ["extra3"],
+                    "needs": [],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
+            .unwrap();
+        assert_eq!(
+            stages["u-new"].gates,
+            vec!["ok".to_string(), "extra3".to_string()],
+            "a genuinely-new unmatched sub-unit must still carry the template's gates \
+             unioned with its own named gate; got {:?}",
+            stages["u-new"].gates
+        );
+    }
+
+    #[test]
+    fn harvest_proposed_gate_inheritance_survives_a_resumed_window() {
+        // spec 103 criterion 1: "a resumed window re-derives the same list." The
+        // template's gates are read fresh from `self.cfg.workflow.stages` (the PINNED
+        // workflow definition, never the runtime `stages` map the template is removed
+        // from once expanded) on EVERY call - so a second `RunCtx` over a freshly-seeded
+        // `stages` map (exactly what a fresh process replaying the log on resume starts
+        // from) derives the identical gate list a live window already recorded, from
+        // the same proposals already in the log.
+        let crit_a = "criterion A: the alpha module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                TYPE_UNIT_PROPOSED,
+                serde_json::to_vec(&json!({
+                    "id": "u-a",
+                    "agent": "worker",
+                    "criterion": crit_a,
+                    "criterion_id": criterion_stable_id(1, crit_a),
+                    "gates": ["extra"],
+                    "needs": [],
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string()],
+        };
+
+        // Window 1 (the live window): harvest over a freshly-seeded DAG.
+        let ctx1 = RunCtx::for_test(&cfg, &deps);
+        let mut stages1 = seed_refine_dag(&deps.criteria);
+        let mut proposed1: HashSet<String> = HashSet::new();
+        ctx1.harvest_proposed(
+            &mut stages1,
+            &mut proposed1,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        // Window 2 (a RESUMED window): a brand new `RunCtx` and a brand new,
+        // freshly-seeded `stages` map - exactly the state a fresh `rigger step`
+        // process starts from - over the SAME store, which already holds the same
+        // `UnitProposed` the live window read.
+        let ctx2 = RunCtx::for_test(&cfg, &deps);
+        let mut stages2 = seed_refine_dag(&deps.criteria);
+        let mut proposed2: HashSet<String> = HashSet::new();
+        ctx2.harvest_proposed(
+            &mut stages2,
+            &mut proposed2,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            stages1["u-a"].gates, stages2["u-a"].gates,
+            "a resumed window must re-derive the EXACT SAME gate list the live window \
+             did; live: {:?}, resumed: {:?}",
+            stages1["u-a"].gates, stages2["u-a"].gates
+        );
+        assert_eq!(
+            stages2["u-a"].gates,
+            vec!["ok".to_string(), "extra".to_string()],
+            "the resumed window's list must still be the template's gates unioned with \
+             the proposal's own; got {:?}",
+            stages2["u-a"].gates
+        );
+    }
+
+    #[test]
+    fn plan_protocol_tells_the_planner_gates_come_from_the_template() {
+        // spec 103 criterion 1 ("THE PROTOCOL STAYS SILENT ON GATES", decided):
+        // PLAN_PROTOCOL keeps its JSON proposal shape exactly as documented - id,
+        // agent, criterion, criterion_id, needs - but states in prose that every
+        // proposed unit runs the fan-out template's own gates automatically, so the
+        // planner never needs to (though a `gates` field is still accepted for
+        // compatibility, per the harvest-side union proven above).
+        assert!(
+            PLAN_PROTOCOL.to_lowercase().contains("gate"),
+            "PLAN_PROTOCOL must tell the planner that every proposed unit runs the \
+             fan-out template's own gates automatically; got:\n{PLAN_PROTOCOL}"
+        );
+        assert!(
+            !PLAN_PROTOCOL.contains("\"gates\""),
+            "PLAN_PROTOCOL's JSON proposal shape must stay silent on gates - the \
+             planner never authors them; got:\n{PLAN_PROTOCOL}"
+        );
+    }
+
     /// Whether the run stream carries an `unmatched-proposal` signal for `unit` -
     /// recorded on the EXISTING `DecisionMade` surface (spec 18 §3.3, no new event
     /// type). Lets the fixtures assert the signal fires for a genuinely-new proposal
@@ -17387,6 +18447,74 @@ mod tests {
             !events.iter().any(|e| e.type_ == TYPE_SCOPE_CREEP
                 && String::from_utf8_lossy(&e.data).contains("new-subunit")),
             "a genuinely-new sub-unit with real coverage must not be refused as scope creep"
+        );
+    }
+
+    #[test]
+    fn a_genuinely_new_proposal_with_no_gates_still_spawns_gated_via_template_inheritance() {
+        // adv-u103c2-guard-blind-to-unmatched-subunit, end to end through the real
+        // `harvest_proposed` -> `assert_no_ungated_fanout_unit` wiring (not the
+        // hand-built-stages unit tests above): a genuinely-new sub-unit that omits
+        // `gates` entirely resolves no criterion, so `criterion_id` stays empty and
+        // the OLD guard would have let it spawn silently under the gated `implement`
+        // template (`supersede_cfg`'s `gates: ["ok"]`).
+        //
+        // RENAMED at merge time (decision u103c2-merge-gate-inheritance-obsoletes-guard-
+        // reproduction): criterion 1's already-landed gate-inheritance fix
+        // (`harvest_proposed`'s `union_gates`, merged into this unit from `rigger-run`)
+        // now unconditionally seeds every proposed stage - including a genuinely-new
+        // unmatched one - with its fan-out template's own gates BEFORE
+        // `assert_no_ungated_fanout_unit` ever runs, so an omitted-gates proposal can no
+        // longer reach the guard with an empty gate list through this real `run()` entry
+        // point at all; `adj-u103c2-verdict-reject` already anticipated exactly this
+        // ("not exploitable post-merge only because the already-landed u103c1 fix
+        // independently unions gates for it too"). The guard itself is untouched and
+        // still fully exercised by the hand-built-stages unit tests above
+        // (`unmatched_fanout_proposal_under_a_gated_template_fails_the_step` et al.),
+        // which call `assert_no_ungated_fanout_unit` directly with a hand-built empty
+        // gate list, independent of `harvest_proposed`. What THIS test can still prove at
+        // the real `run()` boundary is the combined, still-safe outcome: the unit is
+        // never left ungated - it spawns carrying the template's own gate, inherited.
+        let crit_a = "criterion A: the metrics module is implemented";
+        let cfg = supersede_cfg();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({
+                    "id": "new-subunit",
+                    "agent": "worker",
+                    "criterion": "an entirely separate concern the spec never lists",
+                    // `gates` omitted entirely - the shape that used to be ungated.
+                }),
+            )],
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: vec![crit_a.to_string()],
+        };
+        let rs = run(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["new-subunit"].status,
+            ledger::Status::Integrated,
+            "a genuinely-new sub-unit that omits gates must still run to completion, \
+             gated by inheritance rather than refused"
+        );
+        assert_eq!(
+            rs.units["new-subunit"]
+                .evidence
+                .get("verified")
+                .map(String::as_str),
+            Some("gates passed: ok"),
+            "the unit must have actually run the template's inherited 'ok' gate, not \
+             skipped gating entirely; got {:?}",
+            rs.units["new-subunit"].evidence
         );
     }
 
@@ -23133,6 +24261,7 @@ mod tests {
             conflict_regenerate_pending: Mutex::new(HashMap::new()),
             integrate_attempted: HashSet::new(),
             pending_landing: Mutex::new(HashMap::new()),
+            landed: Mutex::new(HashMap::new()),
             taxonomy: failure::Taxonomy::default(),
         };
 
@@ -29488,6 +30617,242 @@ mod tests {
         );
     }
 
+    // NO UNGATED FAN-OUT UNIT PASSES SILENTLY (spec 103, criterion 2). These test
+    // `assert_no_ungated_fanout_unit` DIRECTLY, with hand-built `stages`/
+    // `fanout_criteria`/`fanout_template_gates`, never through `harvest_proposed`:
+    // criterion 1 owns gate INHERITANCE (the union that is supposed to make an empty
+    // result unreachable from that path); this criterion owns only the runtime guard
+    // and must keep proving it independently of whatever inheritance does.
+
+    /// Shared harness for the six cases below: puts `stage` alone into a `stages` map
+    /// keyed by its own name, marks it the lone `ready` entry, and runs
+    /// `assert_no_ungated_fanout_unit` against it with `fanout_criteria` and
+    /// `fanout_template_gates`. Every case differs only in the stage shape, the
+    /// template map, and the expected outcome, so the repeated wiring lives here once
+    /// instead of six times over (the operator's strict-DRY convention).
+    fn run_ungated_fanout_guard(
+        stage: Stage,
+        fanout_criteria: HashMap<String, HashSet<String>>,
+        fanout_template_gates: HashMap<String, Vec<String>>,
+    ) -> Result<(), Error> {
+        let ready = vec![stage.name.clone()];
+        let mut stages = BTreeMap::new();
+        stages.insert(stage.name.clone(), stage);
+        assert_no_ungated_fanout_unit(&stages, &ready, &fanout_criteria, &fanout_template_gates)
+    }
+
+    #[test]
+    fn ungated_fanout_unit_under_a_gated_template_fails_the_step() {
+        let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        fanout_criteria.insert("implement".into(), ["crit-1".into()].into_iter().collect());
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), vec!["fmt".into(), "test".into()]);
+
+        let err = run_ungated_fanout_guard(
+            Stage {
+                name: "u-a".into(),
+                agent: "worker".into(),
+                criterion_id: "crit-1".into(),
+                gates: Vec::new(),
+                ..Default::default()
+            },
+            fanout_criteria,
+            fanout_template_gates,
+        )
+        .expect_err("an empty gate list under a gated template must fail the step");
+        assert!(
+            err.0.contains("u-a"),
+            "the failure must name the ungated unit; got {:?}",
+            err.0
+        );
+        assert!(
+            err.0.contains("implement"),
+            "the failure must name the template that declared gates; got {:?}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn ungated_fanout_unit_under_an_ungated_template_is_not_flagged() {
+        // Empty template gates is a legitimate, authored, ungated workflow (a Design
+        // constraint) - the guard must stay silent, not invent a violation.
+        let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        fanout_criteria.insert("implement".into(), ["crit-1".into()].into_iter().collect());
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), Vec::new());
+
+        let outcome = run_ungated_fanout_guard(
+            Stage {
+                name: "u-a".into(),
+                agent: "worker".into(),
+                criterion_id: "crit-1".into(),
+                gates: Vec::new(),
+                ..Default::default()
+            },
+            fanout_criteria,
+            fanout_template_gates,
+        );
+        assert!(
+            outcome.is_ok(),
+            "a template that itself declares no gates keeps running ungated"
+        );
+    }
+
+    #[test]
+    fn gated_fanout_unit_passes() {
+        let mut fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        fanout_criteria.insert("implement".into(), ["crit-1".into()].into_iter().collect());
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), vec!["fmt".into()]);
+
+        let outcome = run_ungated_fanout_guard(
+            Stage {
+                name: "u-a".into(),
+                agent: "worker".into(),
+                criterion_id: "crit-1".into(),
+                gates: vec!["fmt".into()],
+                ..Default::default()
+            },
+            fanout_criteria,
+            fanout_template_gates,
+        );
+        assert!(
+            outcome.is_ok(),
+            "a unit that inherited its template's gates must spawn"
+        );
+    }
+
+    #[test]
+    fn non_fanout_stage_with_no_gates_is_never_flagged() {
+        // A stage that never came from a gated fan-out template at all (its
+        // criterion_id names no `fanout_criteria` entry) - e.g. the plan or
+        // plan-critique infrastructure stages - is out of this guard's scope
+        // entirely, gated or not.
+        let fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), vec!["fmt".into()]);
+
+        let outcome = run_ungated_fanout_guard(
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                gates: Vec::new(),
+                ..Default::default()
+            },
+            fanout_criteria,
+            fanout_template_gates,
+        );
+        assert!(
+            outcome.is_ok(),
+            "a stage outside every tracked fan-out template's criteria must never be flagged"
+        );
+    }
+
+    #[test]
+    fn unmatched_fanout_proposal_under_a_gated_template_fails_the_step() {
+        // adv-u103c2-guard-blind-to-unmatched-subunit: a genuinely-new sub-unit
+        // `harvest_proposed` adds resolves no baseline criterion, so its
+        // `criterion_id` is empty and it can never match a `fanout_criteria` entry -
+        // the loop above alone would silently pass it, gated template or not. The
+        // positive `unmatched_fanout_proposal` marker closes exactly that hole.
+        let fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), vec!["fmt".into(), "test".into()]);
+
+        let err = run_ungated_fanout_guard(
+            Stage {
+                name: "new-subunit".into(),
+                agent: "worker".into(),
+                gates: Vec::new(),
+                unmatched_fanout_proposal: true,
+                ..Default::default()
+            },
+            fanout_criteria,
+            fanout_template_gates,
+        )
+        .expect_err(
+            "an unmatched-proposal sub-unit with an empty gate list under a gated \
+             template must fail the step",
+        );
+        assert!(
+            err.0.contains("new-subunit"),
+            "the failure must name the ungated unit; got {:?}",
+            err.0
+        );
+        assert!(
+            err.0.contains("implement"),
+            "the failure must name the template that declared gates; got {:?}",
+            err.0
+        );
+    }
+
+    #[test]
+    fn unmatched_fanout_proposal_under_an_ungated_template_is_not_flagged() {
+        // The Design's own carve-out applies to an unmatched-proposal sub-unit exactly
+        // as it does to a matched one: a template that itself declares no gates keeps
+        // running ungated, so the check must never fire against it.
+        let fanout_criteria: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
+        fanout_template_gates.insert("implement".into(), Vec::new());
+
+        let outcome = run_ungated_fanout_guard(
+            Stage {
+                name: "new-subunit".into(),
+                agent: "worker".into(),
+                gates: Vec::new(),
+                unmatched_fanout_proposal: true,
+                ..Default::default()
+            },
+            fanout_criteria,
+            fanout_template_gates,
+        );
+        assert!(
+            outcome.is_ok(),
+            "an unmatched-proposal sub-unit under a template that itself declares no \
+             gates keeps running ungated"
+        );
+    }
+
+    #[test]
+    fn ungated_fan_out_templates_names_a_gateless_template() {
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                gates: Vec::new(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            ungated_fan_out_templates(&stages),
+            vec!["implement".to_string()],
+            "a fan-out template with no gates at all must be named"
+        );
+    }
+
+    #[test]
+    fn ungated_fan_out_templates_is_silent_on_a_gated_template() {
+        let mut stages: BTreeMap<String, Stage> = BTreeMap::new();
+        stages.insert(
+            "implement".into(),
+            Stage {
+                name: "implement".into(),
+                agent: "worker".into(),
+                strategy: "fan-out".into(),
+                gates: vec!["fmt".into()],
+                ..Default::default()
+            },
+        );
+        assert!(
+            ungated_fan_out_templates(&stages).is_empty(),
+            "a template that declares gates must not be advised on"
+        );
+    }
+
     #[test]
     fn planner_covering_every_criterion_passes() {
         // A `produces` planner defers coverage: it proposes a unit whose `coverage`
@@ -30159,6 +31524,7 @@ mod tests {
             conflict_regenerate_pending: Mutex::new(HashMap::new()),
             integrate_attempted: HashSet::new(),
             pending_landing: Mutex::new(HashMap::new()),
+            landed: Mutex::new(HashMap::new()),
             taxonomy: failure::Taxonomy::default(),
         };
         ctx.record_gate("ok", gate::Kind::Core, GateRatchet::CleanPass, "silent");
@@ -32799,6 +34165,154 @@ mod tests {
             json!("integrate-conflict"),
             "a resumed-reviewed merge break must be stamped 'integrate-conflict', not a \
              plain gate cause: {v:?}"
+        );
+    }
+
+    #[test]
+    fn a_resumed_landed_but_ungated_unit_regates_the_landed_tree() {
+        // Spec 103, criterion 3 (RE-GATE WHAT LANDED): a prior window's `integrate_and_emit`
+        // already fast-forwarded the run branch onto the unit's own tip and durably recorded
+        // the landing (`record_landed`, the `integrate-landed` row), but crashed before the
+        // post-merge re-gate that must follow it ever ran. On resume, `changed_since_base`
+        // reads empty (the content is already on the run branch) and `pending_landing_for`
+        // finds nothing PENDING (the landed row already exists, matching whatever intent
+        // preceded it) - so the resumed call must not mistake "nothing left to land" for
+        // "nothing left to gate": it must resolve `commit` from the durably-recorded landed
+        // sha and actually run the post-merge gate before ever emitting `UnitIntegrated`,
+        // never take the true-no-op short circuit a unit that genuinely landed nothing takes.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let base_sha = git_head(&repo_path);
+
+        // The prior window's approved diff, on the unit's own durable branch.
+        commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+        let branch = unit_branch("s");
+        let unit_sha = {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo_path)
+                .args(["rev-parse", &branch])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+
+        // Simulate `Worktree::land`'s fast-forward already having happened: the checked-out
+        // repo (the run branch) is ALREADY at the unit's own tip.
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["merge", "--ff-only", &branch])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "test setup: the fast-forward must succeed: {out:?}"
+        );
+        assert_eq!(
+            git_head(&repo_path),
+            unit_sha,
+            "test setup premise: the run branch must already carry the unit's landed tip"
+        );
+
+        let st = Store::open(":memory:").unwrap();
+        seed_events_in_run(
+            &st,
+            &[],
+            &[
+                Event::new(
+                    ledger::TYPE_UNIT_STARTED,
+                    serde_json::to_vec(&json!({"id": "s", "agent": "worker", "branch": branch}))
+                        .unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "verified"})).unwrap(),
+                ),
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({"id": "s", "status": "reviewed"})).unwrap(),
+                ),
+                // The durably-recorded LANDED row a real prior process's `record_landed`
+                // wrote right after `Worktree::land` succeeded - before it ever reached the
+                // post-merge re-gate that must follow it.
+                Event::new(
+                    ledger::TYPE_UNIT_STATUS,
+                    serde_json::to_vec(&json!({
+                        "id": "s",
+                        "status": "integrate-landed",
+                        "attempt": 0,
+                        "evidence": {"sha": unit_sha, "pre_merge": base_sha},
+                    }))
+                    .unwrap(),
+                )
+                .with_meta(META_REPLAY_KEY, "s/landed#0~0"),
+            ],
+        );
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("lens".into(), agent("lens"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "merge".into(),
+                review: crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            !driver.spawned("worker") && !driver.spawned("lens") && !driver.spawned("judge"),
+            "premise: an already-approved, already-landed unit must resume straight through \
+             integrate with no lifecycle spawns, or this test is not exercising the resumed \
+             already-landed path"
+        );
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let postmerge_key = postmerge_gate_verdict_key("s", 0, "ok");
+        assert!(
+            events
+                .iter()
+                .any(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&postmerge_key)),
+            "a real-merge landing recorded before this resume must still run its post-merge \
+             re-gate for real, keyed {postmerge_key:?} - never skip it as if nothing had \
+             landed"
+        );
+
+        let integrated = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+            .expect("the resumed already-landed unit must emit UnitIntegrated");
+        let v: Value = serde_json::from_slice(&integrated.data).unwrap();
+        assert_eq!(
+            v["commit"],
+            json!(unit_sha),
+            "UnitIntegrated must carry the actual landed sha, never an empty/stale commit: \
+             {v:?}"
         );
     }
 
@@ -39058,16 +40572,18 @@ mod tests {
     }
 
     #[test]
-    fn the_post_merge_re_gate_gets_the_units_mutants_root_though_it_runs_in_the_repo() {
-        // Spec 91, THE GATE ENVIRONMENT, at the post-merge re-gate (spec 12, unit 5): the
-        // second of two batch-mates merges into a tree its own gate never saw, so its re-gate
-        // MISSES the content cache and RUNS - in the repo's own checkout, never a
-        // `rigger-wt-<slug>` worktree. A `checkin` stage's `mutation` gate there runs
-        // `rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`, so an EMPTY `$MUTANTS` fails the gate
-        // (`mkdir: cannot create directory ''`) and blocks the integration of a green unit -
-        // exactly what spec 89's own check-in hit (2026-09-13). The re-gate must export the
-        // SAME unit-keyed root the pre-merge sweep used: keyed by the unit's worktree name,
-        // not by the directory the gate happens to run in.
+    fn the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo() {
+        // Spec 103, criterion 7 (POST-MERGE GATES RUN ON THE LANDED TREE): the second of two
+        // batch-mates merges into a tree its own gate never saw, so its re-gate MISSES the
+        // content cache and RUNS for real - and it must run in its OWN throwaway,
+        // scratch-rooted worktree, NEVER `self.deps.repo` (the operator's own checkout, where a
+        // stray untracked file used to be able to flip the verdict) and never a bare/empty
+        // root: a `checkin` stage's `mutation` gate there runs `rm -rf "$MUTANTS" && mkdir -p
+        // "$MUTANTS"`, so an EMPTY `$MUTANTS` fails the gate (`mkdir: cannot create directory
+        // ''`) and blocks the integration of a green unit - exactly what spec 89's own
+        // check-in hit (2026-09-13). It must still export the SAME unit-keyed `$MUTANTS` root
+        // AND `$CARGO_TARGET_DIR` the pre-merge sweep already warmed, and its own worktree must
+        // be gone once its gate suite ends.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
@@ -39082,10 +40598,20 @@ mod tests {
                 .output()
                 .unwrap();
         }
-        // Every gate run appends "<physical cwd> <$MUTANTS>" to a log OUTSIDE the repo (an
-        // untracked file inside it would dirty the very tree the integrate lock guards).
+        // An UNTRACKED file sitting in the operator's own checkout for the whole run - never
+        // `git add`ed. A gate command whose cwd is the repo would see it on disk; a gate
+        // running in a real git worktree checkout of the landed sha never can, because a
+        // worktree holds only git-tracked content.
+        std::fs::write(
+            Path::new(&repo_path).join("operator-only.marker"),
+            "must never be visible to a gate\n",
+        )
+        .unwrap();
+        // Every gate run appends "<physical cwd> <$MUTANTS> <$CARGO_TARGET_DIR> <marker>" to a
+        // log OUTSIDE the repo (an untracked file inside it would dirty the very tree the
+        // integrate lock guards).
         let log_dir = tempfile::tempdir().unwrap();
-        let log = log_dir.path().join("mutants-seen.log");
+        let log = log_dir.path().join("gate-runs.log");
 
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_retries = 2;
@@ -39095,7 +40621,8 @@ mod tests {
         cfg.workflow.gates.insert(
             "g".into(),
             gate_def(&format!(
-                "printf '%s %s\\n' \"$(pwd -P)\" \"$MUTANTS\" >> '{}'",
+                "printf '%s %s %s %s\\n' \"$(pwd -P)\" \"$MUTANTS\" \"$CARGO_TARGET_DIR\" \
+                 \"$([ -f operator-only.marker ] && echo present || echo absent)\" >> '{}'",
                 log.display()
             )),
         );
@@ -39140,31 +40667,302 @@ mod tests {
 
         let seen = std::fs::read_to_string(&log).unwrap();
         let repo_physical = std::fs::canonicalize(&repo_path).unwrap();
-        let in_repo: Vec<&str> = seen
-            .lines()
-            .filter(|l| l.split(' ').next() == repo_physical.to_str())
-            .collect();
-        assert!(
-            !in_repo.is_empty(),
-            "the second integrator's post-merge re-gate must RUN in the repo checkout (a \
-             content-cache miss over the merged two-MARK tree); gate runs seen:\n{seen}"
-        );
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let unit_roots: HashSet<String> = ["unit-a", "unit-b"]
+        let mutants_roots: HashSet<String> = ["unit-a", "unit-b"]
             .iter()
             .map(|u| {
                 crate::worktree::unit_mutants_sibling(&unit_worktree_dir(&scratch, u)).unwrap()
             })
             .collect();
-        for line in &in_repo {
-            let root = line.split_once(' ').map(|(_, r)| r).unwrap_or_default();
-            assert!(
-                unit_roots.contains(root),
-                "a post-merge re-gate in the repo must get the integrating unit's own \
-                 unit-keyed $MUTANTS root (one of {unit_roots:?}), never an empty or \
-                 foreign one; got {root:?} in:\n{seen}"
+        let cache_roots: HashSet<String> = ["unit-a", "unit-b"]
+            .iter()
+            .map(|u| crate::worktree::unit_cache_sibling(&unit_worktree_dir(&scratch, u)).unwrap())
+            .collect();
+
+        // The post-merge worktree's own basename prefix (`postmerge_worktree_dir`) is the
+        // ONLY thing that distinguishes its log line from a unit's ordinary pre-merge run in
+        // its own `rigger-wt-<slug>` worktree - both live under the same scratch root.
+        let is_postmerge_cwd = |cwd: &str| {
+            Path::new(cwd)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("rigger-postmerge-"))
+        };
+        let mut postmerge_lines: Vec<(&str, &str, &str)> = Vec::new();
+        for line in seen.lines() {
+            let mut fields = line.split(' ');
+            let cwd = fields.next().unwrap_or_default();
+            let mutants = fields.next().unwrap_or_default();
+            let target = fields.next().unwrap_or_default();
+            let marker = fields.next().unwrap_or_default();
+            // No gate run - pre-merge OR post-merge - may ever use the operator's own
+            // checkout as its cwd, or see its untracked file.
+            assert_ne!(
+                cwd,
+                repo_physical.to_str().unwrap(),
+                "no gate run may use the operator's own checkout as its cwd; log:\n{seen}"
             );
+            assert_eq!(
+                marker, "absent",
+                "no gate run may see the operator's untracked file; cwd={cwd}, log:\n{seen}"
+            );
+            if is_postmerge_cwd(cwd) {
+                postmerge_lines.push((cwd, mutants, target));
+            }
         }
+        assert_eq!(
+            postmerge_lines.len(),
+            1,
+            "exactly one post-merge re-gate should have run for real (a content-cache miss \
+             over the merged two-MARK tree); gate runs seen:\n{seen}"
+        );
+        let (pm_cwd, pm_mutants, pm_target) = postmerge_lines[0];
+        assert!(
+            pm_cwd.starts_with(&scratch),
+            "the post-merge re-gate must run under the scratch root, got {pm_cwd:?}"
+        );
+        assert!(
+            mutants_roots.contains(pm_mutants),
+            "the post-merge re-gate must get the integrating unit's own unit-keyed $MUTANTS \
+             root (one of {mutants_roots:?}), never an empty or foreign one; got \
+             {pm_mutants:?} in:\n{seen}"
+        );
+        assert!(
+            cache_roots.contains(pm_target),
+            "the post-merge re-gate must build into the integrating unit's own warm \
+             $CARGO_TARGET_DIR (one of {cache_roots:?}), never an empty or foreign one; got \
+             {pm_target:?} in:\n{seen}"
+        );
+        assert!(
+            !Path::new(pm_cwd).exists(),
+            "the post-merge re-gate's own throwaway worktree must be reaped once its gate \
+             suite ends; {pm_cwd} still exists"
+        );
+    }
+
+    /// An `EventStore` decorator, the META-matching counterpart to `FailingStore` above
+    /// (which matches an event's JSON `data`): forwards every call to `inner` unchanged
+    /// except `append`, which refuses (a real `Backend` error, indistinguishable from a
+    /// genuine backend fault) if any event in the batch carries a metadata VALUE
+    /// containing `needle`. Needed because a `GateVerdict`'s pre-merge-vs-post-merge
+    /// identity lives in its `META_REPLAY_KEY` metadata (`gate:` vs `postmerge-gate:`),
+    /// never in its `data` (which carries only `gate`/`pass`/`flaky`/`evidence`,
+    /// identical either way) - so a caller that needs to fail specifically the
+    /// post-merge re-gate's own verdict write, and nothing else, cannot use
+    /// `FailingStore`'s data match at all.
+    struct FailAppendMetaContaining<'a> {
+        inner: &'a dyn EventStore,
+        needle: &'static str,
+    }
+    impl EventStore for FailAppendMetaContaining<'_> {
+        fn append(
+            &self,
+            stream: &str,
+            expected: ExpectedRevision,
+            events: &[Event],
+        ) -> Result<Appended, crate::eventstore::Error> {
+            if events
+                .iter()
+                .any(|e| e.meta.values().any(|v| v.contains(self.needle)))
+            {
+                return Err(crate::eventstore::Error::Backend(format!(
+                    "simulated store failure appending an event whose metadata contains {:?}",
+                    self.needle
+                )));
+            }
+            self.inner.append(stream, expected, events)
+        }
+        fn read_stream(
+            &self,
+            stream: &str,
+            from: crate::eventstore::Revision,
+            dir: Direction,
+        ) -> Result<Vec<Event>, crate::eventstore::Error> {
+            self.inner.read_stream(stream, from, dir)
+        }
+        fn read_all(
+            &self,
+            from: crate::eventstore::Position,
+            dir: Direction,
+            filter: &Filter,
+        ) -> Result<Vec<Event>, crate::eventstore::Error> {
+            self.inner.read_all(from, dir, filter)
+        }
+        fn subscribe_all(
+            &self,
+            from: crate::eventstore::Position,
+            filter: &Filter,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            self.inner.subscribe_all(from, filter)
+        }
+        fn subscribe_stream(
+            &self,
+            stream: &str,
+            from: crate::eventstore::Revision,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            self.inner.subscribe_stream(stream, from)
+        }
+    }
+
+    #[test]
+    fn postmerge_run_gates_err_still_reaps_the_throwaway_worktree_and_branch() {
+        // adv-u103c7-postmerge-worktree-branch-leak-on-run-gates-err: `integrate_and_emit`
+        // used to `?` the post-merge `run_gates` call directly (the `if !commit.is_empty()`
+        // block above), so an Err out of it - a real infra fault, e.g. a transient
+        // event-store write failure under this run's own concurrent multi-unit load - was
+        // propagated immediately, SKIPPING the two cleanup lines right below it
+        // (`pm_wt.remove()` / `Worktree::delete_branch`) and permanently leaking the
+        // throwaway `rigger-postmerge-<unit>-<attempt>` worktree dir and its
+        // `rigger/postmerge/<unit>-<attempt>` branch. Forced here via a store double that
+        // fails specifically the post-merge `GateVerdict` write (its `replay_key` META
+        // carries the `postmerge-gate:` infix the pre-merge write's key never does, so the
+        // pre-merge gate - and every other store write this run makes - is unaffected,
+        // proving the leak is specific to the post-merge re-gate's own error path, not
+        // merely "the run failed somewhere").
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+
+        let real_store = Store::open(":memory:").unwrap();
+        let store = FailAppendMetaContaining {
+            inner: &real_store,
+            needle: "postmerge-gate:",
+        };
+        let driver = Stub {
+            write_file: Some("f.txt".into()),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let pm_dir = postmerge_worktree_dir(&scratch, "unit-a", 0);
+        let pm_branch = postmerge_branch("unit-a", 0);
+
+        assert!(
+            run(&cfg, &deps).is_err(),
+            "a genuine post-merge gate infra Err must propagate out of run(), never be \
+             swallowed as a passing/failing gate verdict"
+        );
+
+        assert!(
+            !Path::new(&pm_dir).exists(),
+            "the post-merge re-gate's own throwaway worktree must be reaped even when its \
+             gate suite errors, never leaked for a later step to find; {pm_dir} still exists"
+        );
+        let branches = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["branch", "--list", &pm_branch])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted \
+             even when its gate suite errors, never left behind"
+        );
+    }
+
+    #[test]
+    fn postmerge_worktree_create_err_still_reaps_the_just_created_branch() {
+        // adv-u103c7-r3-createbranch-then-create-leaks-branch: `integrate_and_emit` used to
+        // `?` the post-merge `Worktree::create` call directly, one line after
+        // `Worktree::create_branch_at` had already minted `pm_branch` as a real ref. An Err
+        // out of `Worktree::create` (a real git operation - `git worktree add <dir>
+        // <branch>` on the adopt path, which can fail on a transient worktree-metadata race
+        // or disk pressure, both live conditions under this run's own concurrent load) was
+        // propagated immediately, and because `pm_wt` was never bound, NEITHER of the two
+        // reap lines seven lines below (`pm_wt.remove()` / `Worktree::delete_branch`, the
+        // round-2 fix) ever ran - they are both called on `pm_wt`. The just-created
+        // `rigger/postmerge/<unit>-<attempt>` branch ref leaked permanently.
+        //
+        // Forced here via a DANGLING SYMLINK planted at the deterministic `pm_dir` path
+        // before the run starts: `Path::exists` follows symlinks and reports `false` for a
+        // dangling one, so `Worktree::discard` (which only clears a dir that `exists()`)
+        // and `Worktree::create`'s own leftover-dir check both skip it, letting
+        // `create_branch_at` succeed exactly as in the real leak window - but the dangling
+        // symlink still OCCUPIES that path, so the adopt-path `git worktree add <pm_dir>
+        // <pm_branch>` that follows hard-fails with "already exists" (verified: this is a
+        // deterministic filesystem property, not a race). This reproduces the exact
+        // create_branch_at-succeeds-then-create-fails window the leak lived in, driving the
+        // real `crate::worktree::Worktree::create_branch_at`/`create` functions through the
+        // conductor's own call site, never a probe copy.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("f.txt".into()),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let pm_dir = postmerge_worktree_dir(&scratch, "unit-a", 0);
+        let pm_branch = postmerge_branch("unit-a", 0);
+        std::os::unix::fs::symlink("/nonexistent-adv-u103c7-r3-target", &pm_dir)
+            .expect("plant the dangling symlink that occupies pm_dir without `exists()`-ing");
+
+        assert!(
+            run(&cfg, &deps).is_err(),
+            "a genuine post-merge worktree-create infra Err must propagate out of run(), \
+             never be swallowed as a passing/failing gate verdict"
+        );
+
+        let branches = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["branch", "--list", &pm_branch])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted \
+             even when Worktree::create itself errors right after create_branch_at minted \
+             it, never left behind"
+        );
     }
 
     #[test]
@@ -42061,11 +43859,11 @@ mod tests {
         let driver = CritiqueDriver::new(vec![
             (
                 TYPE_UNIT_PROPOSED.to_string(),
-                json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":["plan-critique"]}),
+                json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":["plan-critique"],"gates":["ok"]}),
             ),
             (
                 TYPE_UNIT_PROPOSED.to_string(),
-                json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":["plan-critique"]}),
+                json!({"id":"u-b","agent":"worker","criterion":criterion,"needs":["plan-critique"],"gates":["ok"]}),
             ),
         ]);
         let grep = crate::grounder::Grep {
@@ -42345,7 +44143,7 @@ mod tests {
         let st = Store::open(":memory:").unwrap();
         let driver = CritiqueDriver::new(vec![(
             TYPE_UNIT_PROPOSED.to_string(),
-            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":["plan-critique"]}),
+            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":["plan-critique"],"gates":["ok"]}),
         )]);
         let grep = crate::grounder::Grep {
             root: dir.path().to_string_lossy().into_owned(),
@@ -42836,11 +44634,11 @@ mod tests {
         let driver = CritiqueDriver::new(vec![
             (
                 TYPE_UNIT_PROPOSED.to_string(),
-                json!({"id":"u-a","agent":"worker","criterion":crit_a,"needs":[]}),
+                json!({"id":"u-a","agent":"worker","criterion":crit_a,"needs":[],"gates":["ok"]}),
             ),
             (
                 TYPE_UNIT_PROPOSED.to_string(),
-                json!({"id":"u-b","agent":"worker","criterion":crit_b,"needs":[]}),
+                json!({"id":"u-b","agent":"worker","criterion":crit_b,"needs":[],"gates":["ok"]}),
             ),
         ]);
         let deps = Deps {
@@ -42899,7 +44697,7 @@ mod tests {
         // criterion and the second critique approves.
         let driver = CritiqueDriver::rejecting(vec![(
             TYPE_UNIT_PROPOSED.to_string(),
-            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[]}),
+            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[],"gates":["ok"]}),
         )]);
         let deps = Deps {
             store: &st,

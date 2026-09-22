@@ -7693,15 +7693,17 @@ stages:
 /// The mirror image of the sibling test above: this time the resumed unit's exhaustive
 /// re-gate PASSES, so `run_single_stage` reaches `integrate_and_emit`, which merges the
 /// branch into the base repo and then re-gates the MERGED tree (spec 12, unit 5,
-/// `GateSelection::PostMerge`, run against `self.deps.repo` - a DIFFERENT directory than the
-/// unit worktree). An out-of-band actor deleting the unit worktree during that real wall-clock
-/// window is invisible to `integrate_and_emit`'s own internal re-assert (which ran BEFORE the
-/// post-merge re-gate, over the pre-merge tree) - so nothing protects the `failed_sha` read on
-/// this specific `integration.blocked` arm without round 6's fix. The gate command here is
-/// unscoped (no `inputs`), so it genuinely runs twice at two distinct verdict keys - once
-/// against the worktree (the exhaustive check, passes) and once against the merged base repo
-/// (the post-merge re-gate, fails and deletes the worktree as its side effect) - never a
-/// fabricated in-memory deletion. The base repo gets an unrelated commit of its own between
+/// `GateSelection::PostMerge`; spec 103 criterion 7 runs it in its own throwaway scratch
+/// worktree of the landed sha - a DIFFERENT directory than both the unit worktree and
+/// `self.deps.repo`). An out-of-band actor deleting the unit worktree during that real
+/// wall-clock window is invisible to `integrate_and_emit`'s own internal re-assert (which ran
+/// BEFORE the post-merge re-gate, over the pre-merge tree) - so nothing protects the
+/// `failed_sha` read on this specific `integration.blocked` arm without round 6's fix. The
+/// gate command here is unscoped (no `inputs`), so it genuinely runs twice at two distinct
+/// verdict keys - once against the worktree (the exhaustive check, passes) and once in the
+/// post-merge re-gate's own scratch worktree of the merged tree (fails and deletes the unit
+/// worktree as its side effect) - never a fabricated in-memory deletion. The base repo gets
+/// an unrelated commit of its own between
 /// the bootstrap and the resume, so the merge is a genuine three-way merge rather than a
 /// fast-forward - a fast-forward's merged tree is byte-identical to the worktree's own
 /// pre-merge tree, which would CACHE-HIT the exhaustive check's green verdict (spec 12, unit
@@ -7726,14 +7728,15 @@ fn resumed_reviewed_unit_stamps_a_real_failed_sha_after_the_post_merge_re_gates_
     // The unit's own deterministic worktree dir, computed the SAME way `rigger step` itself
     // computes it - known up front so the gate script below can target it by an absolute
     // path, exactly the "an out-of-band actor deletes the worktree" shape this arm guards
-    // against (never the gate deleting its OWN cwd, since the post-merge re-gate's cwd is the
-    // base repo, a different directory entirely).
+    // against (never the gate deleting its OWN cwd, since the post-merge re-gate's cwd is its
+    // own throwaway scratch worktree, spec 103 criterion 7 - a different directory entirely).
     let wt_dir = common::default_scratch_root(root).join("rigger-wt-solo");
     let wt_dir_str = wt_dir.to_str().unwrap();
     // A flag OUTSIDE the worktree that survives its deletion: the gate's first real
     // invocation (the pre-merge exhaustive check, run in the worktree) passes and sets it;
-    // its second real invocation (the post-merge re-gate, run in the base repo - a distinct
-    // verdict key, never cache-answered) finds it set, deletes the worktree, and fails.
+    // its second real invocation (the post-merge re-gate, run in its own throwaway scratch
+    // worktree of the landed sha - a distinct verdict key, never cache-answered) finds it
+    // set, deletes the unit worktree, and fails.
     let flag = root.join("postmerge-resumed-flag");
     let flag_str = flag.to_str().unwrap();
     let marker = root.join("postmerge-resumed-deleted-marker.txt");
@@ -7893,8 +7896,9 @@ stages:
 ///
 /// The THIRD sibling round 6 closes, on the SPECULATION surface this time: a
 /// `speculation_width: 2` unit whose winning candidate's post-merge re-gate goes red. The
-/// exhaustive post-merge re-gate that produces `blocked` here runs against `self.deps.repo`
-/// (the base repo), never re-touching `candidates[i].wt.dir` - so `integrate_and_emit`'s own
+/// exhaustive post-merge re-gate that produces `blocked` here runs in its own throwaway
+/// scratch worktree of the landed sha (spec 103 criterion 7), never re-touching
+/// `candidates[i].wt.dir` or `self.deps.repo` - so `integrate_and_emit`'s own
 /// internal re-assert (which ran BEFORE that re-gate, over the pre-merge worktree) cannot
 /// cover this read either. The unscoped `ok` gate's FIRST real invocation (candidate 0's
 /// pre-merge narrowed check) passes and arms a flag; every real invocation after that -
@@ -24899,6 +24903,110 @@ fn any_marker_fresh_public_contract_holds_at_the_crate_boundary() {
     assert!(
         !any_marker_fresh(root, far_future, Duration::from_secs(1)),
         "a marker older than max_age must not read as a live agent signal"
+    );
+}
+
+/// Spec 103, THE HALTED-SPAWN CHECKPOINT - the PUBLIC contract of
+/// [`rigger::liveness::spawn_is_halted`] at the CRATE BOUNDARY, mirroring
+/// `any_marker_fresh_public_contract_holds_at_the_crate_boundary` above for this criterion's own
+/// new pub fn. `src/liveness.rs`'s own module tests prove it white-box, inside the module
+/// (including the bounded/unbounded-sibling and same-run-scoping edge cases);
+/// `tests/halted_spawn_wip_recovery_periphery.rs` proves the cross-module seam - `conductor.rs`'s
+/// `RunCtx::halted_spawn_checkpoint_permitted` calling into it - end to end through the real
+/// compiled binary. Neither calls the function directly from OUTSIDE the module the way an
+/// external caller does - this test does, pinning that `rigger::liveness::spawn_is_halted` is
+/// exported and its three-part truth table (recorded request, no real result, no live sibling)
+/// holds at the public `rigger::liveness` boundary, built entirely from the crate's own public
+/// `spawn`/`spawn_store`/`eventstore` API - never a crate-internal privilege this external test
+/// does not have.
+#[test]
+fn spawn_is_halted_public_contract_holds_at_the_crate_boundary() {
+    use rigger::conductor::STREAM;
+    use rigger::eventstore::sqlite::Store;
+    use rigger::eventstore::{Direction, EventStore};
+    use rigger::liveness::{marker_path, spawn_is_halted};
+    use rigger::spawn::{SpawnRequest, SpawnResult, ROLE_IMPLEMENTER};
+    use rigger::spawn_store::{park, record_result};
+    use std::time::SystemTime;
+
+    const RUN_ID: &str = "run-1";
+    let scratch = tempfile::tempdir().unwrap();
+    let root = scratch.path().to_str().unwrap();
+    let store = Store::open(":memory:").unwrap();
+    let read = |store: &Store| store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+
+    // A spawn id nobody ever requested: nothing has halted, so the checkpoint must not fire.
+    assert!(
+        !spawn_is_halted(
+            &read(&store),
+            root,
+            RUN_ID,
+            "u",
+            "u/implementer#0",
+            SystemTime::now()
+        )
+        .unwrap(),
+        "an id with no recorded SpawnRequested must never read as halted"
+    );
+
+    // Requested, no result, no marker at all - the classic silent halt.
+    let mut named = SpawnRequest::new("u", "u", ROLE_IMPLEMENTER, 0, "task");
+    named.max_wall_clock = Some(300);
+    park(&store, &named).unwrap();
+    assert!(
+        spawn_is_halted(
+            &read(&store),
+            root,
+            RUN_ID,
+            "u",
+            &named.id,
+            SystemTime::now()
+        )
+        .unwrap(),
+        "a requested spawn with no result and no live marker must read as halted"
+    );
+
+    // The SAME spawn, once it carries a real (non-fault) result: no longer a halt, however
+    // dirty the tree it left behind - the exact "reviewer edits above an approved tip" shape
+    // spec 103's own problem statement names.
+    record_result(&store, &SpawnResult::ok(&named.id, "done")).unwrap();
+    assert!(
+        !spawn_is_halted(
+            &read(&store),
+            root,
+            RUN_ID,
+            "u",
+            &named.id,
+            SystemTime::now()
+        )
+        .unwrap(),
+        "a spawn that already carries a real result must never read as halted"
+    );
+
+    // A DIFFERENT, still-resultless spawn of the same unit, with a SIBLING spawn's own
+    // liveness marker fresh right now: the unit has live work in flight, so this one must not
+    // read as halted either, even though it individually looks silent.
+    let mut other = SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 0, "task");
+    other.max_wall_clock = Some(300);
+    park(&store, &other).unwrap();
+    let mut sibling = SpawnRequest::new("v", "v", ROLE_IMPLEMENTER, 1, "task");
+    sibling.max_wall_clock = Some(300);
+    park(&store, &sibling).unwrap();
+    let marker = marker_path(root, RUN_ID, &sibling.id).expect("a real spawn id always encodes");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"heartbeat").unwrap();
+    assert!(
+        !spawn_is_halted(
+            &read(&store),
+            root,
+            RUN_ID,
+            "v",
+            &other.id,
+            SystemTime::now()
+        )
+        .unwrap(),
+        "a live sibling spawn of the same unit must suppress the checkpoint for a resultless \
+         named spawn"
     );
 }
 

@@ -551,6 +551,20 @@ pub struct Stage {
     /// hand-authored proposal), which a later unit's supersede handling resolves.
     #[serde(skip)]
     pub episode: String,
+    /// Set by the conductor (never authored, hence `serde(skip)`) ONLY on a genuinely-
+    /// new sub-unit `harvest_proposed`'s ADD path adds whose proposal maps to no
+    /// acceptance criterion (the `unmatched-proposal` signal, spec 18 §3.3c). Its
+    /// `criterion_id` is empty for this reason AND for every plan/plan-critique
+    /// infrastructure stage and every ordinary authored stage that serves no criterion,
+    /// so this field is the ONE thing that tells those apart. It lets
+    /// `assert_no_ungated_fanout_unit` (spec 103, criterion 2) hold a stage to its
+    /// fan-out template's declared gates by this narrower, positive signal instead of
+    /// the ambiguous empty `criterion_id`, which would also catch the producer/plan
+    /// stage and any unrelated authored stage. False for every other stage: a baseline,
+    /// a proposal that resolved a real criterion, a same-id refine, and every
+    /// workflow-authored stage.
+    #[serde(skip)]
+    pub unmatched_fanout_proposal: bool,
 }
 
 impl AgentDef {

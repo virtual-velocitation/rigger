@@ -1460,6 +1460,22 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
+        "content_hash": "ef4ba2d11d94e93a"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "44a96e5d7828e33b"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "62c0a3fdea893bf4"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "44a96e5d7828e33b"
+      },
+      {
+        "file": "src/conductor.rs",
         "content_hash": "038e2dec6bef996c"
       },
       {
@@ -1568,11 +1584,15 @@
       },
       {
         "file": "src/liveness.rs",
-        "content_hash": "553210990f0ada01"
+        "content_hash": "8cd155b9f7674be6"
       },
       {
         "file": "src/liveness.rs",
         "content_hash": "0234522ff60b9638"
+      },
+      {
+        "file": "src/liveness.rs",
+        "content_hash": "50cd3c1e51affeb1"
       },
       {
         "file": "src/main.rs",
@@ -1835,6 +1855,18 @@
         "content_hash": "572defa6902d294e"
       },
       {
+        "file": "tests/cli.rs",
+        "content_hash": "50cd3c1e51affeb1"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "50cd3c1e51affeb1"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "50cd3c1e51affeb1"
+      },
+      {
         "file": "tests/dash_run_tree_spine.rs",
         "content_hash": "0234522ff60b9638"
       },
@@ -1921,6 +1953,10 @@
       {
         "file": "tests/dash_run_tree_spine.rs",
         "content_hash": "50cd3c1e51affeb1"
+      },
+      {
+        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
+        "content_hash": "06b0e53aaffbd37d"
       },
       {
         "file": "tests/mcp_activity_liveness_age_periphery.rs",
@@ -2172,6 +2208,22 @@
       },
       {
         "file": "src/conductor.rs",
+        "content_hash": "ce7fbe03de34f36b"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "7b0a2d7c4d31282b"
+      },
+      {
+        "file": "src/conductor.rs",
         "content_hash": "7b0a2d7c4d31282b"
       },
       {
@@ -2227,6 +2279,10 @@
         "content_hash": "446ab234af65a4ac"
       },
       {
+        "file": "src/liveness.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
         "file": "src/spawn_store.rs",
         "content_hash": "446ab234af65a4ac"
       },
@@ -2241,6 +2297,22 @@
       {
         "file": "src/spawn_store.rs",
         "content_hash": "bcd7620b2f61753c"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "55c217ebb3bbfd1b"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "446ab234af65a4ac"
+      },
+      {
+        "file": "tests/cli.rs",
+        "content_hash": "446ab234af65a4ac"
       }
     ],
     "disposition": "delete",
@@ -2256,6 +2328,18 @@
       {
         "file": "src/conductor.rs",
         "content_hash": "5d6d3db4ae2ef1ac"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "01e27fa592ebe024"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "01e27fa592ebe024"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "01e27fa592ebe024"
       },
       {
         "file": "src/worktree.rs",

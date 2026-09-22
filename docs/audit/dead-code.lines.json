@@ -588,23 +588,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 14213
+        "line": 14226
       },
       {
         "file": "src/main.rs",
-        "line": 14234
+        "line": 14247
       },
       {
         "file": "src/main.rs",
-        "line": 14749
+        "line": 14762
       },
       {
         "file": "tests/cli.rs",
-        "line": 23583
+        "line": 23587
       },
       {
         "file": "tests/cli.rs",
-        "line": 23598
+        "line": 23602
       }
     ]
   },
@@ -656,7 +656,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 19477
+        "line": 20605
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -1118,7 +1118,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 9999
+        "line": 10002
       }
     ]
   },
@@ -1243,15 +1243,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 39839
+        "line": 41637
       },
       {
         "file": "src/conductor.rs",
-        "line": 39906
+        "line": 41704
       },
       {
         "file": "src/conductor.rs",
-        "line": 40681
+        "line": 42479
       },
       {
         "file": "src/ledger.rs",
@@ -1334,35 +1334,51 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 21792
+        "line": 14595
       },
       {
         "file": "src/conductor.rs",
-        "line": 21869
+        "line": 14812
       },
       {
         "file": "src/conductor.rs",
-        "line": 21963
+        "line": 14823
       },
       {
         "file": "src/conductor.rs",
-        "line": 22050
+        "line": 14903
       },
       {
         "file": "src/conductor.rs",
-        "line": 22145
+        "line": 22920
       },
       {
         "file": "src/conductor.rs",
-        "line": 29279
+        "line": 22997
       },
       {
         "file": "src/conductor.rs",
-        "line": 29284
+        "line": 23091
       },
       {
         "file": "src/conductor.rs",
-        "line": 29347
+        "line": 23178
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 23273
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 30408
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 30413
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 30476
       },
       {
         "file": "src/console/mod.rs",
@@ -1442,35 +1458,35 @@
       },
       {
         "file": "src/liveness.rs",
-        "line": 791
+        "line": 879
       },
       {
         "file": "src/liveness.rs",
-        "line": 900
+        "line": 988
+      },
+      {
+        "file": "src/liveness.rs",
+        "line": 1326
       },
       {
         "file": "src/main.rs",
-        "line": 17422
+        "line": 17435
       },
       {
         "file": "src/main.rs",
-        "line": 17455
+        "line": 17468
       },
       {
         "file": "src/main.rs",
-        "line": 17474
+        "line": 17487
       },
       {
         "file": "src/main.rs",
-        "line": 17477
+        "line": 17490
       },
       {
         "file": "src/main.rs",
-        "line": 17480
-      },
-      {
-        "file": "src/main.rs",
-        "line": 19350
+        "line": 17493
       },
       {
         "file": "src/main.rs",
@@ -1478,19 +1494,23 @@
       },
       {
         "file": "src/main.rs",
-        "line": 19378
+        "line": 19376
       },
       {
         "file": "src/main.rs",
-        "line": 24823
+        "line": 19391
       },
       {
         "file": "src/main.rs",
-        "line": 24824
+        "line": 24836
       },
       {
         "file": "src/main.rs",
-        "line": 24825
+        "line": 24837
+      },
+      {
+        "file": "src/main.rs",
+        "line": 24838
       },
       {
         "file": "src/mcpserver.rs",
@@ -1638,75 +1658,87 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 4815
+        "line": 5129
       },
       {
         "file": "src/worktree.rs",
-        "line": 4838
+        "line": 5152
       },
       {
         "file": "src/worktree.rs",
-        "line": 4874
+        "line": 5188
       },
       {
         "file": "src/worktree.rs",
-        "line": 4906
+        "line": 5220
       },
       {
         "file": "src/worktree.rs",
-        "line": 4941
+        "line": 5255
       },
       {
         "file": "src/worktree.rs",
-        "line": 4957
+        "line": 5271
       },
       {
         "file": "src/worktree.rs",
-        "line": 4984
+        "line": 5298
       },
       {
         "file": "src/worktree.rs",
-        "line": 5014
+        "line": 5328
       },
       {
         "file": "src/worktree.rs",
-        "line": 5021
+        "line": 5335
       },
       {
         "file": "src/worktree.rs",
-        "line": 5029
+        "line": 5343
       },
       {
         "file": "tests/cli.rs",
-        "line": 11126
+        "line": 11130
       },
       {
         "file": "tests/cli.rs",
-        "line": 11127
+        "line": 11131
       },
       {
         "file": "tests/cli.rs",
-        "line": 11128
+        "line": 11132
       },
       {
         "file": "tests/cli.rs",
-        "line": 11129
+        "line": 11133
       },
       {
         "file": "tests/cli.rs",
-        "line": 11214
+        "line": 11218
       },
       {
         "file": "tests/cli.rs",
-        "line": 11274
+        "line": 11278
       },
       {
         "file": "tests/cli.rs",
-        "line": 11275
+        "line": 11279
       },
       {
         "file": "tests/cli.rs",
-        "line": 11276
+        "line": 11280
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24953
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24989
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24992
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -1795,6 +1827,10 @@
       {
         "file": "tests/dash_run_tree_spine.rs",
         "line": 916
+      },
+      {
+        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
+        "line": 515
       },
       {
         "file": "tests/mcp_activity_liveness_age_periphery.rs",
@@ -2006,15 +2042,31 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 29277
+        "line": 14593
       },
       {
         "file": "src/conductor.rs",
-        "line": 29282
+        "line": 14810
       },
       {
         "file": "src/conductor.rs",
-        "line": 29345
+        "line": 14831
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 14901
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 30406
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 30411
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 30474
       },
       {
         "file": "src/driver/replay.rs",
@@ -2058,15 +2110,19 @@
       },
       {
         "file": "src/liveness.rs",
-        "line": 787
+        "line": 868
       },
       {
         "file": "src/liveness.rs",
-        "line": 793
+        "line": 881
       },
       {
         "file": "src/liveness.rs",
-        "line": 901
+        "line": 989
+      },
+      {
+        "file": "src/liveness.rs",
+        "line": 1328
       },
       {
         "file": "src/spawn_store.rs",
@@ -2083,37 +2139,65 @@
       {
         "file": "src/spawn_store.rs",
         "line": 491
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24929
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24955
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24991
+      },
+      {
+        "file": "tests/cli.rs",
+        "line": 24994
       }
     ]
   },
   {
     "file": "src/worktree.rs",
     "name": "is_dirty",
-    "line": 696,
+    "line": 717,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 14034
+        "line": 14576
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 14724
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 14801
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 14924
       },
       {
         "file": "src/worktree.rs",
-        "line": 4333
+        "line": 4647
       },
       {
         "file": "src/worktree.rs",
-        "line": 4343
+        "line": 4657
       },
       {
         "file": "src/worktree.rs",
-        "line": 4409
+        "line": 4723
       },
       {
         "file": "src/worktree.rs",
-        "line": 4444
+        "line": 4758
       },
       {
         "file": "src/worktree.rs",
-        "line": 4456
+        "line": 4770
       }
     ]
   }
