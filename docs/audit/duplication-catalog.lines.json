@@ -159,203 +159,208 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13735,
-        "end_line": 13735
+        "start_line": 13750,
+        "end_line": 13750
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13815,
-        "end_line": 13815
+        "start_line": 13830,
+        "end_line": 13830
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13832,
-        "end_line": 13832
+        "start_line": 13847,
+        "end_line": 13847
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13850,
-        "end_line": 13850
+        "start_line": 13865,
+        "end_line": 13865
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 14315,
-        "end_line": 14315
+        "start_line": 14330,
+        "end_line": 14330
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 14320,
-        "end_line": 14320
+        "start_line": 14335,
+        "end_line": 14335
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21306,
-        "end_line": 21306
+        "start_line": 21321,
+        "end_line": 21321
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25135,
-        "end_line": 25135
+        "start_line": 25150,
+        "end_line": 25150
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25753,
-        "end_line": 25753
+        "start_line": 25768,
+        "end_line": 25768
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25827,
-        "end_line": 25827
+        "start_line": 25842,
+        "end_line": 25842
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26752,
-        "end_line": 26752
+        "start_line": 26767,
+        "end_line": 26767
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26941,
-        "end_line": 26941
+        "start_line": 26956,
+        "end_line": 26956
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30721,
-        "end_line": 30721
+        "start_line": 30736,
+        "end_line": 30736
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30819,
-        "end_line": 30819
+        "start_line": 30834,
+        "end_line": 30834
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30904,
-        "end_line": 30904
+        "start_line": 30919,
+        "end_line": 30919
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31196,
-        "end_line": 31196
+        "start_line": 31211,
+        "end_line": 31211
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31526,
-        "end_line": 31526
+        "start_line": 31541,
+        "end_line": 31541
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31556,
-        "end_line": 31556
+        "start_line": 31571,
+        "end_line": 31571
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31704,
-        "end_line": 31704
+        "start_line": 31719,
+        "end_line": 31719
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32275,
-        "end_line": 32275
+        "start_line": 32290,
+        "end_line": 32290
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35934,
-        "end_line": 35934
+        "start_line": 35949,
+        "end_line": 35949
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36595,
-        "end_line": 36595
+        "start_line": 36610,
+        "end_line": 36610
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37263,
-        "end_line": 37263
+        "start_line": 37278,
+        "end_line": 37278
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37270,
-        "end_line": 37270
+        "start_line": 37285,
+        "end_line": 37285
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37360,
-        "end_line": 37360
+        "start_line": 37375,
+        "end_line": 37375
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37417,
-        "end_line": 37417
+        "start_line": 37432,
+        "end_line": 37432
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37473,
-        "end_line": 37473
+        "start_line": 37488,
+        "end_line": 37488
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37684,
-        "end_line": 37684
+        "start_line": 37699,
+        "end_line": 37699
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37698,
-        "end_line": 37698
+        "start_line": 37713,
+        "end_line": 37713
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37748,
-        "end_line": 37748
+        "start_line": 37763,
+        "end_line": 37763
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 38027,
-        "end_line": 38027
+        "start_line": 38042,
+        "end_line": 38042
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 38180,
-        "end_line": 38180
+        "start_line": 38123,
+        "end_line": 38123
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 38505,
-        "end_line": 38505
+        "start_line": 38277,
+        "end_line": 38277
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 38540,
-        "end_line": 38540
+        "start_line": 38602,
+        "end_line": 38602
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 39721,
-        "end_line": 39721
+        "start_line": 38637,
+        "end_line": 38637
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 39739,
-        "end_line": 39739
+        "start_line": 39818,
+        "end_line": 39818
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 39757,
-        "end_line": 39757
+        "start_line": 39836,
+        "end_line": 39836
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 39788,
-        "end_line": 39788
+        "start_line": 39854,
+        "end_line": 39854
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 39979,
-        "end_line": 39979
+        "start_line": 39885,
+        "end_line": 39885
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 40292,
-        "end_line": 40292
+        "start_line": 40076,
+        "end_line": 40076
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 40389,
+        "end_line": 40389
       },
       {
         "file": "src/dash.rs",
@@ -2159,8 +2164,8 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 14372,
-        "end_line": 14377
+        "start_line": 14387,
+        "end_line": 14392
       },
       {
         "file": "src/config_store.rs",
@@ -2694,13 +2699,13 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 11127,
-        "end_line": 11129
+        "start_line": 11142,
+        "end_line": 11144
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 11154,
-        "end_line": 11161
+        "start_line": 11169,
+        "end_line": 11176
       },
       {
         "file": "src/eventstore/namespace.rs",
@@ -2939,13 +2944,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 9242,
-        "end_line": 9247
+        "start_line": 9257,
+        "end_line": 9262
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 9263,
-        "end_line": 9268
+        "start_line": 9278,
+        "end_line": 9283
       }
     ]
   },
@@ -2954,18 +2959,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 9398,
-        "end_line": 9412
+        "start_line": 9413,
+        "end_line": 9427
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 9444,
-        "end_line": 9459
+        "start_line": 9459,
+        "end_line": 9474
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 9464,
-        "end_line": 9472
+        "start_line": 9479,
+        "end_line": 9487
       }
     ]
   },
@@ -2974,8 +2979,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10870,
-        "end_line": 10872
+        "start_line": 10885,
+        "end_line": 10887
       },
       {
         "file": "src/distiller.rs",
@@ -2994,8 +2999,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10870,
-        "end_line": 10872
+        "start_line": 10885,
+        "end_line": 10887
       },
       {
         "file": "tests/cli.rs",
@@ -3009,8 +3014,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 11968,
-        "end_line": 11970
+        "start_line": 11983,
+        "end_line": 11985
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -3024,8 +3029,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 11980,
-        "end_line": 11986
+        "start_line": 11995,
+        "end_line": 12001
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
@@ -3039,23 +3044,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 12339,
-        "end_line": 12344
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 12351,
-        "end_line": 12353
+        "start_line": 12354,
+        "end_line": 12359
       },
       {
         "file": "src/conductor.rs",
         "start_line": 12366,
-        "end_line": 12371
+        "end_line": 12368
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 12378,
-        "end_line": 12380
+        "start_line": 12381,
+        "end_line": 12386
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 12393,
+        "end_line": 12395
       }
     ]
   },
@@ -3064,13 +3069,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 13256,
-        "end_line": 13262
+        "start_line": 13271,
+        "end_line": 13277
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13267,
-        "end_line": 13272
+        "start_line": 13282,
+        "end_line": 13287
       }
     ]
   },
@@ -3079,13 +3084,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 13275,
-        "end_line": 13296
+        "start_line": 13290,
+        "end_line": 13311
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13338,
-        "end_line": 13355
+        "start_line": 13353,
+        "end_line": 13370
       }
     ]
   },
@@ -3094,13 +3099,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 13299,
-        "end_line": 13314
+        "start_line": 13314,
+        "end_line": 13329
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 13317,
-        "end_line": 13335
+        "start_line": 13332,
+        "end_line": 13350
       }
     ]
   },
@@ -3109,23 +3114,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14147,
-        "end_line": 14154
+        "start_line": 14162,
+        "end_line": 14169
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 14157,
-        "end_line": 14164
+        "start_line": 14172,
+        "end_line": 14179
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 14168,
-        "end_line": 14174
+        "start_line": 14183,
+        "end_line": 14189
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 14178,
-        "end_line": 14180
+        "start_line": 14193,
+        "end_line": 14195
       }
     ]
   },
@@ -3134,28 +3139,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14190,
-        "end_line": 14192
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 34418,
-        "end_line": 34420
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 34421,
-        "end_line": 34423
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 34424,
-        "end_line": 34426
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 34430,
-        "end_line": 34432
+        "start_line": 14205,
+        "end_line": 14207
       },
       {
         "file": "src/conductor.rs",
@@ -3169,8 +3154,28 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34594,
-        "end_line": 34596
+        "start_line": 34439,
+        "end_line": 34441
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 34445,
+        "end_line": 34447
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 34448,
+        "end_line": 34450
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 34451,
+        "end_line": 34453
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 34609,
+        "end_line": 34611
       },
       {
         "file": "src/eventstore/mod.rs",
@@ -3209,18 +3214,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14196,
-        "end_line": 14203
+        "start_line": 14211,
+        "end_line": 14218
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 40842,
-        "end_line": 40849
+        "start_line": 40939,
+        "end_line": 40946
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 41833,
-        "end_line": 41840
+        "start_line": 41930,
+        "end_line": 41937
       }
     ]
   },
@@ -3229,8 +3234,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14207,
-        "end_line": 14213
+        "start_line": 14222,
+        "end_line": 14228
       },
       {
         "file": "src/eventstore/mod.rs",
@@ -3244,8 +3249,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14382,
-        "end_line": 14388
+        "start_line": 14397,
+        "end_line": 14403
       },
       {
         "file": "src/config_store.rs",
@@ -3264,8 +3269,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14390,
-        "end_line": 14396
+        "start_line": 14405,
+        "end_line": 14411
       },
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -3289,23 +3294,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14439,
-        "end_line": 14463
+        "start_line": 14454,
+        "end_line": 14478
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29216,
-        "end_line": 29248
+        "start_line": 29231,
+        "end_line": 29263
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29295,
-        "end_line": 29329
+        "start_line": 29310,
+        "end_line": 29344
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29332,
-        "end_line": 29366
+        "start_line": 29347,
+        "end_line": 29381
       }
     ]
   },
@@ -3314,28 +3319,28 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 14869,
-        "end_line": 14896
+        "start_line": 14884,
+        "end_line": 14911
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21962,
-        "end_line": 21984
+        "start_line": 21977,
+        "end_line": 21999
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 22271,
-        "end_line": 22291
+        "start_line": 22286,
+        "end_line": 22306
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34496,
-        "end_line": 34518
+        "start_line": 34511,
+        "end_line": 34533
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 40746,
-        "end_line": 40785
+        "start_line": 40843,
+        "end_line": 40882
       },
       {
         "file": "src/driver/replay.rs",
@@ -3369,13 +3374,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 15752,
-        "end_line": 15848
+        "start_line": 15767,
+        "end_line": 15863
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 15911,
-        "end_line": 15990
+        "start_line": 15926,
+        "end_line": 16005
       }
     ]
   },
@@ -3384,18 +3389,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 15993,
-        "end_line": 16120
+        "start_line": 16008,
+        "end_line": 16135
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 16123,
-        "end_line": 16245
+        "start_line": 16138,
+        "end_line": 16260
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 16580,
-        "end_line": 16674
+        "start_line": 16595,
+        "end_line": 16689
       }
     ]
   },
@@ -3404,18 +3409,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 16282,
-        "end_line": 16300
+        "start_line": 16297,
+        "end_line": 16315
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 16427,
-        "end_line": 16444
+        "start_line": 16442,
+        "end_line": 16459
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 16446,
-        "end_line": 16464
+        "start_line": 16461,
+        "end_line": 16479
       }
     ]
   },
@@ -3424,13 +3429,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 16302,
-        "end_line": 16314
+        "start_line": 16317,
+        "end_line": 16329
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 16466,
-        "end_line": 16478
+        "start_line": 16481,
+        "end_line": 16493
       }
     ]
   },
@@ -3439,23 +3444,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 16794,
-        "end_line": 16850
+        "start_line": 16809,
+        "end_line": 16865
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 16853,
-        "end_line": 16927
+        "start_line": 16868,
+        "end_line": 16942
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 16930,
-        "end_line": 17014
+        "start_line": 16945,
+        "end_line": 17029
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 17017,
-        "end_line": 17089
+        "start_line": 17032,
+        "end_line": 17104
       }
     ]
   },
@@ -3464,8 +3469,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 17296,
-        "end_line": 17296
+        "start_line": 17311,
+        "end_line": 17311
       },
       {
         "file": "src/config_store.rs",
@@ -7224,18 +7229,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 18008,
-        "end_line": 18028
+        "start_line": 18023,
+        "end_line": 18043
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 18250,
-        "end_line": 18269
+        "start_line": 18265,
+        "end_line": 18284
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 20701,
-        "end_line": 20723
+        "start_line": 20716,
+        "end_line": 20738
       }
     ]
   },
@@ -7244,13 +7249,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 18031,
-        "end_line": 18098
+        "start_line": 18046,
+        "end_line": 18113
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 20589,
-        "end_line": 20655
+        "start_line": 20604,
+        "end_line": 20670
       }
     ]
   },
@@ -7259,18 +7264,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 19952,
-        "end_line": 19959
+        "start_line": 19967,
+        "end_line": 19974
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27031,
-        "end_line": 27038
+        "start_line": 27046,
+        "end_line": 27053
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37929,
-        "end_line": 37936
+        "start_line": 37944,
+        "end_line": 37951
       }
     ]
   },
@@ -7279,18 +7284,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 19960,
-        "end_line": 19967
+        "start_line": 19975,
+        "end_line": 19982
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27039,
-        "end_line": 27046
+        "start_line": 27054,
+        "end_line": 27061
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37937,
-        "end_line": 37944
+        "start_line": 37952,
+        "end_line": 37959
       }
     ]
   },
@@ -7299,18 +7304,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 19968,
-        "end_line": 19974
+        "start_line": 19983,
+        "end_line": 19989
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27047,
-        "end_line": 27053
+        "start_line": 27062,
+        "end_line": 27068
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37945,
-        "end_line": 37951
+        "start_line": 37960,
+        "end_line": 37966
       }
     ]
   },
@@ -7319,18 +7324,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 19975,
-        "end_line": 19981
+        "start_line": 19990,
+        "end_line": 19996
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27054,
-        "end_line": 27060
+        "start_line": 27069,
+        "end_line": 27075
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37952,
-        "end_line": 37958
+        "start_line": 37967,
+        "end_line": 37973
       }
     ]
   },
@@ -7339,13 +7344,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 20004,
-        "end_line": 20006
+        "start_line": 20019,
+        "end_line": 20021
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35274,
-        "end_line": 35276
+        "start_line": 35289,
+        "end_line": 35291
       }
     ]
   },
@@ -7354,13 +7359,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 20393,
-        "end_line": 20433
+        "start_line": 20408,
+        "end_line": 20448
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 20556,
-        "end_line": 20586
+        "start_line": 20571,
+        "end_line": 20601
       }
     ]
   },
@@ -7369,13 +7374,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 20889,
-        "end_line": 20906
+        "start_line": 20904,
+        "end_line": 20921
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21109,
-        "end_line": 21125
+        "start_line": 21124,
+        "end_line": 21140
       }
     ]
   },
@@ -7384,23 +7389,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 20909,
-        "end_line": 21004
+        "start_line": 20924,
+        "end_line": 21019
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23142,
-        "end_line": 23227
+        "start_line": 23157,
+        "end_line": 23242
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23230,
-        "end_line": 23341
+        "start_line": 23245,
+        "end_line": 23356
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31315,
-        "end_line": 31418
+        "start_line": 31330,
+        "end_line": 31433
       }
     ]
   },
@@ -7409,23 +7414,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 21007,
-        "end_line": 21101
+        "start_line": 21022,
+        "end_line": 21116
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21140,
-        "end_line": 21196
+        "start_line": 21155,
+        "end_line": 21211
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21418,
-        "end_line": 21510
+        "start_line": 21433,
+        "end_line": 21525
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21513,
-        "end_line": 21594
+        "start_line": 21528,
+        "end_line": 21609
       }
     ]
   },
@@ -7434,13 +7439,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 21597,
-        "end_line": 21664
+        "start_line": 21612,
+        "end_line": 21679
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21769,
-        "end_line": 21852
+        "start_line": 21784,
+        "end_line": 21867
       }
     ]
   },
@@ -7449,13 +7454,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 21667,
-        "end_line": 21766
+        "start_line": 21682,
+        "end_line": 21781
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 21855,
-        "end_line": 21958
+        "start_line": 21870,
+        "end_line": 21973
       }
     ]
   },
@@ -7464,13 +7469,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 22720,
-        "end_line": 22765
+        "start_line": 22735,
+        "end_line": 22780
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 22768,
-        "end_line": 22812
+        "start_line": 22783,
+        "end_line": 22827
       }
     ]
   },
@@ -7479,13 +7484,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 23666,
-        "end_line": 23708
+        "start_line": 23681,
+        "end_line": 23723
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29251,
-        "end_line": 29292
+        "start_line": 29266,
+        "end_line": 29307
       }
     ]
   },
@@ -7494,13 +7499,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 23747,
-        "end_line": 23813
+        "start_line": 23762,
+        "end_line": 23828
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 23869,
-        "end_line": 23962
+        "start_line": 23884,
+        "end_line": 23977
       }
     ]
   },
@@ -7509,23 +7514,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 24245,
-        "end_line": 24305
+        "start_line": 24260,
+        "end_line": 24320
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24308,
-        "end_line": 24378
+        "start_line": 24323,
+        "end_line": 24393
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24399,
-        "end_line": 24477
+        "start_line": 24414,
+        "end_line": 24492
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 24592,
-        "end_line": 24656
+        "start_line": 24607,
+        "end_line": 24671
       }
     ]
   },
@@ -7534,13 +7539,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 26228,
-        "end_line": 26290
+        "start_line": 26243,
+        "end_line": 26305
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26293,
-        "end_line": 26388
+        "start_line": 26308,
+        "end_line": 26403
       }
     ]
   },
@@ -7549,8 +7554,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 27064,
-        "end_line": 27122
+        "start_line": 27079,
+        "end_line": 27137
       },
       {
         "file": "src/grounder/mod.rs",
@@ -7594,28 +7599,28 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 27210,
-        "end_line": 27282
+        "start_line": 27225,
+        "end_line": 27297
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27810,
-        "end_line": 27883
+        "start_line": 27825,
+        "end_line": 27898
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27979,
-        "end_line": 28045
+        "start_line": 27994,
+        "end_line": 28060
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29933,
-        "end_line": 29980
+        "start_line": 29948,
+        "end_line": 29995
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33467,
-        "end_line": 33512
+        "start_line": 33482,
+        "end_line": 33527
       }
     ]
   },
@@ -7624,13 +7629,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 27381,
-        "end_line": 27478
+        "start_line": 27396,
+        "end_line": 27493
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27395,
-        "end_line": 27441
+        "start_line": 27410,
+        "end_line": 27456
       }
     ]
   },
@@ -7639,13 +7644,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 28048,
-        "end_line": 28082
+        "start_line": 28063,
+        "end_line": 28097
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28085,
-        "end_line": 28136
+        "start_line": 28100,
+        "end_line": 28151
       }
     ]
   },
@@ -7654,13 +7659,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 28139,
-        "end_line": 28189
+        "start_line": 28154,
+        "end_line": 28204
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28952,
-        "end_line": 28990
+        "start_line": 28967,
+        "end_line": 29005
       }
     ]
   },
@@ -7669,18 +7674,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 28284,
-        "end_line": 28388
+        "start_line": 28299,
+        "end_line": 28403
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28465,
-        "end_line": 28546
+        "start_line": 28480,
+        "end_line": 28561
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28585,
-        "end_line": 28709
+        "start_line": 28600,
+        "end_line": 28724
       }
     ]
   },
@@ -7689,18 +7694,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 28852,
-        "end_line": 28903
+        "start_line": 28867,
+        "end_line": 28918
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28906,
-        "end_line": 28949
+        "start_line": 28921,
+        "end_line": 28964
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29369,
-        "end_line": 29428
+        "start_line": 29384,
+        "end_line": 29443
       }
     ]
   },
@@ -7709,13 +7714,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29028,
-        "end_line": 29096
+        "start_line": 29043,
+        "end_line": 29111
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29099,
-        "end_line": 29140
+        "start_line": 29114,
+        "end_line": 29155
       }
     ]
   },
@@ -7724,18 +7729,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29431,
-        "end_line": 29474
+        "start_line": 29446,
+        "end_line": 29489
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29477,
-        "end_line": 29510
+        "start_line": 29492,
+        "end_line": 29525
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29513,
-        "end_line": 29552
+        "start_line": 29528,
+        "end_line": 29567
       }
     ]
   },
@@ -7744,23 +7749,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29559,
-        "end_line": 29607
+        "start_line": 29574,
+        "end_line": 29622
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29613,
-        "end_line": 29662
+        "start_line": 29628,
+        "end_line": 29677
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29667,
-        "end_line": 29714
+        "start_line": 29682,
+        "end_line": 29729
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29800,
-        "end_line": 29857
+        "start_line": 29815,
+        "end_line": 29872
       }
     ]
   },
@@ -7769,13 +7774,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 30010,
-        "end_line": 30097
+        "start_line": 30025,
+        "end_line": 30112
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30100,
-        "end_line": 30166
+        "start_line": 30115,
+        "end_line": 30181
       }
     ]
   },
@@ -7784,13 +7789,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 30234,
-        "end_line": 30236
+        "start_line": 30249,
+        "end_line": 30251
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34427,
-        "end_line": 34429
+        "start_line": 34442,
+        "end_line": 34444
       }
     ]
   },
@@ -7799,18 +7804,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 30637,
-        "end_line": 30743
+        "start_line": 30652,
+        "end_line": 30758
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30746,
-        "end_line": 30838
+        "start_line": 30761,
+        "end_line": 30853
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30841,
-        "end_line": 30943
+        "start_line": 30856,
+        "end_line": 30958
       }
     ]
   },
@@ -7819,13 +7824,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 31245,
-        "end_line": 31312
+        "start_line": 31260,
+        "end_line": 31327
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32094,
-        "end_line": 32165
+        "start_line": 32109,
+        "end_line": 32180
       }
     ]
   },
@@ -7834,13 +7839,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 32428,
-        "end_line": 32471
+        "start_line": 32443,
+        "end_line": 32486
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32474,
-        "end_line": 32515
+        "start_line": 32489,
+        "end_line": 32530
       }
     ]
   },
@@ -7849,33 +7854,33 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 32633,
-        "end_line": 32686
+        "start_line": 32648,
+        "end_line": 32701
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32689,
-        "end_line": 32785
+        "start_line": 32704,
+        "end_line": 32800
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32788,
-        "end_line": 32881
+        "start_line": 32803,
+        "end_line": 32896
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32884,
-        "end_line": 32969
+        "start_line": 32899,
+        "end_line": 32984
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32972,
-        "end_line": 33059
+        "start_line": 32987,
+        "end_line": 33074
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33062,
-        "end_line": 33129
+        "start_line": 33077,
+        "end_line": 33144
       }
     ]
   },
@@ -7884,13 +7889,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 33579,
-        "end_line": 33662
+        "start_line": 33594,
+        "end_line": 33677
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33665,
-        "end_line": 33735
+        "start_line": 33680,
+        "end_line": 33750
       }
     ]
   },
@@ -7899,13 +7904,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 34403,
-        "end_line": 34408
+        "start_line": 34418,
+        "end_line": 34423
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34412,
-        "end_line": 34417
+        "start_line": 34427,
+        "end_line": 34432
       }
     ]
   },
@@ -7914,8 +7919,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 34522,
-        "end_line": 34528
+        "start_line": 34537,
+        "end_line": 34543
       },
       {
         "file": "src/spawn.rs",
@@ -7929,13 +7934,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 34641,
-        "end_line": 34707
+        "start_line": 34656,
+        "end_line": 34722
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34755,
-        "end_line": 34811
+        "start_line": 34770,
+        "end_line": 34826
       }
     ]
   },
@@ -7944,13 +7949,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 34947,
-        "end_line": 35020
+        "start_line": 34962,
+        "end_line": 35035
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35560,
-        "end_line": 35624
+        "start_line": 35575,
+        "end_line": 35639
       }
     ]
   },
@@ -7959,23 +7964,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 35876,
-        "end_line": 35917
+        "start_line": 35891,
+        "end_line": 35932
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36430,
-        "end_line": 36472
+        "start_line": 36445,
+        "end_line": 36487
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36926,
-        "end_line": 36963
+        "start_line": 36941,
+        "end_line": 36978
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37061,
-        "end_line": 37106
+        "start_line": 37076,
+        "end_line": 37121
       },
       {
         "file": "tests/revert_on_base_hook_bypass_periphery.rs",
@@ -7989,13 +7994,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 36654,
-        "end_line": 36705
+        "start_line": 36669,
+        "end_line": 36720
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36770,
-        "end_line": 36821
+        "start_line": 36785,
+        "end_line": 36836
       }
     ]
   },
@@ -8004,13 +8009,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 36967,
-        "end_line": 37050
+        "start_line": 36982,
+        "end_line": 37065
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37110,
-        "end_line": 37208
+        "start_line": 37125,
+        "end_line": 37223
       }
     ]
   },
@@ -8019,8 +8024,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 37401,
-        "end_line": 37449
+        "start_line": 37416,
+        "end_line": 37464
       },
       {
         "file": "tests/postmerge_gate_modified_file_periphery.rs",
@@ -8034,13 +8039,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 38198,
-        "end_line": 38284
+        "start_line": 37977,
+        "end_line": 38053
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 38287,
-        "end_line": 38367
+        "start_line": 38056,
+        "end_line": 38135
       }
     ]
   },
@@ -8049,13 +8054,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 38715,
-        "end_line": 38783
+        "start_line": 38295,
+        "end_line": 38381
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 38821,
-        "end_line": 38892
+        "start_line": 38384,
+        "end_line": 38464
       }
     ]
   },
@@ -8064,13 +8069,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 38895,
-        "end_line": 38999
+        "start_line": 38812,
+        "end_line": 38880
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 39002,
-        "end_line": 39087
+        "start_line": 38918,
+        "end_line": 38989
       }
     ]
   },
@@ -8079,8 +8084,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 39748,
-        "end_line": 39765
+        "start_line": 38992,
+        "end_line": 39096
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 39099,
+        "end_line": 39184
+      }
+    ]
+  },
+  {
+    "id": "dup-0109",
+    "sites": [
+      {
+        "file": "src/conductor.rs",
+        "start_line": 39845,
+        "end_line": 39862
       },
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -8125,37 +8145,22 @@
     ]
   },
   {
-    "id": "dup-0109",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "start_line": 40415,
-        "end_line": 40490
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 40493,
-        "end_line": 40557
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 40560,
-        "end_line": 40635
-      }
-    ]
-  },
-  {
     "id": "dup-0110",
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 40828,
-        "end_line": 40833
+        "start_line": 40512,
+        "end_line": 40587
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 40836,
-        "end_line": 40841
+        "start_line": 40590,
+        "end_line": 40654
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 40657,
+        "end_line": 40732
       }
     ]
   },
@@ -8164,13 +8169,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 41035,
-        "end_line": 41072
+        "start_line": 40925,
+        "end_line": 40930
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 41075,
-        "end_line": 41126
+        "start_line": 40933,
+        "end_line": 40938
       }
     ]
   },
@@ -8179,23 +8184,38 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 41587,
-        "end_line": 41685
+        "start_line": 41132,
+        "end_line": 41169
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 41688,
-        "end_line": 41744
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 41867,
-        "end_line": 41938
+        "start_line": 41172,
+        "end_line": 41223
       }
     ]
   },
   {
     "id": "dup-0113",
+    "sites": [
+      {
+        "file": "src/conductor.rs",
+        "start_line": 41684,
+        "end_line": 41782
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 41785,
+        "end_line": 41841
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 41964,
+        "end_line": 42035
+      }
+    ]
+  },
+  {
+    "id": "dup-0114",
     "sites": [
       {
         "file": "src/config.rs",
@@ -8215,7 +8235,7 @@
     ]
   },
   {
-    "id": "dup-0114",
+    "id": "dup-0115",
     "sites": [
       {
         "file": "src/config.rs",
@@ -8235,7 +8255,7 @@
     ]
   },
   {
-    "id": "dup-0115",
+    "id": "dup-0116",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8250,7 +8270,7 @@
     ]
   },
   {
-    "id": "dup-0116",
+    "id": "dup-0117",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8270,7 +8290,7 @@
     ]
   },
   {
-    "id": "dup-0117",
+    "id": "dup-0118",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8290,7 +8310,7 @@
     ]
   },
   {
-    "id": "dup-0118",
+    "id": "dup-0119",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8305,7 +8325,7 @@
     ]
   },
   {
-    "id": "dup-0119",
+    "id": "dup-0120",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8330,7 +8350,7 @@
     ]
   },
   {
-    "id": "dup-0120",
+    "id": "dup-0121",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8365,7 +8385,7 @@
     ]
   },
   {
-    "id": "dup-0121",
+    "id": "dup-0122",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8380,7 +8400,7 @@
     ]
   },
   {
-    "id": "dup-0122",
+    "id": "dup-0123",
     "sites": [
       {
         "file": "src/config_store.rs",
@@ -8400,7 +8420,7 @@
     ]
   },
   {
-    "id": "dup-0123",
+    "id": "dup-0124",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8420,7 +8440,7 @@
     ]
   },
   {
-    "id": "dup-0124",
+    "id": "dup-0125",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8435,7 +8455,7 @@
     ]
   },
   {
-    "id": "dup-0125",
+    "id": "dup-0126",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8485,7 +8505,7 @@
     ]
   },
   {
-    "id": "dup-0126",
+    "id": "dup-0127",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8560,7 +8580,7 @@
     ]
   },
   {
-    "id": "dup-0127",
+    "id": "dup-0128",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8575,7 +8595,7 @@
     ]
   },
   {
-    "id": "dup-0128",
+    "id": "dup-0129",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8590,7 +8610,7 @@
     ]
   },
   {
-    "id": "dup-0129",
+    "id": "dup-0130",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8605,7 +8625,7 @@
     ]
   },
   {
-    "id": "dup-0130",
+    "id": "dup-0131",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8620,7 +8640,7 @@
     ]
   },
   {
-    "id": "dup-0131",
+    "id": "dup-0132",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8635,7 +8655,7 @@
     ]
   },
   {
-    "id": "dup-0132",
+    "id": "dup-0133",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8650,7 +8670,7 @@
     ]
   },
   {
-    "id": "dup-0133",
+    "id": "dup-0134",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8670,7 +8690,7 @@
     ]
   },
   {
-    "id": "dup-0134",
+    "id": "dup-0135",
     "sites": [
       {
         "file": "src/console/map.rs",
@@ -8685,7 +8705,7 @@
     ]
   },
   {
-    "id": "dup-0135",
+    "id": "dup-0136",
     "sites": [
       {
         "file": "src/console/mod.rs",
@@ -8700,7 +8720,7 @@
     ]
   },
   {
-    "id": "dup-0136",
+    "id": "dup-0137",
     "sites": [
       {
         "file": "src/console/mod.rs",
@@ -8720,7 +8740,7 @@
     ]
   },
   {
-    "id": "dup-0137",
+    "id": "dup-0138",
     "sites": [
       {
         "file": "src/console/mod.rs",
@@ -8740,7 +8760,7 @@
     ]
   },
   {
-    "id": "dup-0138",
+    "id": "dup-0139",
     "sites": [
       {
         "file": "src/console/mod.rs",
@@ -8755,7 +8775,7 @@
     ]
   },
   {
-    "id": "dup-0139",
+    "id": "dup-0140",
     "sites": [
       {
         "file": "src/contextgraph/mod.rs",
@@ -8775,7 +8795,7 @@
     ]
   },
   {
-    "id": "dup-0140",
+    "id": "dup-0141",
     "sites": [
       {
         "file": "src/contextgraph/mod.rs",
@@ -8790,7 +8810,7 @@
     ]
   },
   {
-    "id": "dup-0141",
+    "id": "dup-0142",
     "sites": [
       {
         "file": "src/contextgraph/mod.rs",
@@ -8820,7 +8840,7 @@
     ]
   },
   {
-    "id": "dup-0142",
+    "id": "dup-0143",
     "sites": [
       {
         "file": "src/contextgraph/mod.rs",
@@ -8850,7 +8870,7 @@
     ]
   },
   {
-    "id": "dup-0143",
+    "id": "dup-0144",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -8865,7 +8885,7 @@
     ]
   },
   {
-    "id": "dup-0144",
+    "id": "dup-0145",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -8885,7 +8905,7 @@
     ]
   },
   {
-    "id": "dup-0145",
+    "id": "dup-0146",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -8925,7 +8945,7 @@
     ]
   },
   {
-    "id": "dup-0146",
+    "id": "dup-0147",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -8940,7 +8960,7 @@
     ]
   },
   {
-    "id": "dup-0147",
+    "id": "dup-0148",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -8955,7 +8975,7 @@
     ]
   },
   {
-    "id": "dup-0148",
+    "id": "dup-0149",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9030,7 +9050,7 @@
     ]
   },
   {
-    "id": "dup-0149",
+    "id": "dup-0150",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9060,7 +9080,7 @@
     ]
   },
   {
-    "id": "dup-0150",
+    "id": "dup-0151",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9085,7 +9105,7 @@
     ]
   },
   {
-    "id": "dup-0151",
+    "id": "dup-0152",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9110,7 +9130,7 @@
     ]
   },
   {
-    "id": "dup-0152",
+    "id": "dup-0153",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
@@ -9125,7 +9145,7 @@
     ]
   },
   {
-    "id": "dup-0153",
+    "id": "dup-0154",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9360,7 +9380,7 @@
     ]
   },
   {
-    "id": "dup-0154",
+    "id": "dup-0155",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9375,7 +9395,7 @@
     ]
   },
   {
-    "id": "dup-0155",
+    "id": "dup-0156",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9395,7 +9415,7 @@
     ]
   },
   {
-    "id": "dup-0156",
+    "id": "dup-0157",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9410,7 +9430,7 @@
     ]
   },
   {
-    "id": "dup-0157",
+    "id": "dup-0158",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9430,7 +9450,7 @@
     ]
   },
   {
-    "id": "dup-0158",
+    "id": "dup-0159",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9460,7 +9480,7 @@
     ]
   },
   {
-    "id": "dup-0159",
+    "id": "dup-0160",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9475,7 +9495,7 @@
     ]
   },
   {
-    "id": "dup-0160",
+    "id": "dup-0161",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9495,7 +9515,7 @@
     ]
   },
   {
-    "id": "dup-0161",
+    "id": "dup-0162",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9550,7 +9570,7 @@
     ]
   },
   {
-    "id": "dup-0162",
+    "id": "dup-0163",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9600,7 +9620,7 @@
     ]
   },
   {
-    "id": "dup-0163",
+    "id": "dup-0164",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9615,7 +9635,7 @@
     ]
   },
   {
-    "id": "dup-0164",
+    "id": "dup-0165",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9630,7 +9650,7 @@
     ]
   },
   {
-    "id": "dup-0165",
+    "id": "dup-0166",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9645,7 +9665,7 @@
     ]
   },
   {
-    "id": "dup-0166",
+    "id": "dup-0167",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9660,7 +9680,7 @@
     ]
   },
   {
-    "id": "dup-0167",
+    "id": "dup-0168",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9675,7 +9695,7 @@
     ]
   },
   {
-    "id": "dup-0168",
+    "id": "dup-0169",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9690,7 +9710,7 @@
     ]
   },
   {
-    "id": "dup-0169",
+    "id": "dup-0170",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9705,7 +9725,7 @@
     ]
   },
   {
-    "id": "dup-0170",
+    "id": "dup-0171",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9725,7 +9745,7 @@
     ]
   },
   {
-    "id": "dup-0171",
+    "id": "dup-0172",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9740,7 +9760,7 @@
     ]
   },
   {
-    "id": "dup-0172",
+    "id": "dup-0173",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9755,7 +9775,7 @@
     ]
   },
   {
-    "id": "dup-0173",
+    "id": "dup-0174",
     "sites": [
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -9770,7 +9790,7 @@
     ]
   },
   {
-    "id": "dup-0174",
+    "id": "dup-0175",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10075,7 +10095,7 @@
     ]
   },
   {
-    "id": "dup-0175",
+    "id": "dup-0176",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10155,7 +10175,7 @@
     ]
   },
   {
-    "id": "dup-0176",
+    "id": "dup-0177",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10170,7 +10190,7 @@
     ]
   },
   {
-    "id": "dup-0177",
+    "id": "dup-0178",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10195,7 +10215,7 @@
     ]
   },
   {
-    "id": "dup-0178",
+    "id": "dup-0179",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10215,7 +10235,7 @@
     ]
   },
   {
-    "id": "dup-0179",
+    "id": "dup-0180",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10230,7 +10250,7 @@
     ]
   },
   {
-    "id": "dup-0180",
+    "id": "dup-0181",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10260,7 +10280,7 @@
     ]
   },
   {
-    "id": "dup-0181",
+    "id": "dup-0182",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10275,7 +10295,7 @@
     ]
   },
   {
-    "id": "dup-0182",
+    "id": "dup-0183",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10290,7 +10310,7 @@
     ]
   },
   {
-    "id": "dup-0183",
+    "id": "dup-0184",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10305,7 +10325,7 @@
     ]
   },
   {
-    "id": "dup-0184",
+    "id": "dup-0185",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10320,7 +10340,7 @@
     ]
   },
   {
-    "id": "dup-0185",
+    "id": "dup-0186",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10335,7 +10355,7 @@
     ]
   },
   {
-    "id": "dup-0186",
+    "id": "dup-0187",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10350,7 +10370,7 @@
     ]
   },
   {
-    "id": "dup-0187",
+    "id": "dup-0188",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10365,7 +10385,7 @@
     ]
   },
   {
-    "id": "dup-0188",
+    "id": "dup-0189",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10380,7 +10400,7 @@
     ]
   },
   {
-    "id": "dup-0189",
+    "id": "dup-0190",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10395,7 +10415,7 @@
     ]
   },
   {
-    "id": "dup-0190",
+    "id": "dup-0191",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10410,7 +10430,7 @@
     ]
   },
   {
-    "id": "dup-0191",
+    "id": "dup-0192",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10430,7 +10450,7 @@
     ]
   },
   {
-    "id": "dup-0192",
+    "id": "dup-0193",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10460,7 +10480,7 @@
     ]
   },
   {
-    "id": "dup-0193",
+    "id": "dup-0194",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10475,7 +10495,7 @@
     ]
   },
   {
-    "id": "dup-0194",
+    "id": "dup-0195",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -10500,7 +10520,7 @@
     ]
   },
   {
-    "id": "dup-0195",
+    "id": "dup-0196",
     "sites": [
       {
         "file": "src/distiller.rs",
@@ -10520,7 +10540,7 @@
     ]
   },
   {
-    "id": "dup-0196",
+    "id": "dup-0197",
     "sites": [
       {
         "file": "src/distiller.rs",
@@ -10535,7 +10555,7 @@
     ]
   },
   {
-    "id": "dup-0197",
+    "id": "dup-0198",
     "sites": [
       {
         "file": "src/distiller.rs",
@@ -10550,7 +10570,7 @@
     ]
   },
   {
-    "id": "dup-0198",
+    "id": "dup-0199",
     "sites": [
       {
         "file": "src/distiller.rs",
@@ -10570,7 +10590,7 @@
     ]
   },
   {
-    "id": "dup-0199",
+    "id": "dup-0200",
     "sites": [
       {
         "file": "src/docs.rs",
@@ -10585,7 +10605,7 @@
     ]
   },
   {
-    "id": "dup-0200",
+    "id": "dup-0201",
     "sites": [
       {
         "file": "src/docs.rs",
@@ -10600,7 +10620,7 @@
     ]
   },
   {
-    "id": "dup-0201",
+    "id": "dup-0202",
     "sites": [
       {
         "file": "src/docs.rs",
@@ -10640,7 +10660,7 @@
     ]
   },
   {
-    "id": "dup-0202",
+    "id": "dup-0203",
     "sites": [
       {
         "file": "src/docs.rs",
@@ -10655,7 +10675,7 @@
     ]
   },
   {
-    "id": "dup-0203",
+    "id": "dup-0204",
     "sites": [
       {
         "file": "src/driver/cli.rs",
@@ -10670,7 +10690,7 @@
     ]
   },
   {
-    "id": "dup-0204",
+    "id": "dup-0205",
     "sites": [
       {
         "file": "src/driver/replay.rs",
@@ -10685,7 +10705,7 @@
     ]
   },
   {
-    "id": "dup-0205",
+    "id": "dup-0206",
     "sites": [
       {
         "file": "src/driver/replay.rs",
@@ -10700,7 +10720,7 @@
     ]
   },
   {
-    "id": "dup-0206",
+    "id": "dup-0207",
     "sites": [
       {
         "file": "src/driver/replay.rs",
@@ -10715,7 +10735,7 @@
     ]
   },
   {
-    "id": "dup-0207",
+    "id": "dup-0208",
     "sites": [
       {
         "file": "src/driver/replay.rs",
@@ -10740,7 +10760,7 @@
     ]
   },
   {
-    "id": "dup-0208",
+    "id": "dup-0209",
     "sites": [
       {
         "file": "src/driver/workflow.rs",
@@ -10755,7 +10775,7 @@
     ]
   },
   {
-    "id": "dup-0209",
+    "id": "dup-0210",
     "sites": [
       {
         "file": "src/eventstore/contract.rs",
@@ -10775,7 +10795,7 @@
     ]
   },
   {
-    "id": "dup-0210",
+    "id": "dup-0211",
     "sites": [
       {
         "file": "src/eventstore/contract.rs",
@@ -10790,7 +10810,7 @@
     ]
   },
   {
-    "id": "dup-0211",
+    "id": "dup-0212",
     "sites": [
       {
         "file": "src/eventstore/contract.rs",
@@ -10810,7 +10830,7 @@
     ]
   },
   {
-    "id": "dup-0212",
+    "id": "dup-0213",
     "sites": [
       {
         "file": "src/eventstore/contract.rs",
@@ -10840,7 +10860,7 @@
     ]
   },
   {
-    "id": "dup-0213",
+    "id": "dup-0214",
     "sites": [
       {
         "file": "src/eventstore/kurrentdb.rs",
@@ -10855,7 +10875,7 @@
     ]
   },
   {
-    "id": "dup-0214",
+    "id": "dup-0215",
     "sites": [
       {
         "file": "src/eventstore/kurrentdb.rs",
@@ -10870,7 +10890,7 @@
     ]
   },
   {
-    "id": "dup-0215",
+    "id": "dup-0216",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -10885,7 +10905,7 @@
     ]
   },
   {
-    "id": "dup-0216",
+    "id": "dup-0217",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -10900,7 +10920,7 @@
     ]
   },
   {
-    "id": "dup-0217",
+    "id": "dup-0218",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -10915,7 +10935,7 @@
     ]
   },
   {
-    "id": "dup-0218",
+    "id": "dup-0219",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -10930,7 +10950,7 @@
     ]
   },
   {
-    "id": "dup-0219",
+    "id": "dup-0220",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -10950,7 +10970,7 @@
     ]
   },
   {
-    "id": "dup-0220",
+    "id": "dup-0221",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -10965,7 +10985,7 @@
     ]
   },
   {
-    "id": "dup-0221",
+    "id": "dup-0222",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -10980,7 +11000,7 @@
     ]
   },
   {
-    "id": "dup-0222",
+    "id": "dup-0223",
     "sites": [
       {
         "file": "src/eventstore/mod.rs",
@@ -10995,7 +11015,7 @@
     ]
   },
   {
-    "id": "dup-0223",
+    "id": "dup-0224",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11010,7 +11030,7 @@
     ]
   },
   {
-    "id": "dup-0224",
+    "id": "dup-0225",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11025,7 +11045,7 @@
     ]
   },
   {
-    "id": "dup-0225",
+    "id": "dup-0226",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11050,7 +11070,7 @@
     ]
   },
   {
-    "id": "dup-0226",
+    "id": "dup-0227",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11070,7 +11090,7 @@
     ]
   },
   {
-    "id": "dup-0227",
+    "id": "dup-0228",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11090,7 +11110,7 @@
     ]
   },
   {
-    "id": "dup-0228",
+    "id": "dup-0229",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11110,7 +11130,7 @@
     ]
   },
   {
-    "id": "dup-0229",
+    "id": "dup-0230",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11135,7 +11155,7 @@
     ]
   },
   {
-    "id": "dup-0230",
+    "id": "dup-0231",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11150,7 +11170,7 @@
     ]
   },
   {
-    "id": "dup-0231",
+    "id": "dup-0232",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11165,7 +11185,7 @@
     ]
   },
   {
-    "id": "dup-0232",
+    "id": "dup-0233",
     "sites": [
       {
         "file": "src/eventstore/sqlite.rs",
@@ -11185,7 +11205,7 @@
     ]
   },
   {
-    "id": "dup-0233",
+    "id": "dup-0234",
     "sites": [
       {
         "file": "src/failure.rs",
@@ -11210,7 +11230,7 @@
     ]
   },
   {
-    "id": "dup-0234",
+    "id": "dup-0235",
     "sites": [
       {
         "file": "src/failure.rs",
@@ -11230,7 +11250,7 @@
     ]
   },
   {
-    "id": "dup-0235",
+    "id": "dup-0236",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11245,7 +11265,7 @@
     ]
   },
   {
-    "id": "dup-0236",
+    "id": "dup-0237",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11265,7 +11285,7 @@
     ]
   },
   {
-    "id": "dup-0237",
+    "id": "dup-0238",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11280,7 +11300,7 @@
     ]
   },
   {
-    "id": "dup-0238",
+    "id": "dup-0239",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11315,7 +11335,7 @@
     ]
   },
   {
-    "id": "dup-0239",
+    "id": "dup-0240",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11340,7 +11360,7 @@
     ]
   },
   {
-    "id": "dup-0240",
+    "id": "dup-0241",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11355,7 +11375,7 @@
     ]
   },
   {
-    "id": "dup-0241",
+    "id": "dup-0242",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11370,7 +11390,7 @@
     ]
   },
   {
-    "id": "dup-0242",
+    "id": "dup-0243",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11385,7 +11405,7 @@
     ]
   },
   {
-    "id": "dup-0243",
+    "id": "dup-0244",
     "sites": [
       {
         "file": "src/gate.rs",
@@ -11400,7 +11420,7 @@
     ]
   },
   {
-    "id": "dup-0244",
+    "id": "dup-0245",
     "sites": [
       {
         "file": "src/grounder/design/events.rs",
@@ -11415,7 +11435,7 @@
     ]
   },
   {
-    "id": "dup-0245",
+    "id": "dup-0246",
     "sites": [
       {
         "file": "src/grounder/design/events.rs",
@@ -11435,7 +11455,7 @@
     ]
   },
   {
-    "id": "dup-0246",
+    "id": "dup-0247",
     "sites": [
       {
         "file": "src/grounder/design/events.rs",
@@ -11450,7 +11470,7 @@
     ]
   },
   {
-    "id": "dup-0247",
+    "id": "dup-0248",
     "sites": [
       {
         "file": "src/grounder/design/extract.rs",
@@ -11470,7 +11490,7 @@
     ]
   },
   {
-    "id": "dup-0248",
+    "id": "dup-0249",
     "sites": [
       {
         "file": "src/grounder/design/extract.rs",
@@ -11485,7 +11505,7 @@
     ]
   },
   {
-    "id": "dup-0249",
+    "id": "dup-0250",
     "sites": [
       {
         "file": "src/grounder/design/extract.rs",
@@ -11510,7 +11530,7 @@
     ]
   },
   {
-    "id": "dup-0250",
+    "id": "dup-0251",
     "sites": [
       {
         "file": "src/grounder/design/extract.rs",
@@ -11525,7 +11545,7 @@
     ]
   },
   {
-    "id": "dup-0251",
+    "id": "dup-0252",
     "sites": [
       {
         "file": "src/grounder/design/model.rs",
@@ -11540,7 +11560,7 @@
     ]
   },
   {
-    "id": "dup-0252",
+    "id": "dup-0253",
     "sites": [
       {
         "file": "src/grounder/symbols/events.rs",
@@ -11555,7 +11575,7 @@
     ]
   },
   {
-    "id": "dup-0253",
+    "id": "dup-0254",
     "sites": [
       {
         "file": "src/grounder/symbols/extract.rs",
@@ -11575,7 +11595,7 @@
     ]
   },
   {
-    "id": "dup-0254",
+    "id": "dup-0255",
     "sites": [
       {
         "file": "src/grounder/symbols/extract.rs",
@@ -11615,7 +11635,7 @@
     ]
   },
   {
-    "id": "dup-0255",
+    "id": "dup-0256",
     "sites": [
       {
         "file": "src/grounder/symbols/extract.rs",
@@ -11630,7 +11650,7 @@
     ]
   },
   {
-    "id": "dup-0256",
+    "id": "dup-0257",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11645,7 +11665,7 @@
     ]
   },
   {
-    "id": "dup-0257",
+    "id": "dup-0258",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11660,7 +11680,7 @@
     ]
   },
   {
-    "id": "dup-0258",
+    "id": "dup-0259",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11675,7 +11695,7 @@
     ]
   },
   {
-    "id": "dup-0259",
+    "id": "dup-0260",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11695,7 +11715,7 @@
     ]
   },
   {
-    "id": "dup-0260",
+    "id": "dup-0261",
     "sites": [
       {
         "file": "src/grounder/symbols/grounder.rs",
@@ -11715,7 +11735,7 @@
     ]
   },
   {
-    "id": "dup-0261",
+    "id": "dup-0262",
     "sites": [
       {
         "file": "src/grounder/symbols/mod.rs",
@@ -11730,7 +11750,7 @@
     ]
   },
   {
-    "id": "dup-0262",
+    "id": "dup-0263",
     "sites": [
       {
         "file": "src/grounder/symbols/model.rs",
@@ -11745,7 +11765,7 @@
     ]
   },
   {
-    "id": "dup-0263",
+    "id": "dup-0264",
     "sites": [
       {
         "file": "src/grounder/symbols/registry.rs",
@@ -11760,7 +11780,7 @@
     ]
   },
   {
-    "id": "dup-0264",
+    "id": "dup-0265",
     "sites": [
       {
         "file": "src/grounder/symbols/store.rs",
@@ -11775,7 +11795,7 @@
     ]
   },
   {
-    "id": "dup-0265",
+    "id": "dup-0266",
     "sites": [
       {
         "file": "src/grounder/symbols/store.rs",
@@ -11790,7 +11810,7 @@
     ]
   },
   {
-    "id": "dup-0266",
+    "id": "dup-0267",
     "sites": [
       {
         "file": "src/hooks.rs",
@@ -11805,7 +11825,7 @@
     ]
   },
   {
-    "id": "dup-0267",
+    "id": "dup-0268",
     "sites": [
       {
         "file": "src/hooks.rs",
@@ -11820,7 +11840,7 @@
     ]
   },
   {
-    "id": "dup-0268",
+    "id": "dup-0269",
     "sites": [
       {
         "file": "src/hooks.rs",
@@ -11835,7 +11855,7 @@
     ]
   },
   {
-    "id": "dup-0269",
+    "id": "dup-0270",
     "sites": [
       {
         "file": "src/hooks.rs",
@@ -11850,7 +11870,7 @@
     ]
   },
   {
-    "id": "dup-0270",
+    "id": "dup-0271",
     "sites": [
       {
         "file": "src/hooks.rs",
@@ -11865,7 +11885,7 @@
     ]
   },
   {
-    "id": "dup-0271",
+    "id": "dup-0272",
     "sites": [
       {
         "file": "src/ingest.rs",
@@ -11880,7 +11900,7 @@
     ]
   },
   {
-    "id": "dup-0272",
+    "id": "dup-0273",
     "sites": [
       {
         "file": "src/ledger.rs",
@@ -11895,7 +11915,7 @@
     ]
   },
   {
-    "id": "dup-0273",
+    "id": "dup-0274",
     "sites": [
       {
         "file": "src/ledger.rs",
@@ -11910,7 +11930,7 @@
     ]
   },
   {
-    "id": "dup-0274",
+    "id": "dup-0275",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -11925,7 +11945,7 @@
     ]
   },
   {
-    "id": "dup-0275",
+    "id": "dup-0276",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -11940,7 +11960,7 @@
     ]
   },
   {
-    "id": "dup-0276",
+    "id": "dup-0277",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -11955,7 +11975,7 @@
     ]
   },
   {
-    "id": "dup-0277",
+    "id": "dup-0278",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -11975,7 +11995,7 @@
     ]
   },
   {
-    "id": "dup-0278",
+    "id": "dup-0279",
     "sites": [
       {
         "file": "src/liveness.rs",
@@ -11990,7 +12010,7 @@
     ]
   },
   {
-    "id": "dup-0279",
+    "id": "dup-0280",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12010,7 +12030,7 @@
     ]
   },
   {
-    "id": "dup-0280",
+    "id": "dup-0281",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12025,7 +12045,7 @@
     ]
   },
   {
-    "id": "dup-0281",
+    "id": "dup-0282",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12040,7 +12060,7 @@
     ]
   },
   {
-    "id": "dup-0282",
+    "id": "dup-0283",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12055,7 +12075,7 @@
     ]
   },
   {
-    "id": "dup-0283",
+    "id": "dup-0284",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12070,7 +12090,7 @@
     ]
   },
   {
-    "id": "dup-0284",
+    "id": "dup-0285",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12085,7 +12105,7 @@
     ]
   },
   {
-    "id": "dup-0285",
+    "id": "dup-0286",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12100,7 +12120,7 @@
     ]
   },
   {
-    "id": "dup-0286",
+    "id": "dup-0287",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12115,7 +12135,7 @@
     ]
   },
   {
-    "id": "dup-0287",
+    "id": "dup-0288",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12135,7 +12155,7 @@
     ]
   },
   {
-    "id": "dup-0288",
+    "id": "dup-0289",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12155,7 +12175,7 @@
     ]
   },
   {
-    "id": "dup-0289",
+    "id": "dup-0290",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12170,7 +12190,7 @@
     ]
   },
   {
-    "id": "dup-0290",
+    "id": "dup-0291",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12190,7 +12210,7 @@
     ]
   },
   {
-    "id": "dup-0291",
+    "id": "dup-0292",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12205,7 +12225,7 @@
     ]
   },
   {
-    "id": "dup-0292",
+    "id": "dup-0293",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12220,7 +12240,7 @@
     ]
   },
   {
-    "id": "dup-0293",
+    "id": "dup-0294",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12240,7 +12260,7 @@
     ]
   },
   {
-    "id": "dup-0294",
+    "id": "dup-0295",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12370,7 +12390,7 @@
     ]
   },
   {
-    "id": "dup-0295",
+    "id": "dup-0296",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12405,7 +12425,7 @@
     ]
   },
   {
-    "id": "dup-0296",
+    "id": "dup-0297",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12430,7 +12450,7 @@
     ]
   },
   {
-    "id": "dup-0297",
+    "id": "dup-0298",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12445,7 +12465,7 @@
     ]
   },
   {
-    "id": "dup-0298",
+    "id": "dup-0299",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12465,7 +12485,7 @@
     ]
   },
   {
-    "id": "dup-0299",
+    "id": "dup-0300",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12480,7 +12500,7 @@
     ]
   },
   {
-    "id": "dup-0300",
+    "id": "dup-0301",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12500,7 +12520,7 @@
     ]
   },
   {
-    "id": "dup-0301",
+    "id": "dup-0302",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12515,7 +12535,7 @@
     ]
   },
   {
-    "id": "dup-0302",
+    "id": "dup-0303",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12530,7 +12550,7 @@
     ]
   },
   {
-    "id": "dup-0303",
+    "id": "dup-0304",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12550,7 +12570,7 @@
     ]
   },
   {
-    "id": "dup-0304",
+    "id": "dup-0305",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12565,7 +12585,7 @@
     ]
   },
   {
-    "id": "dup-0305",
+    "id": "dup-0306",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12580,7 +12600,7 @@
     ]
   },
   {
-    "id": "dup-0306",
+    "id": "dup-0307",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12595,7 +12615,7 @@
     ]
   },
   {
-    "id": "dup-0307",
+    "id": "dup-0308",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12610,7 +12630,7 @@
     ]
   },
   {
-    "id": "dup-0308",
+    "id": "dup-0309",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12635,7 +12655,7 @@
     ]
   },
   {
-    "id": "dup-0309",
+    "id": "dup-0310",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12650,7 +12670,7 @@
     ]
   },
   {
-    "id": "dup-0310",
+    "id": "dup-0311",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12685,7 +12705,7 @@
     ]
   },
   {
-    "id": "dup-0311",
+    "id": "dup-0312",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12700,7 +12720,7 @@
     ]
   },
   {
-    "id": "dup-0312",
+    "id": "dup-0313",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12715,7 +12735,7 @@
     ]
   },
   {
-    "id": "dup-0313",
+    "id": "dup-0314",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12730,7 +12750,7 @@
     ]
   },
   {
-    "id": "dup-0314",
+    "id": "dup-0315",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12745,7 +12765,7 @@
     ]
   },
   {
-    "id": "dup-0315",
+    "id": "dup-0316",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12760,7 +12780,7 @@
     ]
   },
   {
-    "id": "dup-0316",
+    "id": "dup-0317",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12775,7 +12795,7 @@
     ]
   },
   {
-    "id": "dup-0317",
+    "id": "dup-0318",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12790,7 +12810,7 @@
     ]
   },
   {
-    "id": "dup-0318",
+    "id": "dup-0319",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12805,7 +12825,7 @@
     ]
   },
   {
-    "id": "dup-0319",
+    "id": "dup-0320",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12820,7 +12840,7 @@
     ]
   },
   {
-    "id": "dup-0320",
+    "id": "dup-0321",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12850,7 +12870,7 @@
     ]
   },
   {
-    "id": "dup-0321",
+    "id": "dup-0322",
     "sites": [
       {
         "file": "src/main.rs",
@@ -12865,7 +12885,7 @@
     ]
   },
   {
-    "id": "dup-0322",
+    "id": "dup-0323",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -12880,7 +12900,7 @@
     ]
   },
   {
-    "id": "dup-0323",
+    "id": "dup-0324",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -12905,7 +12925,7 @@
     ]
   },
   {
-    "id": "dup-0324",
+    "id": "dup-0325",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -12920,7 +12940,7 @@
     ]
   },
   {
-    "id": "dup-0325",
+    "id": "dup-0326",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -12935,7 +12955,7 @@
     ]
   },
   {
-    "id": "dup-0326",
+    "id": "dup-0327",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -12950,7 +12970,7 @@
     ]
   },
   {
-    "id": "dup-0327",
+    "id": "dup-0328",
     "sites": [
       {
         "file": "src/mcpserver.rs",
@@ -12980,7 +13000,7 @@
     ]
   },
   {
-    "id": "dup-0328",
+    "id": "dup-0329",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13020,7 +13040,7 @@
     ]
   },
   {
-    "id": "dup-0329",
+    "id": "dup-0330",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13035,7 +13055,7 @@
     ]
   },
   {
-    "id": "dup-0330",
+    "id": "dup-0331",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13050,7 +13070,7 @@
     ]
   },
   {
-    "id": "dup-0331",
+    "id": "dup-0332",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13065,7 +13085,7 @@
     ]
   },
   {
-    "id": "dup-0332",
+    "id": "dup-0333",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13085,7 +13105,7 @@
     ]
   },
   {
-    "id": "dup-0333",
+    "id": "dup-0334",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13120,7 +13140,7 @@
     ]
   },
   {
-    "id": "dup-0334",
+    "id": "dup-0335",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13150,7 +13170,7 @@
     ]
   },
   {
-    "id": "dup-0335",
+    "id": "dup-0336",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13165,7 +13185,7 @@
     ]
   },
   {
-    "id": "dup-0336",
+    "id": "dup-0337",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13180,7 +13200,7 @@
     ]
   },
   {
-    "id": "dup-0337",
+    "id": "dup-0338",
     "sites": [
       {
         "file": "src/metrics.rs",
@@ -13195,7 +13215,7 @@
     ]
   },
   {
-    "id": "dup-0338",
+    "id": "dup-0339",
     "sites": [
       {
         "file": "src/progress.rs",
@@ -13210,7 +13230,7 @@
     ]
   },
   {
-    "id": "dup-0339",
+    "id": "dup-0340",
     "sites": [
       {
         "file": "src/reap.rs",
@@ -13245,7 +13265,7 @@
     ]
   },
   {
-    "id": "dup-0340",
+    "id": "dup-0341",
     "sites": [
       {
         "file": "src/reap.rs",
@@ -13270,7 +13290,7 @@
     ]
   },
   {
-    "id": "dup-0341",
+    "id": "dup-0342",
     "sites": [
       {
         "file": "src/reap.rs",
@@ -13285,7 +13305,7 @@
     ]
   },
   {
-    "id": "dup-0342",
+    "id": "dup-0343",
     "sites": [
       {
         "file": "src/reap.rs",
@@ -13300,7 +13320,7 @@
     ]
   },
   {
-    "id": "dup-0343",
+    "id": "dup-0344",
     "sites": [
       {
         "file": "src/registry.rs",
@@ -13370,7 +13390,7 @@
     ]
   },
   {
-    "id": "dup-0344",
+    "id": "dup-0345",
     "sites": [
       {
         "file": "src/registry.rs",
@@ -13390,7 +13410,7 @@
     ]
   },
   {
-    "id": "dup-0345",
+    "id": "dup-0346",
     "sites": [
       {
         "file": "src/registry.rs",
@@ -13405,7 +13425,7 @@
     ]
   },
   {
-    "id": "dup-0346",
+    "id": "dup-0347",
     "sites": [
       {
         "file": "src/registry.rs",
@@ -13420,7 +13440,7 @@
     ]
   },
   {
-    "id": "dup-0347",
+    "id": "dup-0348",
     "sites": [
       {
         "file": "src/run_store.rs",
@@ -13440,7 +13460,7 @@
     ]
   },
   {
-    "id": "dup-0348",
+    "id": "dup-0349",
     "sites": [
       {
         "file": "src/run_store.rs",
@@ -13455,7 +13475,7 @@
     ]
   },
   {
-    "id": "dup-0349",
+    "id": "dup-0350",
     "sites": [
       {
         "file": "src/sidecar.rs",
@@ -13475,7 +13495,7 @@
     ]
   },
   {
-    "id": "dup-0350",
+    "id": "dup-0351",
     "sites": [
       {
         "file": "src/sidecar.rs",
@@ -13490,7 +13510,7 @@
     ]
   },
   {
-    "id": "dup-0351",
+    "id": "dup-0352",
     "sites": [
       {
         "file": "src/sidecar.rs",
@@ -13505,7 +13525,7 @@
     ]
   },
   {
-    "id": "dup-0352",
+    "id": "dup-0353",
     "sites": [
       {
         "file": "src/sidecar.rs",
@@ -13525,7 +13545,7 @@
     ]
   },
   {
-    "id": "dup-0353",
+    "id": "dup-0354",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13540,7 +13560,7 @@
     ]
   },
   {
-    "id": "dup-0354",
+    "id": "dup-0355",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13565,7 +13585,7 @@
     ]
   },
   {
-    "id": "dup-0355",
+    "id": "dup-0356",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13585,7 +13605,7 @@
     ]
   },
   {
-    "id": "dup-0356",
+    "id": "dup-0357",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13600,7 +13620,7 @@
     ]
   },
   {
-    "id": "dup-0357",
+    "id": "dup-0358",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13611,21 +13631,6 @@
         "file": "src/spawn.rs",
         "start_line": 706,
         "end_line": 708
-      }
-    ]
-  },
-  {
-    "id": "dup-0358",
-    "sites": [
-      {
-        "file": "src/spawn.rs",
-        "start_line": 563,
-        "end_line": 570
-      },
-      {
-        "file": "src/spawn.rs",
-        "start_line": 575,
-        "end_line": 582
       }
     ]
   },
@@ -13641,6 +13646,21 @@
         "file": "src/spawn.rs",
         "start_line": 575,
         "end_line": 582
+      }
+    ]
+  },
+  {
+    "id": "dup-0360",
+    "sites": [
+      {
+        "file": "src/spawn.rs",
+        "start_line": 563,
+        "end_line": 570
+      },
+      {
+        "file": "src/spawn.rs",
+        "start_line": 575,
+        "end_line": 582
       },
       {
         "file": "src/spawn.rs",
@@ -13650,7 +13670,7 @@
     ]
   },
   {
-    "id": "dup-0360",
+    "id": "dup-0361",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13665,7 +13685,7 @@
     ]
   },
   {
-    "id": "dup-0361",
+    "id": "dup-0362",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13680,7 +13700,7 @@
     ]
   },
   {
-    "id": "dup-0362",
+    "id": "dup-0363",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13695,7 +13715,7 @@
     ]
   },
   {
-    "id": "dup-0363",
+    "id": "dup-0364",
     "sites": [
       {
         "file": "src/spawn.rs",
@@ -13710,7 +13730,7 @@
     ]
   },
   {
-    "id": "dup-0364",
+    "id": "dup-0365",
     "sites": [
       {
         "file": "src/spawn_store.rs",
@@ -13725,7 +13745,7 @@
     ]
   },
   {
-    "id": "dup-0365",
+    "id": "dup-0366",
     "sites": [
       {
         "file": "src/spawn_store.rs",
@@ -13740,7 +13760,7 @@
     ]
   },
   {
-    "id": "dup-0366",
+    "id": "dup-0367",
     "sites": [
       {
         "file": "src/spawn_store.rs",
@@ -13765,7 +13785,7 @@
     ]
   },
   {
-    "id": "dup-0367",
+    "id": "dup-0368",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13780,7 +13800,7 @@
     ]
   },
   {
-    "id": "dup-0368",
+    "id": "dup-0369",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13800,7 +13820,7 @@
     ]
   },
   {
-    "id": "dup-0369",
+    "id": "dup-0370",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13815,7 +13835,7 @@
     ]
   },
   {
-    "id": "dup-0370",
+    "id": "dup-0371",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13905,7 +13925,7 @@
     ]
   },
   {
-    "id": "dup-0371",
+    "id": "dup-0372",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13920,7 +13940,7 @@
     ]
   },
   {
-    "id": "dup-0372",
+    "id": "dup-0373",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13935,7 +13955,7 @@
     ]
   },
   {
-    "id": "dup-0373",
+    "id": "dup-0374",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13950,7 +13970,7 @@
     ]
   },
   {
-    "id": "dup-0374",
+    "id": "dup-0375",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13965,7 +13985,7 @@
     ]
   },
   {
-    "id": "dup-0375",
+    "id": "dup-0376",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13980,7 +14000,7 @@
     ]
   },
   {
-    "id": "dup-0376",
+    "id": "dup-0377",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -13995,7 +14015,7 @@
     ]
   },
   {
-    "id": "dup-0377",
+    "id": "dup-0378",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -14020,7 +14040,7 @@
     ]
   },
   {
-    "id": "dup-0378",
+    "id": "dup-0379",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -14035,7 +14055,7 @@
     ]
   },
   {
-    "id": "dup-0379",
+    "id": "dup-0380",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -14050,7 +14070,7 @@
     ]
   },
   {
-    "id": "dup-0380",
+    "id": "dup-0381",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -14065,7 +14085,7 @@
     ]
   },
   {
-    "id": "dup-0381",
+    "id": "dup-0382",
     "sites": [
       {
         "file": "src/spec.rs",
@@ -14080,7 +14100,7 @@
     ]
   },
   {
-    "id": "dup-0382",
+    "id": "dup-0383",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -14105,7 +14125,7 @@
     ]
   },
   {
-    "id": "dup-0383",
+    "id": "dup-0384",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -14120,7 +14140,7 @@
     ]
   },
   {
-    "id": "dup-0384",
+    "id": "dup-0385",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -14140,7 +14160,7 @@
     ]
   },
   {
-    "id": "dup-0385",
+    "id": "dup-0386",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -14160,7 +14180,7 @@
     ]
   },
   {
-    "id": "dup-0386",
+    "id": "dup-0387",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -14175,7 +14195,7 @@
     ]
   },
   {
-    "id": "dup-0387",
+    "id": "dup-0388",
     "sites": [
       {
         "file": "src/watch.rs",
@@ -14190,7 +14210,7 @@
     ]
   },
   {
-    "id": "dup-0388",
+    "id": "dup-0389",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14205,7 +14225,7 @@
     ]
   },
   {
-    "id": "dup-0389",
+    "id": "dup-0390",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14220,7 +14240,7 @@
     ]
   },
   {
-    "id": "dup-0390",
+    "id": "dup-0391",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14235,7 +14255,7 @@
     ]
   },
   {
-    "id": "dup-0391",
+    "id": "dup-0392",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14250,7 +14270,7 @@
     ]
   },
   {
-    "id": "dup-0392",
+    "id": "dup-0393",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14265,7 +14285,7 @@
     ]
   },
   {
-    "id": "dup-0393",
+    "id": "dup-0394",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14280,7 +14300,7 @@
     ]
   },
   {
-    "id": "dup-0394",
+    "id": "dup-0395",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14295,7 +14315,7 @@
     ]
   },
   {
-    "id": "dup-0395",
+    "id": "dup-0396",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14310,7 +14330,7 @@
     ]
   },
   {
-    "id": "dup-0396",
+    "id": "dup-0397",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14325,7 +14345,7 @@
     ]
   },
   {
-    "id": "dup-0397",
+    "id": "dup-0398",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14340,7 +14360,7 @@
     ]
   },
   {
-    "id": "dup-0398",
+    "id": "dup-0399",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14355,7 +14375,7 @@
     ]
   },
   {
-    "id": "dup-0399",
+    "id": "dup-0400",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14370,7 +14390,7 @@
     ]
   },
   {
-    "id": "dup-0400",
+    "id": "dup-0401",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14395,7 +14415,7 @@
     ]
   },
   {
-    "id": "dup-0401",
+    "id": "dup-0402",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14410,7 +14430,7 @@
     ]
   },
   {
-    "id": "dup-0402",
+    "id": "dup-0403",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14435,7 +14455,7 @@
     ]
   },
   {
-    "id": "dup-0403",
+    "id": "dup-0404",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14455,7 +14475,7 @@
     ]
   },
   {
-    "id": "dup-0404",
+    "id": "dup-0405",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14470,7 +14490,7 @@
     ]
   },
   {
-    "id": "dup-0405",
+    "id": "dup-0406",
     "sites": [
       {
         "file": "src/worktree.rs",
@@ -14490,7 +14510,7 @@
     ]
   },
   {
-    "id": "dup-0406",
+    "id": "dup-0407",
     "sites": [
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -14590,7 +14610,7 @@
     ]
   },
   {
-    "id": "dup-0407",
+    "id": "dup-0408",
     "sites": [
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -14695,7 +14715,7 @@
     ]
   },
   {
-    "id": "dup-0408",
+    "id": "dup-0409",
     "sites": [
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -14715,7 +14735,7 @@
     ]
   },
   {
-    "id": "dup-0409",
+    "id": "dup-0410",
     "sites": [
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -14740,7 +14760,7 @@
     ]
   },
   {
-    "id": "dup-0410",
+    "id": "dup-0411",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14765,7 +14785,7 @@
     ]
   },
   {
-    "id": "dup-0411",
+    "id": "dup-0412",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14785,7 +14805,7 @@
     ]
   },
   {
-    "id": "dup-0412",
+    "id": "dup-0413",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14800,7 +14820,7 @@
     ]
   },
   {
-    "id": "dup-0413",
+    "id": "dup-0414",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14815,7 +14835,7 @@
     ]
   },
   {
-    "id": "dup-0414",
+    "id": "dup-0415",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14830,7 +14850,7 @@
     ]
   },
   {
-    "id": "dup-0415",
+    "id": "dup-0416",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14845,7 +14865,7 @@
     ]
   },
   {
-    "id": "dup-0416",
+    "id": "dup-0417",
     "sites": [
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -14860,7 +14880,7 @@
     ]
   },
   {
-    "id": "dup-0417",
+    "id": "dup-0418",
     "sites": [
       {
         "file": "tests/architecture_current_surface.rs",
@@ -14915,7 +14935,7 @@
     ]
   },
   {
-    "id": "dup-0418",
+    "id": "dup-0419",
     "sites": [
       {
         "file": "tests/architecture_current_surface.rs",
@@ -14930,7 +14950,7 @@
     ]
   },
   {
-    "id": "dup-0419",
+    "id": "dup-0420",
     "sites": [
       {
         "file": "tests/architecture_current_surface.rs",
@@ -14945,7 +14965,7 @@
     ]
   },
   {
-    "id": "dup-0420",
+    "id": "dup-0421",
     "sites": [
       {
         "file": "tests/architecture_current_surface.rs",
@@ -14960,7 +14980,7 @@
     ]
   },
   {
-    "id": "dup-0421",
+    "id": "dup-0422",
     "sites": [
       {
         "file": "tests/architecture_current_surface.rs",
@@ -14975,7 +14995,7 @@
     ]
   },
   {
-    "id": "dup-0422",
+    "id": "dup-0423",
     "sites": [
       {
         "file": "tests/build_budget_slots_periphery.rs",
@@ -15000,7 +15020,7 @@
     ]
   },
   {
-    "id": "dup-0423",
+    "id": "dup-0424",
     "sites": [
       {
         "file": "tests/build_budget_slots_periphery.rs",
@@ -15035,7 +15055,7 @@
     ]
   },
   {
-    "id": "dup-0424",
+    "id": "dup-0425",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -15060,7 +15080,7 @@
     ]
   },
   {
-    "id": "dup-0425",
+    "id": "dup-0426",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -15080,7 +15100,7 @@
     ]
   },
   {
-    "id": "dup-0426",
+    "id": "dup-0427",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -15095,7 +15115,7 @@
     ]
   },
   {
-    "id": "dup-0427",
+    "id": "dup-0428",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -15110,7 +15130,7 @@
     ]
   },
   {
-    "id": "dup-0428",
+    "id": "dup-0429",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -15125,7 +15145,7 @@
     ]
   },
   {
-    "id": "dup-0429",
+    "id": "dup-0430",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -15145,7 +15165,7 @@
     ]
   },
   {
-    "id": "dup-0430",
+    "id": "dup-0431",
     "sites": [
       {
         "file": "tests/build_env_authority_periphery.rs",
@@ -15160,7 +15180,7 @@
     ]
   },
   {
-    "id": "dup-0431",
+    "id": "dup-0432",
     "sites": [
       {
         "file": "tests/build_watch_paths.rs",
@@ -15175,7 +15195,7 @@
     ]
   },
   {
-    "id": "dup-0432",
+    "id": "dup-0433",
     "sites": [
       {
         "file": "tests/build_watch_paths.rs",
@@ -15195,7 +15215,7 @@
     ]
   },
   {
-    "id": "dup-0433",
+    "id": "dup-0434",
     "sites": [
       {
         "file": "tests/calls_down_execution_path_periphery.rs",
@@ -15215,7 +15235,7 @@
     ]
   },
   {
-    "id": "dup-0434",
+    "id": "dup-0435",
     "sites": [
       {
         "file": "tests/calls_down_execution_path_periphery.rs",
@@ -15230,7 +15250,7 @@
     ]
   },
   {
-    "id": "dup-0435",
+    "id": "dup-0436",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
@@ -15245,7 +15265,7 @@
     ]
   },
   {
-    "id": "dup-0436",
+    "id": "dup-0437",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
@@ -15265,7 +15285,7 @@
     ]
   },
   {
-    "id": "dup-0437",
+    "id": "dup-0438",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
@@ -15295,7 +15315,7 @@
     ]
   },
   {
-    "id": "dup-0438",
+    "id": "dup-0439",
     "sites": [
       {
         "file": "tests/canary_false_positives_periphery.rs",
@@ -15310,7 +15330,7 @@
     ]
   },
   {
-    "id": "dup-0439",
+    "id": "dup-0440",
     "sites": [
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
@@ -15325,7 +15345,7 @@
     ]
   },
   {
-    "id": "dup-0440",
+    "id": "dup-0441",
     "sites": [
       {
         "file": "tests/canary_item_sharding_jobs_cap_periphery.rs",
@@ -15345,7 +15365,7 @@
     ]
   },
   {
-    "id": "dup-0441",
+    "id": "dup-0442",
     "sites": [
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -15445,7 +15465,7 @@
     ]
   },
   {
-    "id": "dup-0442",
+    "id": "dup-0443",
     "sites": [
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -15580,7 +15600,7 @@
     ]
   },
   {
-    "id": "dup-0443",
+    "id": "dup-0444",
     "sites": [
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -15670,7 +15690,7 @@
     ]
   },
   {
-    "id": "dup-0444",
+    "id": "dup-0445",
     "sites": [
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -15685,7 +15705,7 @@
     ]
   },
   {
-    "id": "dup-0445",
+    "id": "dup-0446",
     "sites": [
       {
         "file": "tests/canary_tolerant_attribution_periphery.rs",
@@ -15700,7 +15720,7 @@
     ]
   },
   {
-    "id": "dup-0446",
+    "id": "dup-0447",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -15755,7 +15775,7 @@
     ]
   },
   {
-    "id": "dup-0447",
+    "id": "dup-0448",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -15865,7 +15885,7 @@
     ]
   },
   {
-    "id": "dup-0448",
+    "id": "dup-0449",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -16000,7 +16020,7 @@
     ]
   },
   {
-    "id": "dup-0449",
+    "id": "dup-0450",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -16050,7 +16070,7 @@
     ]
   },
   {
-    "id": "dup-0450",
+    "id": "dup-0451",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -16120,7 +16140,7 @@
     ]
   },
   {
-    "id": "dup-0451",
+    "id": "dup-0452",
     "sites": [
       {
         "file": "tests/cause_wire_periphery.rs",
@@ -16190,7 +16210,7 @@
     ]
   },
   {
-    "id": "dup-0452",
+    "id": "dup-0453",
     "sites": [
       {
         "file": "tests/change_path_revert_periphery.rs",
@@ -16245,26 +16265,6 @@
     ]
   },
   {
-    "id": "dup-0453",
-    "sites": [
-      {
-        "file": "tests/change_path_revert_periphery.rs",
-        "start_line": 77,
-        "end_line": 83
-      },
-      {
-        "file": "tests/dedup_seeding_periphery.rs",
-        "start_line": 676,
-        "end_line": 682
-      },
-      {
-        "file": "tests/workflow_definition_and_js_constants_periphery.rs",
-        "start_line": 138,
-        "end_line": 144
-      }
-    ]
-  },
-  {
     "id": "dup-0454",
     "sites": [
       {
@@ -16289,6 +16289,26 @@
     "sites": [
       {
         "file": "tests/change_path_revert_periphery.rs",
+        "start_line": 77,
+        "end_line": 83
+      },
+      {
+        "file": "tests/dedup_seeding_periphery.rs",
+        "start_line": 676,
+        "end_line": 682
+      },
+      {
+        "file": "tests/workflow_definition_and_js_constants_periphery.rs",
+        "start_line": 138,
+        "end_line": 144
+      }
+    ]
+  },
+  {
+    "id": "dup-0456",
+    "sites": [
+      {
+        "file": "tests/change_path_revert_periphery.rs",
         "start_line": 159,
         "end_line": 175
       },
@@ -16300,7 +16320,7 @@
     ]
   },
   {
-    "id": "dup-0456",
+    "id": "dup-0457",
     "sites": [
       {
         "file": "tests/change_path_revert_periphery.rs",
@@ -16320,32 +16340,17 @@
     ]
   },
   {
-    "id": "dup-0457",
-    "sites": [
-      {
-        "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "start_line": 89,
-        "end_line": 96
-      },
-      {
-        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 89,
-        "end_line": 96
-      }
-    ]
-  },
-  {
     "id": "dup-0458",
     "sites": [
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "start_line": 98,
-        "end_line": 105
+        "start_line": 89,
+        "end_line": 96
       },
       {
         "file": "tests/halted_spawn_wip_recovery_periphery.rs",
-        "start_line": 98,
-        "end_line": 105
+        "start_line": 89,
+        "end_line": 96
       }
     ]
   },
@@ -16354,6 +16359,21 @@
     "sites": [
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
+        "start_line": 98,
+        "end_line": 105
+      },
+      {
+        "file": "tests/halted_spawn_wip_recovery_periphery.rs",
+        "start_line": 98,
+        "end_line": 105
+      }
+    ]
+  },
+  {
+    "id": "dup-0460",
+    "sites": [
+      {
+        "file": "tests/checkin_mutation_diff_base_periphery.rs",
         "start_line": 107,
         "end_line": 115
       },
@@ -16365,7 +16385,7 @@
     ]
   },
   {
-    "id": "dup-0460",
+    "id": "dup-0461",
     "sites": [
       {
         "file": "tests/checkin_mutation_diff_base_periphery.rs",
@@ -16376,21 +16396,6 @@
         "file": "tests/store_resolution.rs",
         "start_line": 119,
         "end_line": 135
-      }
-    ]
-  },
-  {
-    "id": "dup-0461",
-    "sites": [
-      {
-        "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
-        "start_line": 70,
-        "end_line": 76
-      },
-      {
-        "file": "tests/revert_on_base_hook_bypass_periphery.rs",
-        "start_line": 81,
-        "end_line": 87
       }
     ]
   },
@@ -16414,18 +16419,13 @@
     "sites": [
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
-        "start_line": 93,
-        "end_line": 99
-      },
-      {
-        "file": "tests/integrate_conflict_merge_periphery.rs",
-        "start_line": 364,
-        "end_line": 370
+        "start_line": 70,
+        "end_line": 76
       },
       {
         "file": "tests/revert_on_base_hook_bypass_periphery.rs",
-        "start_line": 104,
-        "end_line": 110
+        "start_line": 81,
+        "end_line": 87
       }
     ]
   },
@@ -16454,6 +16454,26 @@
     "sites": [
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
+        "start_line": 93,
+        "end_line": 99
+      },
+      {
+        "file": "tests/integrate_conflict_merge_periphery.rs",
+        "start_line": 364,
+        "end_line": 370
+      },
+      {
+        "file": "tests/revert_on_base_hook_bypass_periphery.rs",
+        "start_line": 104,
+        "end_line": 110
+      }
+    ]
+  },
+  {
+    "id": "dup-0466",
+    "sites": [
+      {
+        "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
         "start_line": 101,
         "end_line": 111
       },
@@ -16465,7 +16485,7 @@
     ]
   },
   {
-    "id": "dup-0466",
+    "id": "dup-0467",
     "sites": [
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -16480,7 +16500,7 @@
     ]
   },
   {
-    "id": "dup-0467",
+    "id": "dup-0468",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16500,7 +16520,7 @@
     ]
   },
   {
-    "id": "dup-0468",
+    "id": "dup-0469",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16540,7 +16560,7 @@
     ]
   },
   {
-    "id": "dup-0469",
+    "id": "dup-0470",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16565,7 +16585,7 @@
     ]
   },
   {
-    "id": "dup-0470",
+    "id": "dup-0471",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16600,7 +16620,7 @@
     ]
   },
   {
-    "id": "dup-0471",
+    "id": "dup-0472",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16630,7 +16650,7 @@
     ]
   },
   {
-    "id": "dup-0472",
+    "id": "dup-0473",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16645,7 +16665,7 @@
     ]
   },
   {
-    "id": "dup-0473",
+    "id": "dup-0474",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16680,7 +16700,7 @@
     ]
   },
   {
-    "id": "dup-0474",
+    "id": "dup-0475",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16695,7 +16715,7 @@
     ]
   },
   {
-    "id": "dup-0475",
+    "id": "dup-0476",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16710,7 +16730,7 @@
     ]
   },
   {
-    "id": "dup-0476",
+    "id": "dup-0477",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16725,7 +16745,7 @@
     ]
   },
   {
-    "id": "dup-0477",
+    "id": "dup-0478",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16740,7 +16760,7 @@
     ]
   },
   {
-    "id": "dup-0478",
+    "id": "dup-0479",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16755,7 +16775,7 @@
     ]
   },
   {
-    "id": "dup-0479",
+    "id": "dup-0480",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16780,7 +16800,7 @@
     ]
   },
   {
-    "id": "dup-0480",
+    "id": "dup-0481",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16800,7 +16820,7 @@
     ]
   },
   {
-    "id": "dup-0481",
+    "id": "dup-0482",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16815,7 +16835,7 @@
     ]
   },
   {
-    "id": "dup-0482",
+    "id": "dup-0483",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16830,7 +16850,7 @@
     ]
   },
   {
-    "id": "dup-0483",
+    "id": "dup-0484",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16845,7 +16865,7 @@
     ]
   },
   {
-    "id": "dup-0484",
+    "id": "dup-0485",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16870,7 +16890,7 @@
     ]
   },
   {
-    "id": "dup-0485",
+    "id": "dup-0486",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16905,7 +16925,7 @@
     ]
   },
   {
-    "id": "dup-0486",
+    "id": "dup-0487",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16920,7 +16940,7 @@
     ]
   },
   {
-    "id": "dup-0487",
+    "id": "dup-0488",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -16940,7 +16960,7 @@
     ]
   },
   {
-    "id": "dup-0488",
+    "id": "dup-0489",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17030,7 +17050,7 @@
     ]
   },
   {
-    "id": "dup-0489",
+    "id": "dup-0490",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17050,7 +17070,7 @@
     ]
   },
   {
-    "id": "dup-0490",
+    "id": "dup-0491",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17065,7 +17085,7 @@
     ]
   },
   {
-    "id": "dup-0491",
+    "id": "dup-0492",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17090,7 +17110,7 @@
     ]
   },
   {
-    "id": "dup-0492",
+    "id": "dup-0493",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17110,7 +17130,7 @@
     ]
   },
   {
-    "id": "dup-0493",
+    "id": "dup-0494",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17140,7 +17160,7 @@
     ]
   },
   {
-    "id": "dup-0494",
+    "id": "dup-0495",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17155,7 +17175,7 @@
     ]
   },
   {
-    "id": "dup-0495",
+    "id": "dup-0496",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17170,7 +17190,7 @@
     ]
   },
   {
-    "id": "dup-0496",
+    "id": "dup-0497",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17181,21 +17201,6 @@
         "file": "tests/step_attention_periphery.rs",
         "start_line": 252,
         "end_line": 351
-      }
-    ]
-  },
-  {
-    "id": "dup-0497",
-    "sites": [
-      {
-        "file": "tests/cli.rs",
-        "start_line": 8719,
-        "end_line": 8729
-      },
-      {
-        "file": "tests/step_attention_periphery.rs",
-        "start_line": 416,
-        "end_line": 426
       }
     ]
   },
@@ -17219,6 +17224,21 @@
     "sites": [
       {
         "file": "tests/cli.rs",
+        "start_line": 8719,
+        "end_line": 8729
+      },
+      {
+        "file": "tests/step_attention_periphery.rs",
+        "start_line": 416,
+        "end_line": 426
+      }
+    ]
+  },
+  {
+    "id": "dup-0500",
+    "sites": [
+      {
+        "file": "tests/cli.rs",
         "start_line": 9621,
         "end_line": 9669
       },
@@ -17230,7 +17250,7 @@
     ]
   },
   {
-    "id": "dup-0500",
+    "id": "dup-0501",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17250,7 +17270,7 @@
     ]
   },
   {
-    "id": "dup-0501",
+    "id": "dup-0502",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17265,7 +17285,7 @@
     ]
   },
   {
-    "id": "dup-0502",
+    "id": "dup-0503",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17280,7 +17300,7 @@
     ]
   },
   {
-    "id": "dup-0503",
+    "id": "dup-0504",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17296,26 +17316,6 @@
         "file": "tests/cli.rs",
         "start_line": 11851,
         "end_line": 11894
-      }
-    ]
-  },
-  {
-    "id": "dup-0504",
-    "sites": [
-      {
-        "file": "tests/cli.rs",
-        "start_line": 12231,
-        "end_line": 12233
-      },
-      {
-        "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
-        "start_line": 134,
-        "end_line": 136
-      },
-      {
-        "file": "tests/step_attention_periphery.rs",
-        "start_line": 143,
-        "end_line": 145
       }
     ]
   },
@@ -17344,6 +17344,26 @@
     "sites": [
       {
         "file": "tests/cli.rs",
+        "start_line": 12231,
+        "end_line": 12233
+      },
+      {
+        "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
+        "start_line": 134,
+        "end_line": 136
+      },
+      {
+        "file": "tests/step_attention_periphery.rs",
+        "start_line": 143,
+        "end_line": 145
+      }
+    ]
+  },
+  {
+    "id": "dup-0507",
+    "sites": [
+      {
+        "file": "tests/cli.rs",
         "start_line": 12848,
         "end_line": 12865
       },
@@ -17365,7 +17385,7 @@
     ]
   },
   {
-    "id": "dup-0507",
+    "id": "dup-0508",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17380,7 +17400,7 @@
     ]
   },
   {
-    "id": "dup-0508",
+    "id": "dup-0509",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17395,7 +17415,7 @@
     ]
   },
   {
-    "id": "dup-0509",
+    "id": "dup-0510",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17410,7 +17430,7 @@
     ]
   },
   {
-    "id": "dup-0510",
+    "id": "dup-0511",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17445,7 +17465,7 @@
     ]
   },
   {
-    "id": "dup-0511",
+    "id": "dup-0512",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17460,7 +17480,7 @@
     ]
   },
   {
-    "id": "dup-0512",
+    "id": "dup-0513",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17475,7 +17495,7 @@
     ]
   },
   {
-    "id": "dup-0513",
+    "id": "dup-0514",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17490,7 +17510,7 @@
     ]
   },
   {
-    "id": "dup-0514",
+    "id": "dup-0515",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17505,7 +17525,7 @@
     ]
   },
   {
-    "id": "dup-0515",
+    "id": "dup-0516",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17525,7 +17545,7 @@
     ]
   },
   {
-    "id": "dup-0516",
+    "id": "dup-0517",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17540,7 +17560,7 @@
     ]
   },
   {
-    "id": "dup-0517",
+    "id": "dup-0518",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17570,7 +17590,7 @@
     ]
   },
   {
-    "id": "dup-0518",
+    "id": "dup-0519",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17585,7 +17605,7 @@
     ]
   },
   {
-    "id": "dup-0519",
+    "id": "dup-0520",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17600,7 +17620,7 @@
     ]
   },
   {
-    "id": "dup-0520",
+    "id": "dup-0521",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17630,7 +17650,7 @@
     ]
   },
   {
-    "id": "dup-0521",
+    "id": "dup-0522",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17645,7 +17665,7 @@
     ]
   },
   {
-    "id": "dup-0522",
+    "id": "dup-0523",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17665,7 +17685,7 @@
     ]
   },
   {
-    "id": "dup-0523",
+    "id": "dup-0524",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17680,7 +17700,7 @@
     ]
   },
   {
-    "id": "dup-0524",
+    "id": "dup-0525",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17700,7 +17720,7 @@
     ]
   },
   {
-    "id": "dup-0525",
+    "id": "dup-0526",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17720,7 +17740,7 @@
     ]
   },
   {
-    "id": "dup-0526",
+    "id": "dup-0527",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17740,7 +17760,7 @@
     ]
   },
   {
-    "id": "dup-0527",
+    "id": "dup-0528",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17755,7 +17775,7 @@
     ]
   },
   {
-    "id": "dup-0528",
+    "id": "dup-0529",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17770,7 +17790,7 @@
     ]
   },
   {
-    "id": "dup-0529",
+    "id": "dup-0530",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17785,7 +17805,7 @@
     ]
   },
   {
-    "id": "dup-0530",
+    "id": "dup-0531",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17800,7 +17820,7 @@
     ]
   },
   {
-    "id": "dup-0531",
+    "id": "dup-0532",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17815,7 +17835,7 @@
     ]
   },
   {
-    "id": "dup-0532",
+    "id": "dup-0533",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17845,7 +17865,7 @@
     ]
   },
   {
-    "id": "dup-0533",
+    "id": "dup-0534",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17865,7 +17885,7 @@
     ]
   },
   {
-    "id": "dup-0534",
+    "id": "dup-0535",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17900,7 +17920,7 @@
     ]
   },
   {
-    "id": "dup-0535",
+    "id": "dup-0536",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17915,7 +17935,7 @@
     ]
   },
   {
-    "id": "dup-0536",
+    "id": "dup-0537",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17930,7 +17950,7 @@
     ]
   },
   {
-    "id": "dup-0537",
+    "id": "dup-0538",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17945,7 +17965,7 @@
     ]
   },
   {
-    "id": "dup-0538",
+    "id": "dup-0539",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -17985,7 +18005,7 @@
     ]
   },
   {
-    "id": "dup-0539",
+    "id": "dup-0540",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18000,7 +18020,7 @@
     ]
   },
   {
-    "id": "dup-0540",
+    "id": "dup-0541",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18015,7 +18035,7 @@
     ]
   },
   {
-    "id": "dup-0541",
+    "id": "dup-0542",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18040,7 +18060,7 @@
     ]
   },
   {
-    "id": "dup-0542",
+    "id": "dup-0543",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18060,7 +18080,7 @@
     ]
   },
   {
-    "id": "dup-0543",
+    "id": "dup-0544",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18075,7 +18095,7 @@
     ]
   },
   {
-    "id": "dup-0544",
+    "id": "dup-0545",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18090,7 +18110,7 @@
     ]
   },
   {
-    "id": "dup-0545",
+    "id": "dup-0546",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18105,7 +18125,7 @@
     ]
   },
   {
-    "id": "dup-0546",
+    "id": "dup-0547",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18120,7 +18140,7 @@
     ]
   },
   {
-    "id": "dup-0547",
+    "id": "dup-0548",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18135,7 +18155,7 @@
     ]
   },
   {
-    "id": "dup-0548",
+    "id": "dup-0549",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18150,7 +18170,7 @@
     ]
   },
   {
-    "id": "dup-0549",
+    "id": "dup-0550",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18175,7 +18195,7 @@
     ]
   },
   {
-    "id": "dup-0550",
+    "id": "dup-0551",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18200,7 +18220,7 @@
     ]
   },
   {
-    "id": "dup-0551",
+    "id": "dup-0552",
     "sites": [
       {
         "file": "tests/cli.rs",
@@ -18215,7 +18235,7 @@
     ]
   },
   {
-    "id": "dup-0552",
+    "id": "dup-0553",
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
@@ -18245,7 +18265,7 @@
     ]
   },
   {
-    "id": "dup-0553",
+    "id": "dup-0554",
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
@@ -18270,7 +18290,7 @@
     ]
   },
   {
-    "id": "dup-0554",
+    "id": "dup-0555",
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
@@ -18300,7 +18320,7 @@
     ]
   },
   {
-    "id": "dup-0555",
+    "id": "dup-0556",
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
@@ -18325,7 +18345,7 @@
     ]
   },
   {
-    "id": "dup-0556",
+    "id": "dup-0557",
     "sites": [
       {
         "file": "tests/code_entity_test_exclusion_periphery.rs",
@@ -18460,7 +18480,7 @@
     ]
   },
   {
-    "id": "dup-0557",
+    "id": "dup-0558",
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
@@ -18495,7 +18515,7 @@
     ]
   },
   {
-    "id": "dup-0558",
+    "id": "dup-0559",
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
@@ -18510,7 +18530,7 @@
     ]
   },
   {
-    "id": "dup-0559",
+    "id": "dup-0560",
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
@@ -18525,7 +18545,7 @@
     ]
   },
   {
-    "id": "dup-0560",
+    "id": "dup-0561",
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
@@ -18575,7 +18595,7 @@
     ]
   },
   {
-    "id": "dup-0561",
+    "id": "dup-0562",
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
@@ -18590,7 +18610,7 @@
     ]
   },
   {
-    "id": "dup-0562",
+    "id": "dup-0563",
     "sites": [
       {
         "file": "tests/code_lens_overview_collapse_viz.rs",
@@ -18605,7 +18625,7 @@
     ]
   },
   {
-    "id": "dup-0563",
+    "id": "dup-0564",
     "sites": [
       {
         "file": "tests/code_lens_overview_collapse_viz.rs",
@@ -18631,41 +18651,6 @@
         "file": "tests/subject_view_memory_rail_client.rs",
         "start_line": 100,
         "end_line": 115
-      }
-    ]
-  },
-  {
-    "id": "dup-0564",
-    "sites": [
-      {
-        "file": "tests/code_lens_overview_collapse_viz.rs",
-        "start_line": 92,
-        "end_line": 118
-      },
-      {
-        "file": "tests/metadata_card_handoff_viz.rs",
-        "start_line": 141,
-        "end_line": 168
-      },
-      {
-        "file": "tests/proof_row_renders_on_the_card.rs",
-        "start_line": 94,
-        "end_line": 121
-      },
-      {
-        "file": "tests/subject_lens_overlay_client_arms.rs",
-        "start_line": 101,
-        "end_line": 127
-      },
-      {
-        "file": "tests/subject_lens_overlay_served_page.rs",
-        "start_line": 59,
-        "end_line": 85
-      },
-      {
-        "file": "tests/subject_view_memory_rail_client.rs",
-        "start_line": 119,
-        "end_line": 145
       }
     ]
   },
@@ -18709,6 +18694,41 @@
     "sites": [
       {
         "file": "tests/code_lens_overview_collapse_viz.rs",
+        "start_line": 92,
+        "end_line": 118
+      },
+      {
+        "file": "tests/metadata_card_handoff_viz.rs",
+        "start_line": 141,
+        "end_line": 168
+      },
+      {
+        "file": "tests/proof_row_renders_on_the_card.rs",
+        "start_line": 94,
+        "end_line": 121
+      },
+      {
+        "file": "tests/subject_lens_overlay_client_arms.rs",
+        "start_line": 101,
+        "end_line": 127
+      },
+      {
+        "file": "tests/subject_lens_overlay_served_page.rs",
+        "start_line": 59,
+        "end_line": 85
+      },
+      {
+        "file": "tests/subject_view_memory_rail_client.rs",
+        "start_line": 119,
+        "end_line": 145
+      }
+    ]
+  },
+  {
+    "id": "dup-0567",
+    "sites": [
+      {
+        "file": "tests/code_lens_overview_collapse_viz.rs",
         "start_line": 200,
         "end_line": 213
       },
@@ -18740,7 +18760,7 @@
     ]
   },
   {
-    "id": "dup-0567",
+    "id": "dup-0568",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18785,7 +18805,7 @@
     ]
   },
   {
-    "id": "dup-0568",
+    "id": "dup-0569",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18800,7 +18820,7 @@
     ]
   },
   {
-    "id": "dup-0569",
+    "id": "dup-0570",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18815,7 +18835,7 @@
     ]
   },
   {
-    "id": "dup-0570",
+    "id": "dup-0571",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18830,7 +18850,7 @@
     ]
   },
   {
-    "id": "dup-0571",
+    "id": "dup-0572",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18845,7 +18865,7 @@
     ]
   },
   {
-    "id": "dup-0572",
+    "id": "dup-0573",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18860,7 +18880,7 @@
     ]
   },
   {
-    "id": "dup-0573",
+    "id": "dup-0574",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18875,7 +18895,7 @@
     ]
   },
   {
-    "id": "dup-0574",
+    "id": "dup-0575",
     "sites": [
       {
         "file": "tests/code_lens_view_periphery.rs",
@@ -18890,7 +18910,7 @@
     ]
   },
   {
-    "id": "dup-0575",
+    "id": "dup-0576",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -18910,7 +18930,7 @@
     ]
   },
   {
-    "id": "dup-0576",
+    "id": "dup-0577",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -18925,7 +18945,7 @@
     ]
   },
   {
-    "id": "dup-0577",
+    "id": "dup-0578",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -18940,7 +18960,7 @@
     ]
   },
   {
-    "id": "dup-0578",
+    "id": "dup-0579",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -18965,7 +18985,7 @@
     ]
   },
   {
-    "id": "dup-0579",
+    "id": "dup-0580",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -18980,7 +19000,7 @@
     ]
   },
   {
-    "id": "dup-0580",
+    "id": "dup-0581",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -18995,7 +19015,7 @@
     ]
   },
   {
-    "id": "dup-0581",
+    "id": "dup-0582",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -19010,7 +19030,7 @@
     ]
   },
   {
-    "id": "dup-0582",
+    "id": "dup-0583",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -19025,7 +19045,7 @@
     ]
   },
   {
-    "id": "dup-0583",
+    "id": "dup-0584",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -19040,7 +19060,7 @@
     ]
   },
   {
-    "id": "dup-0584",
+    "id": "dup-0585",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -19055,7 +19075,7 @@
     ]
   },
   {
-    "id": "dup-0585",
+    "id": "dup-0586",
     "sites": [
       {
         "file": "tests/community_detection_cli.rs",
@@ -19070,7 +19090,7 @@
     ]
   },
   {
-    "id": "dup-0586",
+    "id": "dup-0587",
     "sites": [
       {
         "file": "tests/community_detection_pass.rs",
@@ -19085,7 +19105,7 @@
     ]
   },
   {
-    "id": "dup-0587",
+    "id": "dup-0588",
     "sites": [
       {
         "file": "tests/community_detection_pass.rs",
@@ -19100,7 +19120,7 @@
     ]
   },
   {
-    "id": "dup-0588",
+    "id": "dup-0589",
     "sites": [
       {
         "file": "tests/community_fold_periphery.rs",
@@ -19115,7 +19135,7 @@
     ]
   },
   {
-    "id": "dup-0589",
+    "id": "dup-0590",
     "sites": [
       {
         "file": "tests/community_fold_periphery.rs",
@@ -19130,7 +19150,7 @@
     ]
   },
   {
-    "id": "dup-0590",
+    "id": "dup-0591",
     "sites": [
       {
         "file": "tests/community_fold_periphery.rs",
@@ -19145,7 +19165,7 @@
     ]
   },
   {
-    "id": "dup-0591",
+    "id": "dup-0592",
     "sites": [
       {
         "file": "tests/community_fold_periphery.rs",
@@ -19160,7 +19180,7 @@
     ]
   },
   {
-    "id": "dup-0592",
+    "id": "dup-0593",
     "sites": [
       {
         "file": "tests/community_resolution_knob.rs",
@@ -19175,7 +19195,7 @@
     ]
   },
   {
-    "id": "dup-0593",
+    "id": "dup-0594",
     "sites": [
       {
         "file": "tests/compiler_pass_stage1_audit.rs",
@@ -19190,7 +19210,7 @@
     ]
   },
   {
-    "id": "dup-0594",
+    "id": "dup-0595",
     "sites": [
       {
         "file": "tests/concepts_labels_membership.rs",
@@ -19205,7 +19225,7 @@
     ]
   },
   {
-    "id": "dup-0595",
+    "id": "dup-0596",
     "sites": [
       {
         "file": "tests/concepts_labels_membership.rs",
@@ -19220,7 +19240,7 @@
     ]
   },
   {
-    "id": "dup-0596",
+    "id": "dup-0597",
     "sites": [
       {
         "file": "tests/concepts_lens_view_periphery.rs",
@@ -19290,7 +19310,7 @@
     ]
   },
   {
-    "id": "dup-0597",
+    "id": "dup-0598",
     "sites": [
       {
         "file": "tests/confidence_tier_blast_radius.rs",
@@ -19315,7 +19335,7 @@
     ]
   },
   {
-    "id": "dup-0598",
+    "id": "dup-0599",
     "sites": [
       {
         "file": "tests/confidence_tier_blast_radius.rs",
@@ -19330,7 +19350,7 @@
     ]
   },
   {
-    "id": "dup-0599",
+    "id": "dup-0600",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19355,21 +19375,6 @@
     ]
   },
   {
-    "id": "dup-0600",
-    "sites": [
-      {
-        "file": "tests/console_palette_periphery.rs",
-        "start_line": 72,
-        "end_line": 82
-      },
-      {
-        "file": "tests/console_position_model_periphery.rs",
-        "start_line": 73,
-        "end_line": 83
-      }
-    ]
-  },
-  {
     "id": "dup-0601",
     "sites": [
       {
@@ -19386,6 +19391,21 @@
   },
   {
     "id": "dup-0602",
+    "sites": [
+      {
+        "file": "tests/console_palette_periphery.rs",
+        "start_line": 72,
+        "end_line": 82
+      },
+      {
+        "file": "tests/console_position_model_periphery.rs",
+        "start_line": 73,
+        "end_line": 83
+      }
+    ]
+  },
+  {
+    "id": "dup-0603",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19410,7 +19430,7 @@
     ]
   },
   {
-    "id": "dup-0603",
+    "id": "dup-0604",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19425,7 +19445,7 @@
     ]
   },
   {
-    "id": "dup-0604",
+    "id": "dup-0605",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19440,7 +19460,7 @@
     ]
   },
   {
-    "id": "dup-0605",
+    "id": "dup-0606",
     "sites": [
       {
         "file": "tests/console_palette_periphery.rs",
@@ -19451,21 +19471,6 @@
         "file": "tests/console_position_model_periphery.rs",
         "start_line": 131,
         "end_line": 151
-      }
-    ]
-  },
-  {
-    "id": "dup-0606",
-    "sites": [
-      {
-        "file": "tests/console_shell_periphery.rs",
-        "start_line": 89,
-        "end_line": 98
-      },
-      {
-        "file": "tests/dash_console_wasm_route_periphery.rs",
-        "start_line": 118,
-        "end_line": 127
       }
     ]
   },
@@ -19489,13 +19494,13 @@
     "sites": [
       {
         "file": "tests/console_shell_periphery.rs",
-        "start_line": 100,
-        "end_line": 105
+        "start_line": 89,
+        "end_line": 98
       },
       {
         "file": "tests/dash_console_wasm_route_periphery.rs",
-        "start_line": 129,
-        "end_line": 134
+        "start_line": 118,
+        "end_line": 127
       }
     ]
   },
@@ -19519,6 +19524,21 @@
     "sites": [
       {
         "file": "tests/console_shell_periphery.rs",
+        "start_line": 100,
+        "end_line": 105
+      },
+      {
+        "file": "tests/dash_console_wasm_route_periphery.rs",
+        "start_line": 129,
+        "end_line": 134
+      }
+    ]
+  },
+  {
+    "id": "dup-0611",
+    "sites": [
+      {
+        "file": "tests/console_shell_periphery.rs",
         "start_line": 159,
         "end_line": 191
       },
@@ -19530,7 +19550,7 @@
     ]
   },
   {
-    "id": "dup-0611",
+    "id": "dup-0612",
     "sites": [
       {
         "file": "tests/console_status_periphery.rs",
@@ -19550,7 +19570,7 @@
     ]
   },
   {
-    "id": "dup-0612",
+    "id": "dup-0613",
     "sites": [
       {
         "file": "tests/console_status_periphery.rs",
@@ -19565,7 +19585,7 @@
     ]
   },
   {
-    "id": "dup-0613",
+    "id": "dup-0614",
     "sites": [
       {
         "file": "tests/console_wasm_build_periphery.rs",
@@ -19580,7 +19600,7 @@
     ]
   },
   {
-    "id": "dup-0614",
+    "id": "dup-0615",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -19595,7 +19615,7 @@
     ]
   },
   {
-    "id": "dup-0615",
+    "id": "dup-0616",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -19615,7 +19635,7 @@
     ]
   },
   {
-    "id": "dup-0616",
+    "id": "dup-0617",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
@@ -19636,36 +19656,6 @@
         "file": "tests/registry_refresh_driver_courier_convergence_periphery.rs",
         "start_line": 109,
         "end_line": 116
-      }
-    ]
-  },
-  {
-    "id": "dup-0617",
-    "sites": [
-      {
-        "file": "tests/courier_registry_refresh_boundary_periphery.rs",
-        "start_line": 91,
-        "end_line": 109
-      },
-      {
-        "file": "tests/courier_registry_refresh_fence_periphery.rs",
-        "start_line": 53,
-        "end_line": 71
-      },
-      {
-        "file": "tests/courier_registry_refresh_periphery.rs",
-        "start_line": 81,
-        "end_line": 99
-      },
-      {
-        "file": "tests/gate_store_fence_periphery.rs",
-        "start_line": 253,
-        "end_line": 271
-      },
-      {
-        "file": "tests/registry_refresh_driver_courier_convergence_periphery.rs",
-        "start_line": 122,
-        "end_line": 140
       }
     ]
   },
@@ -19704,6 +19694,36 @@
     "sites": [
       {
         "file": "tests/courier_registry_refresh_boundary_periphery.rs",
+        "start_line": 91,
+        "end_line": 109
+      },
+      {
+        "file": "tests/courier_registry_refresh_fence_periphery.rs",
+        "start_line": 53,
+        "end_line": 71
+      },
+      {
+        "file": "tests/courier_registry_refresh_periphery.rs",
+        "start_line": 81,
+        "end_line": 99
+      },
+      {
+        "file": "tests/gate_store_fence_periphery.rs",
+        "start_line": 253,
+        "end_line": 271
+      },
+      {
+        "file": "tests/registry_refresh_driver_courier_convergence_periphery.rs",
+        "start_line": 122,
+        "end_line": 140
+      }
+    ]
+  },
+  {
+    "id": "dup-0620",
+    "sites": [
+      {
+        "file": "tests/courier_registry_refresh_boundary_periphery.rs",
         "start_line": 263,
         "end_line": 283
       },
@@ -19715,7 +19735,7 @@
     ]
   },
   {
-    "id": "dup-0620",
+    "id": "dup-0621",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_fence_periphery.rs",
@@ -19730,7 +19750,7 @@
     ]
   },
   {
-    "id": "dup-0621",
+    "id": "dup-0622",
     "sites": [
       {
         "file": "tests/courier_registry_refresh_periphery.rs",
@@ -19745,7 +19765,7 @@
     ]
   },
   {
-    "id": "dup-0622",
+    "id": "dup-0623",
     "sites": [
       {
         "file": "tests/dash_cluster_detail_drill.rs",
@@ -19760,7 +19780,7 @@
     ]
   },
   {
-    "id": "dup-0623",
+    "id": "dup-0624",
     "sites": [
       {
         "file": "tests/dash_console_stream_periphery.rs",
@@ -19775,7 +19795,7 @@
     ]
   },
   {
-    "id": "dup-0624",
+    "id": "dup-0625",
     "sites": [
       {
         "file": "tests/dash_decisions_progressive_disclosure.rs",
@@ -19810,7 +19830,7 @@
     ]
   },
   {
-    "id": "dup-0625",
+    "id": "dup-0626",
     "sites": [
       {
         "file": "tests/dash_exploration_route_client_contract.rs",
@@ -19825,7 +19845,7 @@
     ]
   },
   {
-    "id": "dup-0626",
+    "id": "dup-0627",
     "sites": [
       {
         "file": "tests/dash_exploration_route_client_contract.rs",
@@ -19840,7 +19860,7 @@
     ]
   },
   {
-    "id": "dup-0627",
+    "id": "dup-0628",
     "sites": [
       {
         "file": "tests/dash_graph_exploration_fold.rs",
@@ -19855,7 +19875,7 @@
     ]
   },
   {
-    "id": "dup-0628",
+    "id": "dup-0629",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19875,7 +19895,7 @@
     ]
   },
   {
-    "id": "dup-0629",
+    "id": "dup-0630",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19900,7 +19920,7 @@
     ]
   },
   {
-    "id": "dup-0630",
+    "id": "dup-0631",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19920,7 +19940,7 @@
     ]
   },
   {
-    "id": "dup-0631",
+    "id": "dup-0632",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19945,7 +19965,7 @@
     ]
   },
   {
-    "id": "dup-0632",
+    "id": "dup-0633",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19975,7 +19995,7 @@
     ]
   },
   {
-    "id": "dup-0633",
+    "id": "dup-0634",
     "sites": [
       {
         "file": "tests/dash_kg_graph_route.rs",
@@ -19986,21 +20006,6 @@
         "file": "tests/dash_kg_graph_route.rs",
         "start_line": 740,
         "end_line": 784
-      }
-    ]
-  },
-  {
-    "id": "dup-0634",
-    "sites": [
-      {
-        "file": "tests/dash_release_ready.rs",
-        "start_line": 104,
-        "end_line": 112
-      },
-      {
-        "file": "tests/dash_run_tree_spine.rs",
-        "start_line": 282,
-        "end_line": 290
       }
     ]
   },
@@ -20021,6 +20026,21 @@
   },
   {
     "id": "dup-0636",
+    "sites": [
+      {
+        "file": "tests/dash_release_ready.rs",
+        "start_line": 104,
+        "end_line": 112
+      },
+      {
+        "file": "tests/dash_run_tree_spine.rs",
+        "start_line": 282,
+        "end_line": 290
+      }
+    ]
+  },
+  {
+    "id": "dup-0637",
     "sites": [
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -20045,7 +20065,7 @@
     ]
   },
   {
-    "id": "dup-0637",
+    "id": "dup-0638",
     "sites": [
       {
         "file": "tests/dash_run_tree_spine.rs",
@@ -20060,7 +20080,7 @@
     ]
   },
   {
-    "id": "dup-0638",
+    "id": "dup-0639",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -20100,7 +20120,7 @@
     ]
   },
   {
-    "id": "dup-0639",
+    "id": "dup-0640",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -20120,7 +20140,7 @@
     ]
   },
   {
-    "id": "dup-0640",
+    "id": "dup-0641",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -20140,7 +20160,7 @@
     ]
   },
   {
-    "id": "dup-0641",
+    "id": "dup-0642",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -20160,7 +20180,7 @@
     ]
   },
   {
-    "id": "dup-0642",
+    "id": "dup-0643",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -20175,7 +20195,7 @@
     ]
   },
   {
-    "id": "dup-0643",
+    "id": "dup-0644",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -20195,7 +20215,7 @@
     ]
   },
   {
-    "id": "dup-0644",
+    "id": "dup-0645",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -20215,7 +20235,7 @@
     ]
   },
   {
-    "id": "dup-0645",
+    "id": "dup-0646",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -20240,7 +20260,7 @@
     ]
   },
   {
-    "id": "dup-0646",
+    "id": "dup-0647",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -20255,7 +20275,7 @@
     ]
   },
   {
-    "id": "dup-0647",
+    "id": "dup-0648",
     "sites": [
       {
         "file": "tests/dead_code_json_contract_periphery.rs",
@@ -20270,7 +20290,7 @@
     ]
   },
   {
-    "id": "dup-0648",
+    "id": "dup-0649",
     "sites": [
       {
         "file": "tests/dedup_seeding_periphery.rs",
@@ -20285,7 +20305,7 @@
     ]
   },
   {
-    "id": "dup-0649",
+    "id": "dup-0650",
     "sites": [
       {
         "file": "tests/design_intent_events.rs",
@@ -20300,7 +20320,7 @@
     ]
   },
   {
-    "id": "dup-0650",
+    "id": "dup-0651",
     "sites": [
       {
         "file": "tests/design_intent_events.rs",
@@ -20315,7 +20335,7 @@
     ]
   },
   {
-    "id": "dup-0651",
+    "id": "dup-0652",
     "sites": [
       {
         "file": "tests/escalation_resume_periphery.rs",
@@ -20340,7 +20360,7 @@
     ]
   },
   {
-    "id": "dup-0652",
+    "id": "dup-0653",
     "sites": [
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
@@ -20355,7 +20375,7 @@
     ]
   },
   {
-    "id": "dup-0653",
+    "id": "dup-0654",
     "sites": [
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
@@ -20370,7 +20390,7 @@
     ]
   },
   {
-    "id": "dup-0654",
+    "id": "dup-0655",
     "sites": [
       {
         "file": "tests/fanout_template_needs_and_stage_retries_periphery.rs",
@@ -20385,7 +20405,7 @@
     ]
   },
   {
-    "id": "dup-0655",
+    "id": "dup-0656",
     "sites": [
       {
         "file": "tests/gate_store_fence_periphery.rs",
@@ -20400,7 +20420,7 @@
     ]
   },
   {
-    "id": "dup-0656",
+    "id": "dup-0657",
     "sites": [
       {
         "file": "tests/gate_store_fence_periphery.rs",
@@ -20415,7 +20435,7 @@
     ]
   },
   {
-    "id": "dup-0657",
+    "id": "dup-0658",
     "sites": [
       {
         "file": "tests/gitsemver_derivation.rs",
@@ -20435,7 +20455,7 @@
     ]
   },
   {
-    "id": "dup-0658",
+    "id": "dup-0659",
     "sites": [
       {
         "file": "tests/gitsemver_derivation.rs",
@@ -20446,36 +20466,6 @@
         "file": "tests/gitsemver_derivation.rs",
         "start_line": 113,
         "end_line": 131
-      }
-    ]
-  },
-  {
-    "id": "dup-0659",
-    "sites": [
-      {
-        "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
-        "start_line": 58,
-        "end_line": 71
-      },
-      {
-        "file": "tests/hermetic_test_git_audit.rs",
-        "start_line": 342,
-        "end_line": 355
-      },
-      {
-        "file": "tests/no_os_kill_audit.rs",
-        "start_line": 324,
-        "end_line": 337
-      },
-      {
-        "file": "tests/reap_before_removal_audit.rs",
-        "start_line": 761,
-        "end_line": 774
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 2135,
-        "end_line": 2148
       }
     ]
   },
@@ -20514,6 +20504,36 @@
     "sites": [
       {
         "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
+        "start_line": 58,
+        "end_line": 71
+      },
+      {
+        "file": "tests/hermetic_test_git_audit.rs",
+        "start_line": 342,
+        "end_line": 355
+      },
+      {
+        "file": "tests/no_os_kill_audit.rs",
+        "start_line": 324,
+        "end_line": 337
+      },
+      {
+        "file": "tests/reap_before_removal_audit.rs",
+        "start_line": 761,
+        "end_line": 774
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 2135,
+        "end_line": 2148
+      }
+    ]
+  },
+  {
+    "id": "dup-0662",
+    "sites": [
+      {
+        "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
         "start_line": 176,
         "end_line": 180
       },
@@ -20525,7 +20545,7 @@
     ]
   },
   {
-    "id": "dup-0662",
+    "id": "dup-0663",
     "sites": [
       {
         "file": "tests/gitsemver_path_inclusion_accounting_periphery.rs",
@@ -20555,7 +20575,7 @@
     ]
   },
   {
-    "id": "dup-0663",
+    "id": "dup-0664",
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
@@ -20590,7 +20610,7 @@
     ]
   },
   {
-    "id": "dup-0664",
+    "id": "dup-0665",
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
@@ -20620,7 +20640,7 @@
     ]
   },
   {
-    "id": "dup-0665",
+    "id": "dup-0666",
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
@@ -20635,7 +20655,7 @@
     ]
   },
   {
-    "id": "dup-0666",
+    "id": "dup-0667",
     "sites": [
       {
         "file": "tests/graph_around_code_first.rs",
@@ -20650,7 +20670,7 @@
     ]
   },
   {
-    "id": "dup-0667",
+    "id": "dup-0668",
     "sites": [
       {
         "file": "tests/graph_collision_body_and_tiebreak.rs",
@@ -20665,7 +20685,7 @@
     ]
   },
   {
-    "id": "dup-0668",
+    "id": "dup-0669",
     "sites": [
       {
         "file": "tests/graph_collision_body_and_tiebreak.rs",
@@ -20680,7 +20700,7 @@
     ]
   },
   {
-    "id": "dup-0669",
+    "id": "dup-0670",
     "sites": [
       {
         "file": "tests/graph_denoise_content_survives.rs",
@@ -20695,7 +20715,7 @@
     ]
   },
   {
-    "id": "dup-0670",
+    "id": "dup-0671",
     "sites": [
       {
         "file": "tests/graph_denoise_target_project.rs",
@@ -20710,7 +20730,7 @@
     ]
   },
   {
-    "id": "dup-0671",
+    "id": "dup-0672",
     "sites": [
       {
         "file": "tests/graph_density_spread_floor_and_centring.rs",
@@ -20735,7 +20755,7 @@
     ]
   },
   {
-    "id": "dup-0672",
+    "id": "dup-0673",
     "sites": [
       {
         "file": "tests/graph_density_spread_floor_and_centring.rs",
@@ -20755,7 +20775,7 @@
     ]
   },
   {
-    "id": "dup-0673",
+    "id": "dup-0674",
     "sites": [
       {
         "file": "tests/graph_fold_dedup_live_edge.rs",
@@ -20770,7 +20790,7 @@
     ]
   },
   {
-    "id": "dup-0674",
+    "id": "dup-0675",
     "sites": [
       {
         "file": "tests/graph_fold_dedup_live_edge.rs",
@@ -20795,7 +20815,7 @@
     ]
   },
   {
-    "id": "dup-0675",
+    "id": "dup-0676",
     "sites": [
       {
         "file": "tests/graph_fold_dedup_live_edge.rs",
@@ -20810,7 +20830,7 @@
     ]
   },
   {
-    "id": "dup-0676",
+    "id": "dup-0677",
     "sites": [
       {
         "file": "tests/graph_fold_dedup_live_edge.rs",
@@ -20825,7 +20845,7 @@
     ]
   },
   {
-    "id": "dup-0677",
+    "id": "dup-0678",
     "sites": [
       {
         "file": "tests/graph_query_engine_relocation_periphery.rs",
@@ -20841,26 +20861,6 @@
         "file": "tests/graph_query_engine_relocation_periphery.rs",
         "start_line": 190,
         "end_line": 198
-      }
-    ]
-  },
-  {
-    "id": "dup-0678",
-    "sites": [
-      {
-        "file": "tests/graph_show_periphery.rs",
-        "start_line": 86,
-        "end_line": 88
-      },
-      {
-        "file": "tests/graph_show_staleness.rs",
-        "start_line": 71,
-        "end_line": 73
-      },
-      {
-        "file": "tests/graph_show_surface.rs",
-        "start_line": 67,
-        "end_line": 69
       }
     ]
   },
@@ -20889,13 +20889,18 @@
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 138,
-        "end_line": 141
+        "start_line": 86,
+        "end_line": 88
       },
       {
         "file": "tests/graph_show_staleness.rs",
-        "start_line": 76,
-        "end_line": 79
+        "start_line": 71,
+        "end_line": 73
+      },
+      {
+        "file": "tests/graph_show_surface.rs",
+        "start_line": 67,
+        "end_line": 69
       }
     ]
   },
@@ -20904,13 +20909,13 @@
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
-        "start_line": 147,
-        "end_line": 156
+        "start_line": 138,
+        "end_line": 141
       },
       {
         "file": "tests/graph_show_staleness.rs",
-        "start_line": 119,
-        "end_line": 128
+        "start_line": 76,
+        "end_line": 79
       }
     ]
   },
@@ -20934,6 +20939,21 @@
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
+        "start_line": 147,
+        "end_line": 156
+      },
+      {
+        "file": "tests/graph_show_staleness.rs",
+        "start_line": 119,
+        "end_line": 128
+      }
+    ]
+  },
+  {
+    "id": "dup-0684",
+    "sites": [
+      {
+        "file": "tests/graph_show_periphery.rs",
         "start_line": 163,
         "end_line": 177
       },
@@ -20945,7 +20965,7 @@
     ]
   },
   {
-    "id": "dup-0684",
+    "id": "dup-0685",
     "sites": [
       {
         "file": "tests/graph_show_periphery.rs",
@@ -21020,7 +21040,7 @@
     ]
   },
   {
-    "id": "dup-0685",
+    "id": "dup-0686",
     "sites": [
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
@@ -21035,7 +21055,7 @@
     ]
   },
   {
-    "id": "dup-0686",
+    "id": "dup-0687",
     "sites": [
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
@@ -21055,7 +21075,7 @@
     ]
   },
   {
-    "id": "dup-0687",
+    "id": "dup-0688",
     "sites": [
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
@@ -21070,7 +21090,7 @@
     ]
   },
   {
-    "id": "dup-0688",
+    "id": "dup-0689",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -21085,7 +21105,7 @@
     ]
   },
   {
-    "id": "dup-0689",
+    "id": "dup-0690",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -21100,7 +21120,7 @@
     ]
   },
   {
-    "id": "dup-0690",
+    "id": "dup-0691",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -21120,7 +21140,7 @@
     ]
   },
   {
-    "id": "dup-0691",
+    "id": "dup-0692",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -21135,7 +21155,7 @@
     ]
   },
   {
-    "id": "dup-0692",
+    "id": "dup-0693",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -21150,7 +21170,7 @@
     ]
   },
   {
-    "id": "dup-0693",
+    "id": "dup-0694",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -21165,7 +21185,7 @@
     ]
   },
   {
-    "id": "dup-0694",
+    "id": "dup-0695",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -21180,7 +21200,7 @@
     ]
   },
   {
-    "id": "dup-0695",
+    "id": "dup-0696",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -21205,7 +21225,7 @@
     ]
   },
   {
-    "id": "dup-0696",
+    "id": "dup-0697",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -21220,7 +21240,7 @@
     ]
   },
   {
-    "id": "dup-0697",
+    "id": "dup-0698",
     "sites": [
       {
         "file": "tests/integrate_conflict_merge_periphery.rs",
@@ -21240,7 +21260,7 @@
     ]
   },
   {
-    "id": "dup-0698",
+    "id": "dup-0699",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -21260,7 +21280,7 @@
     ]
   },
   {
-    "id": "dup-0699",
+    "id": "dup-0700",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -21275,7 +21295,7 @@
     ]
   },
   {
-    "id": "dup-0700",
+    "id": "dup-0701",
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
@@ -21286,21 +21306,6 @@
         "file": "tests/turbovec_retired.rs",
         "start_line": 43,
         "end_line": 58
-      }
-    ]
-  },
-  {
-    "id": "dup-0701",
-    "sites": [
-      {
-        "file": "tests/kurrentdb_always_available.rs",
-        "start_line": 62,
-        "end_line": 70
-      },
-      {
-        "file": "tests/turbovec_retired.rs",
-        "start_line": 63,
-        "end_line": 71
       }
     ]
   },
@@ -21324,13 +21329,13 @@
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
-        "start_line": 188,
-        "end_line": 203
+        "start_line": 62,
+        "end_line": 70
       },
       {
         "file": "tests/turbovec_retired.rs",
-        "start_line": 75,
-        "end_line": 90
+        "start_line": 63,
+        "end_line": 71
       }
     ]
   },
@@ -21354,6 +21359,21 @@
     "sites": [
       {
         "file": "tests/kurrentdb_always_available.rs",
+        "start_line": 188,
+        "end_line": 203
+      },
+      {
+        "file": "tests/turbovec_retired.rs",
+        "start_line": 75,
+        "end_line": 90
+      }
+    ]
+  },
+  {
+    "id": "dup-0706",
+    "sites": [
+      {
+        "file": "tests/kurrentdb_always_available.rs",
         "start_line": 214,
         "end_line": 233
       },
@@ -21365,7 +21385,7 @@
     ]
   },
   {
-    "id": "dup-0706",
+    "id": "dup-0707",
     "sites": [
       {
         "file": "tests/meta_phases_declaration_periphery.rs",
@@ -21395,7 +21415,7 @@
     ]
   },
   {
-    "id": "dup-0707",
+    "id": "dup-0708",
     "sites": [
       {
         "file": "tests/metadata_card_handoff_viz.rs",
@@ -21420,7 +21440,7 @@
     ]
   },
   {
-    "id": "dup-0708",
+    "id": "dup-0709",
     "sites": [
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
@@ -21465,7 +21485,7 @@
     ]
   },
   {
-    "id": "dup-0709",
+    "id": "dup-0710",
     "sites": [
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
@@ -21480,7 +21500,7 @@
     ]
   },
   {
-    "id": "dup-0710",
+    "id": "dup-0711",
     "sites": [
       {
         "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
@@ -21505,7 +21525,7 @@
     ]
   },
   {
-    "id": "dup-0711",
+    "id": "dup-0712",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21520,7 +21540,7 @@
     ]
   },
   {
-    "id": "dup-0712",
+    "id": "dup-0713",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21535,7 +21555,7 @@
     ]
   },
   {
-    "id": "dup-0713",
+    "id": "dup-0714",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21550,7 +21570,7 @@
     ]
   },
   {
-    "id": "dup-0714",
+    "id": "dup-0715",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21575,7 +21595,7 @@
     ]
   },
   {
-    "id": "dup-0715",
+    "id": "dup-0716",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21590,7 +21610,7 @@
     ]
   },
   {
-    "id": "dup-0716",
+    "id": "dup-0717",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21605,7 +21625,7 @@
     ]
   },
   {
-    "id": "dup-0717",
+    "id": "dup-0718",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21620,7 +21640,7 @@
     ]
   },
   {
-    "id": "dup-0718",
+    "id": "dup-0719",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21635,7 +21655,7 @@
     ]
   },
   {
-    "id": "dup-0719",
+    "id": "dup-0720",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21695,7 +21715,7 @@
     ]
   },
   {
-    "id": "dup-0720",
+    "id": "dup-0721",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21720,7 +21740,7 @@
     ]
   },
   {
-    "id": "dup-0721",
+    "id": "dup-0722",
     "sites": [
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -21735,7 +21755,7 @@
     ]
   },
   {
-    "id": "dup-0722",
+    "id": "dup-0723",
     "sites": [
       {
         "file": "tests/no_os_kill_test_helper_periphery.rs",
@@ -21760,7 +21780,7 @@
     ]
   },
   {
-    "id": "dup-0723",
+    "id": "dup-0724",
     "sites": [
       {
         "file": "tests/no_os_kill_test_helper_periphery.rs",
@@ -21775,7 +21795,7 @@
     ]
   },
   {
-    "id": "dup-0724",
+    "id": "dup-0725",
     "sites": [
       {
         "file": "tests/parallel_ordered_emit.rs",
@@ -21790,7 +21810,7 @@
     ]
   },
   {
-    "id": "dup-0725",
+    "id": "dup-0726",
     "sites": [
       {
         "file": "tests/phase_of_role_mapping_periphery.rs",
@@ -21810,7 +21830,7 @@
     ]
   },
   {
-    "id": "dup-0726",
+    "id": "dup-0727",
     "sites": [
       {
         "file": "tests/projections_stay_local.rs",
@@ -21825,7 +21845,7 @@
     ]
   },
   {
-    "id": "dup-0727",
+    "id": "dup-0728",
     "sites": [
       {
         "file": "tests/projections_stay_local.rs",
@@ -21840,7 +21860,7 @@
     ]
   },
   {
-    "id": "dup-0728",
+    "id": "dup-0729",
     "sites": [
       {
         "file": "tests/projections_stay_local.rs",
@@ -21855,7 +21875,7 @@
     ]
   },
   {
-    "id": "dup-0729",
+    "id": "dup-0730",
     "sites": [
       {
         "file": "tests/proof_lands_on_the_card_periphery.rs",
@@ -21875,7 +21895,7 @@
     ]
   },
   {
-    "id": "dup-0730",
+    "id": "dup-0731",
     "sites": [
       {
         "file": "tests/reap_before_removal_audit.rs",
@@ -21955,7 +21975,7 @@
     ]
   },
   {
-    "id": "dup-0731",
+    "id": "dup-0732",
     "sites": [
       {
         "file": "tests/reap_before_removal_audit.rs",
@@ -21975,7 +21995,7 @@
     ]
   },
   {
-    "id": "dup-0732",
+    "id": "dup-0733",
     "sites": [
       {
         "file": "tests/reap_before_removal_audit.rs",
@@ -22015,7 +22035,7 @@
     ]
   },
   {
-    "id": "dup-0733",
+    "id": "dup-0734",
     "sites": [
       {
         "file": "tests/reap_before_removal_audit.rs",
@@ -22055,7 +22075,7 @@
     ]
   },
   {
-    "id": "dup-0734",
+    "id": "dup-0735",
     "sites": [
       {
         "file": "tests/reap_before_removal_periphery.rs",
@@ -22085,7 +22105,7 @@
     ]
   },
   {
-    "id": "dup-0735",
+    "id": "dup-0736",
     "sites": [
       {
         "file": "tests/reminder_dedup_workflow_child_env_periphery.rs",
@@ -22100,7 +22120,7 @@
     ]
   },
   {
-    "id": "dup-0736",
+    "id": "dup-0737",
     "sites": [
       {
         "file": "tests/replan_episode_identity.rs",
@@ -22115,7 +22135,7 @@
     ]
   },
   {
-    "id": "dup-0737",
+    "id": "dup-0738",
     "sites": [
       {
         "file": "tests/replan_episode_identity.rs",
@@ -22130,7 +22150,7 @@
     ]
   },
   {
-    "id": "dup-0738",
+    "id": "dup-0739",
     "sites": [
       {
         "file": "tests/replan_episode_identity.rs",
@@ -22145,7 +22165,7 @@
     ]
   },
   {
-    "id": "dup-0739",
+    "id": "dup-0740",
     "sites": [
       {
         "file": "tests/replan_episode_identity.rs",
@@ -22165,7 +22185,7 @@
     ]
   },
   {
-    "id": "dup-0740",
+    "id": "dup-0741",
     "sites": [
       {
         "file": "tests/reset_build_cache_periphery.rs",
@@ -22185,7 +22205,7 @@
     ]
   },
   {
-    "id": "dup-0741",
+    "id": "dup-0742",
     "sites": [
       {
         "file": "tests/reset_build_cache_periphery.rs",
@@ -22200,7 +22220,7 @@
     ]
   },
   {
-    "id": "dup-0742",
+    "id": "dup-0743",
     "sites": [
       {
         "file": "tests/reset_derived_compaction.rs",
@@ -22215,7 +22235,7 @@
     ]
   },
   {
-    "id": "dup-0743",
+    "id": "dup-0744",
     "sites": [
       {
         "file": "tests/reset_derived_compaction.rs",
@@ -22230,7 +22250,7 @@
     ]
   },
   {
-    "id": "dup-0744",
+    "id": "dup-0745",
     "sites": [
       {
         "file": "tests/reset_derived_compaction.rs",
@@ -22250,7 +22270,7 @@
     ]
   },
   {
-    "id": "dup-0745",
+    "id": "dup-0746",
     "sites": [
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
@@ -22265,7 +22285,7 @@
     ]
   },
   {
-    "id": "dup-0746",
+    "id": "dup-0747",
     "sites": [
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -22285,7 +22305,7 @@
     ]
   },
   {
-    "id": "dup-0747",
+    "id": "dup-0748",
     "sites": [
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -22310,7 +22330,7 @@
     ]
   },
   {
-    "id": "dup-0748",
+    "id": "dup-0749",
     "sites": [
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -22325,7 +22345,7 @@
     ]
   },
   {
-    "id": "dup-0749",
+    "id": "dup-0750",
     "sites": [
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
@@ -22340,7 +22360,7 @@
     ]
   },
   {
-    "id": "dup-0750",
+    "id": "dup-0751",
     "sites": [
       {
         "file": "tests/reset_menu.rs",
@@ -22355,7 +22375,7 @@
     ]
   },
   {
-    "id": "dup-0751",
+    "id": "dup-0752",
     "sites": [
       {
         "file": "tests/reset_menu.rs",
@@ -22371,21 +22391,6 @@
         "file": "tests/reset_menu_previews_periphery.rs",
         "start_line": 81,
         "end_line": 86
-      }
-    ]
-  },
-  {
-    "id": "dup-0752",
-    "sites": [
-      {
-        "file": "tests/reset_menu.rs",
-        "start_line": 153,
-        "end_line": 170
-      },
-      {
-        "file": "tests/reset_menu_identity_migration_periphery.rs",
-        "start_line": 120,
-        "end_line": 137
       }
     ]
   },
@@ -22408,6 +22413,21 @@
     "id": "dup-0754",
     "sites": [
       {
+        "file": "tests/reset_menu.rs",
+        "start_line": 153,
+        "end_line": 170
+      },
+      {
+        "file": "tests/reset_menu_identity_migration_periphery.rs",
+        "start_line": 120,
+        "end_line": 137
+      }
+    ]
+  },
+  {
+    "id": "dup-0755",
+    "sites": [
+      {
         "file": "tests/review_tier_roster_periphery.rs",
         "start_line": 75,
         "end_line": 129
@@ -22420,7 +22440,7 @@
     ]
   },
   {
-    "id": "dup-0755",
+    "id": "dup-0756",
     "sites": [
       {
         "file": "tests/review_tier_roster_periphery.rs",
@@ -22435,7 +22455,7 @@
     ]
   },
   {
-    "id": "dup-0756",
+    "id": "dup-0757",
     "sites": [
       {
         "file": "tests/review_tier_roster_periphery.rs",
@@ -22450,7 +22470,7 @@
     ]
   },
   {
-    "id": "dup-0757",
+    "id": "dup-0758",
     "sites": [
       {
         "file": "tests/scratch_workdir_config.rs",
@@ -22465,7 +22485,7 @@
     ]
   },
   {
-    "id": "dup-0758",
+    "id": "dup-0759",
     "sites": [
       {
         "file": "tests/scratch_workdir_config.rs",
@@ -22490,7 +22510,7 @@
     ]
   },
   {
-    "id": "dup-0759",
+    "id": "dup-0760",
     "sites": [
       {
         "file": "tests/scratch_workdir_config.rs",
@@ -22505,7 +22525,7 @@
     ]
   },
   {
-    "id": "dup-0760",
+    "id": "dup-0761",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22540,7 +22560,7 @@
     ]
   },
   {
-    "id": "dup-0761",
+    "id": "dup-0762",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22555,7 +22575,7 @@
     ]
   },
   {
-    "id": "dup-0762",
+    "id": "dup-0763",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22580,7 +22600,7 @@
     ]
   },
   {
-    "id": "dup-0763",
+    "id": "dup-0764",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22595,7 +22615,7 @@
     ]
   },
   {
-    "id": "dup-0764",
+    "id": "dup-0765",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22610,7 +22630,7 @@
     ]
   },
   {
-    "id": "dup-0765",
+    "id": "dup-0766",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22625,7 +22645,7 @@
     ]
   },
   {
-    "id": "dup-0766",
+    "id": "dup-0767",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22685,7 +22705,7 @@
     ]
   },
   {
-    "id": "dup-0767",
+    "id": "dup-0768",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22715,7 +22735,7 @@
     ]
   },
   {
-    "id": "dup-0768",
+    "id": "dup-0769",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22730,7 +22750,7 @@
     ]
   },
   {
-    "id": "dup-0769",
+    "id": "dup-0770",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22750,7 +22770,7 @@
     ]
   },
   {
-    "id": "dup-0770",
+    "id": "dup-0771",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22765,7 +22785,7 @@
     ]
   },
   {
-    "id": "dup-0771",
+    "id": "dup-0772",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22785,7 +22805,7 @@
     ]
   },
   {
-    "id": "dup-0772",
+    "id": "dup-0773",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22805,7 +22825,7 @@
     ]
   },
   {
-    "id": "dup-0773",
+    "id": "dup-0774",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22820,7 +22840,7 @@
     ]
   },
   {
-    "id": "dup-0774",
+    "id": "dup-0775",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22840,7 +22860,7 @@
     ]
   },
   {
-    "id": "dup-0775",
+    "id": "dup-0776",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22860,7 +22880,7 @@
     ]
   },
   {
-    "id": "dup-0776",
+    "id": "dup-0777",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22875,7 +22895,7 @@
     ]
   },
   {
-    "id": "dup-0777",
+    "id": "dup-0778",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22890,7 +22910,7 @@
     ]
   },
   {
-    "id": "dup-0778",
+    "id": "dup-0779",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22905,7 +22925,7 @@
     ]
   },
   {
-    "id": "dup-0779",
+    "id": "dup-0780",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22920,7 +22940,7 @@
     ]
   },
   {
-    "id": "dup-0780",
+    "id": "dup-0781",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22935,7 +22955,7 @@
     ]
   },
   {
-    "id": "dup-0781",
+    "id": "dup-0782",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22950,7 +22970,7 @@
     ]
   },
   {
-    "id": "dup-0782",
+    "id": "dup-0783",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22965,7 +22985,7 @@
     ]
   },
   {
-    "id": "dup-0783",
+    "id": "dup-0784",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -22980,7 +23000,7 @@
     ]
   },
   {
-    "id": "dup-0784",
+    "id": "dup-0785",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23000,7 +23020,7 @@
     ]
   },
   {
-    "id": "dup-0785",
+    "id": "dup-0786",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23015,7 +23035,7 @@
     ]
   },
   {
-    "id": "dup-0786",
+    "id": "dup-0787",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23030,7 +23050,7 @@
     ]
   },
   {
-    "id": "dup-0787",
+    "id": "dup-0788",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23045,7 +23065,7 @@
     ]
   },
   {
-    "id": "dup-0788",
+    "id": "dup-0789",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23060,7 +23080,7 @@
     ]
   },
   {
-    "id": "dup-0789",
+    "id": "dup-0790",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23075,7 +23095,7 @@
     ]
   },
   {
-    "id": "dup-0790",
+    "id": "dup-0791",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23090,7 +23110,7 @@
     ]
   },
   {
-    "id": "dup-0791",
+    "id": "dup-0792",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23105,7 +23125,7 @@
     ]
   },
   {
-    "id": "dup-0792",
+    "id": "dup-0793",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23135,7 +23155,7 @@
     ]
   },
   {
-    "id": "dup-0793",
+    "id": "dup-0794",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23160,7 +23180,7 @@
     ]
   },
   {
-    "id": "dup-0794",
+    "id": "dup-0795",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23255,7 +23275,7 @@
     ]
   },
   {
-    "id": "dup-0795",
+    "id": "dup-0796",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23280,7 +23300,7 @@
     ]
   },
   {
-    "id": "dup-0796",
+    "id": "dup-0797",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23325,7 +23345,7 @@
     ]
   },
   {
-    "id": "dup-0797",
+    "id": "dup-0798",
     "sites": [
       {
         "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
@@ -23345,7 +23365,7 @@
     ]
   },
   {
-    "id": "dup-0798",
+    "id": "dup-0799",
     "sites": [
       {
         "file": "tests/spawn_timing_periphery.rs",
@@ -23360,7 +23380,7 @@
     ]
   },
   {
-    "id": "dup-0799",
+    "id": "dup-0800",
     "sites": [
       {
         "file": "tests/spec_lint.rs",
@@ -23575,7 +23595,7 @@
     ]
   },
   {
-    "id": "dup-0800",
+    "id": "dup-0801",
     "sites": [
       {
         "file": "tests/step_attention_periphery.rs",
@@ -23595,7 +23615,7 @@
     ]
   },
   {
-    "id": "dup-0801",
+    "id": "dup-0802",
     "sites": [
       {
         "file": "tests/step_sheds_the_freshen.rs",
@@ -23610,7 +23630,7 @@
     ]
   },
   {
-    "id": "dup-0802",
+    "id": "dup-0803",
     "sites": [
       {
         "file": "tests/store_config.rs",
@@ -23625,7 +23645,7 @@
     ]
   },
   {
-    "id": "dup-0803",
+    "id": "dup-0804",
     "sites": [
       {
         "file": "tests/store_config.rs",
@@ -23640,7 +23660,7 @@
     ]
   },
   {
-    "id": "dup-0804",
+    "id": "dup-0805",
     "sites": [
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -23665,7 +23685,7 @@
     ]
   },
   {
-    "id": "dup-0805",
+    "id": "dup-0806",
     "sites": [
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -23680,7 +23700,7 @@
     ]
   },
   {
-    "id": "dup-0806",
+    "id": "dup-0807",
     "sites": [
       {
         "file": "tests/store_content_identity_periphery.rs",
@@ -23695,7 +23715,7 @@
     ]
   },
   {
-    "id": "dup-0807",
+    "id": "dup-0808",
     "sites": [
       {
         "file": "tests/store_flag_precedence.rs",
@@ -23720,7 +23740,7 @@
     ]
   },
   {
-    "id": "dup-0808",
+    "id": "dup-0809",
     "sites": [
       {
         "file": "tests/store_flag_precedence.rs",
@@ -23745,7 +23765,7 @@
     ]
   },
   {
-    "id": "dup-0809",
+    "id": "dup-0810",
     "sites": [
       {
         "file": "tests/store_flag_precedence.rs",
@@ -23760,7 +23780,7 @@
     ]
   },
   {
-    "id": "dup-0810",
+    "id": "dup-0811",
     "sites": [
       {
         "file": "tests/store_flag_precedence.rs",
@@ -23775,7 +23795,7 @@
     ]
   },
   {
-    "id": "dup-0811",
+    "id": "dup-0812",
     "sites": [
       {
         "file": "tests/store_precedence.rs",
@@ -23795,7 +23815,7 @@
     ]
   },
   {
-    "id": "dup-0812",
+    "id": "dup-0813",
     "sites": [
       {
         "file": "tests/store_precedence.rs",
@@ -23810,7 +23830,7 @@
     ]
   },
   {
-    "id": "dup-0813",
+    "id": "dup-0814",
     "sites": [
       {
         "file": "tests/store_precedence.rs",
@@ -23826,21 +23846,6 @@
         "file": "tests/store_precedence.rs",
         "start_line": 315,
         "end_line": 355
-      }
-    ]
-  },
-  {
-    "id": "dup-0814",
-    "sites": [
-      {
-        "file": "tests/store_resolution_cli.rs",
-        "start_line": 78,
-        "end_line": 90
-      },
-      {
-        "file": "tests/store_secrets.rs",
-        "start_line": 88,
-        "end_line": 100
       }
     ]
   },
@@ -23864,6 +23869,21 @@
     "sites": [
       {
         "file": "tests/store_resolution_cli.rs",
+        "start_line": 78,
+        "end_line": 90
+      },
+      {
+        "file": "tests/store_secrets.rs",
+        "start_line": 88,
+        "end_line": 100
+      }
+    ]
+  },
+  {
+    "id": "dup-0817",
+    "sites": [
+      {
+        "file": "tests/store_resolution_cli.rs",
         "start_line": 93,
         "end_line": 127
       },
@@ -23880,7 +23900,7 @@
     ]
   },
   {
-    "id": "dup-0817",
+    "id": "dup-0818",
     "sites": [
       {
         "file": "tests/store_resolution_cli.rs",
@@ -23895,7 +23915,7 @@
     ]
   },
   {
-    "id": "dup-0818",
+    "id": "dup-0819",
     "sites": [
       {
         "file": "tests/store_secrets_periphery.rs",
@@ -23910,7 +23930,7 @@
     ]
   },
   {
-    "id": "dup-0819",
+    "id": "dup-0820",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -23930,7 +23950,7 @@
     ]
   },
   {
-    "id": "dup-0820",
+    "id": "dup-0821",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -23970,7 +23990,7 @@
     ]
   },
   {
-    "id": "dup-0821",
+    "id": "dup-0822",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -23990,7 +24010,7 @@
     ]
   },
   {
-    "id": "dup-0822",
+    "id": "dup-0823",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -24010,7 +24030,7 @@
     ]
   },
   {
-    "id": "dup-0823",
+    "id": "dup-0824",
     "sites": [
       {
         "file": "tests/subject_lens_defined_cells.rs",
@@ -24026,21 +24046,6 @@
         "file": "tests/subject_lens_reprojection_contract.rs",
         "start_line": 380,
         "end_line": 401
-      }
-    ]
-  },
-  {
-    "id": "dup-0824",
-    "sites": [
-      {
-        "file": "tests/subject_lens_defined_cells.rs",
-        "start_line": 510,
-        "end_line": 530
-      },
-      {
-        "file": "tests/subject_lens_defined_cells_contract.rs",
-        "start_line": 238,
-        "end_line": 256
       }
     ]
   },
@@ -24063,6 +24068,21 @@
     "id": "dup-0826",
     "sites": [
       {
+        "file": "tests/subject_lens_defined_cells.rs",
+        "start_line": 510,
+        "end_line": 530
+      },
+      {
+        "file": "tests/subject_lens_defined_cells_contract.rs",
+        "start_line": 238,
+        "end_line": 256
+      }
+    ]
+  },
+  {
+    "id": "dup-0827",
+    "sites": [
+      {
         "file": "tests/subject_lens_defined_cells_contract.rs",
         "start_line": 318,
         "end_line": 334
@@ -24075,7 +24095,7 @@
     ]
   },
   {
-    "id": "dup-0827",
+    "id": "dup-0828",
     "sites": [
       {
         "file": "tests/subject_lens_reprojection_contract.rs",
@@ -24095,7 +24115,7 @@
     ]
   },
   {
-    "id": "dup-0828",
+    "id": "dup-0829",
     "sites": [
       {
         "file": "tests/subject_lens_reprojection_contract.rs",
@@ -24110,7 +24130,7 @@
     ]
   },
   {
-    "id": "dup-0829",
+    "id": "dup-0830",
     "sites": [
       {
         "file": "tests/unified_traversal_grounding.rs",
@@ -24150,7 +24170,7 @@
     ]
   },
   {
-    "id": "dup-0830",
+    "id": "dup-0831",
     "sites": [
       {
         "file": "tests/unified_traversal_grounding.rs",
@@ -24165,7 +24185,7 @@
     ]
   },
   {
-    "id": "dup-0831",
+    "id": "dup-0832",
     "sites": [
       {
         "file": "tests/unified_traversal_grounding.rs",
@@ -24180,7 +24200,7 @@
     ]
   },
   {
-    "id": "dup-0832",
+    "id": "dup-0833",
     "sites": [
       {
         "file": "tests/validate_advisories.rs",
@@ -24195,7 +24215,7 @@
     ]
   },
   {
-    "id": "dup-0833",
+    "id": "dup-0834",
     "sites": [
       {
         "file": "tests/validate_advisories.rs",
@@ -24210,7 +24230,7 @@
     ]
   },
   {
-    "id": "dup-0834",
+    "id": "dup-0835",
     "sites": [
       {
         "file": "tests/validate_advisories.rs",
@@ -24225,7 +24245,7 @@
     ]
   },
   {
-    "id": "dup-0835",
+    "id": "dup-0836",
     "sites": [
       {
         "file": "tests/watchdog_cli_periphery.rs",
@@ -24245,7 +24265,7 @@
     ]
   },
   {
-    "id": "dup-0836",
+    "id": "dup-0837",
     "sites": [
       {
         "file": "tests/watchdog_cli_periphery.rs",
@@ -24265,7 +24285,7 @@
     ]
   },
   {
-    "id": "dup-0837",
+    "id": "dup-0838",
     "sites": [
       {
         "file": "tests/worker_persona_label_periphery.rs",
@@ -24280,7 +24300,7 @@
     ]
   },
   {
-    "id": "dup-0838",
+    "id": "dup-0839",
     "sites": [
       {
         "file": "tests/workflow_definition_and_js_constants_periphery.rs",
@@ -24295,7 +24315,7 @@
     ]
   },
   {
-    "id": "dup-0839",
+    "id": "dup-0840",
     "sites": [
       {
         "file": "tests/workflow_driver_resolved_model_periphery.rs",

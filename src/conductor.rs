@@ -8703,7 +8703,22 @@ impl RunCtx<'_> {
             // `review_only_worktree` - never adopt a leftover post-merge checkout.
             Worktree::discard(&self.deps.repo, &pm_dir, &pm_branch, &scratch)?;
             Worktree::create_branch_at(&self.deps.repo, &pm_branch, &commit)?;
-            let pm_wt = Worktree::create(&self.deps.repo, &pm_dir, &pm_branch, &scratch)?;
+            // Captured into a local instead of `?`-ed directly (round 3 fix for
+            // adv-u103c7-r3-createbranch-then-create-leaks-branch), mirroring the
+            // capture-then-cleanup shape `run_gates`'s own call seven lines below already
+            // uses: a `?` here would propagate immediately on any Err from `Worktree::
+            // create` (a real git operation - a transient worktree-metadata race or disk
+            // pressure can fail it) and skip the `pm_branch` this function just minted one
+            // line above via `create_branch_at`, permanently leaking that throwaway
+            // `rigger/postmerge/<unit>-<attempt>` ref. `pm_dir` is never created on this
+            // path (`Worktree::create` erred before returning a live worktree), so only
+            // the branch needs reaping here - the dir-and-branch pair `run_gates`'s own
+            // cleanup reaps below is for the LATER window, once a real `pm_wt` exists.
+            let create_result = Worktree::create(&self.deps.repo, &pm_dir, &pm_branch, &scratch);
+            if create_result.is_err() {
+                let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
+            }
+            let pm_wt = create_result?;
             // Captured into a local instead of `?`-ed directly (round 2 fix for
             // adv-u103c7-postmerge-worktree-branch-leak-on-run-gates-err), mirroring
             // `run_fan_out_stage`'s own identical shape around `run_fan_out_review_loop`
@@ -38034,6 +38049,88 @@ mod tests {
             String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
             "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted \
              even when its gate suite errors, never left behind"
+        );
+    }
+
+    #[test]
+    fn postmerge_worktree_create_err_still_reaps_the_just_created_branch() {
+        // adv-u103c7-r3-createbranch-then-create-leaks-branch: `integrate_and_emit` used to
+        // `?` the post-merge `Worktree::create` call directly, one line after
+        // `Worktree::create_branch_at` had already minted `pm_branch` as a real ref. An Err
+        // out of `Worktree::create` (a real git operation - `git worktree add <dir>
+        // <branch>` on the adopt path, which can fail on a transient worktree-metadata race
+        // or disk pressure, both live conditions under this run's own concurrent load) was
+        // propagated immediately, and because `pm_wt` was never bound, NEITHER of the two
+        // reap lines seven lines below (`pm_wt.remove()` / `Worktree::delete_branch`, the
+        // round-2 fix) ever ran - they are both called on `pm_wt`. The just-created
+        // `rigger/postmerge/<unit>-<attempt>` branch ref leaked permanently.
+        //
+        // Forced here via a DANGLING SYMLINK planted at the deterministic `pm_dir` path
+        // before the run starts: `Path::exists` follows symlinks and reports `false` for a
+        // dangling one, so `Worktree::discard` (which only clears a dir that `exists()`)
+        // and `Worktree::create`'s own leftover-dir check both skip it, letting
+        // `create_branch_at` succeed exactly as in the real leak window - but the dangling
+        // symlink still OCCUPIES that path, so the adopt-path `git worktree add <pm_dir>
+        // <pm_branch>` that follows hard-fails with "already exists" (verified: this is a
+        // deterministic filesystem property, not a race). This reproduces the exact
+        // create_branch_at-succeeds-then-create-fails window the leak lived in, driving the
+        // real `crate::worktree::Worktree::create_branch_at`/`create` functions through the
+        // conductor's own call site, never a probe copy.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("f.txt".into()),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let pm_dir = postmerge_worktree_dir(&scratch, "unit-a", 0);
+        let pm_branch = postmerge_branch("unit-a", 0);
+        std::os::unix::fs::symlink("/nonexistent-adv-u103c7-r3-target", &pm_dir)
+            .expect("plant the dangling symlink that occupies pm_dir without `exists()`-ing");
+
+        assert!(
+            run(&cfg, &deps).is_err(),
+            "a genuine post-merge worktree-create infra Err must propagate out of run(), \
+             never be swallowed as a passing/failing gate verdict"
+        );
+
+        let branches = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo_path)
+            .args(["branch", "--list", &pm_branch])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&branches.stdout).trim().is_empty(),
+            "the post-merge re-gate's own throwaway branch {pm_branch:?} must be deleted \
+             even when Worktree::create itself errors right after create_branch_at minted \
+             it, never left behind"
         );
     }
 
