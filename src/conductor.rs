@@ -893,6 +893,16 @@ struct ReviewOutcome {
     /// adjudicator rendered the verdict (an empty/adjudicator-less panel approves trivially and
     /// emits no `reviewed`, exactly like the single-lane path).
     adj_resolved: String,
+    /// THE sha `review_unit`'s own round judged (spec 103, criterion 6) - captured ONLY
+    /// when the `reviewed` status emit is DEFERRED (speculation, `defer_reviewed`), same
+    /// scope as `adj_resolved` above. The winning candidate's deferred `reviewed#{lane}`
+    /// stamp (`emit_speculation_winner_status`) reads this instead of a live
+    /// `worktree::head_sha_of(dir)` taken after the exhaustive gate run (and, on the merge
+    /// path, after `integrate_and_emit`'s own `catch_up_owed_regeneration`) - either of
+    /// which can have moved `dir`'s tip past the sha the round actually reviewed, the same
+    /// live-re-read bug class criterion 6 already closed for the single-lane stamp. Empty
+    /// when the emit was not deferred, or no adjudicator rendered the verdict.
+    round_start_sha: String,
 }
 
 impl ReviewOutcome {
@@ -902,6 +912,7 @@ impl ReviewOutcome {
             reason,
             compensate: None,
             adj_resolved: String::new(),
+            round_start_sha: String::new(),
         }
     }
     fn rejected(reason: String) -> Self {
@@ -910,6 +921,7 @@ impl ReviewOutcome {
             reason,
             compensate: None,
             adj_resolved: String::new(),
+            round_start_sha: String::new(),
         }
     }
 }
@@ -4556,6 +4568,13 @@ impl RunCtx<'_> {
                 let mut outcome = ReviewOutcome::approved(reason);
                 outcome.compensate = compensate;
                 outcome.adj_resolved = adj_resolved;
+                // THE sha this round judged (spec 103, criterion 6) - carried on the
+                // outcome so the winning candidate's deferred `reviewed#{lane}` stamp
+                // (`emit_speculation_winner_status`) can use it in place of a live
+                // `worktree::head_sha_of(dir)` read after real wall-clock work (the
+                // exhaustive gate run, and on the merge path `integrate_and_emit`) has
+                // had a chance to move `dir`'s tip past it.
+                outcome.round_start_sha = round_start_sha.clone();
                 return Ok(outcome);
             }
             // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
@@ -6083,6 +6102,18 @@ impl RunCtx<'_> {
         // empty / adjudicator-less panel approves trivially and emits no `reviewed`, exactly as
         // the single-lane path does. It carries the adjudicator's requested alias + the resolved
         // id `review_unit` stashed, and the winner's reviewed-tree sha (spec 11, unit 1).
+        //
+        // THE sha the round judged, never `winner_sha` (spec 103, criterion 6, round 4 fix
+        // for adv-u103c6-r4-speculation-winner-sha-not-round-start): `winner_sha` above is
+        // read AFTER the caller's exhaustive gate run and, on the merge path, AFTER
+        // `integrate_and_emit` (whose `catch_up_owed_regeneration` can itself add a real
+        // regenerate commit to `dir`) - either can move `dir`'s tip past the sha
+        // `review_unit` actually reviewed. `review.round_start_sha` is `review_unit`'s own
+        // log-derived round-start sha (`review_round_start_sha`), carried on the outcome
+        // for exactly this deferred re-emission - the same ground truth the single-lane
+        // `reviewed` stamp uses inline, never a fresh live read here. `verified#{lane}`
+        // above legitimately keeps `winner_sha`: it records what the gates verified, not
+        // what the review judged.
         let panel = self.effective_review_panel(st);
         if !panel.is_empty() && !panel.adjudicator.is_empty() {
             self.emit_keyed_meta(
@@ -6099,7 +6130,7 @@ impl RunCtx<'_> {
                         &self.agent_model(&panel.adjudicator, lane),
                     ),
                     (META_MODEL_RESOLVED, &review.adj_resolved),
-                    (META_WORKTREE_SHA, &winner_sha),
+                    (META_WORKTREE_SHA, &review.round_start_sha),
                     (META_SPEC_GROUP, group),
                 ],
             )?;
@@ -33286,6 +33317,182 @@ mod tests {
              when the adjudicator's own spawn deleted the tree as its side effect - it must \
              be stamped AFTER a re-assert restores it, not a snapshot taken during the \
              deletion window"
+        );
+    }
+
+    #[test]
+    fn speculation_winner_reviewed_sha_stays_the_round_start_sha_across_a_post_review_regen_commit_and_integrate(
+    ) {
+        // Spec 103, criterion 6, adjudication round 4
+        // (adv-u103c6-r4-speculation-winner-sha-not-round-start, UPHELD): round 3 fixed the
+        // single-lane `reviewed` stamp to use `review_unit`'s LOG-DERIVED
+        // `round_start_sha` instead of a live `worktree::head_sha_of(dir)` read, but the
+        // speculation winner's DEFERRED `reviewed#{lane}` stamp
+        // (`emit_speculation_winner_status`) still live-read `dir` AFTER the exhaustive
+        // gate run and, on the merge path, after `integrate_and_emit` - either of which can
+        // land a REAL commit on the candidate's own worktree between the moment
+        // `review_unit` actually judged it and the moment this stamp reads `dir`.
+        //
+        // Drives that end to end: a `speculation_width: 2` unit, `on_pass: merge` (so
+        // `integrate_and_emit` genuinely runs), reviewed by an adjudicator-only panel that
+        // approves. The `door` gate is scoped with `inputs` that never match the
+        // (always-empty, no grounder) blast radius, so it is SKIPPED at the narrowed pass -
+        // before `review_unit` runs - and fires for the FIRST time at the EXHAUSTIVE pass,
+        // strictly AFTER `review_unit` already captured `round_start_sha` and returned. Its
+        // own `run:` command commits a real new file straight onto the candidate's worktree
+        // branch - a real regeneration-shaped commit landing in the exact post-review
+        // window the round-4 finding names, never a fabricated sentinel. So by the time
+        // `emit_speculation_winner_status` reads `dir` (after this gate AND after
+        // `integrate_and_emit`), the tree's tip has moved strictly past the sha the round
+        // actually reviewed.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.agents.insert("judge".into(), agent("judge"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.gates.insert(
+            "door".into(),
+            gate_def_inputs(
+                // Idempotent, like a real `regenerate:` command (`RunCtx::
+                // catch_up_owed_regeneration`'s own doc comment: "re-running the
+                // regenerate command on an already-regenerated, unchanged tree is an
+                // established idempotent no-op") - the post-merge re-gate (spec 12, unit
+                // 5) re-runs every exhaustive-tier gate a second time against the MERGED
+                // tree, so a non-idempotent side effect would falsely fail there.
+                "[ -f regen.txt ] || (echo regenerated > regen.txt && git add regen.txt \
+                 && git commit -q -m regen-commit)",
+                &["never-matches/**"],
+            ),
+        );
+        cfg.workflow.stages.insert(
+            "s".into(),
+            Stage {
+                name: "s".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into(), "door".into()],
+                on_pass: "merge".into(),
+                speculation_width: 2,
+                review: crate::config::ReviewPanel {
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        assert!(
+            driver.spawned("worker") && driver.spawned("judge"),
+            "premise: both the implementer and the adjudicator must actually have run, or \
+             this test proves nothing"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the winning candidate must actually integrate, so `integrate_and_emit` really \
+             ran on the merge path this finding also names"
+        );
+
+        // Candidate 0 wins deterministically against Stub's identical lane-1 candidate; a
+        // winning `on_pass: merge` candidate has its OWN worktree torn down right after
+        // integrating (mirroring the single-lane path's post-integrate branch deletion), so
+        // the door gate's regen commit is checked in the BASE it landed into instead.
+        assert!(
+            repo.path().join("regen.txt").exists(),
+            "premise: the door gate's own regenerate commit must really have landed (merged \
+             into the base), or this test proves nothing about the post-review window"
+        );
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+
+        // The ground truth: the sha `review_unit` ACTUALLY judged, captured durably BEFORE
+        // any tier ran and before the door gate's own regen commit ever landed.
+        let round_start = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains(STATUS_REVIEW_ROUND_START)
+            })
+            .expect("review_unit must have durably stamped its round-start sha");
+        let round_start_sha = round_start
+            .meta
+            .get(META_WORKTREE_SHA)
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            round_start_sha.len(),
+            40,
+            "premise: the durable round-start sha must be a real 40-hex sha: \
+             {round_start_sha:?}"
+        );
+
+        let verified = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains(r#""status":"verified"#)
+            })
+            .expect("the speculation winner's deferred verified status must have been recorded");
+        let verified_sha = verified
+            .meta
+            .get(META_WORKTREE_SHA)
+            .cloned()
+            .unwrap_or_default();
+        let reviewed = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && String::from_utf8_lossy(&e.data).contains(r#""status":"reviewed"#)
+            })
+            .expect("the speculation winner's deferred reviewed status must have been recorded");
+        let reviewed_sha = reviewed
+            .meta
+            .get(META_WORKTREE_SHA)
+            .cloned()
+            .unwrap_or_default();
+
+        // Non-vacuity: the regen commit genuinely moved the tip past what the round
+        // reviewed, or this test cannot distinguish the fixed behavior from the bug.
+        assert_ne!(
+            round_start_sha, verified_sha,
+            "premise: the door gate's post-review regen commit must have moved the \
+             candidate's tip strictly past round_start_sha, or this test proves nothing \
+             about the live-re-read bug: round_start={round_start_sha:?} verified={verified_sha:?}"
+        );
+
+        // The actual fix: `reviewed#{lane}` must carry the sha the round REVIEWED
+        // (round_start_sha), never a live read of `dir` taken after the exhaustive gate's
+        // own regen commit and `integrate_and_emit`.
+        assert_eq!(
+            reviewed_sha, round_start_sha,
+            "the speculation winner's deferred `reviewed#{{lane}}` stamp must carry THE sha \
+             review_unit's round actually judged (round_start_sha), not a live re-read of \
+             `dir` taken after the exhaustive gate's own post-review regen commit and \
+             integrate_and_emit: reviewed={reviewed_sha:?} round_start={round_start_sha:?} \
+             verified={verified_sha:?}"
+        );
+        // `verified#{lane}` legitimately keeps the post-gate sha (what the gates verified,
+        // never what the review judged) - unchanged by this fix.
+        assert_eq!(
+            verified_sha.len(),
+            40,
+            "the verified sha must be a real 40-hex sha: {verified_sha:?}"
         );
     }
 

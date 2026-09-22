@@ -1,6 +1,14 @@
 [
   {
     "file": "src/conductor.rs",
+    "name": "review_round_start_key",
+    "is_test": false,
+    "proposed_module": "conductor::review",
+    "reason": "name contains \"review\" (review orchestration); grouped under `conductor::review`.",
+    "content_hash": "98bc16c049c25926"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "gate_verdict_key",
     "is_test": false,
     "proposed_module": "conductor::gate",
@@ -173,7 +181,7 @@
     "is_test": false,
     "proposed_module": "conductor::review_outcome",
     "reason": "method inside `impl ReviewOutcome`; grouped with its other `ReviewOutcome` methods.",
-    "content_hash": "447edac6021bdf81"
+    "content_hash": "d2411d1a19497571"
   },
   {
     "file": "src/conductor.rs",
@@ -181,7 +189,7 @@
     "is_test": false,
     "proposed_module": "conductor::review_outcome",
     "reason": "method inside `impl ReviewOutcome`; grouped with its other `ReviewOutcome` methods.",
-    "content_hash": "9e6405e05497faaf"
+    "content_hash": "2a3df84bcea61207"
   },
   {
     "file": "src/conductor.rs",
@@ -729,11 +737,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "review_round_start_sha",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "281b1da90e8d95db"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "review_unit",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "59610025302f4061"
+    "content_hash": "60a888eb1a09900d"
   },
   {
     "file": "src/conductor.rs",
@@ -805,7 +821,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "5482ddad0bdd7e31"
+    "content_hash": "be2e203c246f4c76"
   },
   {
     "file": "src/conductor.rs",
@@ -1710,6 +1726,14 @@
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
     "content_hash": "4ab671a3459bffe1"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "recorded_review_round_start_sha",
+    "is_test": false,
+    "proposed_module": "conductor::review",
+    "reason": "name contains \"review\" (review orchestration); grouped under `conductor::review`.",
+    "content_hash": "9045cd155f9b3dd2"
   },
   {
     "file": "src/conductor.rs",
@@ -4513,6 +4537,30 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "a_review_rounds_log_derived_start_sha_survives_a_cross_call_resume_after_a_later_tiers_park",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b9475c39230e325f"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "a_review_rounds_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e79bc04bef28c915"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "a_speculation_lanes_log_derived_start_sha_survives_a_cross_call_resume_after_a_park",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "5f294ecf11c343b0"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "a_resumed_reviewed_unit_restores_a_worktree_the_exhaustive_gate_deleted",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -4574,6 +4622,14 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "354c45497dc91c58"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "speculation_winner_reviewed_sha_stays_the_round_start_sha_across_a_post_review_regen_commit_and_integrate",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "0b5f8d0d9e572261"
   },
   {
     "file": "src/conductor.rs",
