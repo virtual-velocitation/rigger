@@ -173,8 +173,8 @@ fn a_real_ungated_fanout_template_decomposes_and_every_baseline_unit_still_integ
 /// criteria, and whose JSON payload OMITS `gates` entirely - the real shape a proposing
 /// worker's own JSON can take, never a hand-built `Stage`. Mirrors the driver-per-spawn
 /// convention the implementer's own `Stub` test double already establishes for this exact
-/// scenario (`a_genuinely_new_proposal_with_no_gates_refuses_to_spawn_ungated`,
-/// src/conductor.rs `mod tests`).
+/// scenario (`a_genuinely_new_proposal_with_no_gates_still_spawns_gated_via_template_
+/// inheritance`, src/conductor.rs `mod tests`).
 #[derive(Default)]
 struct UnmatchedProposalWorker;
 
@@ -205,15 +205,24 @@ impl AgentDriver for UnmatchedProposalWorker {
 
 /// THE BLIND SPOT ITSELF (spec 103, criterion 2,
 /// `adv-u103c2-guard-blind-to-unmatched-subunit`): a genuinely-new sub-unit a worker
-/// proposes mid-run, under a GATED fan-out template, with no `gates` of its own, must be
-/// refused before it ever spawns ungated - proven here through the REAL `conductor::run`
-/// entry, the REAL `harvest_proposed` ADD path, and the REAL
-/// `assert_no_ungated_fanout_unit` wiring, driven from this external (black-box) test
-/// crate through only the crate's public API - completing, at the periphery, the coverage
-/// the adversary's finding demanded once the implementer closed the code gap
-/// (`Stage::unmatched_fanout_proposal`).
+/// proposes mid-run, under a GATED fan-out template, with no `gates` of its own, must
+/// never spawn ungated - proven here through the REAL `conductor::run` entry, the REAL
+/// `harvest_proposed` ADD path, and the REAL `assert_no_ungated_fanout_unit` wiring,
+/// driven from this external (black-box) test crate through only the crate's public API -
+/// completing, at the periphery, the coverage the adversary's finding demanded once the
+/// implementer closed the code gap (`Stage::unmatched_fanout_proposal`).
+///
+/// UPDATED at merge time (decision u103c2-merge-gate-inheritance-obsoletes-guard-
+/// reproduction, mirrors the identical rename in `src/conductor.rs`'s own `mod tests`):
+/// criterion 1's already-landed gate-inheritance fix (`harvest_proposed`'s
+/// `union_gates`) now unconditionally seeds this stage with the template's own gates
+/// before `assert_no_ungated_fanout_unit` ever runs, so the omitted-gates shape below can
+/// no longer reach the guard with an empty gate list through this real `run()` entry
+/// point - the guard itself stays covered directly (src/conductor.rs `mod tests`,
+/// hand-built `stages`/`fanout_criteria`/`fanout_template_gates`). What this test proves
+/// now is the combined, still-safe outcome: never ungated, gated by inheritance instead.
 #[test]
-fn a_genuinely_new_unmatched_proposal_under_a_gated_template_refuses_to_spawn_ungated() {
+fn a_genuinely_new_unmatched_proposal_under_a_gated_template_spawns_gated_via_inheritance() {
     let mut cfg = Config::default();
     cfg.agents.insert(
         "worker".into(),
@@ -257,22 +266,27 @@ fn a_genuinely_new_unmatched_proposal_under_a_gated_template_refuses_to_spawn_un
         criteria: vec!["the auth module lands".to_string()],
     };
 
-    let err = match run(&cfg, &deps) {
-        Ok(rs) => panic!(
-            "a genuinely-new unmatched sub-unit with no gates under a GATED fan-out \
-             template must refuse to spawn ungated, not integrate; got units: {:?}",
-            rs.units.keys().collect::<Vec<_>>()
-        ),
-        Err(e) => e,
-    };
-    assert!(
-        err.0.contains("new-subunit"),
-        "the failure must name the ungated unmatched sub-unit; got {:?}",
-        err.0
+    let rs = run(&cfg, &deps).unwrap_or_else(|e| {
+        panic!(
+            "a genuinely-new unmatched sub-unit under a GATED fan-out template must \
+             inherit that template's gates and integrate, not be refused; got error: {:?}",
+            e.0
+        )
+    });
+    assert_eq!(
+        rs.units["new-subunit"].status,
+        Status::Integrated,
+        "a genuinely-new unmatched sub-unit with no gates of its own must still run to \
+         completion, gated by inheritance rather than refused"
     );
-    assert!(
-        err.0.contains("implement"),
-        "the failure must name the gated template it should have inherited from; got {:?}",
-        err.0
+    assert_eq!(
+        rs.units["new-subunit"]
+            .evidence
+            .get("verified")
+            .map(String::as_str),
+        Some("gates passed: ok"),
+        "the unit must have actually run the gated template's inherited 'ok' gate, not \
+         spawned ungated; got {:?}",
+        rs.units["new-subunit"].evidence
     );
 }
