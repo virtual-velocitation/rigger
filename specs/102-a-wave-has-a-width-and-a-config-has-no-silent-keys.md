@@ -7,13 +7,13 @@ no code read the key: the spec-92 run had five units in flight, three per-unit b
 of 54 GB each (162 GB), and every unit's four reviewers re-running both test lanes at once -
 the baseline the day's memory overrun landed on. `rigger validate` reported nothing, because
 `config::Defaults` and its siblings derive `Deserialize` without `deny_unknown_fields`
-(`src/config.rs:357`) and unknown keys are dropped on load.
+(`src/config.rs:362`) and unknown keys are dropped on load.
 
 ## Design
 
 **THE WIDTH IS A CONFIG KEY THE CONDUCTOR ENFORCES.** `defaults.max_parallel_units`
 (the key the config already carries) bounds the stages in flight across a wave: within each
-batch `run_wave` (`src/conductor.rs:3785`) admits at most that many stages; a stage not
+batch `run_wave` (`src/conductor.rs:3895`) admits at most that many stages; a stage not
 admitted is neither failed nor terminal - it waits, and starts when a slot frees in this
 step's wave or a later one. `0` means unbounded and is the default, so an existing consumer's
 behavior does not change until it writes the key; `rigger init` and `rigger setup` scaffold
