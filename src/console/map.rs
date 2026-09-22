@@ -1828,6 +1828,58 @@ mod tests {
     }
 
     #[test]
+    fn frame_excludes_an_edge_when_only_one_endpoint_is_drawn() {
+        // MapModel::edges' own contract: frame() keeps an edge only when BOTH endpoints are
+        // actually drawn that frame - not merely when one of them is (a dangling half-edge
+        // pointing off-screen at an entity the zoom budget cut).
+        let model = MapModel {
+            entities: vec![
+                MapEntity {
+                    id: "a".into(),
+                    name: "a".into(),
+                    kind: "function".into(),
+                    community: "c".into(),
+                    district: "d".into(),
+                    degree: 1,
+                    rank: 0,
+                    x: 0.0,
+                    y: 0.0,
+                },
+                MapEntity {
+                    id: "b".into(),
+                    name: "b".into(),
+                    kind: "function".into(),
+                    community: "c".into(),
+                    district: "d".into(),
+                    degree: 1,
+                    rank: 99,
+                    x: 500.0,
+                    y: 500.0,
+                },
+            ],
+            districts: vec![],
+            edges: vec![("a".to_string(), "b".to_string(), "calls".to_string())],
+            bounds: (0.0, 0.0, 500.0, 500.0),
+        };
+
+        let dl = frame(&model, 1200.0, 800.0, &Camera::default(), None);
+
+        assert!(
+            dl.entities.iter().any(|e| e.id == "a"),
+            "a's rank is within the zoom-0 budget and must be drawn"
+        );
+        assert!(
+            !dl.entities.iter().any(|e| e.id == "b"),
+            "b's rank must sit beyond the zoom-0 budget and stay undrawn"
+        );
+        assert!(
+            dl.edges.is_empty(),
+            "an edge with only one endpoint drawn must never appear: {:?}",
+            dl.edges
+        );
+    }
+
+    #[test]
     fn frame_always_carries_every_districts_pill_at_every_zoom() {
         let model = build(&populous_graph(4, 2, 5));
         for zoom in [0.0, 2.0, 5.0] {
@@ -1888,6 +1940,24 @@ mod tests {
             budget(-3.0),
             budget(0.0),
             "a negative zoom clamps to zero, never panics or shrinks"
+        );
+    }
+
+    #[test]
+    fn budget_scales_the_step_by_zoom_rather_than_offsetting_it() {
+        // Pins the actual formula (base + round(zoom * step)), not just its monotonic shape:
+        // a mistaken `+` in place of `*` is also strictly increasing and also clamps at zero,
+        // so the shape-only test above cannot tell the two apart.
+        assert_eq!(budget(0.0), 3, "zoom 0 contributes nothing beyond the base");
+        assert_eq!(
+            budget(1.0),
+            7,
+            "one full zoom step adds exactly one step's worth"
+        );
+        assert_eq!(
+            budget(2.0),
+            11,
+            "the contribution doubles with the zoom factor"
         );
     }
 

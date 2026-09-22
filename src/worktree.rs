@@ -3112,6 +3112,36 @@ mod tests {
     }
 
     #[test]
+    fn land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked() {
+        // The two named outcomes above (`TipMoved`, `Blocked`) each require their own git
+        // wording; every OTHER `git merge --ff-only` failure - this test forces one by
+        // pointing the worktree at a branch name that was never created - must fall through
+        // to the generic `Err`, never be misread as a content-overwrite `Blocked`.
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let mut wt = Worktree::create(
+            &repo_path,
+            wt_path.to_str().unwrap(),
+            "rigger/land-generic-error",
+            "",
+        )
+        .unwrap();
+        wt.branch = "rigger/no-such-branch".to_string();
+
+        let err = match wt.land() {
+            Err(e) => e,
+            Ok(outcome) => panic!("expected a generic Err, got Ok({outcome:?})"),
+        };
+        assert!(
+            !err.to_string()
+                .to_ascii_lowercase()
+                .contains("would be overwritten by merge"),
+            "a missing-branch failure is not a content-overwrite refusal: {err}"
+        );
+    }
+
+    #[test]
     fn parse_blocking_paths_reads_every_tab_indented_line_sorted_and_deduped() {
         let untracked = "error: The following untracked working tree files would be overwritten by merge:\n\tb.txt\n\ta.txt\nPlease move or remove them before you merge.\nAborting\n";
         assert_eq!(

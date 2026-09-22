@@ -2072,6 +2072,26 @@ mod path_tests {
              names it"
         );
     }
+
+    /// `is_node`'s contract is IDENTITY (`n.id == id`), not "some OTHER node's id differs from
+    /// this string" - with 2+ real nodes in the graph, that inverted check is true for almost
+    /// any string, including one naming no real node at all. The `from == to` same-endpoint
+    /// short-circuit runs AFTER the is-a-node guard, so a fabricated id equal to itself must
+    /// still be caught there, never fall through to report a one-node path to a node that does
+    /// not exist.
+    #[test]
+    fn neither_endpoint_a_real_node_yields_no_path_even_when_they_are_equal() {
+        let g = Graph {
+            nodes: vec![node("src/a.rs"), node("src/b.rs")],
+            edges: vec![edge("src/a.rs", "src/b.rs")],
+        };
+        assert_eq!(
+            path(&g, "ghost", "ghost"),
+            Vec::<String>::new(),
+            "neither endpoint is a real node, so no path - not even the trivial one-node path \
+             a same-endpoint shortcut would otherwise report"
+        );
+    }
 }
 
 #[cfg(test)]

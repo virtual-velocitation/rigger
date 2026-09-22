@@ -70,19 +70,19 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2316
+        "line": 2386
       },
       {
         "file": "src/console/map.rs",
-        "line": 2331
+        "line": 2401
       },
       {
         "file": "src/console/map.rs",
-        "line": 2360
+        "line": 2430
       },
       {
         "file": "src/console/map.rs",
-        "line": 2371
+        "line": 2441
       },
       {
         "file": "src/failure.rs",
@@ -193,15 +193,15 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2407
+        "line": 2477
       },
       {
         "file": "src/console/map.rs",
-        "line": 2417
+        "line": 2487
       },
       {
         "file": "src/console/map.rs",
-        "line": 2418
+        "line": 2488
       },
       {
         "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
@@ -216,7 +216,7 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2424
+        "line": 2494
       }
     ]
   },
@@ -227,11 +227,11 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2441
+        "line": 2511
       },
       {
         "file": "src/console/map.rs",
-        "line": 2449
+        "line": 2519
       }
     ]
   },
@@ -242,11 +242,11 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2484
+        "line": 2554
       },
       {
         "file": "src/console/map.rs",
-        "line": 2493
+        "line": 2563
       }
     ]
   },
@@ -260,19 +260,19 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2504
+        "line": 2574
       },
       {
         "file": "src/console/map.rs",
-        "line": 2511
+        "line": 2581
       },
       {
         "file": "src/console/map.rs",
-        "line": 2519
+        "line": 2589
       },
       {
         "file": "src/console/map.rs",
-        "line": 2525
+        "line": 2595
       },
       {
         "file": "tests/console_map_explore_rail_wire_shape_periphery.rs",
@@ -287,7 +287,7 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2538
+        "line": 2608
       }
     ]
   },
@@ -298,11 +298,11 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2638
+        "line": 2708
       },
       {
         "file": "src/console/map.rs",
-        "line": 2660
+        "line": 2730
       }
     ]
   },
@@ -313,27 +313,27 @@
     "test_only_references": [
       {
         "file": "src/console/map.rs",
-        "line": 2695
+        "line": 2765
       },
       {
         "file": "src/console/map.rs",
-        "line": 2717
+        "line": 2787
       },
       {
         "file": "src/console/map.rs",
-        "line": 2731
+        "line": 2801
       },
       {
         "file": "src/console/map.rs",
-        "line": 2742
+        "line": 2812
       },
       {
         "file": "src/console/map.rs",
-        "line": 2756
+        "line": 2826
       },
       {
         "file": "src/console/map.rs",
-        "line": 2766
+        "line": 2836
       },
       {
         "file": "tests/console_map_kind_colour_periphery.rs",
@@ -1658,31 +1658,27 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 5129
+        "line": 5159
       },
       {
         "file": "src/worktree.rs",
-        "line": 5152
+        "line": 5182
       },
       {
         "file": "src/worktree.rs",
-        "line": 5188
+        "line": 5218
       },
       {
         "file": "src/worktree.rs",
-        "line": 5220
+        "line": 5250
       },
       {
         "file": "src/worktree.rs",
-        "line": 5255
+        "line": 5285
       },
       {
         "file": "src/worktree.rs",
-        "line": 5271
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 5298
+        "line": 5301
       },
       {
         "file": "src/worktree.rs",
@@ -1690,11 +1686,15 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 5335
+        "line": 5358
       },
       {
         "file": "src/worktree.rs",
-        "line": 5343
+        "line": 5365
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 5373
       },
       {
         "file": "tests/cli.rs",
@@ -2181,23 +2181,23 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 4647
+        "line": 4677
       },
       {
         "file": "src/worktree.rs",
-        "line": 4657
+        "line": 4687
       },
       {
         "file": "src/worktree.rs",
-        "line": 4723
+        "line": 4753
       },
       {
         "file": "src/worktree.rs",
-        "line": 4758
+        "line": 4788
       },
       {
         "file": "src/worktree.rs",
-        "line": 4770
+        "line": 4800
       }
     ]
   }
