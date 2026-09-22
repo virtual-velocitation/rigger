@@ -37,7 +37,7 @@ pub struct Worktree {
     /// above states its `git worktree add`/adopt path does not support concurrent
     /// callers. This lock is per-WORKTREE (not per-run), so it serializes only concurrent
     /// re-asserts of THIS SAME instance - it never adds contention across different units
-    /// racing in `run_batch`; that WIDER admin-directory race is `repo_create_lock`'s
+    /// racing in `run_batch`; that WIDER admin-directory race is `repo_admin_lock`'s
     /// (per-repository, spec 103 criterion 4), a separate lock this instance-scoped one
     /// composes with rather than duplicates. `()` payload: only mutual exclusion is needed.
     reassert_mu: std::sync::Mutex<()>,
@@ -156,10 +156,10 @@ impl Worktree {
         authorized_root: &str,
     ) -> Result<Self, Error> {
         // Serialize this WHOLE call - heal scan through the `git worktree add` below -
-        // against every other `create` call this process makes for the SAME repository
-        // (spec 103 criterion 4: see `repo_create_lock`'s doc comment for the race this
-        // closes and what it does not).
-        let repo_lock = repo_create_lock(repo);
+        // against every other in-process admin-directory mutation this process makes for
+        // the SAME repository (spec 103 criterion 4, widened at the checkin seam: see
+        // `repo_admin_lock`'s doc comment for the race this closes and what it does not).
+        let repo_lock = repo_admin_lock(repo);
         let _repo_guard = repo_lock.lock().unwrap();
         // SELF-HEAL before any `git worktree add` (spec 51): a lifecycle killed mid
         // `git worktree remove` can leave a corrupt admin entry (a zero-length `commondir`)
@@ -182,7 +182,7 @@ impl Worktree {
             // the same branch concurrently, so that shape is not a first-class case. The
             // WIDER admin-directory race - two units' own DIFFERENT worktrees within one
             // `run_batch`, whose heal scans and adds could interleave and corrupt each
-            // other's admin entries - is now closed in-process by `repo_create_lock` above
+            // other's admin entries - is now closed in-process by `repo_admin_lock` above
             // (spec 103 criterion 4); it does not cover a second SEPARATE process adding
             // worktrees against this same repository, which only the `locked`/grace-period
             // guards in `worktree_admin_is_corrupt` defend against.
@@ -473,6 +473,14 @@ impl Worktree {
         branch: &str,
         authorized_root: &str,
     ) -> Result<(), Error> {
+        // Serialize this WHOLE call - both the dir-present `clear_worktree_dir` path and the
+        // dir-absent `git worktree prune` fallback below - against every other in-process
+        // admin-directory mutation this process makes for the SAME repository (spec 103
+        // checkin round 4: a sibling unit's `Worktree::create` heal-scanning or adding into
+        // this same admin directory while this call prunes/removes it corrupts whichever one
+        // loses the race; see `repo_admin_lock`'s doc comment).
+        let repo_lock = repo_admin_lock(repo);
+        let _repo_guard = repo_lock.lock().unwrap();
         if std::path::Path::new(dir).exists() {
             clear_worktree_dir(repo, dir, authorized_root)?;
         } else {
@@ -1368,6 +1376,12 @@ impl Worktree {
     /// partition. Reclamation is best-effort - a review worktree or an un-built unit has no
     /// such sibling and it is a no-op there - and never changes the removal's result.
     pub fn remove(&self) -> Result<(), Error> {
+        // Serialize this WHOLE call against every other in-process admin-directory mutation
+        // this process makes for the SAME repository (spec 103 checkin round 4: this call's
+        // own `git worktree remove --force` below writes into `.git/worktrees` exactly like
+        // `Worktree::create`'s heal-scan-then-add does; see `repo_admin_lock`'s doc comment).
+        let repo_lock = repo_admin_lock(&self.repo);
+        let _repo_guard = repo_lock.lock().unwrap();
         // Reap any process still rooted inside this worktree BEFORE git removes the dir (spec
         // 23): otherwise a build or tool an agent left running holds a now-deleted cwd and
         // outlives its worktree, leaking memory. Scoped to this EXACT dir, so a process rooted
@@ -2133,6 +2147,12 @@ fn sweep_terminal_logged(
     events: &[Event],
     log: &mut dyn FnMut(&str),
 ) -> Result<usize, Error> {
+    // Serialize this WHOLE sweep - the prune below and every candidate's own `git worktree
+    // remove --force` in the loop - against every other in-process admin-directory mutation
+    // this process makes for the SAME repository (spec 103 checkin round 4; see
+    // `repo_admin_lock`'s doc comment).
+    let repo_lock = repo_admin_lock(repo);
+    let _repo_guard = repo_lock.lock().unwrap();
     git(repo, &["worktree", "prune"])?;
     let out = run_git(repo, &["worktree", "list", "--porcelain"]).map_err(Error)?;
     let mut removed = 0;
@@ -2279,6 +2299,13 @@ pub(crate) fn registered_worktree_for(repo: &str, branch: &str) -> Option<String
 /// cwd. `authorized_root` is threaded straight through to [`reap_dir_before_removal`] - see
 /// that function's doc comment for why it must be the CALLER's independently-resolved root,
 /// never derived from `dir` itself.
+///
+/// CALLER-LOCKED (spec 103 checkin round 4): this mutates the repository's worktree admin
+/// directory (`git worktree remove --force` / `git worktree prune`), so every call site -
+/// `Worktree::create`, `Worktree::discard`, [`reclaim_worktree_on_branch`] - already holds
+/// `repo_admin_lock(repo)` across its own whole call before reaching here. This function
+/// itself must NEVER take that lock: `std::sync::Mutex` is not reentrant, and doing so would
+/// deadlock every one of its callers against itself.
 fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
     reap_dir_before_removal(dir, authorized_root);
     if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
@@ -2347,6 +2374,13 @@ fn reap_dir_before_removal(dir: &str, authorized_root: &str) {
 /// admin dir - and it is removed only when [`worktree_admin_is_corrupt`] has already proven
 /// the entry provably corrupt (a marker file missing or zero-length). Nothing hostable, so no
 /// reap is needed here.
+///
+/// CALLER-LOCKED (spec 103 checkin round 4): its only production call site
+/// (`Worktree::create`) already holds `repo_admin_lock(repo)` across its whole call before
+/// reaching here. This function itself must NEVER take that lock: `std::sync::Mutex` is not
+/// reentrant, and doing so would deadlock `Worktree::create` against itself. (Its unit tests
+/// below call it directly, bypassing `Worktree::create` and the lock entirely - that is fine,
+/// they exercise the heal predicate in isolation, not the concurrency guard.)
 fn heal_corrupt_worktree_admin(repo: &str) {
     let Ok(common) = run_git(repo, &["rev-parse", "--git-common-dir"]) else {
         return;
@@ -2371,21 +2405,40 @@ fn heal_corrupt_worktree_admin(repo: &str) {
     }
 }
 
-/// Per-repository in-process mutual exclusion across [`heal_corrupt_worktree_admin`] and
-/// the `git worktree add` it guards (spec 103 criterion 4). [`Worktree::create`] is a plain
-/// associated function with no owning instance - `run_batch` spawns one real OS thread per
-/// concurrent unit in a wave and each calls `create` independently against the SAME shared
-/// repository, so nothing before this serialized one thread's heal scan against a sibling
-/// thread's in-flight `git worktree add` writing into that same admin directory (the exact
-/// shape the Goal names: "a batch-mate's add on a concurrent thread... is deleted mid-write").
-/// [`Worktree::ensure_present`]'s own `reassert_mu` is a DIFFERENT, narrower lock -
-/// per-worktree instance, serializing only concurrent re-asserts of ONE already-created
-/// `Worktree`; this one is per-REPOSITORY, serializing every `create` call this process
-/// makes against that repo, whichever unit or instance it is for.
+/// Per-repository in-process mutual exclusion across EVERY in-process mutation of a
+/// repository's worktree admin directory (`.git/worktrees/<name>/`) - originally scoped to
+/// just [`heal_corrupt_worktree_admin`] and the `git worktree add` it guards (spec 103
+/// criterion 4), widened at the whole-spec checkin seam (round 4) once a second admin-
+/// directory writer, [`Worktree::discard`], was found racing a sibling's [`Worktree::create`]
+/// in the same `run_batch` wave (`adv-checkin-r3-discard-vs-create-race-flakes-the-new-soak-
+/// test`): `git worktree prune`/`git worktree remove --force`/`git worktree add` all read
+/// and rewrite the SAME admin directory, so every one of them - not just `add` - must be
+/// serialized against every other. [`Worktree::create`] is a plain associated function with
+/// no owning instance - `run_batch` spawns one real OS thread per concurrent unit in a wave
+/// and each calls `create` independently against the SAME shared repository, so nothing
+/// before criterion 4 serialized one thread's heal scan against a sibling thread's in-flight
+/// `git worktree add` writing into that same admin directory (the exact shape the Goal
+/// names: "a batch-mate's add on a concurrent thread... is deleted mid-write"); nothing
+/// before this round serialized that same heal scan / `add` against a DIFFERENT thread's
+/// `discard`-driven `git worktree prune` or `remove --force` doing the same thing from the
+/// other direction. [`Worktree::ensure_present`]'s own `reassert_mu` is a DIFFERENT,
+/// narrower lock - per-worktree instance, serializing only concurrent re-asserts of ONE
+/// already-created `Worktree`; this one is per-REPOSITORY, serializing every admin-directory
+/// mutation this process makes against that repo, whichever unit, instance, or call site it
+/// is for.
+///
+/// Every public entry point that mutates the admin directory takes this ONCE, for its whole
+/// call: [`Worktree::create`], [`Worktree::discard`], [`Worktree::remove`],
+/// [`sweep_terminal_logged`], and [`reclaim_worktree_on_branch`]. The private helpers those
+/// entry points call - [`clear_worktree_dir`] and [`heal_corrupt_worktree_admin`] - are
+/// deliberately left LOCK-FREE: the underlying `std::sync::Mutex` is not reentrant, and
+/// every caller of either helper already holds this lock across the helper's call, so a
+/// helper that also locked would deadlock its own caller. Never add a new admin-directory
+/// mutation site without taking this lock at ITS public entry point first.
 ///
 /// This is defense IN ADDITION TO the heal predicate's own `locked`/grace-period guards
 /// above, never a replacement for them: a lock held by THIS process cannot serialize
-/// against a `git worktree add` some OTHER process runs against the same repository (a
+/// against a `git worktree` command some OTHER process runs against the same repository (a
 /// second `rigger step`, or an operator's own `git` invocation) - only the marker git
 /// itself writes into the entry is authoritative across process boundaries.
 ///
@@ -2396,7 +2449,7 @@ fn heal_corrupt_worktree_admin(repo: &str) {
 /// map entries and never contend on each other's lock. Mirrors the existing
 /// `static TMP_NONCE: AtomicU64` synchronization primitive in `src/registry.rs` - an
 /// internal concurrency detail, not an injected dependency.
-fn repo_create_lock(repo: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+fn repo_admin_lock(repo: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
     static LOCKS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
     > = std::sync::OnceLock::new();
@@ -2489,6 +2542,12 @@ pub fn reclaim_worktree_on_branch(
     branch: &str,
     authorized_root: &str,
 ) -> Result<(), Error> {
+    // Serialize this WHOLE call against every other in-process admin-directory mutation
+    // this process makes for the SAME repository (spec 103 checkin round 4: this call's own
+    // `clear_worktree_dir` below writes into `.git/worktrees` exactly like `Worktree::
+    // create`'s heal-scan-then-add does; see `repo_admin_lock`'s doc comment).
+    let repo_lock = repo_admin_lock(repo);
+    let _repo_guard = repo_lock.lock().unwrap();
     if let Some(dir) = registered_worktree_for(repo, branch) {
         clear_worktree_dir(repo, &dir, authorized_root)?;
         reclaim_cache_sibling(&dir, authorized_root);
