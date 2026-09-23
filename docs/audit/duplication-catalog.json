@@ -6558,6 +6558,16 @@
         "content_hash": "44b0b5acd1a2e590"
       },
       {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
+      },
+      {
         "file": "tests/console_status_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
@@ -7949,7 +7959,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 761 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 763 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0070",
@@ -22139,9 +22149,19 @@
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
         "name": "rigger_status_and_read_store_config_name_the_same_dotted_path_for_an_unknown_store_key",
         "content_hash": "609ddbe069f4efd6"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "rigger_validate_passes_through_a_type_mismatch_whose_value_echoes_the_unknown_field_marker",
+        "content_hash": "1d3b34a1e1b891df"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "rigger_validate_names_the_full_key_when_the_unknown_key_itself_contains_a_backtick",
+        "content_hash": "446b868ebd520dae"
       }
     ],
-    "proposed_home": "config_unknown_key_dotted_path_periphery::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "config_unknown_key_dotted_path_periphery::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
