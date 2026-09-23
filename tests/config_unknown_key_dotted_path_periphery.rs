@@ -12,20 +12,20 @@
 //! on) is wired at multiple independent call sites, not one: `load_workflow` (proven
 //! above), `read_store_config`, and `read_scratch_defaults` from round one; `parse_agent`
 //! joins them in round four (see the file's last paragraph below). The second test below
-//! closes `read_store_config`'s own wiring, which no other test (unit or periphery) reaches
-//! - it is a SEPARATE `.map_err` call over a
-//! DIFFERENT struct (`StoreConfig`, not `Workflow`/`Defaults`), driven by `rigger status`
-//! rather than `rigger validate` because `read_store_config` is the store-selection probe
-//! (§48 rung 4) every store-opening command resolves through BEFORE it ever requires an
-//! existing run, so it is observable without first bootstrapping an `events.db`.
-//! `read_scratch_defaults`'s own wiring is EXEMPT: it wraps the identical `Defaults` struct
-//! through the identical `dotted_unknown_key` call and the identical `"parse workflow: {}"`
-//! prefix `load_workflow` already uses (byte-for-byte, per `src/config_store.rs`), so its
-//! dotted-path text is already proven by the first test above; its one CLI-propagating caller
-//! (`reset --build-cache`, via `read_scratch_workdir`) has no additional branching logic to
-//! diverge on, and its other production caller (`scratch_defaults` in `main.rs`) deliberately
-//! discards the error via `.unwrap_or_default()` (a pre-existing, documented contract this
-//! diff does not change), so no new behavior is observable there at all.
+//! closes `read_store_config`'s own wiring, which no other test (unit or periphery) reaches -
+//! it is a SEPARATE `.map_err` call over a DIFFERENT struct (`StoreConfig`, not
+//! `Workflow`/`Defaults`), driven by `rigger status` rather than `rigger validate` because
+//! `read_store_config` is the store-selection probe (§48 rung 4) every store-opening command
+//! resolves through BEFORE it ever requires an existing run, so it is observable without first
+//! bootstrapping an `events.db`. `read_scratch_defaults`'s own wiring is EXEMPT: it wraps the
+//! identical `Defaults` struct through the identical `dotted_unknown_key` call and the
+//! identical `"parse workflow: {}"` prefix `load_workflow` already uses (byte-for-byte, per
+//! `src/config_store.rs`), so its dotted-path text is already proven by the first test above;
+//! its one CLI-propagating caller (`reset --build-cache`, via `read_scratch_workdir`) has no
+//! additional branching logic to diverge on, and its other production caller
+//! (`scratch_defaults` in `main.rs`) deliberately discards the error via `.unwrap_or_default()`
+//! (a pre-existing, documented contract this diff does not change), so no new behavior is
+//! observable there at all.
 //!
 //! The next two tests close a SEPARATE gap: the adjudicator rejected the first round
 //! on two adversary-found edge cases inside `dotted_unknown_key` itself (a real error
