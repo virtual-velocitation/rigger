@@ -864,6 +864,102 @@ mod tests {
             "a field name that itself contains a backtick is not truncated at the embedded \
              backtick"
         );
+
+        // adv-u102c3-r2-terminator-embedded-in-field-name-still-truncates: round 1's fix moved
+        // the search target from the first bare backtick to the first backtick-comma-space run,
+        // but a field name that itself CONTAINS that exact 3-char run still wins the .find()
+        // race and truncates. The field must be recovered in full regardless of how many
+        // expected names the struct being deserialized has (a struct with 3+ fields renders
+        // "expected one of `a`, `b`, `c`" - itself full of "`, " runs - so a fix that merely
+        // swapped `find` for `rfind` would break this same case the other way).
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct ManyFields {
+            #[serde(default)]
+            #[allow(dead_code)]
+            a: String,
+            #[serde(default)]
+            #[allow(dead_code)]
+            b: String,
+            #[serde(default)]
+            #[allow(dead_code)]
+            c: String,
+        }
+        let terminator_embedded_err =
+            serde_yaml::from_str::<ManyFields>("\"z`, y\": 1\n").expect_err("must fail to parse");
+        assert_eq!(
+            dotted_unknown_key(&terminator_embedded_err),
+            "z`, y: unknown key",
+            "a field name that itself embeds the backtick-comma-space terminator is recovered \
+             in full, not cut off at the embedded run: {terminator_embedded_err}"
+        );
+
+        // A field name that embeds the marker text itself, at the document root, must not
+        // confuse the path/marker boundary search into inventing a bogus non-root path: the
+        // root short-circuit (message opens with the marker outright) wins regardless of what
+        // the field name goes on to contain.
+        let marker_embedded_at_root_err =
+            serde_yaml::from_str::<ManyFields>("\"evil: unknown field `x\": 1\n")
+                .expect_err("must fail to parse");
+        assert_eq!(
+            dotted_unknown_key(&marker_embedded_at_root_err),
+            "evil: unknown field `x: unknown key",
+            "a root-level field name that embeds marker-shaped text is still named in full, \
+             not mistaken for a nested path: {marker_embedded_at_root_err}"
+        );
+
+        // Ambiguous case: BOTH a genuine path segment and the field name would need their own
+        // embedded ": unknown field `" text for this to be reachable in practice, but when it
+        // is, this must never fabricate a wrong dotted path - it declines to guess and passes
+        // the raw message through unchanged, the same discipline the type-mismatch case above
+        // relies on.
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct AmbiguousOuter {
+            #[serde(default)]
+            #[allow(dead_code)]
+            inner: ManyFields,
+        }
+        let ambiguous_err =
+            serde_yaml::from_str::<AmbiguousOuter>("inner:\n  \"a: unknown field `b\": 1\n")
+                .expect_err("must fail to parse");
+        assert_eq!(
+            dotted_unknown_key(&ambiguous_err),
+            ambiguous_err.to_string(),
+            "when the path/marker boundary is genuinely ambiguous (more than one position a \
+             colon-space immediately precedes the marker), the raw message passes through \
+             unchanged rather than naming a guessed, possibly-wrong key: {ambiguous_err}"
+        );
+    }
+
+    /// sdet-u102c3-colon-in-map-key-path-defeats-reformat: a nested path segment sourced from a
+    /// YAML MAP KEY (unlike a struct field name, arbitrary operator text) can carry its own
+    /// ": " - the exact text the path/marker split anchors on. The true boundary is not always
+    /// the message's FIRST ": " when a map key embeds one of its own.
+    #[test]
+    fn dotted_unknown_key_recomposes_a_path_through_a_map_key_containing_its_own_colon_space() {
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Stage {
+            #[serde(default)]
+            #[allow(dead_code)]
+            agent: String,
+        }
+        #[derive(Debug, Default, serde::Deserialize)]
+        struct WithStages {
+            #[serde(default)]
+            #[allow(dead_code)]
+            stages: BTreeMap<String, Stage>,
+        }
+        let map_key_err =
+            serde_yaml::from_str::<WithStages>("stages:\n  \"foo: bar\":\n    gatez: x\n")
+                .expect_err("must fail to parse");
+        assert_eq!(
+            dotted_unknown_key(&map_key_err),
+            "stages.foo: bar.gatez: unknown key",
+            "a map-key path segment containing its own ': ' is recovered in full, not split \
+             at its embedded colon-space: {map_key_err}"
+        );
     }
 
     #[test]

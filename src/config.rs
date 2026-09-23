@@ -31,37 +31,65 @@ pub(crate) fn err(msg: impl Into<String>) -> Error {
 /// the field is at the document root); this just recomposes that existing prefix and the
 /// leaf field name into ONE dotted token instead of adding a second, independent path
 /// tracker (`serde_path_to_error` or a hand-rolled schema walk) - config.rs and every
-/// downstream config struct stay a zero-new-dependency surface. Any OTHER parse error (a
-/// type mismatch, a missing field, malformed YAML, ...) is not this shape and passes
-/// through with `serde_yaml`'s own message unchanged.
+/// downstream config struct stay a zero-new-dependency surface (spec 102's own global
+/// constraint forbids one). Any OTHER parse error (a type mismatch, a missing field,
+/// malformed YAML, ...) is not this shape and passes through with `serde_yaml`'s own
+/// message unchanged.
+///
+/// BOTH the dotted PATH and the leaf FIELD name are built from YAML text an operator
+/// wrote (a struct field name is safe - always a plain Rust identifier - but a `path`
+/// segment sourced from a MAP KEY, e.g. a `stages` name, or the unknown field's own name,
+/// is arbitrary text), so this cannot simply search the rendered message for the first (or
+/// last) occurrence of a short delimiter: either side can echo it. Two rounds of review
+/// found exactly that - a value that echoes the marker text (round 1), a field name that
+/// embeds a backtick (round 1), a field name that embeds the terminator itself (round 2),
+/// and a path segment that embeds its own ": " (round 2) - so this anchors on the LONGEST
+/// unambiguous literal available at each boundary instead of patching the delimiter search
+/// a further time:
+/// - the marker `"unknown field \`"` only ever opens the message outright (root) or right
+///   after a literal `": "` (non-root); scanning every position the marker occurs at and
+///   keeping only the ones a `": "` immediately precedes finds that boundary exactly once
+///   in every real case (however many `": "` runs a map-key path segment embeds elsewhere,
+///   none of them is immediately followed by the marker) - MORE than one such position
+///   means a field or path segment has gone out of its way to embed the marker text right
+///   after a colon-space too, which this cannot tell apart from the truth, so it declines
+///   to guess rather than risk naming the wrong key (same discipline as passing an
+///   unrelated error through unchanged).
+/// - the field name ends where the trailer `serde`'s formatter always appends begins -
+///   `"\`, expected "` (one, two, or "one of" N expected names all open this way) or
+///   `"\`, there are no fields"` - and because that trailer is fixed, always appended
+///   LAST, and never recurs (each of "expected"/"there are no fields" appears at most
+///   once), its true position is always the RIGHTMOST match of either anchor: whatever a
+///   crafted field name echoes of this text can only land to its left, never past it.
 pub(crate) fn dotted_unknown_key(e: &serde_yaml::Error) -> String {
     let msg = e.to_string();
     const MARKER: &str = "unknown field `";
-    // `serde_yaml`'s Display renders EXACTLY `"<path>: "` (only when the path is non-root;
-    // root-level is un-prefixed) followed by the raw `serde::de::Error::unknown_field`
-    // message, followed by an optional " at line N column M" location suffix - so a genuine
-    // unknown-field violation has the marker OPENING the message outright (root) or opening
-    // right after a "<path>: " prefix, never merely appearing somewhere later in it.
-    // Anchoring here (rather than searching the whole message for the marker) is what a
-    // type-mismatch error whose own quoted invalid-value TEXT happens to echo this exact
-    // wording needs: that text can only ever land after the real path/message boundary, so it
-    // never satisfies either anchor and the message passes through unchanged instead of being
-    // corrupted into a bogus unknown-key report.
-    let (path, after_marker) = if let Some(rest) = msg.strip_prefix(MARKER) {
+    const EXPECTED_ANCHOR: &str = "`, expected ";
+    const NO_FIELDS_ANCHOR: &str = "`, there are no fields";
+
+    let (path, after_marker): (&str, &str) = if let Some(rest) = msg.strip_prefix(MARKER) {
         ("", rest)
-    } else if let Some(colon) = msg.find(": ") {
-        match msg[colon + 2..].strip_prefix(MARKER) {
-            Some(rest) => (&msg[..colon], rest),
-            None => return msg,
-        }
     } else {
-        return msg;
+        let boundaries: Vec<usize> = msg
+            .match_indices(MARKER)
+            .map(|(i, _)| i)
+            .filter(|&i| i >= 2 && msg.get(i - 2..i) == Some(": "))
+            .collect();
+        match boundaries.as_slice() {
+            [only] => (&msg[..only - 2], &msg[only + MARKER.len()..]),
+            // Zero: not this error shape at all (a type mismatch, ...) - pass the raw
+            // message through. More than one: genuinely ambiguous - never guess.
+            _ => return msg,
+        }
     };
-    // The field name ends at its own closing backtick, which `serde`'s formatter always
-    // follows with a literal "`, " (either "...`, expected ..." or "...`, there are no
-    // fields") - search for that exact terminator, not the first backtick encountered, so a
-    // field name that itself embeds a backtick is never truncated mid-name.
-    let Some(end) = after_marker.find("`, ") else {
+    let end = [
+        after_marker.rfind(EXPECTED_ANCHOR),
+        after_marker.rfind(NO_FIELDS_ANCHOR),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+    let Some(end) = end else {
         return msg;
     };
     let field = &after_marker[..end];
