@@ -110,6 +110,38 @@ pub struct Server<'a> {
     /// Without it a concurrent sibling adjudicator's approve, sharing the reviewer role token
     /// on the ONE stream, would be misattributed by a bare position window.
     current_spawn: Mutex<Option<String>>,
+    /// The id this `Server` is BOUND to (spec 104, `rigger mcp --spawn <id>`), set once at
+    /// construction via [`with_spawn`](Server::with_spawn) - the launched agent's own MCP
+    /// server, `--strict-mcp-config` naming this exact invocation, so every record it writes
+    /// is attributed BY CONSTRUCTION, never a runtime guess. `Some` marks this `Server` as
+    /// the THIRD tool surface (see [`Surface`]): [`tool_list`](Server::tool_list) and
+    /// [`call_tool`](Server::call_tool) both read it through [`surface`](Server::surface), so
+    /// the two can never disagree on which tools this instance serves. Unlike
+    /// [`current_spawn`](Server::current_spawn) (set/cleared per `rigger_next`/`rigger_result`
+    /// on the SHARED workflow bridge), this is fixed for the server's whole lifetime - one
+    /// spawn, one child process, one MCP server (Design's CONSTRAINTS WALK: "Concurrent
+    /// spawns - one child, one reader, one MCP server process each; no shared file").
+    spawn: Option<String>,
+}
+
+/// The tool surface a [`Server`] instance answers - computed once by
+/// [`surface`](Server::surface) so [`tool_list`](Server::tool_list) and
+/// [`call_tool`](Server::call_tool) can never drift on which tools an instance serves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Surface {
+    /// The default: the workflow-driver bridge the loop's shim polls
+    /// (`rigger_next`/`rigger_result`/`rigger_emit`/`rigger_peers`/`rigger_activity`).
+    Workflow,
+    /// A grounder wired (spec 92, criterion 4): the operator's read-only lookup surface
+    /// (`rigger_peers`/`rigger_ground`/`rigger_graph`), reached by `rigger mcp` with no
+    /// `--spawn`.
+    Lookup,
+    /// A spawn bound (spec 104, criterion 3): the launched agent's own MCP server
+    /// (`rigger_emit`/`rigger_peers`/`rigger_ground`/`rigger_graph`/`rigger_progress`/
+    /// `rigger_scratch`), reached by `rigger mcp --spawn <id>`. Takes priority over `Lookup`
+    /// when both a grounder and a spawn are wired - a spawn-bound server always serves the
+    /// write-scoped six, never the narrower three.
+    SpawnBound,
 }
 
 impl<'a> Server<'a> {
@@ -130,6 +162,7 @@ impl<'a> Server<'a> {
             progress: None,
             scratch_root: String::new(),
             current_spawn: Mutex::new(None),
+            spawn: None,
         }
     }
 
@@ -171,6 +204,17 @@ impl<'a> Server<'a> {
     /// reason as its own tool-call error.
     pub fn with_grounder_unavailable(mut self, reason: impl Into<String>) -> Self {
         self.grounder_unavailable = Some(reason.into());
+        self
+    }
+
+    /// Bind this `Server` to one spawn (spec 104, `rigger mcp --spawn <id>`): the launched
+    /// agent's own MCP server, so [`tool_list`](Server::tool_list)/
+    /// [`call_tool`](Server::call_tool) switch to the spawn-bound surface's six tools (see
+    /// [`Surface::SpawnBound`]) and every write it serves is attributed to `id` by
+    /// construction. Pair with [`with_progress`](Server::with_progress) so
+    /// `rigger_progress`/`rigger_scratch` have a store/root to write to and read from.
+    pub fn with_spawn(mut self, id: impl Into<String>) -> Self {
+        self.spawn = Some(id.into());
         self
     }
 
@@ -272,16 +316,33 @@ impl<'a> Server<'a> {
         self.grounder.is_some() || self.grounder_unavailable.is_some()
     }
 
+    /// The ONE authority for which [`Surface`] this instance answers as - see
+    /// [`spawn`](Server::spawn)'s and [`Surface`]'s doc comments for the ordering. Both
+    /// [`tool_list`] and [`call_tool`] read it, so the advertised list can never drift from
+    /// what is actually dispatchable.
+    fn surface(&self) -> Surface {
+        if self.spawn.is_some() {
+            Surface::SpawnBound
+        } else if self.is_lookup_surface() {
+            Surface::Lookup
+        } else {
+            Surface::Workflow
+        }
+    }
+
     fn call_tool(&self, id: Value, name: &str, args: &Value) -> String {
-        let lookup = self.is_lookup_surface();
-        let result = match (lookup, name) {
+        let surface = self.surface();
+        let result = match (surface, name) {
             (_, "rigger_peers") => Ok(self.tool_peers(args)),
-            (true, "rigger_ground") => self.tool_ground(args),
-            (true, "rigger_graph") => self.tool_graph(args),
-            (false, "rigger_next") => self.tool_next(),
-            (false, "rigger_result") => self.tool_result(args),
-            (false, "rigger_emit") => self.tool_emit(args),
-            (false, "rigger_activity") => self.tool_activity(),
+            (Surface::Lookup | Surface::SpawnBound, "rigger_ground") => self.tool_ground(args),
+            (Surface::Lookup | Surface::SpawnBound, "rigger_graph") => self.tool_graph(args),
+            (Surface::Workflow, "rigger_next") => self.tool_next(),
+            (Surface::Workflow, "rigger_result") => self.tool_result(args),
+            (Surface::Workflow, "rigger_emit") => self.tool_emit(args),
+            (Surface::Workflow, "rigger_activity") => self.tool_activity(),
+            (Surface::SpawnBound, "rigger_emit") => self.tool_emit_bound(args),
+            (Surface::SpawnBound, "rigger_progress") => self.tool_progress(args),
+            (Surface::SpawnBound, "rigger_scratch") => self.tool_scratch(),
             _ => return err(id, -32602, &format!("unknown tool {name}")),
         };
         match result {
@@ -391,14 +452,136 @@ impl<'a> Server<'a> {
             Some(o) => o,
             None => return args,
         };
-        let meta = obj.entry("meta").or_insert_with(|| json!({}));
-        if let Some(meta) = meta.as_object_mut() {
-            meta.insert(
-                crate::conductor::META_SPAWN.to_string(),
-                Value::String(spawn),
-            );
-        }
+        Self::stamp_spawn_meta(obj, &spawn);
         args
+    }
+
+    /// `rigger_emit` on the SPAWN-BOUND surface (spec 104, criterion 3): stamps `meta.spawn`
+    /// with the id this server is BOUND to ([`with_spawn`](Server::with_spawn)) - ATTRIBUTION
+    /// BY CONSTRUCTION, unlike [`stamp_current_spawn`]'s workflow-bridge surface, which is a
+    /// runtime guess (set/cleared per `rigger_next`/`rigger_result`, unstamped between
+    /// spawns). A write NAMING a DIFFERENT spawn is REFUSED outright, never silently
+    /// corrected: the generic `meta` pass-through this tool's schema already carries (shared
+    /// with the workflow bridge's `rigger_emit`) is the one vector through which a
+    /// spawn-bound session could otherwise misattribute a decision to a sibling spawn it
+    /// shares no memory with. Naming the server's OWN bound spawn is not "another spawn" -
+    /// it is accepted exactly like an unstamped emit. The stamp itself goes through
+    /// [`stamp_spawn_meta`](Server::stamp_spawn_meta), shared with `stamp_current_spawn`, so a
+    /// present-but-non-object `meta` (e.g. a stray `meta: null`) can never silently bypass it.
+    fn tool_emit_bound(&self, args: &Value) -> Result<Value, ToolError> {
+        let bound = self.bound_spawn();
+        if let Some(named) = args
+            .get("meta")
+            .and_then(|m| m.get(crate::conductor::META_SPAWN))
+            .and_then(Value::as_str)
+        {
+            if named != bound {
+                return Err(ToolError::invalid_params(format!(
+                    "rigger_emit: refusing to emit on behalf of spawn {named:?}: this \
+                     server is bound to spawn {bound:?}"
+                )));
+            }
+        }
+        let mut stamped = args.clone();
+        let obj = stamped
+            .as_object_mut()
+            .ok_or("rigger_emit: arguments must be a JSON object")?;
+        Self::stamp_spawn_meta(obj, bound);
+        emit_event(self.store, &self.stream, self.graph, &stamped)
+            .map(|_| json!({}))
+            .map_err(ToolError::internal)
+    }
+
+    /// Insert `meta.spawn = spawn` into an args object's `meta` field - the ONE stamping site
+    /// both [`tool_emit_bound`](Server::tool_emit_bound) and
+    /// [`stamp_current_spawn`](Server::stamp_current_spawn) call, so the two attribution paths
+    /// can never drift apart (spec 104 review round 1 upheld their duplicate, byte-identical
+    /// inline copies as a DRY defect carrying the same latent bug). A `meta` that is present
+    /// but NOT an object (e.g. a stray `meta: null`, `[]`, or `"x"` a caller sends) is forced
+    /// to a fresh empty object first: `obj.entry("meta").or_insert_with(...)` alone is not
+    /// enough, because it only runs its closure on a VACANT entry, so an occupied non-object
+    /// `meta` would leave the stamp silently skipped - the exact attribution bypass this
+    /// helper exists to close.
+    fn stamp_spawn_meta(obj: &mut serde_json::Map<String, Value>, spawn: &str) {
+        let meta = obj.entry("meta").or_insert_with(|| json!({}));
+        if !meta.is_object() {
+            *meta = json!({});
+        }
+        meta.as_object_mut()
+            .expect("meta was just forced to a JSON object")
+            .insert(
+                crate::conductor::META_SPAWN.to_string(),
+                Value::String(spawn.to_string()),
+            );
+    }
+
+    /// The id this server is bound to. Panics if called off the spawn-bound surface - every
+    /// caller ([`tool_emit_bound`], [`tool_progress`], [`tool_scratch`]) is reachable ONLY
+    /// through [`call_tool`]'s `Surface::SpawnBound` arms, which exist only when
+    /// [`with_spawn`](Server::with_spawn) set this field, so the invariant always holds by
+    /// construction.
+    fn bound_spawn(&self) -> &str {
+        self.spawn.as_deref().expect(
+            "tool_emit_bound/tool_progress/tool_scratch are dispatched only on the \
+             spawn-bound surface, which always carries a bound id",
+        )
+    }
+
+    /// The current run's id, resolved fresh from the run stream - the SAME derivation
+    /// [`tool_activity`](Server::tool_activity) uses for its own `run_id`, shared here for
+    /// the two spawn-bound tools ([`tool_progress`], [`tool_scratch`]) that need it to
+    /// resolve a per-run record/path, never a second parallel resolution.
+    fn current_run_id(&self) -> Result<String, ToolError> {
+        let all = self
+            .store
+            .read_stream(&self.stream, 0, crate::eventstore::Direction::Forward)
+            .map_err(|e| ToolError::internal(e.to_string()))?;
+        Ok(crate::run::current_run_id(&all).unwrap_or_default())
+    }
+
+    /// `rigger_progress` (spec 104's spawn MCP server, addendum §4.3): record one live
+    /// activity line for the BOUND spawn to the SAME progress store + record shape
+    /// `rigger progress <id> "<activity>"` and [`tool_activity`]'s `with_progress` wiring
+    /// already use ([`crate::progress_store::record`]) - never a second parallel writer. No
+    /// spawn-naming argument exists on this tool's schema at all: attribution is by
+    /// construction, with nothing to refuse.
+    fn tool_progress(&self, args: &Value) -> Result<Value, ToolError> {
+        let activity = args
+            .get("activity")
+            .and_then(Value::as_str)
+            .ok_or("rigger_progress: missing activity")?;
+        if activity.trim().is_empty() {
+            return Err("rigger_progress: activity must be non-empty".into());
+        }
+        let progress = self
+            .progress
+            .ok_or("rigger_progress: no progress store is wired on this server")?;
+        let bound = self.bound_spawn().to_string();
+        let run_id = self.current_run_id()?;
+        crate::progress_store::record(progress, &run_id, &bound, activity)
+            .map(|_| json!({}))
+            .map_err(|e| ToolError::internal(e.to_string()))
+    }
+
+    /// `rigger_scratch` (spec 104's spawn MCP server, addendum §4.3): the BOUND spawn's own
+    /// rigger-assigned scratch container - the exact path
+    /// [`crate::driver::replay::spawn_scratch_path`] resolves and the per-spawn reclaim reaps
+    /// at its terminus, over the SAME `scratch_root` [`with_progress`](Server::with_progress)
+    /// already wires for [`tool_activity`]'s liveness ages. No argument at all: the
+    /// spawn-bound server can name no OTHER spawn's scratch, by construction.
+    fn tool_scratch(&self) -> Result<Value, ToolError> {
+        if self.scratch_root.is_empty() {
+            return Err("rigger_scratch: no scratch root is wired on this server".into());
+        }
+        let bound = self.bound_spawn().to_string();
+        let run_id = self.current_run_id()?;
+        let path = crate::driver::replay::spawn_scratch_path(&self.scratch_root, &run_id, &bound)
+            .ok_or_else(|| {
+            ToolError::internal(format!(
+                "rigger_scratch: {bound:?} does not name a usable scratch path"
+            ))
+        })?;
+        Ok(json!({"path": path.display().to_string()}))
     }
 
     /// List peers' decisions, lessons, AND review findings, optionally scoped to a
@@ -559,26 +742,34 @@ impl<'a> Server<'a> {
         serde_json::to_value(view).map_err(|e| ToolError::internal(e.to_string()))
     }
 
-    /// The tools THIS instance advertises (spec 92, criterion 4's fix round): the operator's
-    /// lookup surface (a grounder wired) gets exactly `rigger_peers`/`rigger_ground`/
-    /// `rigger_graph`; the workflow-driver bridge (the default) gets its usual five. One method
-    /// so the advertised list can never drift from what [`call_tool`](Server::call_tool)
-    /// actually dispatches.
+    /// The tools THIS instance advertises: the spawn-bound surface (spec 104, `--spawn <id>`)
+    /// gets exactly the six named tools; the operator's lookup surface (spec 92, a grounder
+    /// wired, no spawn) gets `rigger_peers`/`rigger_ground`/`rigger_graph`; the
+    /// workflow-driver bridge (the default) gets its usual five. One method, driven by
+    /// [`surface`](Server::surface), so the advertised list can never drift from what
+    /// [`call_tool`](Server::call_tool) actually dispatches.
     fn tool_list(&self) -> Value {
-        if self.is_lookup_surface() {
-            json!([
+        match self.surface() {
+            Surface::SpawnBound => json!([
+                {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Stamped with the spawn this server is bound to; optionally set valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string). meta.spawn, if set, must name THIS server's own bound spawn.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
                 {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far this run, so you do not work blind to them. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
                 {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
                 {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
-            ])
-        } else {
-            json!([
+                {"name": "rigger_progress", "description": "Record one live progress line for the spawn this server is bound to, so an observer sees you working between milestones. Report one short line after each significant step; never batch them up.", "inputSchema": {"type": "object", "properties": {"activity": {"type": "string", "description": "a short one-line description of what you just did"}}, "required": ["activity"]}},
+                {"name": "rigger_scratch", "description": "Your own rigger-assigned scratch container - the one directory every probe repo, verification worktree, test build, or CARGO_TARGET_DIR you create must live under, never /tmp or a session scratchpad. Reaped the moment your result records.", "inputSchema": {"type": "object", "properties": {}}},
+            ]),
+            Surface::Lookup => json!([
+                {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings recorded so far this run, so you do not work blind to them. Pass `files` to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}}}}},
+                {"name": "rigger_ground", "description": "The MEMORY-adjacent intent lookup (spec 92): rank code entities by relevance to a natural-language query. Same as `rigger ground \"<query>\" [<k>]`.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "description": "the natural-language query"}, "k": {"type": "integer", "description": "how many results (default 8)"}}, "required": ["query"]}},
+                {"name": "rigger_graph", "description": "The STRUCTURE and resolution lookups: pass `show` <entity> for its definition site (same as `rigger graph --show <entity>`), or `around` <file|entity> (optionally `depth`) for its structural neighborhood (same as `rigger graph --around <file|entity> --depth <n>`). Pass exactly one of `show`/`around`.", "inputSchema": {"type": "object", "properties": {"show": {"type": "string"}, "around": {"type": "string"}, "depth": {"type": "integer", "description": "neighborhood depth for `around` (default 2)"}}}},
+            ]),
+            Surface::Workflow => json!([
                 {"name": "rigger_next", "description": "Pick up the next queued agent spawn. The id is empty when nothing is waiting.", "inputSchema": {"type": "object", "properties": {}}},
                 {"name": "rigger_result", "description": "Report an agent's final result by spawn id.", "inputSchema": {"type": "object", "properties": {"id": {"type": "string"}, "output": {"type": "string"}, "error": {"type": "string"}}, "required": ["id"]}},
                 {"name": "rigger_emit", "description": "Record a decision on the shared event log, live, so other agents see it immediately. Optionally set meta (e.g. the acting agent, which stamps the graph's DECIDED edge) and valid_from (the bi-temporal time the fact became true).", "inputSchema": {"type": "object", "properties": {"type": {"type": "string"}, "data": {"type": "object"}, "meta": {"type": "object", "description": "Metadata entries (string->string), e.g. {\"actor\": \"<agent-id>\"}.", "additionalProperties": {"type": "string"}}, "valid_from": {"description": "When the fact became true: unix nanoseconds (integer) or an RFC3339 timestamp string.", "type": ["integer", "string"]}}, "required": ["type", "data"]}},
                 {"name": "rigger_peers", "description": "List the decisions, lessons, AND review findings other agents have raised so far this run, so you do not work blind to them (concurrent reviewers see each other's findings live; lessons recover what a capped prompt section elided). Pass `files` (your blast-radius) to scope the result to decisions, lessons, and findings that touch those files; omit it to see every one.", "inputSchema": {"type": "object", "properties": {"files": {"type": "array", "items": {"type": "string"}, "description": "The agent's blast-radius: only decisions whose `governs`, and lessons and findings whose `about`, intersect these files are returned. Omit for all."}}}},
                 {"name": "rigger_activity", "description": "The live per-agent view of the current run: one entry per in-flight agent with its stage, latest activity, how long since that activity and its last heartbeat, and its last event-store milestone (and how long ago - the blackout this fills). Rigger consolidates the run stream, the progress store, and the liveness markers and presents them here, so you get up-to-the-second agent state with no filesystem access of your own.", "inputSchema": {"type": "object", "properties": {}}},
-            ])
+            ]),
         }
     }
 }
@@ -962,6 +1153,46 @@ mod tests {
                 .tool_result(&json!({"id": sibling_id, "output": "done"}))
                 .unwrap();
         });
+    }
+
+    /// Reject-fix (spec 104 review round 1): `stamp_current_spawn` shares
+    /// `tool_emit_bound`'s latent gap - `obj.entry("meta").or_insert_with(...)` only runs its
+    /// closure on a VACANT entry, so a caller-supplied non-object `meta` (e.g. a stray
+    /// `meta: null`) occupies the key and the stamping `if let` used to skip it silently,
+    /// landing the event with NO `META_SPAWN` at all while `rigger_emit` still reported
+    /// success. Drives `tool_emit` (the workflow-bridge surface `rigger_emit` uses while a
+    /// spawn is being served) with each non-object shape and proves the stamp still lands.
+    #[test]
+    fn stray_emit_with_non_object_meta_while_served_is_still_stamped() {
+        use crate::conductor::META_SPAWN;
+
+        for meta in [Value::Null, json!([]), json!("x")] {
+            let store = Store::open(":memory:").unwrap();
+            let driver = Driver::new();
+            let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+            let server = Server::new(&driver, &store, "run", &peers);
+
+            // A spawn currently being served: the exact state `rigger_next` leaves the
+            // server in, set directly here since the next/result machinery that produces
+            // it is proven separately by `emit_is_stamped_with_the_serially_served_spawn_id`.
+            *server.current_spawn.lock().unwrap() = Some("adj/implementer#0".to_string());
+
+            server
+                .tool_emit(&json!({"type":"DecisionMade","data":{"id":"d1"},"meta":meta.clone()}))
+                .unwrap();
+
+            let events = store.read_stream("run", 0, Direction::Forward).unwrap();
+            let recorded = events
+                .iter()
+                .find(|e| e.type_ == "DecisionMade")
+                .expect("the emit must still land in the store");
+            assert_eq!(
+                recorded.meta.get(META_SPAWN).map(String::as_str),
+                Some("adj/implementer#0"),
+                "a non-object meta ({meta:?}) must be force-replaced and stamped, never \
+                 silently dropped and left unattributed"
+            );
+        }
     }
 
     /// Reject-fix (spec 61 c10 round 2): the prior round's `meta.resolved_model` never
@@ -1906,5 +2137,327 @@ mod tests {
             structured.get("site").is_none(),
             "an ambiguous result must print NO single site - the honesty rule; got:\n{resp}"
         );
+    }
+
+    // =======================================================================================
+    // Spec 104, criterion 3 (THE SPAWN MCP SERVER): `with_spawn` binds a `Server` to one
+    // spawn (`rigger mcp --spawn <id>`), adding a THIRD surface distinct from both the
+    // workflow-driver bridge and the operator's lookup surface - proven here at the unit
+    // level; `tests/cli.rs`'s `mcp_spawn_*` tests prove the same thing end to end through the
+    // real `rigger mcp --spawn` binary.
+    // =======================================================================================
+
+    /// The spawn-bound surface advertises EXACTLY the six tools the design names, in the
+    /// order it names them - never the workflow bridge's `rigger_next`/`rigger_result`/
+    /// `rigger_activity` (there is no result tool: the session's own final message is the
+    /// result) and never the lookup surface's narrower three.
+    #[test]
+    fn spawn_bound_tool_list_is_exactly_the_six_named_tools() {
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        let grounder = Nop;
+        let server = Server::new(&driver, &store, "run", &peers)
+            .with_grounder(&grounder)
+            .with_progress(&progress, "/scratch/root")
+            .with_spawn("u104-spawn-mcp/implementer#0");
+
+        let names: Vec<String> = server
+            .tool_list()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "rigger_emit",
+                "rigger_peers",
+                "rigger_ground",
+                "rigger_graph",
+                "rigger_progress",
+                "rigger_scratch",
+            ]
+        );
+    }
+
+    /// No result tool: `rigger_next` and `rigger_result` are UNDISPATCHABLE on the
+    /// spawn-bound surface (not merely unadvertised) - a launched agent's session ends with
+    /// its own final message, never a self-reported result over this MCP surface.
+    #[test]
+    fn spawn_bound_surface_has_no_result_tool() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers).with_spawn("u/implementer#0");
+
+        for name in ["rigger_next", "rigger_result", "rigger_activity"] {
+            let input = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#
+            );
+            let mut out = Vec::new();
+            server.run(Cursor::new(input), &mut out).unwrap();
+            let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            assert_eq!(
+                resp["error"]["code"], -32602,
+                "{name} must be UNDISPATCHABLE on the spawn-bound surface; got:\n{resp}"
+            );
+        }
+    }
+
+    /// Every write is stamped with the bound spawn BY CONSTRUCTION: an emit with no
+    /// `meta.spawn` at all still lands stamped with the id the server was bound to at
+    /// startup, exactly like a launched agent that never thinks about attribution.
+    #[test]
+    fn spawn_bound_emit_stamps_the_bound_spawn_with_no_meta_supplied() {
+        use crate::conductor::META_SPAWN;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server =
+            Server::new(&driver, &store, "run", &peers).with_spawn("u104-spawn-mcp/implementer#0");
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1","summary":"x"}}}}"#;
+        let mut out = Vec::new();
+        server.run(Cursor::new(input), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert!(
+            resp.get("result").is_some(),
+            "emit must succeed; got:\n{resp}"
+        );
+
+        let events = store.read_stream("run", 0, Direction::Forward).unwrap();
+        let recorded = events.iter().find(|e| e.type_ == "DecisionMade").unwrap();
+        assert_eq!(
+            recorded.meta.get(META_SPAWN).map(String::as_str),
+            Some("u104-spawn-mcp/implementer#0"),
+            "an emit with no meta.spawn supplied must still be stamped with the BOUND spawn"
+        );
+    }
+
+    /// A write NAMING another spawn is refused outright - never silently corrected - and
+    /// nothing lands in the store: the one vector the spawn-bound surface's `rigger_emit`
+    /// schema exposes (the generic `meta` pass-through) can never misattribute a decision to
+    /// a spawn this session is not.
+    #[test]
+    fn spawn_bound_emit_refuses_a_write_naming_another_spawn() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers).with_spawn("u/implementer#0");
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1"},"meta":{"spawn":"v/implementer#0"}}}}"#;
+        let mut out = Vec::new();
+        server.run(Cursor::new(input), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "an emit naming a DIFFERENT spawn must be refused; got:\n{resp}"
+        );
+
+        let events = store.read_stream("run", 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == "DecisionMade"),
+            "a refused emit must land NOTHING in the store"
+        );
+
+        // Naming the SAME spawn the server is bound to is not "another spawn": it goes
+        // through exactly like an unstamped emit.
+        let same_input = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d2"},"meta":{"spawn":"u/implementer#0"}}}}"#;
+        let mut out2 = Vec::new();
+        server.run(Cursor::new(same_input), &mut out2).unwrap();
+        let resp2: Value = serde_json::from_str(String::from_utf8(out2).unwrap().trim()).unwrap();
+        assert!(
+            resp2.get("result").is_some(),
+            "naming the server's OWN bound spawn must be allowed; got:\n{resp2}"
+        );
+    }
+
+    /// Reject-fix (spec 104 review round 1): a present-but-non-object `meta` (e.g. a stray
+    /// `meta: null` a launched agent sends) must never silently bypass the "ATTRIBUTION BY
+    /// CONSTRUCTION" stamp this tool's own doc comment promises.
+    /// `obj.entry("meta").or_insert_with(...)` only runs its closure on a VACANT entry, so an
+    /// OCCUPIED non-object `meta` used to leave the stamping `if let` skipped entirely while
+    /// `emit_event` still reported success - the event landed with no `META_SPAWN` key at
+    /// all, unattributed. Drives each non-object shape through the REAL `tools/call` path and
+    /// proves the write still lands, correctly stamped with the bound spawn.
+    #[test]
+    fn spawn_bound_emit_forces_a_non_object_meta_to_a_stamped_object() {
+        use crate::conductor::META_SPAWN;
+
+        for meta in [Value::Null, json!([]), json!("x")] {
+            let store = Store::open(":memory:").unwrap();
+            let driver = Driver::new();
+            let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+            let server = Server::new(&driver, &store, "run", &peers)
+                .with_spawn("u104-spawn-mcp/implementer#0");
+
+            let meta_json = meta.to_string();
+            let input = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"rigger_emit","arguments":{{"type":"DecisionMade","data":{{"id":"d1"}},"meta":{meta_json}}}}}}}"#
+            );
+            let mut out = Vec::new();
+            server.run(Cursor::new(input), &mut out).unwrap();
+            let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            assert!(
+                resp.get("result").is_some(),
+                "a non-object meta ({meta:?}) must not fail the emit; got:\n{resp}"
+            );
+
+            let events = store.read_stream("run", 0, Direction::Forward).unwrap();
+            let recorded = events
+                .iter()
+                .find(|e| e.type_ == "DecisionMade")
+                .expect("the emit must still land in the store");
+            assert_eq!(
+                recorded.meta.get(META_SPAWN).map(String::as_str),
+                Some("u104-spawn-mcp/implementer#0"),
+                "a non-object meta ({meta:?}) must be force-replaced and stamped, never \
+                 silently dropped and left unattributed"
+            );
+        }
+    }
+
+    /// `rigger_progress` records a live activity line for the bound spawn, with no
+    /// spawn-naming argument at all - attribution by construction, nothing to refuse.
+    #[test]
+    fn spawn_bound_progress_records_for_the_bound_spawn() {
+        use crate::progress::{AgentProgress, TYPE_AGENT_PROGRESS};
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        let server = Server::new(&driver, &store, "run", &peers)
+            .with_progress(&progress, "/scratch/root")
+            .with_spawn("u104-spawn-mcp/implementer#0");
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_progress","arguments":{"activity":"ran the gates"}}}"#;
+        let mut out = Vec::new();
+        server.run(Cursor::new(input), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+        assert!(
+            resp.get("result").is_some(),
+            "progress must succeed; got:\n{resp}"
+        );
+
+        let events = progress
+            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
+            .unwrap();
+        let recorded: Vec<AgentProgress> = events
+            .iter()
+            .filter(|e| e.type_ == TYPE_AGENT_PROGRESS)
+            .map(|e| serde_json::from_slice(&e.data).unwrap())
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![AgentProgress {
+                id: "u104-spawn-mcp/implementer#0".to_string(),
+                activity: "ran the gates".to_string(),
+            }],
+            "the progress report must be attributed to the BOUND spawn with the given activity"
+        );
+
+        // The run stream itself grows by nothing: progress never lands on the replay log.
+        let run_events = store.read_stream("run", 0, Direction::Forward).unwrap();
+        assert!(run_events.is_empty());
+    }
+
+    /// A missing or empty `activity` is refused, mirroring `rigger progress`'s own CLI
+    /// validation - never a silently-recorded blank line.
+    #[test]
+    fn spawn_bound_progress_refuses_a_missing_or_empty_activity() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        let server = Server::new(&driver, &store, "run", &peers)
+            .with_progress(&progress, "/scratch/root")
+            .with_spawn("u/implementer#0");
+
+        for args in [r#"{}"#, r#"{"activity":"  "}"#] {
+            let input = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"rigger_progress","arguments":{args}}}}}"#
+            );
+            let mut out = Vec::new();
+            server.run(Cursor::new(input), &mut out).unwrap();
+            let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            assert!(
+                resp.get("error").is_some(),
+                "an empty/missing activity must be refused; got:\n{resp}"
+            );
+        }
+    }
+
+    /// `rigger_scratch` answers with the BOUND spawn's own scratch container - the exact path
+    /// [`crate::driver::replay::spawn_scratch_path`] resolves - with no argument at all: the
+    /// spawn-bound server can name no OTHER spawn's scratch, by construction.
+    #[test]
+    fn spawn_bound_scratch_answers_with_the_bound_spawns_own_path() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let progress = Store::open(":memory:").unwrap();
+        let server = Server::new(&driver, &store, "run", &peers)
+            .with_progress(&progress, "/scratch/root")
+            .with_spawn("u104-spawn-mcp/implementer#0");
+
+        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_scratch","arguments":{}}}"#;
+        let mut out = Vec::new();
+        server.run(Cursor::new(input), &mut out).unwrap();
+        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+
+        let want = crate::driver::replay::spawn_scratch_path(
+            "/scratch/root",
+            "",
+            "u104-spawn-mcp/implementer#0",
+        )
+        .unwrap();
+        assert_eq!(
+            resp["result"]["structuredContent"]["path"],
+            want.display().to_string(),
+            "rigger_scratch must answer with the SAME path spawn_scratch_path resolves; got:\n{resp}"
+        );
+    }
+
+    /// The spawn-bound surface still answers `rigger_peers`/`rigger_ground`/`rigger_graph`
+    /// exactly as the lookup surface does - read-only tools need no spawn attribution at all,
+    /// so binding a spawn only ADDS tools, never narrows the read surface.
+    #[test]
+    fn spawn_bound_surface_still_serves_peers_ground_and_graph() {
+        use crate::contextgraph::sqlite::Projector;
+        use crate::grounder::Nop;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let grounder = Nop;
+        let graph = Projector::open(":memory:", "test").unwrap();
+        let server = Server::new(&driver, &store, "run", &peers)
+            .with_grounder(&grounder)
+            .with_graph(&graph)
+            .with_spawn("u/implementer#0");
+
+        for (name, args) in [
+            ("rigger_peers", "{}"),
+            ("rigger_ground", r#"{"query":"anything"}"#),
+            ("rigger_graph", r#"{"around":"does-not-exist.rs"}"#),
+        ] {
+            let input = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{args}}}}}"#
+            );
+            let mut out = Vec::new();
+            server.run(Cursor::new(input), &mut out).unwrap();
+            let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            assert!(
+                resp.get("result").is_some(),
+                "{name} must still answer on the spawn-bound surface; got:\n{resp}"
+            );
+        }
     }
 }

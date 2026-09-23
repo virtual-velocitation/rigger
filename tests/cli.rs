@@ -29064,6 +29064,431 @@ fn mcp_serves_peers_ground_and_graph_over_stdio() {
     );
 }
 
+/// `rigger mcp --spawn <id>` (spec 104, criterion 3, THE SPAWN MCP SERVER): the launched
+/// agent's own MCP server over real stdio. Serves exactly the six named tools (no
+/// `rigger_next`/`rigger_result` - there is no result tool), stamps `rigger_emit` and
+/// `rigger_progress` with the bound spawn BY CONSTRUCTION with no argument naming it, and
+/// refuses a `rigger_emit` whose `meta.spawn` names a DIFFERENT spawn.
+#[test]
+fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store as SqliteStore;
+    use rigger::eventstore::{Direction, EventStore};
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    seed_store(root);
+
+    let bound_spawn = "u104-spawn-mcp/implementer#0";
+    let other_spawn = "u104-launch/implementer#0";
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp", "--spawn", bound_spawn])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp --spawn");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout
+            .read_line(&mut line)
+            .expect("rigger mcp --spawn must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    let list = call("tools/list", serde_json::json!({}));
+    let tool_names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tool_names,
+        vec![
+            "rigger_emit",
+            "rigger_peers",
+            "rigger_ground",
+            "rigger_graph",
+            "rigger_progress",
+            "rigger_scratch",
+        ],
+        "the spawn-bound surface must serve exactly these six tools, in this order"
+    );
+
+    // No result tool: rigger_next / rigger_result are UNDISPATCHABLE, not merely unadvertised.
+    for name in ["rigger_next", "rigger_result"] {
+        let resp = call(
+            "tools/call",
+            serde_json::json!({"name": name, "arguments": {}}),
+        );
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "{name} must not exist on the spawn-bound surface; got:\n{resp}"
+        );
+    }
+
+    // rigger_emit with no meta at all still lands stamped with the BOUND spawn.
+    let emit_ok = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_emit", "arguments": {"type": "DecisionMade", "data": {"id": "d1", "summary": "x"}}}),
+    );
+    assert!(
+        emit_ok.get("result").is_some(),
+        "an unstamped emit must succeed; got:\n{emit_ok}"
+    );
+
+    // rigger_emit naming a DIFFERENT spawn is refused outright.
+    let emit_refused = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_emit", "arguments": {"type": "DecisionMade", "data": {"id": "d2"}, "meta": {"spawn": other_spawn}}}),
+    );
+    assert_eq!(
+        emit_refused["error"]["code"], -32602,
+        "an emit naming a DIFFERENT spawn must be refused; got:\n{emit_refused}"
+    );
+
+    // rigger_progress records for the bound spawn with no spawn-naming argument.
+    let progress_ok = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_progress", "arguments": {"activity": "ran the gates"}}),
+    );
+    assert!(
+        progress_ok.get("result").is_some(),
+        "rigger_progress must succeed; got:\n{progress_ok}"
+    );
+
+    // rigger_scratch answers with a real, non-empty path under this spawn's own container.
+    let scratch = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_scratch", "arguments": {}}),
+    );
+    let scratch_path = scratch["result"]["structuredContent"]["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("rigger_scratch must answer with a path; got:\n{scratch}"));
+    assert!(
+        !scratch_path.is_empty(),
+        "rigger_scratch must answer a non-empty path; got:\n{scratch}"
+    );
+
+    drop(stdin);
+    let out = child
+        .wait_with_output()
+        .expect("rigger mcp --spawn must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp --spawn must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The DECISION landed, stamped with the bound spawn; the REFUSED one landed nothing.
+    let events_backend =
+        SqliteStore::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let events_store = Namespaced::new(&events_backend, &run_stream_identity(root));
+    let recorded = events_store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let decisions: Vec<_> = recorded
+        .iter()
+        .filter(|e| e.type_ == "DecisionMade")
+        .collect();
+    assert_eq!(
+        decisions.len(),
+        1,
+        "the refused emit must land NOTHING; got: {decisions:?}"
+    );
+    assert_eq!(
+        decisions[0]
+            .meta
+            .get(rigger::conductor::META_SPAWN)
+            .map(String::as_str),
+        Some(bound_spawn),
+        "the surviving decision must be stamped with the BOUND spawn"
+    );
+
+    // The progress report landed in the SEPARATE progress store, attributed to the bound spawn.
+    let progress_backend =
+        SqliteStore::open(root.join(".rigger").join("progress.db").to_str().unwrap()).unwrap();
+    let progress_store = Namespaced::new(&progress_backend, &run_stream_identity(root));
+    let progress_events = progress_store
+        .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let reports: Vec<rigger::progress::AgentProgress> = progress_events
+        .iter()
+        .filter(|e| e.type_ == rigger::progress::TYPE_AGENT_PROGRESS)
+        .map(|e| serde_json::from_slice(&e.data).unwrap())
+        .collect();
+    assert_eq!(
+        reports,
+        vec![rigger::progress::AgentProgress {
+            id: bound_spawn.to_string(),
+            activity: "ran the gates".to_string(),
+        }]
+    );
+}
+
+// ===========================================================================================
+// SDET periphery additions (spec 104, criterion 3): the CLI-flag surface `parse_mcp_spawn_flag`
+// introduces has no unit test of its own (it is a private free function; the implementer's
+// tests all construct `mcpserver::Server` directly and never touch argument parsing or
+// `cmd_mcp`'s own file-system decisions), so these drive the real compiled binary to prove
+// its error edges and the two behavioral contracts `cmd_mcp`'s doc comment states but the
+// happy-path test above cannot observe.
+// ===========================================================================================
+
+/// `rigger mcp`'s argument surface (spec 104, criterion 3): a valueless `--spawn`, an
+/// explicitly empty spawn id, and any unrecognized or trailing argument are each a clear,
+/// nonzero-exit CLI error - never silently accepted. The pre-spec-104 `cmd_mcp` took
+/// `_args: &[String]` and discarded every argument it was given; this proves the new
+/// contract from OUTSIDE the process, driving the real binary, so a regression back to
+/// "accept and ignore" shows up here even though `parse_mcp_spawn_flag` carries no unit
+/// test of its own to catch it.
+#[test]
+fn mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    // `--spawn` with no id following it.
+    let (out, err, ok) = run_rigger(root, &["mcp", "--spawn"]);
+    assert!(!ok, "mcp --spawn with no id must fail; stdout: {out:?}");
+    assert!(
+        err.contains("mcp: --spawn expects a spawn id"),
+        "got: {err:?}"
+    );
+
+    // `--spawn` with an explicitly empty id.
+    let (out, err, ok) = run_rigger(root, &["mcp", "--spawn", ""]);
+    assert!(!ok, "mcp --spawn '' must fail; stdout: {out:?}");
+    assert!(
+        err.contains("mcp: --spawn expects a non-empty spawn id"),
+        "got: {err:?}"
+    );
+
+    // A bare unrecognized argument, with no `--spawn` at all.
+    let (out, err, ok) = run_rigger(root, &["mcp", "not-a-flag"]);
+    assert!(
+        !ok,
+        "mcp with an unrecognized argument must fail; stdout: {out:?}"
+    );
+    assert!(err.contains("mcp: unexpected arguments"), "got: {err:?}");
+
+    // A trailing argument after an otherwise well-formed `--spawn <id>`.
+    let (out, err, ok) = run_rigger(root, &["mcp", "--spawn", "u/implementer#0", "extra"]);
+    assert!(!ok, "mcp --spawn <id> <extra> must fail; stdout: {out:?}");
+    assert!(err.contains("mcp: unexpected arguments"), "got: {err:?}");
+}
+
+/// Contract stated in `cmd_mcp`'s own doc comment (spec 104): a plain `rigger mcp` with no
+/// `--spawn` is the operator's read-only lookup surface and must NEVER conjure
+/// `.rigger/progress.db` or touch a scratch root it has no use for - only `--spawn <id>`
+/// opens the progress store. The `Server` unit tests build their `EventStore`s directly
+/// (always `:memory:`) and can never observe this file-system side effect either way; only
+/// driving the real `cmd_mcp` composition, end to end, can.
+#[test]
+fn mcp_without_spawn_never_creates_the_progress_store() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    seed_store(root);
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let req = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
+    writeln!(stdin, "{req}").unwrap();
+    stdin.flush().unwrap();
+    let mut line = String::new();
+    stdout.read_line(&mut line).expect("rigger mcp must answer");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&line).is_ok(),
+        "not one JSON-RPC response line: {line:?}"
+    );
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !root.join(".rigger").join("progress.db").exists(),
+        "a plain `rigger mcp` with no --spawn must never create progress.db"
+    );
+}
+
+/// The two spawn-bound-only write tools (`rigger_progress`, `rigger_scratch`) are not merely
+/// unadvertised but UNDISPATCHABLE on a plain `rigger mcp` (no `--spawn`): calling either by
+/// name anyway must come back as an ordinary JSON-RPC "unknown tool" error over the wire,
+/// never a crash - proof that the real subprocess survives an out-of-schema call to a tool
+/// whose handler (`tool_progress`/`tool_scratch`) assumes a bound spawn that, off the
+/// spawn-bound surface, does not exist (each panics via `bound_spawn()` if ever reached
+/// there). The unit tests never drive `call_tool` with a mismatched surface/name pair
+/// through the real dispatch table over real stdio, so this is the only place that proves
+/// the mismatch fails soft.
+#[test]
+fn mcp_without_spawn_reports_progress_and_scratch_as_unknown_tools_over_stdio() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    seed_store(root);
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    for name in ["rigger_progress", "rigger_scratch"] {
+        let resp = call(
+            "tools/call",
+            serde_json::json!({"name": name, "arguments": {"activity": "x"}}),
+        );
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "{name} must be an ordinary unknown-tool error off the spawn-bound surface; \
+             got:\n{resp}"
+        );
+    }
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp must survive and exit 0 after the refused calls; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// PERIPHERY (round 2, closes `sdet-u104-mcp-spawn-scratch-no-real-parity-test-with-cmd-scratch`,
+/// upheld non-blocking by review): `rigger mcp --spawn <id>`'s `rigger_scratch` tool
+/// (`cmd_mcp`'s own `scratch_root` resolution, main.rs) and `rigger scratch <id>`
+/// (`cmd_scratch`) both claim to resolve the SAME `spawn_scratch_path` formula over the same
+/// `scratch_defaults`/`run_id` inputs, but every existing test proving either one right
+/// compares it only to a value HARD-CODED or RE-DERIVED on the test side
+/// (`spawn_bound_scratch_answers_with_the_bound_spawns_own_path` in `mcpserver.rs`,
+/// `mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio`'s bare non-empty check
+/// above) - never to what the OTHER real command prints for the exact same seeded
+/// project/run. Mirrors `scratch_prints_the_exact_container_rigger_result_reclaims`'s
+/// real-behavior-over-hard-coded-string method: run both commands against the same
+/// environment and require them to agree with EACH OTHER, so a future edit to only one call
+/// site's resolution (`cmd_mcp` inlines its own copy of `cmd_scratch`'s repo/workdir
+/// derivation rather than sharing it) would be caught even though it would leave every
+/// single-sided test above green.
+#[test]
+fn mcp_spawn_scratch_tool_agrees_byte_for_byte_with_rigger_scratch() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let spawn_id = "u104-spawn-mcp/implementer#0";
+
+    let (scratch_out, scratch_err, scratch_ok) = run_rigger(root, &["scratch", spawn_id]);
+    assert!(
+        scratch_ok,
+        "rigger scratch {spawn_id} must succeed for a live run; stderr: {scratch_err}"
+    );
+    let cmd_scratch_path = scratch_out.trim().to_string();
+    assert!(
+        !cmd_scratch_path.is_empty(),
+        "rigger scratch must print a non-empty path"
+    );
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp", "--spawn", spawn_id])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp --spawn");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "rigger_scratch", "arguments": {}}
+    });
+    writeln!(stdin, "{req}").unwrap();
+    stdin.flush().unwrap();
+    let mut line = String::new();
+    stdout
+        .read_line(&mut line)
+        .expect("rigger mcp --spawn must answer");
+    let resp: serde_json::Value = serde_json::from_str(&line)
+        .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"));
+    let mcp_scratch_path = resp["result"]["structuredContent"]["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("rigger_scratch must answer with a path; got:\n{resp}"))
+        .to_string();
+
+    drop(stdin);
+    let out = child
+        .wait_with_output()
+        .expect("rigger mcp --spawn must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp --spawn must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        mcp_scratch_path, cmd_scratch_path,
+        "rigger mcp --spawn's rigger_scratch tool must answer the EXACT path `rigger \
+         scratch {spawn_id}` prints for the same seeded run - not a divergent, \
+         independently-resolved one"
+    );
+}
+
 /// Spawn `rigger grep-guard` in `root`, write one PreToolUse `payload` to its stdin, and
 /// parse its one printed JSON object. Shared by every end-to-end `grep-guard` test below (the
 /// happy-path test and the SDET periphery additions that follow it): each drives a DIFFERENT

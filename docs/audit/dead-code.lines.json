@@ -41,7 +41,7 @@
   {
     "file": "src/config.rs",
     "name": "sdet_author_enabled",
-    "line": 600,
+    "line": 611,
     "test_only_references": [
       {
         "file": "src/config_store.rs",
@@ -590,15 +590,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 14243
+        "line": 14300
       },
       {
         "file": "src/main.rs",
-        "line": 14264
+        "line": 14321
       },
       {
         "file": "src/main.rs",
-        "line": 14779
+        "line": 14836
       },
       {
         "file": "tests/cli.rs",
@@ -617,11 +617,11 @@
     "test_only_references": [
       {
         "file": "src/mcpserver.rs",
-        "line": 910
+        "line": 1101
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 951
+        "line": 1142
       }
     ]
   },
@@ -1344,7 +1344,7 @@
       "src/eventstore/namespace.rs:28",
       "src/failure.rs:218",
       "src/ledger.rs:454",
-      "src/mcpserver.rs:116",
+      "src/mcpserver.rs:148",
       "src/watch.rs:577"
     ],
     "test_only_references": [
@@ -1486,51 +1486,51 @@
       },
       {
         "file": "src/main.rs",
-        "line": 17452
+        "line": 17509
       },
       {
         "file": "src/main.rs",
-        "line": 17485
+        "line": 17542
       },
       {
         "file": "src/main.rs",
-        "line": 17504
+        "line": 17561
       },
       {
         "file": "src/main.rs",
-        "line": 17507
+        "line": 17564
       },
       {
         "file": "src/main.rs",
-        "line": 17510
+        "line": 17567
       },
       {
         "file": "src/main.rs",
-        "line": 19380
+        "line": 19437
       },
       {
         "file": "src/main.rs",
-        "line": 19393
+        "line": 19450
       },
       {
         "file": "src/main.rs",
-        "line": 19408
+        "line": 19465
       },
       {
         "file": "src/main.rs",
-        "line": 24991
+        "line": 25048
       },
       {
         "file": "src/main.rs",
-        "line": 24992
+        "line": 25049
       },
       {
         "file": "src/main.rs",
-        "line": 24993
+        "line": 25050
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 1063
+        "line": 1294
       },
       {
         "file": "src/metrics.rs",
