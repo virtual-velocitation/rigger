@@ -49,6 +49,13 @@ against the hook's `cwd`, `..`, symlinks), allows a target under a root and othe
 `hookSpecificOutput.permissionDecision: "deny"` with a reason naming the first root. It reads
 no store. The host passes the spawn's `dir` and scratch container as roots.
 
+THE HOOKS, decided here so no unit has to: the per-spawn settings JSON carries exactly two
+hook families and the host assembles it from their two owners. The `PreToolUse` write guard
+for `Edit|Write|NotebookEdit` is criterion 4's, command and injection both. The `StopFailure`
+entries, one per error category, each invoking `rigger hook stop-failure --spawn <id>
+--class <category>`, are criterion 5's, command, record and injection both. Criterion 1 passes
+the assembled `--settings` string on the argv and owns none of the hooks' content.
+
 FAILURE CLASS, decided: `AgentFailure` is Claude Code's error category: `rate_limit`,
 `overloaded`, `server_error`, `authentication_failed`, `oauth_org_not_allowed`,
 `cloud_credential_error`, `billing_error`, `account_on_hold`, `model_not_found`,
