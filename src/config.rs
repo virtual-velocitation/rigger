@@ -168,6 +168,17 @@ pub struct AgentDef {
     /// authority [`model_for_attempt`](Self::model_for_attempt).
     #[serde(default)]
     pub model_ladder: Vec<String>,
+    /// The single configured fallback model (spec 104 criterion 1; architecture addendum
+    /// §4.1 launch table, the `--model`/`--fallback-model` row: "the attempt's rung, the
+    /// configured fallback"), passed as `--fallback-model` on every launch whenever this
+    /// is non-empty. Distinct from [`model_ladder`](Self::model_ladder): the ladder picks
+    /// a DIFFERENT model per remediation ATTEMPT (rigger's own multi-attempt cascade,
+    /// resolved before the child starts); this field names the one model Claude Code
+    /// itself may fall back to mid-SESSION, unaffected by which attempt is running.
+    /// `#[serde(default)]`, same convention as `model`: empty (the default) omits the
+    /// flag entirely - no session-level fallback configured.
+    #[serde(default)]
+    pub fallback_model: String,
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]

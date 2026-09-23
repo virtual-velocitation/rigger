@@ -69,7 +69,10 @@ impl Driver {
     /// attempt), and it is the ONLY event this call writes - closing it belongs to a
     /// later criterion. The environment the child sees is the operator's ambient
     /// environment (inherited unchanged, credential included) plus `opts.env`; this
-    /// function neither reads nor sets a credential variable of its own.
+    /// function neither reads nor sets a credential variable of its own. Once the record
+    /// is written the launch never returns `Err` with an unaccounted-for child still
+    /// running behind it: a failure writing the first message ends the child through its
+    /// own handle (`kill()` + `wait()`) before the error propagates.
     pub fn launch(
         &self,
         agent: &AgentDef,
@@ -123,14 +126,22 @@ impl Driver {
         // The task is the first user message on the input stream (§4.1); stdin stays
         // open afterward (§4.2's "the host closes the input after the first `result`" is
         // the reader's call, not this one's).
-        if let Some(stdin) = child.stdin.as_mut() {
-            let msg = first_user_message(task);
-            writeln!(stdin, "{msg}").map_err(|e| {
-                Error(format!(
-                    "claude_code driver: write task to {:?}: {e}",
-                    opts.id
-                ))
-            })?;
+        let write_result = child
+            .stdin
+            .as_mut()
+            .map(|stdin| writeln!(stdin, "{}", first_user_message(task)));
+        if let Some(Err(e)) = write_result {
+            // The durable `SpawnLaunched` record above already claims this launch
+            // happened - a write failure here must not also leak the OS process behind
+            // it. End it through the handle that spawned it (process lifecycle
+            // discipline: kill() + wait(), never a computed-pid signal) before
+            // reporting the error, so no unaccounted-for child outlives this `Err`.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error(format!(
+                "claude_code driver: write task to {:?}: {e}",
+                opts.id
+            )));
         }
 
         Ok(Launch {
@@ -216,6 +227,10 @@ pub fn build_args(
         args.push("--model".to_string());
         args.push(model);
     }
+    if !agent.fallback_model.is_empty() {
+        args.push("--fallback-model".to_string());
+        args.push(agent.fallback_model.clone());
+    }
     let tools = agent.allowed_tools();
     if !tools.is_empty() {
         args.push("--allowed-tools".to_string());
@@ -258,6 +273,7 @@ mod tests {
         let a = AgentDef {
             id: "impl".into(),
             model: "sonnet".into(),
+            fallback_model: "haiku".into(),
             tools: vec!["Read".into(), "Bash".into()],
             ..Default::default()
         };
@@ -279,6 +295,7 @@ mod tests {
         assert_eq!(get_val("--session-id"), "sess-123");
         assert_eq!(get_val("--system-prompt"), "You implement findings.");
         assert_eq!(get_val("--model"), "sonnet");
+        assert_eq!(get_val("--fallback-model"), "haiku");
         assert_eq!(get_val("--allowed-tools"), "Read,Bash");
         assert_eq!(get_val("--permission-mode"), "default");
         assert_eq!(get_val("--permission-prompts"), "none");
@@ -324,6 +341,7 @@ mod tests {
         let args = build_args(&a, &bare, "sess", "rigger");
         assert!(!args.iter().any(|x| x == "--system-prompt"));
         assert!(!args.iter().any(|x| x == "--model"));
+        assert!(!args.iter().any(|x| x == "--fallback-model"));
         assert!(!args.iter().any(|x| x == "--allowed-tools"));
         assert!(!args.iter().any(|x| x == "--settings"));
         // The always-on flags are still present.
@@ -513,13 +531,17 @@ mod tests {
         };
         let store = Store::open(":memory:").unwrap();
         let o = opts("u/implementer#0");
-        let launch = driver
+        let mut launch = driver
             .launch(&AgentDef::default(), "task", &o, &store)
             .unwrap();
         assert!(
             launch.child.stdin.is_some(),
             "stdin must stay open after the first message"
         );
+        // Reap: the fixture reads its one line and exits on its own, so this never
+        // blocks - matching every sibling test in this file (`read_fixture_lines`'s
+        // own `.wait()`), never leaving a zombie behind.
+        launch.child.wait().unwrap();
     }
 
     #[test]
