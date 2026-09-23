@@ -1034,8 +1034,8 @@
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 44,
-        "end_line": 44
+        "start_line": 71,
+        "end_line": 71
       },
       {
         "file": "tests/console_status_periphery.rs",
@@ -2364,8 +2364,8 @@
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1515,
-        "end_line": 1520
+        "start_line": 1611,
+        "end_line": 1616
       },
       {
         "file": "tests/canary_false_positives_periphery.rs",
@@ -3204,8 +3204,8 @@
       },
       {
         "file": "src/config.rs",
-        "start_line": 868,
-        "end_line": 874
+        "start_line": 896,
+        "end_line": 902
       }
     ]
   },
@@ -3949,53 +3949,53 @@
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 980,
-        "end_line": 980
+        "start_line": 1076,
+        "end_line": 1076
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 981,
-        "end_line": 981
+        "start_line": 1077,
+        "end_line": 1077
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1008,
-        "end_line": 1008
+        "start_line": 1104,
+        "end_line": 1104
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1009,
-        "end_line": 1009
+        "start_line": 1105,
+        "end_line": 1105
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1549,
-        "end_line": 1549
+        "start_line": 1645,
+        "end_line": 1645
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1550,
-        "end_line": 1550
+        "start_line": 1646,
+        "end_line": 1646
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1582,
-        "end_line": 1582
+        "start_line": 1678,
+        "end_line": 1678
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1583,
-        "end_line": 1583
+        "start_line": 1679,
+        "end_line": 1679
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1604,
-        "end_line": 1604
+        "start_line": 1700,
+        "end_line": 1700
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1605,
-        "end_line": 1605
+        "start_line": 1701,
+        "end_line": 1701
       },
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -6339,28 +6339,48 @@
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 80,
-        "end_line": 80
+        "start_line": 107,
+        "end_line": 107
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 128,
-        "end_line": 128
+        "start_line": 155,
+        "end_line": 155
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 134,
-        "end_line": 134
+        "start_line": 161,
+        "end_line": 161
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 183,
-        "end_line": 183
+        "start_line": 210,
+        "end_line": 210
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 227,
-        "end_line": 227
+        "start_line": 254,
+        "end_line": 254
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 300,
+        "end_line": 300
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 347,
+        "end_line": 347
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 401,
+        "end_line": 401
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 450,
+        "end_line": 450
       },
       {
         "file": "tests/console_status_periphery.rs",
@@ -8844,8 +8864,8 @@
     "sites": [
       {
         "file": "src/config.rs",
-        "start_line": 290,
-        "end_line": 292
+        "start_line": 318,
+        "end_line": 320
       },
       {
         "file": "src/failure.rs",
@@ -8864,8 +8884,8 @@
     "sites": [
       {
         "file": "src/config.rs",
-        "start_line": 1508,
-        "end_line": 1510
+        "start_line": 1536,
+        "end_line": 1538
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -8944,8 +8964,8 @@
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 870,
-        "end_line": 879
+        "start_line": 966,
+        "end_line": 975
       }
     ]
   },
@@ -8979,33 +8999,33 @@
     "sites": [
       {
         "file": "src/config_store.rs",
-        "start_line": 960,
-        "end_line": 969
+        "start_line": 1056,
+        "end_line": 1065
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1523,
-        "end_line": 1539
+        "start_line": 1619,
+        "end_line": 1635
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1788,
-        "end_line": 1801
+        "start_line": 1884,
+        "end_line": 1897
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1810,
-        "end_line": 1825
+        "start_line": 1906,
+        "end_line": 1921
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1834,
-        "end_line": 1849
+        "start_line": 1930,
+        "end_line": 1945
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1897,
-        "end_line": 1910
+        "start_line": 1993,
+        "end_line": 2006
       }
     ]
   },
@@ -9014,13 +9034,13 @@
     "sites": [
       {
         "file": "src/config_store.rs",
-        "start_line": 1065,
-        "end_line": 1079
+        "start_line": 1161,
+        "end_line": 1175
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1085,
-        "end_line": 1099
+        "start_line": 1181,
+        "end_line": 1195
       }
     ]
   },
@@ -9029,13 +9049,13 @@
     "sites": [
       {
         "file": "src/config_store.rs",
-        "start_line": 1259,
-        "end_line": 1277
+        "start_line": 1355,
+        "end_line": 1373
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 2102,
-        "end_line": 2130
+        "start_line": 2198,
+        "end_line": 2226
       }
     ]
   },
@@ -9044,18 +9064,18 @@
     "sites": [
       {
         "file": "src/config_store.rs",
-        "start_line": 1369,
-        "end_line": 1392
+        "start_line": 1465,
+        "end_line": 1488
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1395,
-        "end_line": 1419
+        "start_line": 1491,
+        "end_line": 1515
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1450,
-        "end_line": 1477
+        "start_line": 1546,
+        "end_line": 1573
       }
     ]
   },
@@ -16219,8 +16239,8 @@
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 42,
-        "end_line": 49
+        "start_line": 69,
+        "end_line": 76
       },
       {
         "file": "tests/console_status_periphery.rs",
@@ -16324,8 +16344,8 @@
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 42,
-        "end_line": 49
+        "start_line": 69,
+        "end_line": 76
       },
       {
         "file": "tests/console_status_periphery.rs",
@@ -17064,8 +17084,8 @@
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 51,
-        "end_line": 63
+        "start_line": 78,
+        "end_line": 90
       },
       {
         "file": "tests/dedup_seeding_periphery.rs",
@@ -20269,23 +20289,43 @@
     "sites": [
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 72,
-        "end_line": 112
+        "start_line": 99,
+        "end_line": 139
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 120,
-        "end_line": 160
+        "start_line": 147,
+        "end_line": 187
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 175,
-        "end_line": 214
+        "start_line": 202,
+        "end_line": 241
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 219,
-        "end_line": 254
+        "start_line": 246,
+        "end_line": 281
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 292,
+        "end_line": 328
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 339,
+        "end_line": 375
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 393,
+        "end_line": 431
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 442,
+        "end_line": 486
       }
     ]
   },

@@ -6568,6 +6568,26 @@
         "content_hash": "fab45089dfff5214"
       },
       {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
+      },
+      {
         "file": "tests/console_status_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
@@ -7959,7 +7979,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 763 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 767 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0070",
@@ -22159,9 +22179,29 @@
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
         "name": "rigger_validate_names_the_full_key_when_the_unknown_key_itself_contains_a_backtick",
         "content_hash": "446b868ebd520dae"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "rigger_validate_names_the_full_key_when_the_unknown_key_itself_contains_the_terminator_run",
+        "content_hash": "446b868ebd520dae"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "rigger_validate_recomposes_a_stage_path_through_a_stage_name_containing_its_own_colon_space",
+        "content_hash": "446b868ebd520dae"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "rigger_validate_names_the_dotted_path_even_when_the_unknown_key_echoes_the_marker_boundary",
+        "content_hash": "446b868ebd520dae"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "rigger_validate_keeps_the_nested_dotted_path_on_a_genuine_type_mismatch",
+        "content_hash": "900a10bbc11e435c"
       }
     ],
-    "proposed_home": "config_unknown_key_dotted_path_periphery::support (consolidate these 4 sites into one function in this file)",
+    "proposed_home": "config_unknown_key_dotted_path_periphery::support (consolidate these 8 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
