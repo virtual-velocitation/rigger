@@ -6608,6 +6608,11 @@
         "content_hash": "fab45089dfff5214"
       },
       {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "fab45089dfff5214"
+      },
+      {
         "file": "tests/console_status_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
@@ -7999,7 +8004,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 771 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 772 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0070",
@@ -22252,9 +22257,14 @@
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
         "name": "rigger_validate_escapes_a_literal_dot_inside_a_stage_name",
         "content_hash": "446b868ebd520dae"
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "name": "rigger_validate_escapes_a_literal_backslash_inside_a_stage_name",
+        "content_hash": "446b868ebd520dae"
       }
     ],
-    "proposed_home": "config_unknown_key_dotted_path_periphery::support (consolidate these 11 sites into one function in this file)",
+    "proposed_home": "config_unknown_key_dotted_path_periphery::support (consolidate these 12 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

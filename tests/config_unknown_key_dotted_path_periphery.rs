@@ -78,7 +78,7 @@
 //! exemption (foreign frontmatter import) survives the rewrite of the mechanism it now
 //! shares with every `deny_unknown_fields` struct.
 //!
-//! The FINAL two tests close a FIFTH gap: the adjudicator rejected round 4's structural
+//! The next two tests close a FIFTH gap: the adjudicator rejected round 4's structural
 //! tracker itself on two bugs in HOW it recomposes `e.path()`'s segments back into text,
 //! not in where the path comes from. `expected_prefix` (the parent-path composition used
 //! to classify an unknown-field violation) joined segments unconditionally, putting a "."
@@ -90,6 +90,18 @@
 //! genuine nesting. Both fixes are pinned by the implementer's own unit tests against
 //! synthetic fixture structs (`src/config_store.rs`) - these two close the same gap every
 //! earlier round's pair did, through the real schema and the compiled binary.
+//!
+//! The FINAL test closes a SIXTH gap the round-5 fix itself opened: `render_path_segments`'s
+//! `escape_keys` mode backslash-escapes TWO characters inside a `Segment::Map`/`Enum` key -
+//! a literal "." (closed above) AND a literal "\" (the escape character itself, needed so
+//! the escaping is unambiguous - without it a key already containing a "\" followed by what
+//! looks like an escaped "." could misread as one). The round-5 implementer's own tests (unit
+//! and periphery) cover only the "." branch; the "\" branch had no test anywhere. A stage
+//! name is arbitrary operator-writable text with no character restriction anywhere in
+//! `config_store::validate` (the same fact the dot-bearing-stage-name test above rests on),
+//! so a stage containing a literal backslash is exactly as real and producible as one
+//! containing a dot - same defect family this unit has been rejected on four rounds running,
+//! caught here before a fifth.
 
 mod common;
 
@@ -720,6 +732,56 @@ fn rigger_validate_escapes_a_literal_dot_inside_a_stage_name() {
     );
     assert!(
         cli_err.contains("stages.foo\\.bar.unknown_stage_field: unknown key"),
+        "rigger validate's stderr must name the same escaped path; stderr:\n{cli_err}"
+    );
+    assert!(
+        cli_err.contains(&lib_err),
+        "rigger validate and config_store::load must fail with the SAME text: \
+         lib=\"{lib_err}\" cli=\"{cli_err}\""
+    );
+}
+
+/// A SIXTH gap, from the same round-5 fix: `render_path_segments`'s `escape_keys` mode
+/// escapes a literal "\" inside a map key the same way it escapes a literal "." - both are
+/// documented as escaped (src/config.rs, `render_path_segments`'s doc comment), but only the
+/// "." branch had a test anywhere (unit or periphery) before this one. A stage name
+/// containing its own literal backslash is exactly as legal and operator-producible as one
+/// containing a dot (no character restriction anywhere in `config_store::validate`), so this
+/// proves the fix's other escape branch through the real `Workflow.stages:
+/// BTreeMap<String, Stage>` production seam and the compiled binary, matching the sibling
+/// dot-escaping test above.
+#[test]
+fn rigger_validate_escapes_a_literal_backslash_inside_a_stage_name() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    // YAML double-quoted `"foo\\bar"` decodes to one literal backslash between "foo" and
+    // "bar" - the stage name the deserializer actually sees is `foo\bar` (7 bytes, one `\`).
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        "name: fixture\nstages:\n  \"foo\\\\bar\":\n    unknown_stage_field: 1\n",
+    )
+    .expect("overwrite workflow.yml with the backslash-bearing-stage-name fixture");
+
+    let lib_err = rigger::config_store::load(root.to_str().unwrap())
+        .expect_err("a stage name embedding its own '\\' must still fail to load")
+        .to_string();
+    assert!(
+        lib_err.contains("stages.foo\\\\bar.unknown_stage_field: unknown key"),
+        "config_store::load must escape the stage name's embedded '\\' (doubling it) so it \
+         can never be misread as the start of an escape sequence: {lib_err}"
+    );
+
+    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !cli_ok,
+        "rigger validate must fail on the unrecognized stage field"
+    );
+    assert!(
+        cli_err.contains("stages.foo\\\\bar.unknown_stage_field: unknown key"),
         "rigger validate's stderr must name the same escaped path; stderr:\n{cli_err}"
     );
     assert!(
