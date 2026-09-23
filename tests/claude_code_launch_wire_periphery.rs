@@ -1,8 +1,11 @@
 //! Periphery for spec 104 criterion 1 (THE LAUNCH IS TYPED): the parts of the new surface
 //! that the implementer's own in-process tests structurally cannot reach - the
-//! `SpawnLaunched` record's WIRE CONTRACT across a real process boundary, and the two
+//! `SpawnLaunched` record's WIRE CONTRACT across a real process boundary, the two
 //! empty-string field fallbacks on `Driver` that only a caller building the struct
-//! directly (not `Driver::default()`) ever exercises.
+//! directly (not `Driver::default()`) ever exercises, and (round 2, added alongside the
+//! stdin-write-failure cleanup this criterion's diff grew) the OS-level POSTCONDITION of a
+//! failed launch - that no child survives it - which only a real, externally-observed pid
+//! can prove.
 //!
 //! WHY THIS FILE, DISTINCT FROM THE IMPLEMENTER'S OWN TESTS. `src/driver/claude_code.rs`'s
 //! own `mod tests`, and `src/progress.rs`'s / `src/progress_store.rs`'s own `mod tests`,
@@ -10,7 +13,7 @@
 //! `progress_store::record_launch` IN PROCESS - every one of them against
 //! `Store::open(":memory:")`, a store that lives and dies with the single test function
 //! that opened it, and every one of them constructing `Driver` with BOTH `bin` and
-//! `rigger_bin` set to a real, non-empty value. Two things follow from that which no
+//! `rigger_bin` set to a real, non-empty value. Three things follow from that which no
 //! implementer test proves:
 //!
 //! 1. THE ROUND-TRIP + BACK-COMPAT the new `SpawnLaunched` serialized form needs (this
@@ -31,14 +34,25 @@
 //!    WITHOUT going through `Driver::default()`, which sets both fields to a literal
 //!    non-empty value and so never touches either fallback. Every implementer test either
 //!    uses `Driver::default()` or sets both fields explicitly.
+//! 3. `launch`'s doc comment now states a POSTCONDITION - "the launch never returns `Err`
+//!    with an unaccounted-for child still running behind it" - that is only checkable from
+//!    OUTSIDE the process under test: `mod tests` there asserts the `Result` shape and
+//!    (via `Child::wait`, on the SAME handle it already holds) that its OWN reap succeeds,
+//!    which proves `kill()`/`wait()` were called but not that the OS agrees the process is
+//!    actually gone, since `launch()`'s error path returns no `Child` to check with. Only a
+//!    pid read back independently (here: the fixture writes its own pid to a file before
+//!    exiting) and checked with `common::is_alive` - a real second observer, not the
+//!    handle that did the reaping - closes that gap.
 //!
-//! NOT OWNED HERE: argv/cwd/env/stdin shape (`build_args`, `launch`'s own process
-//! plumbing with both fields already set) - `src/driver/claude_code.rs`'s own tests
-//! already drive the real fixture binary and assert every one of those; THE STREAM
-//! reader, session resume and failure classification - criterion 2 onward, not yet
-//! landed (`impl AgentDriver for Driver` does not exist yet on this branch); the
-//! spawn-bound MCP server, the write guard and the StopFailure hooks - criteria 3, 4 and
-//! 5, separate units.
+//! NOT OWNED HERE: argv/cwd/env shape (`build_args`, `launch`'s own process plumbing with
+//! both fields already set, INCLUDING the new `--fallback-model` flag - one more field of
+//! the same already-exempted shape) - `src/driver/claude_code.rs`'s own tests already
+//! drive the real fixture binary and assert every one of those; THE STREAM reader, session
+//! resume and failure classification - criterion 2 onward, not yet landed (`impl
+//! AgentDriver for Driver` does not exist yet on this branch); the spawn-bound MCP server,
+//! the write guard and the StopFailure hooks - criteria 3, 4 and 5, separate units.
+
+mod common;
 
 use std::io::Read;
 use std::process::Child;
@@ -51,15 +65,32 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::progress::{SpawnLaunched, STREAM, TYPE_SPAWN_LAUNCHED};
 
+/// Resolve a checked-in fixture under `tests/fixtures/` by its file name - shared by both
+/// fixture accessors below so resolving a second, distinct fixture never re-duplicates the
+/// first one's path-joining body (the exact shape the project's own duplication audit
+/// exists to catch).
+fn fixture_path(name: &str) -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// The checked-in fixture `src/driver/claude_code.rs`'s own tests already point `bin` at -
 /// see its header comment (`tests/fixtures/claude-code-echo-agent.sh`) for why it is
 /// checked in rather than written at test time.
 fn fixture_bin() -> String {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/claude-code-echo-agent.sh")
-        .to_string_lossy()
-        .into_owned()
+    fixture_path("claude-code-echo-agent.sh")
 }
+
+// The checked-in fixture that never reads its stdin (`tests/fixtures/claude-code-never-
+// reads-stdin-agent.sh`, see its own header comment) has exactly one call site below, in
+// `launch_reaps_the_child_when_the_stdin_write_fails` - resolved there with `fixture_path`
+// directly rather than through a second single-line wrapper, which would only restate
+// `fixture_bin`'s own shape under a different name (the exact duplicate the project's own
+// audit flags a trivial one-argument forwarding function pair as, regardless of which
+// literal each passes).
 
 fn opts(id: &str) -> SpawnOpts {
     SpawnOpts {
@@ -299,4 +330,74 @@ fn launch_resolves_an_empty_bin_to_the_literal_claude_found_on_path() {
 
     let mut launch = result.expect("an empty bin resolves to `claude` and is found on PATH");
     reap(&mut launch.child);
+}
+
+// ---- launch(): a stdin-write failure reaps the child through its own handle ----
+
+#[test]
+fn launch_reaps_the_child_when_the_stdin_write_fails() {
+    // `launch`'s own doc comment states the postcondition: "the launch never returns `Err`
+    // with an unaccounted-for child still running behind it: a failure writing the first
+    // message ends the child through its own handle (kill() + wait()) before the error
+    // propagates." No implementer test drives this branch at all (every one of them uses
+    // `claude-code-echo-agent.sh`, which always successfully reads the first stdin line) -
+    // this closes that gap, and proves the postcondition from OUTSIDE `launch()`'s own
+    // `Child` handle, the only vantage that can (see this file's module doc, point 3).
+    //
+    // DETERMINISM, NOT A RACE: the fixture never reads its stdin at all and exits almost
+    // immediately. A write of a task bigger than the pipe's kernel buffer (Linux default
+    // 64 KiB, never resized by this driver) cannot fully complete while ANY reader
+    // remains, so it necessarily blocks until the fixture's exit closes the read end - at
+    // which point it fails with a broken pipe. That holds regardless of how the write and
+    // the fixture's exit interleave in time, so - unlike racing a write against a process
+    // that might close stdin fast - there is no flake window here.
+    let driver = Driver {
+        bin: fixture_path("claude-code-never-reads-stdin-agent.sh"),
+        rigger_bin: "rigger".to_string(),
+    };
+    let store = Store::open(":memory:").expect("in-memory store");
+    let pid_dir = tempfile::tempdir().expect("throwaway dir for the fixture's pid file");
+    let pid_file = pid_dir.path().join("child.pid");
+
+    let mut o = opts("u104-launch/implementer#0");
+    o.run_id = "run-stdin-failure".to_string();
+    o.env = vec![(
+        "RIGGER_TEST_NEVER_READ_PID_FILE".to_string(),
+        pid_file.to_string_lossy().into_owned(),
+    )];
+    let oversized_task = "x".repeat(8 * 1024 * 1024); // 8 MiB: far past any pipe buffer.
+
+    let err = match driver.launch(&AgentDef::default(), &oversized_task, &o, &store) {
+        Ok(_) => panic!("a write to a reader that never reads must not report success"),
+        Err(e) => e,
+    };
+    assert!(err.0.contains("u104-launch/implementer#0"), "{}", err.0);
+    assert!(err.0.contains("write task"), "{}", err.0);
+
+    // The durable claim still landed - `launch()` records BEFORE it ever attempts to
+    // start, let alone write to, the child (same ordering the other tests in this suite
+    // and `src/driver/claude_code.rs`'s own suite already pin for the spawn-failure case).
+    let recorded = store
+        .read_stream(STREAM, 0, Direction::Forward)
+        .expect("read the progress stream");
+    assert_eq!(
+        recorded.len(),
+        1,
+        "the launch record lands even though the write later fails"
+    );
+
+    // The postcondition itself: a REAL pid, read back independently of the `Child` handle
+    // `launch()` already reaped, is no longer alive. The fixture only ever gets to write
+    // this file if it actually ran - so its presence also proves the process existed at
+    // all, not merely that `Command::spawn` was attempted.
+    let pid_text =
+        std::fs::read_to_string(&pid_file).expect("the fixture wrote its own pid before exiting");
+    let pid: u32 = pid_text
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    assert!(
+        !common::is_alive(pid),
+        "child pid {pid} must not survive a launch() error - it must be reaped, not leaked"
+    );
 }
