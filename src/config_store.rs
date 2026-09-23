@@ -1015,6 +1015,113 @@ mod tests {
         );
     }
 
+    /// adj-u102c3-r4-verdict-reject-path-composition-bugs /
+    /// sdet-u102c3-r4-seq-index-in-parent-defeats-classification: round 4's `parent` was
+    /// built with an unconditional `.join(".")` over pre-stringified segments, which puts a
+    /// `.` before a `Segment::Seq` index - `serde_yaml`'s own rendering (and the tracker's
+    /// own `Path::Display` for the FULL path, already relied on one line above) never does.
+    /// An unknown field inside a `Vec<T>` element therefore made `expected_prefix` diverge
+    /// from `inner_msg`, so the classification's `starts_with` check silently failed for a
+    /// GENUINE unknown-key violation and the function fell through to the raw message - on
+    /// production schema (`defaults.failure_rules: Vec<FailureRuleDef>`), with an ordinary
+    /// typo, no adversarial input at all.
+    #[test]
+    fn parse_yaml_naming_unknown_keys_recomposes_the_path_past_a_seq_index() {
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Elem {
+            #[serde(default)]
+            #[allow(dead_code)]
+            known: u32,
+        }
+        #[derive(Debug, Default, serde::Deserialize)]
+        struct WithSeq {
+            #[serde(default)]
+            #[allow(dead_code)]
+            items: Vec<Elem>,
+        }
+        let seq_err = crate::config::parse_yaml_naming_unknown_keys::<WithSeq>(
+            "items:\n  - known: 1\n  - bogus: 2\n",
+        )
+        .expect_err("must fail to parse");
+        assert_eq!(
+            seq_err, "items[1].bogus: unknown key",
+            "an unknown field inside a Vec<T> element names the dotted path with NO \
+             separator before the [N] index, matching serde_yaml's own rendering: {seq_err}"
+        );
+    }
+
+    /// sdet-u102c3-r4-dot-in-map-key-recomposes-ambiguous-path: an unescaped join makes a
+    /// map key that literally contains "." (a stage name, e.g. - already legal, no
+    /// character restriction) recompose into a dotted path structurally indistinguishable
+    /// from genuine nesting: a stage "foo.bar" with a plain unknown field, and a stage "foo"
+    /// with a nested substructure "bar" holding the SAME unknown field, would both render
+    /// the byte-identical "stages.foo.bar.<field>" text under an unconditional join.
+    /// Backslash-escaping a literal "." (and the escape character itself) inside a
+    /// Map/Enum key's own text resolves that: only an UN-escaped "." is ever a real
+    /// separator, so the two cases below are now textually distinct.
+    #[test]
+    fn parse_yaml_naming_unknown_keys_escapes_a_literal_dot_inside_a_map_key() {
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Stage {
+            #[serde(default)]
+            #[allow(dead_code)]
+            agent: String,
+        }
+        #[derive(Debug, Default, serde::Deserialize)]
+        struct WithStages {
+            #[serde(default)]
+            #[allow(dead_code)]
+            stages: BTreeMap<String, Stage>,
+        }
+        let dotted_key_err = crate::config::parse_yaml_naming_unknown_keys::<WithStages>(
+            "stages:\n  \"foo.bar\":\n    bogus_field: 1\n",
+        )
+        .expect_err("must fail to parse");
+        assert_eq!(
+            dotted_key_err, "stages.foo\\.bar.bogus_field: unknown key",
+            "a literal '.' inside a single map key is backslash-escaped so it cannot read as \
+             a separator between two segments: {dotted_key_err}"
+        );
+
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Nested {
+            #[serde(default)]
+            #[allow(dead_code)]
+            known: String,
+        }
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct StageWithNested {
+            #[serde(default)]
+            #[allow(dead_code)]
+            bar: Nested,
+        }
+        #[derive(Debug, Default, serde::Deserialize)]
+        struct WithNestedStages {
+            #[serde(default)]
+            #[allow(dead_code)]
+            stages: BTreeMap<String, StageWithNested>,
+        }
+        let genuinely_nested_err =
+            crate::config::parse_yaml_naming_unknown_keys::<WithNestedStages>(
+                "stages:\n  foo:\n    bar:\n      bogus_field: 1\n",
+            )
+            .expect_err("must fail to parse");
+        assert_eq!(
+            genuinely_nested_err, "stages.foo.bar.bogus_field: unknown key",
+            "true nesting (a stage \"foo\" containing substructure \"bar\") has no embedded \
+             dot to escape, so it stays plain-dotted: {genuinely_nested_err}"
+        );
+        assert_ne!(
+            dotted_key_err, genuinely_nested_err,
+            "a stage literally named 'foo.bar' must render differently from a stage 'foo' \
+             nested under 'bar' - an unconditional join made these byte-identical"
+        );
+    }
+
     #[test]
     fn model_ladder_parses_from_frontmatter() {
         // Agent frontmatter accepts a `model_ladder` list (spec 10 unit 4): the cheap-first

@@ -54,35 +54,91 @@ pub(crate) fn err(msg: impl Into<String>) -> Error {
 /// at the document root, `"unknown field \`<field>\`..."`) - a plain prefix check against
 /// two known strings, never a search for a delimiter that content elsewhere in the message
 /// could also contain, so it cannot be fooled by what either string happens to hold.
+///
+/// Two bugs in HOW that plan is carried out (not in where the path comes from) surfaced a
+/// round later, both in this function's own recomposition of `e.path()`'s segments back
+/// into text: (1) the parent-path join was unconditional `.join(".")` over pre-stringified
+/// segments, which puts a "." before a `Segment::Seq` index - `serde_yaml`'s own rendering
+/// (and `serde_path_to_error::Path`'s own `Display`, relied on for the FULL path) never
+/// does, so the classification silently missed every unknown field inside a `Vec<T>`
+/// element. (2) the reported path joined a `Segment::Map` key's raw text with the same "."
+/// the format uses as a separator, so a key that itself contains a literal "." (a stage
+/// name, e.g. - legal today, unrestricted) recomposed a path indistinguishable from
+/// genuine nesting. [`render_path_segments`] fixes both: it reproduces the Seq-skips-
+/// separator rule both libraries already agree on (so a hand-rolled PREFIX rendering - over
+/// `segments[..len-1]`, which neither library exposes a public way to build a `Path` over -
+/// stays in step with their full-path `Display`), and its `escape_keys` mode
+/// backslash-escapes an embedded "." (and the escape character itself) inside a key so only
+/// an UN-escaped "." is ever a real separator in the text reported to the operator.
 pub(crate) fn parse_yaml_naming_unknown_keys<T>(body: &str) -> Result<T, String>
 where
     T: serde::de::DeserializeOwned,
 {
     let de = serde_yaml::Deserializer::from_str(body);
     serde_path_to_error::deserialize(de).map_err(|e| {
-        // Both computed from the tracker's path BEFORE `into_inner` consumes `e` -
-        // `path` for the final `<path>: unknown key` line, `segments` (its parsed pieces)
-        // to split the offending field from its parent for the prefix check below.
-        let path = e.path().to_string();
-        let segments: Vec<String> = e.path().iter().map(ToString::to_string).collect();
+        // Segments computed from the tracker's path BEFORE `into_inner` consumes `e`.
+        let segments: Vec<serde_path_to_error::Segment> = e.path().iter().cloned().collect();
         let inner_msg = e.into_inner().to_string();
         let Some(field) = segments.last() else {
             // No segment at all (e.g. the document itself is not a mapping): not an
             // unknown-key shape by construction.
             return inner_msg;
         };
-        let parent = segments[..segments.len() - 1].join(".");
-        let expected_prefix = if parent.is_empty() {
+        // RAW (unescaped) rendering: must match `serde_yaml`'s own message text exactly, so
+        // it uses the same Seq-skips-separator rule that text does, never escaping (escaping
+        // would make a dot-bearing key's `expected_prefix` diverge from `inner_msg`, which
+        // never escapes either).
+        let raw_parent = render_path_segments(&segments[..segments.len() - 1], false);
+        let expected_prefix = if raw_parent.is_empty() {
             format!("unknown field `{field}`")
         } else {
-            format!("{parent}: unknown field `{field}`")
+            format!("{raw_parent}: unknown field `{field}`")
         };
         if inner_msg.starts_with(&expected_prefix) {
-            format!("{path}: unknown key")
+            // The path REPORTED to the operator is a separate, escaped rendering of the
+            // FULL path (including `field`, the final segment) - see the doc comment above.
+            let escaped_path = render_path_segments(&segments, true);
+            format!("{escaped_path}: unknown key")
         } else {
             inner_msg
         }
     })
+}
+
+/// Render `segments` as a dotted path, reproducing `serde_path_to_error::Path`'s (and
+/// `serde_yaml`'s own internal `Path`'s) separator rule: no "." before a `Segment::Seq`
+/// index, so `[N]` glues to its parent exactly like both libraries' `Display` impls already
+/// do. Neither exposes a public way to build a `Path` over a sub-slice of segments, so this
+/// is the only way to keep a PREFIX rendering (`segments[..len-1]`) in step with their
+/// full-path `Display`.
+///
+/// `escape_keys` additionally backslash-escapes a literal "." or "\\" inside a
+/// `Segment::Map`/`Segment::Enum` key's own text, so the returned string can always be told
+/// apart from one where that "." was a real separator: with escaping off this exactly
+/// reproduces the raw text `serde_yaml` embeds in its own message (needed to classify it);
+/// with escaping on it produces the path reported to the operator.
+fn render_path_segments(segments: &[serde_path_to_error::Segment], escape_keys: bool) -> String {
+    use serde_path_to_error::Segment;
+    let mut out = String::new();
+    let mut separator = "";
+    for segment in segments {
+        if !matches!(segment, Segment::Seq { .. }) {
+            out.push_str(separator);
+        }
+        match segment {
+            Segment::Map { key } | Segment::Enum { variant: key } if escape_keys => {
+                for ch in key.chars() {
+                    if ch == '.' || ch == '\\' {
+                        out.push('\\');
+                    }
+                    out.push(ch);
+                }
+            }
+            other => out.push_str(&other.to_string()),
+        }
+        separator = ".";
+    }
+    out
 }
 
 /// AgentDef is one agent, declared in a .rigger/agents/<id>.md file: YAML

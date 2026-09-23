@@ -77,6 +77,19 @@
 //! unknown key); the second proves `AgentDef`'s deliberate non-`deny_unknown_fields`
 //! exemption (foreign frontmatter import) survives the rewrite of the mechanism it now
 //! shares with every `deny_unknown_fields` struct.
+//!
+//! The FINAL two tests close a FIFTH gap: the adjudicator rejected round 4's structural
+//! tracker itself on two bugs in HOW it recomposes `e.path()`'s segments back into text,
+//! not in where the path comes from. `expected_prefix` (the parent-path composition used
+//! to classify an unknown-field violation) joined segments unconditionally, putting a "."
+//! before a `Segment::Seq` index that `serde_yaml`'s own rendering never does - missing the
+//! classification entirely for an unknown field inside a `Vec<T>` element, real
+//! pre-existing schema, no crafted input. Separately, the path REPORTED to the operator
+//! joined a `Segment::Map` key's raw text with the same "." the format uses as a separator,
+//! so a key that itself contains a literal "." recomposed a path indistinguishable from
+//! genuine nesting. Both fixes are pinned by the implementer's own unit tests against
+//! synthetic fixture structs (`src/config_store.rs`) - these two close the same gap every
+//! earlier round's pair did, through the real schema and the compiled binary.
 
 mod common;
 
@@ -612,5 +625,106 @@ fn rigger_validate_still_ignores_an_unrecognized_agent_frontmatter_key() {
         out.contains("7 agents"),
         "rigger validate must count the foreign-keyed agent among the loaded fleet (the 6 \
          scaffolded defaults plus this one): {out}"
+    );
+}
+
+/// A FIFTH gap, from a fourth remediation round: the adjudicator rejected round 4's
+/// structural-tracker rewrite itself on two path/prefix-composition bugs, both inside
+/// `parse_yaml_naming_unknown_keys`'s own recomposition of `e.path()`'s segments, never
+/// pinned through the real `Workflow` schema or the compiled binary - only against
+/// synthetic fixture structs in `src/config_store.rs`.
+///
+/// `defaults.failure_rules: Vec<FailureRuleDef>` is real, PRE-EXISTING production schema
+/// (spec 10 unit 2, untouched by this diff) - an unknown key inside one of its elements is
+/// an ordinary typo, no crafted input at all. Round 4's `parent` computation joined
+/// segments with an unconditional "." that put a separator before the `[N]` sequence
+/// index; `serde_yaml`'s own rendered message never does, so the classification's
+/// `starts_with` check silently missed a GENUINE unknown-key violation and fell through to
+/// the raw, un-reformatted message - criterion 3 ("AN UNKNOWN KEY IS NAMED ... at every
+/// config level") unmet for any Vec-nested field, through no fault of the operator's input.
+#[test]
+fn rigger_validate_names_the_dotted_path_for_an_unknown_key_inside_a_vec_element() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        "name: fixture\ndefaults:\n  failure_rules:\n    - {}\n    - bogus_field: 1\n",
+    )
+    .expect("overwrite workflow.yml with the Vec-element-unknown-key fixture");
+
+    let lib_err = rigger::config_store::load(root.to_str().unwrap())
+        .expect_err("an unknown key inside a failure_rules element must fail to load")
+        .to_string();
+    assert!(
+        lib_err.contains("defaults.failure_rules[1].bogus_field: unknown key"),
+        "config_store::load must name the dotted path THROUGH the sequence index, with no \
+         separator before it, matching serde_yaml's own rendering: {lib_err}"
+    );
+
+    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !cli_ok,
+        "rigger validate must fail on the unrecognized failure_rules element field"
+    );
+    assert!(
+        cli_err.contains("defaults.failure_rules[1].bogus_field: unknown key"),
+        "rigger validate's stderr must name the same path through the sequence index; \
+         stderr:\n{cli_err}"
+    );
+    assert!(
+        cli_err.contains(&lib_err),
+        "rigger validate and config_store::load must fail with the SAME text: \
+         lib=\"{lib_err}\" cli=\"{cli_err}\""
+    );
+}
+
+/// The round-4 adjudicator's second path-composition finding: a `stages:` name (arbitrary
+/// operator-writable YAML text, already legal today - no character restriction anywhere in
+/// `config_store::validate`) containing its own literal "." recomposed, under round 4's
+/// unescaped join, into a dotted path structurally indistinguishable from a stage "foo"
+/// genuinely nested under a substructure "bar" - an operator reading the message could not
+/// tell which stage was actually wrong. This proves the fix's escaping through the real
+/// `Workflow.stages: BTreeMap<String, Stage>` production seam and the compiled binary, not
+/// just the synthetic fixture structs the implementer's own unit test constructs.
+#[test]
+fn rigger_validate_escapes_a_literal_dot_inside_a_stage_name() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        "name: fixture\nstages:\n  \"foo.bar\":\n    unknown_stage_field: 1\n",
+    )
+    .expect("overwrite workflow.yml with the dot-bearing-stage-name fixture");
+
+    let lib_err = rigger::config_store::load(root.to_str().unwrap())
+        .expect_err("a stage name embedding its own '.' must still fail to load")
+        .to_string();
+    assert!(
+        lib_err.contains("stages.foo\\.bar.unknown_stage_field: unknown key"),
+        "config_store::load must escape the stage name's embedded '.' so it cannot be \
+         misread as a separator between two segments: {lib_err}"
+    );
+
+    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !cli_ok,
+        "rigger validate must fail on the unrecognized stage field"
+    );
+    assert!(
+        cli_err.contains("stages.foo\\.bar.unknown_stage_field: unknown key"),
+        "rigger validate's stderr must name the same escaped path; stderr:\n{cli_err}"
+    );
+    assert!(
+        cli_err.contains(&lib_err),
+        "rigger validate and config_store::load must fail with the SAME text: \
+         lib=\"{lib_err}\" cli=\"{cli_err}\""
     );
 }
