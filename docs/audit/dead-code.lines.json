@@ -39,27 +39,27 @@
   {
     "file": "src/config.rs",
     "name": "sdet_author_enabled",
-    "line": 456,
+    "line": 503,
     "test_only_references": [
       {
         "file": "src/config_store.rs",
-        "line": 936
+        "line": 1005
       },
       {
         "file": "src/config_store.rs",
-        "line": 941
+        "line": 1010
       },
       {
         "file": "src/config_store.rs",
-        "line": 946
+        "line": 1015
       },
       {
         "file": "src/config_store.rs",
-        "line": 951
+        "line": 1020
       },
       {
         "file": "src/config_store.rs",
-        "line": 957
+        "line": 1026
       }
     ]
   },
@@ -1118,7 +1118,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 10002
+        "line": 10006
       }
     ]
   },
@@ -1658,43 +1658,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 5159
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 5182
-      },
-      {
-        "file": "src/worktree.rs",
         "line": 5218
       },
       {
         "file": "src/worktree.rs",
-        "line": 5250
+        "line": 5241
       },
       {
         "file": "src/worktree.rs",
-        "line": 5285
+        "line": 5277
       },
       {
         "file": "src/worktree.rs",
-        "line": 5301
+        "line": 5309
       },
       {
         "file": "src/worktree.rs",
-        "line": 5328
+        "line": 5344
       },
       {
         "file": "src/worktree.rs",
-        "line": 5358
+        "line": 5360
       },
       {
         "file": "src/worktree.rs",
-        "line": 5365
+        "line": 5387
       },
       {
         "file": "src/worktree.rs",
-        "line": 5373
+        "line": 5417
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 5424
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 5432
       },
       {
         "file": "tests/cli.rs",
@@ -2161,7 +2161,7 @@
   {
     "file": "src/worktree.rs",
     "name": "is_dirty",
-    "line": 717,
+    "line": 725,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
@@ -2181,23 +2181,23 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 4677
+        "line": 4736
       },
       {
         "file": "src/worktree.rs",
-        "line": 4687
+        "line": 4746
       },
       {
         "file": "src/worktree.rs",
-        "line": 4753
+        "line": 4812
       },
       {
         "file": "src/worktree.rs",
-        "line": 4788
+        "line": 4847
       },
       {
         "file": "src/worktree.rs",
-        "line": 4800
+        "line": 4859
       }
     ]
   }

@@ -15,8 +15,8 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::config::{
-    err, find_cycle, index_agents, parse_agent, resolve_wall_clocks, AgentDef, Config, Defaults,
-    Error, StoreConfig, Workflow,
+    dotted_unknown_key, err, find_cycle, index_agents, parse_agent, resolve_wall_clocks, AgentDef,
+    Config, Defaults, Error, StoreConfig, Workflow,
 };
 // The rest of `config`'s pure surface this file's own PRODUCTION code never touches, but its
 // moved test module (spec 93, criterion 1 - see this file's own doc) does: Duration for a
@@ -86,8 +86,8 @@ pub fn read_agents_dir(dir: &Path) -> Result<Vec<(String, AgentDef)>, Error> {
 /// is malformed. [`load`] above stays the FULL, validating entry every run-starting path uses.
 pub(crate) fn load_workflow(path: &Path) -> Result<Workflow, Error> {
     let b = std::fs::read_to_string(path).map_err(|e| err(format!("read workflow: {e}")))?;
-    let mut wf: Workflow =
-        serde_yaml::from_str(&b).map_err(|e| err(format!("parse workflow: {e}")))?;
+    let mut wf: Workflow = serde_yaml::from_str(&b)
+        .map_err(|e| err(format!("parse workflow: {}", dotted_unknown_key(&e))))?;
     let names: Vec<String> = wf.stages.keys().cloned().collect();
     for name in names {
         if let Some(st) = wf.stages.get_mut(&name) {
@@ -127,8 +127,8 @@ pub fn read_store_config(rigger_dir: &Path) -> Result<StoreConfig, Error> {
         #[serde(default)]
         store: StoreConfig,
     }
-    let probe: Probe =
-        serde_yaml::from_str(&body).map_err(|e| err(format!("parse store config: {e}")))?;
+    let probe: Probe = serde_yaml::from_str(&body)
+        .map_err(|e| err(format!("parse store config: {}", dotted_unknown_key(&e))))?;
     Ok(probe.store)
 }
 
@@ -179,8 +179,8 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
         #[serde(default)]
         defaults: Defaults,
     }
-    let probe: Probe =
-        serde_yaml::from_str(&body).map_err(|e| err(format!("parse workflow: {e}")))?;
+    let probe: Probe = serde_yaml::from_str(&body)
+        .map_err(|e| err(format!("parse workflow: {}", dotted_unknown_key(&e))))?;
     Ok(probe.defaults)
 }
 
@@ -769,6 +769,75 @@ mod tests {
         assert!(parse_agent(b"no frontmatter here").is_err());
     }
 
+    /// Spec 102, criterion 3 (AN UNKNOWN KEY IS NAMED) scopes "every config level" to the
+    /// internal `workflow.yml` schema tree - `AgentDef` deliberately stays permissive of an
+    /// unmodeled frontmatter field, since `rigger setup --agents` imports whole foreign
+    /// agent collections (the Claude Code / agency-agents shape) carrying fields Rigger
+    /// never models at all (`description`, ...). A regression guard: this must keep
+    /// parsing, not start rejecting `description` the way a `workflow.yml` field would.
+    #[test]
+    fn parse_agent_tolerates_an_unmodeled_frontmatter_key() {
+        let b = b"---\nid: researcher\ndescription: digs up prior art\n---\nBody.\n";
+        let a = parse_agent(b).expect(
+            "AgentDef must stay permissive of unmodeled frontmatter fields (foreign agent \
+             collections import through this same parse)",
+        );
+        assert_eq!(a.id, "researcher");
+    }
+
+    /// The pure reformatter (spec 102, criterion 3): `serde_yaml` already tracks the dotted
+    /// parent path of a nested `deny_unknown_fields` violation internally and prefixes it to
+    /// the message; `dotted_unknown_key` recomposes that prefix and the leaf field name into
+    /// one dotted token. A nested violation names `parent.field`; a root-level violation (no
+    /// parent path) names the bare field; anything that is not this error shape (a type
+    /// mismatch here) passes through unchanged.
+    #[test]
+    fn dotted_unknown_key_recomposes_the_nested_path_and_passes_through_other_errors() {
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Inner {
+            #[serde(default)]
+            #[allow(dead_code)]
+            known: String,
+        }
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Outer {
+            #[serde(default)]
+            #[allow(dead_code)]
+            inner: Inner,
+        }
+
+        let nested_err =
+            serde_yaml::from_str::<Outer>("inner:\n  knwon: x\n").expect_err("must fail to parse");
+        assert_eq!(
+            dotted_unknown_key(&nested_err),
+            "inner.knwon: unknown key",
+            "a nested unknown field recomposes serde_yaml's own path prefix and the leaf field \
+             name into one dotted token"
+        );
+
+        let root_err = serde_yaml::from_str::<Outer>("bogus: 1\n").expect_err("must fail to parse");
+        assert_eq!(
+            dotted_unknown_key(&root_err),
+            "bogus: unknown key",
+            "a root-level unknown field (no parent path) names the bare field"
+        );
+
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct TypeMismatch {
+            n: u32,
+        }
+        let type_err = serde_yaml::from_str::<TypeMismatch>("n: not-a-number\n")
+            .expect_err("must fail to parse");
+        assert_eq!(
+            dotted_unknown_key(&type_err),
+            type_err.to_string(),
+            "a non-unknown-field error (a type mismatch here) passes through unchanged"
+        );
+    }
+
     #[test]
     fn model_ladder_parses_from_frontmatter() {
         // Agent frontmatter accepts a `model_ladder` list (spec 10 unit 4): the cheap-first
@@ -955,6 +1024,50 @@ mod tests {
         let on: Workflow =
             serde_yaml::from_str("name: w\ndefaults:\n  sdet_author: true\n").unwrap();
         assert!(on.defaults.sdet_author_enabled());
+    }
+
+    /// Spec 102, criterion 3 (AN UNKNOWN KEY IS NAMED), the spec's own worked example:
+    /// `defaults.max_parallel_unitz` (a typo of a real-world field this repo's own
+    /// `.rigger/workflow.yml` once carried silently dead) fails naming that dotted path -
+    /// this criterion OWNS unknown-key rejection at every config level, proven here at the
+    /// `load_workflow` level [`load`] itself calls, and at the CLI level (`rigger validate`)
+    /// in `tests/config_unknown_key_dotted_path_periphery.rs` - both read through this same
+    /// function, so their text is identical by construction, not by convention.
+    #[test]
+    fn load_workflow_rejects_an_unknown_key_under_defaults_naming_its_dotted_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("workflow.yml");
+        std::fs::write(
+            &path,
+            "name: w\ndefaults:\n  autonomy: auto_notify\n  max_parallel_unitz: 2\n",
+        )
+        .expect("write workflow.yml");
+
+        let msg = load_workflow(&path).unwrap_err().to_string();
+        assert!(
+            msg.contains("defaults.max_parallel_unitz: unknown key"),
+            "must name the dotted path of the unrecognized key: {msg}"
+        );
+    }
+
+    /// The same rejection reached through a nested map key (`stages.<name>.<field>`), proving
+    /// the dotted path composes correctly past a `BTreeMap` level too, not just a plain
+    /// struct-in-struct nesting.
+    #[test]
+    fn load_workflow_rejects_an_unknown_key_under_a_named_stage_naming_its_dotted_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("workflow.yml");
+        std::fs::write(
+            &path,
+            "name: w\nstages:\n  implement:\n    agent: rust-engineer\n    gatez: [build]\n",
+        )
+        .expect("write workflow.yml");
+
+        let msg = load_workflow(&path).unwrap_err().to_string();
+        assert!(
+            msg.contains("stages.implement.gatez: unknown key"),
+            "must name the dotted path through the stage's own map key: {msg}"
+        );
     }
 
     #[test]

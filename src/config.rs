@@ -22,8 +22,47 @@ pub(crate) fn err(msg: impl Into<String>) -> Error {
     Error(msg.into())
 }
 
+/// Reformat a `serde_yaml` "unknown field" error into the dotted-path form spec 102
+/// criterion 3 requires - `<path.to.field>: unknown key` - so every `deny_unknown_fields`
+/// violation on any config struct, at any nesting depth, reads the same way. `serde_yaml`
+/// ALREADY tracks the dotted parent path of a nested deserialize failure internally (its
+/// own `path` module's doc example is literally `dependencies.serde.typo1`) and prefixes
+/// it onto the message as `"<path>: unknown field \`<field>\`, expected ..."` (empty when
+/// the field is at the document root); this just recomposes that existing prefix and the
+/// leaf field name into ONE dotted token instead of adding a second, independent path
+/// tracker (`serde_path_to_error` or a hand-rolled schema walk) - config.rs and every
+/// downstream config struct stay a zero-new-dependency surface. Any OTHER parse error (a
+/// type mismatch, a missing field, malformed YAML, ...) is not this shape and passes
+/// through with `serde_yaml`'s own message unchanged.
+pub(crate) fn dotted_unknown_key(e: &serde_yaml::Error) -> String {
+    let msg = e.to_string();
+    let Some(field_at) = msg.find("unknown field `") else {
+        return msg;
+    };
+    let after = &msg[field_at + "unknown field `".len()..];
+    let Some(end) = after.find('`') else {
+        return msg;
+    };
+    let field = &after[..end];
+    let path = msg[..field_at].trim_end_matches(": ").trim();
+    if path.is_empty() {
+        format!("{field}: unknown key")
+    } else {
+        format!("{path}.{field}: unknown key")
+    }
+}
+
 /// AgentDef is one agent, declared in a .rigger/agents/<id>.md file: YAML
 /// frontmatter plus a markdown prompt body.
+///
+/// Deliberately NOT `#[serde(deny_unknown_fields)]` (spec 102 criterion 3 scopes "every
+/// config level" to the internal `workflow.yml` schema tree, not this one): `rigger setup
+/// --agents` imports agents from FOREIGN collections (the Claude Code / agency-agents
+/// frontmatter shape) whose files carry fields Rigger does not model at all - `name`
+/// (normalized to `id` before parsing), `description`, and others - and are meant to
+/// pass through untouched on disk (`import_agents`, `tests::import_agents_copies_and_
+/// normalizes_the_identity_field`). Rejecting them would break importing any real
+/// foreign fleet, the opposite of this format's purpose.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct AgentDef {
     pub id: String,
@@ -60,6 +99,7 @@ pub struct AgentDef {
 
 /// Gate is a verification command plus how much it is trusted.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Gate {
     #[serde(default)]
     pub run: String,
@@ -86,6 +126,7 @@ pub struct Gate {
 /// and the matching paths are regenerated in a follow-up commit after the implementer's own
 /// commit lands (the design's "in that order").
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RegenerateRule {
     #[serde(default)]
     pub paths: Vec<String>,
@@ -99,6 +140,7 @@ pub struct RegenerateRule {
 /// `limit` and exponential `backoff`. The runtime form is [`failure::FailureRule`]; this
 /// is only the declarative surface. Rules are evaluated first-match-wins.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FailureRuleDef {
     /// The match predicate. `match` is a Rust keyword, so it is deserialized under the
     /// field name `match` into `match_`.
@@ -120,6 +162,7 @@ pub struct FailureRuleDef {
 /// match (logical AND); an absent field is a wildcard, so an all-absent `match` is the
 /// catch-all a final `product` rule uses.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatchDef {
     #[serde(default)]
     pub exit_status: Option<i32>,
@@ -135,6 +178,7 @@ pub struct MatchDef {
 /// (`duration_ms` / `max_ms`) so a value like `1000` never reads as an ambiguous
 /// bare "duration".
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackoffDef {
     /// Base delay before the first rerun, in milliseconds. 0 = no wait.
     #[serde(default)]
@@ -196,6 +240,7 @@ impl FailureRuleDef {
 /// stage may override it with its own `review` block (§3.2). All three are
 /// optional and compose: lenses alone, lenses + adjudicator, or the full trio.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewPanel {
     #[serde(default)]
     pub lenses: Vec<String>,
@@ -322,6 +367,7 @@ impl ReviewPanel {
 /// gate suite stay mandatory on every tier - only the adversary and the extra lenses
 /// flex - so the light route still gates integration.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewDepth {
     /// The reduced roster a LOW-RISK unit reviews itself with (typically fewer lenses
     /// and no adversary). It must name an adjudicator (`validate_depth`), and its
@@ -359,6 +405,7 @@ pub struct ReviewDepth {
 
 /// Defaults are workflow-wide fallbacks for stages that do not set their own.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Defaults {
     #[serde(default)]
     pub autonomy: String,
@@ -460,6 +507,7 @@ impl Defaults {
 
 /// Stage is one node of the workflow DAG.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Stage {
     #[serde(skip)]
     pub name: String,
@@ -650,6 +698,7 @@ impl Stage {
 /// the choice in the one committed place; the connection string is never required here, so no
 /// secret can leak into a committed file.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct StoreConfig {
     #[serde(default)]
     pub backend: String,
@@ -669,6 +718,7 @@ pub struct StoreConfig {
 /// named-but-absent hard error are spec 65 unit 2's job) lives in `gate.rs`, not
 /// here, so this stays a pure value type like its siblings.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct BuildConfig {
     /// The `RUSTC_WRAPPER` binary name, `auto` to probe PATH, or `off`/empty (the
     /// default) to disable the shared-cache layer entirely.
@@ -738,6 +788,7 @@ fn default_max_concurrent() -> u32 {
 
 /// Workflow is the declarative loop: a DAG of stages, a gate library, and defaults.
 #[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Workflow {
     #[serde(default)]
     pub name: String,

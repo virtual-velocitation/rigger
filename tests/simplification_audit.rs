@@ -4797,11 +4797,15 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:214-231`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0191`, 15 sites: `src/dash.rs`, `src/main.rs`, \
-        `src/reap.rs`, `tests/cli.rs`, `tests/mutation_runner_pdeathsig_periphery.rs` - spec \
-        91's own launcher-exits proving test reads `/proc/<pid>/stat` directly for the same \
-        reason `dash.rs::process_state` does, growing this already-known cluster by one site \
-        rather than opening a new one; `dup-0191`'s own count in \
+        capstone previously caught (`dup-0191`, 60 sites: `src/dash.rs`, `src/main.rs`, \
+        `src/reap.rs`, `tests/cli.rs`, `tests/duplication_catalog_contract_periphery.rs`, \
+        `tests/mutation_runner_pdeathsig_periphery.rs`, `tests/simplification_audit.rs` - \
+        spec 91's own launcher-exits proving test was an early addition to this \
+        already-known cluster; a later semantic-classification pass widened it further, \
+        including this file's own worked-example prose and fixtures (self-referential: the \
+        scanner reads its own `/proc`-string-literal test fixtures as `/proc`-topic sites \
+        too), which is why the count moved well past a one-site increment; `dup-0191`'s own \
+        count in \
         `docs/audit/duplication-catalog.json` is the one live authority, so this paragraph's \
         number is a point-in-time snapshot, not a frozen fact), plus 60 raw `/proc`-path \
         string literals scattered across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four \

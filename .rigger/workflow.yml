@@ -66,11 +66,15 @@ defaults:
   # workers; a fast reviewer role can pin a tighter bound in its own frontmatter.
   max_wall_clock: 3600
 
-  # How many implement units build at once (spec 89, per-unit pipelining). Each live unit
-  # owns a debug build cache of about 50 GB on this crate, and a driver death makes every
-  # live unit rebuild at once; five in parallel filled /home twice on 2026-09-15 (Steam
-  # holds most of the disk). Two bounds the worst case to about 100 GB of caches.
-  max_parallel_units: 2
+  # How many implement units build at once (spec 89, per-unit pipelining) - wired to the
+  # conductor's wave-width bound by spec 102 (`max_parallel_units`, criterion 1). Left
+  # ABSENT here until that field lands: this key sat here, unread by any code, until spec
+  # 102 criterion 3's `deny_unknown_fields` schema turned that silent drop into the loud
+  # load error it should always have been (the spec's own motivating example). Re-add
+  # `max_parallel_units: 2` once the field is real - each live unit owns a debug build
+  # cache of about 50 GB on this crate, and a driver death makes every live unit rebuild
+  # at once; five in parallel filled /home twice on 2026-09-15 (Steam holds most of the
+  # disk), so two bounds the worst case to about 100 GB of caches.
 
   # The three-tier review panel applied to EVERY implementer unit (§3.2). TIER 1:
   # the expert lenses (architecture + sdet) review the unit's diff in parallel.
