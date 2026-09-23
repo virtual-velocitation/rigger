@@ -2117,6 +2117,19 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
         .filter(|u| prior.is_terminal(&u.id))
         .map(|u| u.id.clone())
         .collect();
+    // The wave-width bound's occupancy (spec 102, criterion 1): every unit that has
+    // STARTED (it appears in the prior projection - a `UnitStarted` is already in the
+    // log) but has not reached a terminal state is still occupying a slot. Seeded here,
+    // from the SAME log-derived `prior` projection `integrated`/`terminal` already use,
+    // so a resumed process after a crash counts a spawn still in flight instead of
+    // starting from a false-empty process-local counter - see `run_wave`'s own doc
+    // comment for the admission rule this seeds.
+    let mut in_flight: HashSet<String> = prior
+        .units
+        .values()
+        .filter(|u| !prior.is_terminal(&u.id))
+        .map(|u| u.id.clone())
+        .collect();
 
     // Deterministic decomposition baseline (§3.2): when the run is spec-driven
     // (`deps.criteria` non-empty), the conductor itself creates ONE implement unit per
@@ -2257,7 +2270,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 &fanout_criteria,
                 &fanout_template_gates,
             )?;
-            ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
+            ctx.run_wave(
+                &stages,
+                &ready,
+                &mut integrated,
+                &mut terminal,
+                &mut in_flight,
+            )?;
             ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)?;
         }
         // If the workflow wires a plan-critique stage, review the PROPOSED DAG with its
@@ -2367,7 +2386,13 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
                 &fanout_criteria,
                 &fanout_template_gates,
             )?;
-            ctx.run_wave(&stages, &ready, &mut integrated, &mut terminal)?;
+            ctx.run_wave(
+                &stages,
+                &ready,
+                &mut integrated,
+                &mut terminal,
+                &mut in_flight,
+            )?;
             // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
             // wide wave can exhaust the budget partway through, refusing later spawns.
             // Record the breaker and stop here too, not only at the next wave boundary.
@@ -3898,20 +3923,54 @@ impl RunCtx<'_> {
         ready: &[String],
         integrated: &mut HashSet<String>,
         terminal: &mut HashSet<String>,
+        in_flight: &mut HashSet<String>,
     ) -> Result<(), Error> {
+        // The wave-width bound (spec 102, criterion 1): `defaults.max_parallel_units`
+        // caps how many units may be in flight AT ONCE across the WHOLE run, not just
+        // this wave's own batches. `0` (the default) is unbounded - the historical
+        // behavior, byte-for-byte. A name already in `in_flight` (seeded from the log at
+        // run start, so a crash-resumed process still counts it - see `run`'s own seed)
+        // is ALWAYS admitted: it already holds its slot and must be free to continue,
+        // never blocked by its own occupancy. Only names NOT already in flight compete
+        // for whatever slots remain. A ready stage the width refuses is left OUT of
+        // `admitted` entirely - neither integrated nor terminal - so a later wave (this
+        // step's, once a slot frees, or a resumed step's) offers it again.
+        let width = self.cfg.workflow.defaults.max_parallel_units as usize;
+        let admitted: Vec<String> = if width == 0 {
+            ready.to_vec()
+        } else {
+            let mut fresh_budget = width.saturating_sub(in_flight.len());
+            let mut admitted = Vec::with_capacity(ready.len());
+            for name in ready {
+                if in_flight.contains(name) {
+                    admitted.push(name.clone());
+                } else if fresh_budget > 0 {
+                    fresh_budget -= 1;
+                    admitted.push(name.clone());
+                }
+            }
+            admitted
+        };
+        in_flight.extend(admitted.iter().cloned());
+
         // Safe-parallelism partitioning (§3.2, §8): when partitioning is requested
         // and a grounder can compute blast radii, split the ready stages into
         // batches that are DISJOINT by blast-radius and run the batches SEQUENTIALLY
         // (each batch still concurrent under the pool cap), so two stages whose blast
         // radii overlap never run at the same time and never share a worktree. With
         // no grounder or no partition request, the whole wave is one batch - the
-        // historical single-wave behavior.
-        let batches = self.partition_wave(stages, ready);
+        // historical single-wave behavior. Runs over `admitted` only - the width bound
+        // above already excluded whatever this wave has no slot for.
+        let batches = self.partition_wave(stages, &admitted);
         let mut first_err = None;
         for batch in &batches {
             let results = self.run_batch(stages, batch);
             for (name, r) in results {
                 terminal.insert(name.clone());
+                // Freed for every genuine resolution; the PARKED arm below re-occupies
+                // the slot - the spawn is still actually running, off-process, and a
+                // fresh candidate must not be admitted in its place.
+                in_flight.remove(&name);
                 match r {
                     Ok(true) => {
                         integrated.insert(name);
@@ -3926,6 +3985,7 @@ impl RunCtx<'_> {
                     // the phase boundary holds the deferred gate until a later step
                     // drains the frontier and the tree is fully assembled.
                     Err(e) if is_parked(&e) => {
+                        in_flight.insert(name);
                         self.parked.store(true, Ordering::SeqCst);
                     }
                     // A budget-refused review-tier spawn (lens/adversary/adjudicator) is
@@ -35219,6 +35279,210 @@ mod tests {
                 "every stage must integrate even when the wave exceeds the pool cap"
             );
         }
+    }
+
+    #[test]
+    fn run_wave_admits_at_most_max_parallel_units_leaving_the_rest_neither_failed_nor_terminal() {
+        // Spec 102, criterion 1 (THE WIDTH IS ENFORCED): three independent ready stages,
+        // `max_parallel_units: 1`. Each `run_wave` call must admit exactly one - the other
+        // two are left OUT of `admitted` entirely, so they land in neither `integrated`
+        // nor `terminal` (a stage the width refuses is never failed). Pinned directly at
+        // `run_wave` (white-box, like `partition_wave_own_batches_...` above) across
+        // three successive calls, modeling "this step's wave or a later one".
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_parallel_units = 1;
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        let names = ["s0", "s1", "s2"];
+        for name in names {
+            cfg.workflow.stages.insert(
+                name.to_string(),
+                Stage {
+                    name: name.to_string(),
+                    agent: "a".into(),
+                    gates: vec!["ok".into()],
+                    ..Default::default()
+                },
+            );
+        }
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let stages = cfg.workflow.stages.clone();
+        let mut integrated: HashSet<String> = HashSet::new();
+        let mut terminal: HashSet<String> = HashSet::new();
+        let mut in_flight: HashSet<String> = HashSet::new();
+        let all_ready: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+
+        // Wave 1: all three are READY, but only one may be ADMITTED.
+        ctx.run_wave(
+            &stages,
+            &all_ready,
+            &mut integrated,
+            &mut terminal,
+            &mut in_flight,
+        )
+        .unwrap();
+        assert_eq!(
+            integrated.len(),
+            1,
+            "max_parallel_units:1 must admit exactly one stage this wave: {integrated:?}"
+        );
+        assert_eq!(
+            terminal.len(),
+            1,
+            "the two un-admitted stages must be neither failed nor terminal: {terminal:?}"
+        );
+
+        // Wave 2 (this step's next wave): the two still-ready stages are offered again;
+        // one more slot frees and is admitted.
+        let ready2: Vec<String> = all_ready
+            .iter()
+            .filter(|n| !terminal.contains(*n))
+            .cloned()
+            .collect();
+        assert_eq!(
+            ready2.len(),
+            2,
+            "precondition: two stages still wait for a slot"
+        );
+        ctx.run_wave(
+            &stages,
+            &ready2,
+            &mut integrated,
+            &mut terminal,
+            &mut in_flight,
+        )
+        .unwrap();
+        assert_eq!(integrated.len(), 2);
+        assert_eq!(terminal.len(), 2);
+
+        // Wave 3: the last waiting stage finally gets its slot.
+        let ready3: Vec<String> = all_ready
+            .iter()
+            .filter(|n| !terminal.contains(*n))
+            .cloned()
+            .collect();
+        assert_eq!(ready3.len(), 1);
+        ctx.run_wave(
+            &stages,
+            &ready3,
+            &mut integrated,
+            &mut terminal,
+            &mut in_flight,
+        )
+        .unwrap();
+        assert_eq!(
+            integrated,
+            all_ready.iter().cloned().collect::<HashSet<_>>(),
+            "every stage eventually integrates once its slot frees"
+        );
+        assert!(
+            in_flight.is_empty(),
+            "every stage resolved (none parked), so in_flight must drain back to empty: \
+             {in_flight:?}"
+        );
+    }
+
+    #[test]
+    fn occupancy_survives_a_crash_resume_so_a_still_parked_unit_keeps_its_slot_over_a_fresh_one() {
+        // Spec 102, criterion 1: occupancy is RE-DERIVED FROM THE LOG, not a process-local
+        // counter - "a resumed step after a driver crash counts the spawn still in
+        // flight". Two `run()` calls share ONE store, modeling the stepwise driver's real
+        // crash-resume seam: run 1 starts "z-hung" and its implementer PARKS (simulating a
+        // driver that died before ever recording a result). Run 2 is the resumed process,
+        // with a brand-new stage "a-new" now also ready - sorted BEFORE "z-hung" in the
+        // wave's deterministic order, so a NAIVE process-local counter (reset to 0 on the
+        // fresh process) would admit "a-new" first. The correct, log-derived occupancy
+        // must instead continue "z-hung" (it already holds the one slot) and refuse
+        // "a-new" until "z-hung" actually resolves.
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_parallel_units = 1;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "z-hung".into(),
+            Stage {
+                name: "z-hung".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let store = Store::open(":memory:").unwrap();
+
+        // Run 1: "z-hung" is the only ready stage; its implementer parks.
+        let driver1 = Stub {
+            park_spawn_ids: [spawn_id("z-hung", ROLE_IMPLEMENTER, 0)]
+                .into_iter()
+                .collect(),
+            ..Stub::new()
+        };
+        let deps1 = Deps {
+            store: &store,
+            driver: &driver1,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs1 = run(&cfg, &deps1).unwrap();
+        assert_ne!(
+            rs1.units["z-hung"].status,
+            ledger::Status::Integrated,
+            "run 1: the parked implementer must leave z-hung un-integrated"
+        );
+        assert!(
+            !rs1.is_terminal("z-hung"),
+            "run 1: a parked unit is neither failed nor terminal"
+        );
+
+        // Run 2 (the resume, over the SAME store): "a-new" now exists too.
+        cfg.workflow.stages.insert(
+            "a-new".into(),
+            Stage {
+                name: "a-new".into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                ..Default::default()
+            },
+        );
+        let driver2 = Stub::new(); // z-hung's re-attempt now resolves normally (no park).
+        let deps2 = Deps {
+            store: &store,
+            driver: &driver2,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+        };
+        let rs2 = run(&cfg, &deps2).unwrap();
+        let spawned = driver2.spawn_ids();
+        let z_pos = spawned.iter().position(|id| id.starts_with("z-hung/"));
+        let a_pos = spawned.iter().position(|id| id.starts_with("a-new/"));
+        assert!(
+            z_pos.is_some() && a_pos.is_some(),
+            "both units must eventually run this resumed process: {spawned:?}"
+        );
+        assert!(
+            z_pos < a_pos,
+            "z-hung already held the slot from run 1 and must be admitted before a-new in \
+             the resumed process (occupancy must come from the log, not a fresh \
+             process-local count): {spawned:?}"
+        );
+        assert_eq!(rs2.units["z-hung"].status, ledger::Status::Integrated);
+        assert_eq!(rs2.units["a-new"].status, ledger::Status::Integrated);
     }
 
     #[test]
