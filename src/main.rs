@@ -1413,6 +1413,7 @@ const SUBCOMMANDS: &[&str] = &[
     "prime",
     "mcp",
     "grep-guard",
+    "guard-write",
     "version",
     "help",
 ];
@@ -1455,6 +1456,7 @@ fn main() {
         "prime" => cmd_prime(&args[2..]),
         "mcp" => cmd_mcp(&args[2..]),
         "grep-guard" => cmd_grep_guard(&args[2..]),
+        "guard-write" => cmd_guard_write(&args[2..]),
         "version" | "--version" | "-V" => cmd_version(),
         "help" | "-h" | "--help" => {
             usage();
@@ -13935,6 +13937,207 @@ fn cmd_grep_guard(_args: &[String]) -> Res {
                 "permissionDecisionReason": reason,
             }
         }),
+    };
+    println!("{out}");
+    Ok(())
+}
+
+/// Parse `rigger guard-write`'s own args: one or more `--root <dir>`, in the order given
+/// (the deny reason names the FIRST one, so order is meaningful, not just a set). At least
+/// one is required - a guard installed with no root would silently allow every write, the
+/// opposite of THE WRITE GUARD's contract, so a misconfigured host fails loudly at argument
+/// parse time rather than silently passing every future tool call.
+fn parse_guard_write_roots(args: &[String]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let mut roots = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--root" => {
+                let dir = args.get(i + 1).ok_or(
+                    "guard-write: --root expects a directory: rigger guard-write --root <dir>...",
+                )?;
+                if dir.is_empty() {
+                    return Err("guard-write: --root expects a non-empty directory".into());
+                }
+                roots.push(dir.clone());
+                i += 2;
+            }
+            other => {
+                return Err(format!(
+                    "guard-write: unknown argument {other:?}: rigger guard-write --root <dir>..."
+                )
+                .into())
+            }
+        }
+    }
+    if roots.is_empty() {
+        return Err("guard-write: at least one --root is required".into());
+    }
+    Ok(roots)
+}
+
+/// THE WRITE GUARD's target axis (spec 104 criterion 4): the path an `Edit`/`Write`/
+/// `NotebookEdit` call would touch, straight from that tool's own documented `tool_input`
+/// shape - `file_path` for `Edit`/`Write`, `notebook_path` for `NotebookEdit`. `None` for
+/// every other tool name (the installed hook's own matcher already scopes calls to these
+/// three; a stray call under a different name is nothing this guard protects, so it is
+/// allowed rather than guessed at).
+fn guard_write_target(tool_name: &str, tool_input: &serde_json::Value) -> Option<String> {
+    let key = match tool_name {
+        "Edit" | "Write" => "file_path",
+        "NotebookEdit" => "notebook_path",
+        _ => return None,
+    };
+    tool_input
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+/// Resolve one path component's symlink chain against `result` (the caller's
+/// already-resolved prefix), pushing the resolved target back through the SAME walk
+/// (mutual recursion with [`resolve_lexical_realpath`]) so a symlink that itself points
+/// through another symlink, or ends in more `..`, keeps resolving left to right exactly as
+/// a real `realpath` would. `budget` bounds total hops against a symlink cycle; once spent,
+/// any further component is kept lexically (unresolved) rather than looping forever.
+fn resolve_lexical_realpath(path: &Path, budget: &mut u32) -> PathBuf {
+    let mut result = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::Prefix(_) => {}
+            std::path::Component::RootDir => result.push(std::path::MAIN_SEPARATOR.to_string()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                result.pop();
+            }
+            std::path::Component::Normal(part) => {
+                result.push(part);
+                if *budget == 0 {
+                    continue;
+                }
+                if let Ok(link) = std::fs::read_link(&result) {
+                    *budget -= 1;
+                    let joined = if link.is_absolute() {
+                        link
+                    } else {
+                        result
+                            .parent()
+                            .map(Path::to_path_buf)
+                            .unwrap_or_else(|| PathBuf::from(std::path::MAIN_SEPARATOR.to_string()))
+                            .join(&link)
+                    };
+                    result = resolve_lexical_realpath(&joined, budget);
+                }
+            }
+        }
+    }
+    result
+}
+
+/// One symlink-hop budget for [`resolve_lexical_realpath`] - generous enough for any real
+/// tree, small enough that a symlink cycle on disk cannot hang the guard.
+const SYMLINK_RESOLVE_BUDGET: u32 = 40;
+
+/// Resolve `raw` (an Edit/Write/NotebookEdit target, absolute or relative) against `cwd`
+/// (the PreToolUse payload's OWN reported `cwd` - never this process's, so the decision is
+/// correct no matter where the host happens to run the hook command from) into an
+/// absolute, symlink-resolved path - WITHOUT requiring the target to exist, unlike
+/// `std::fs::canonicalize` (a `Write` routinely creates a brand new file). Every existing
+/// ancestor's symlinks are resolved left to right exactly as a real `realpath` would, so a
+/// `..` that walks back out through an escaping symlink lands where the symlink actually
+/// points, not where the raw text alone suggests - THE WRITE GUARD's stated "relative
+/// paths against the hook's cwd, `..`, symlinks" in one pass. A relative `raw` with an
+/// empty `cwd` (a malformed or absent payload field) resolves to a bare relative path,
+/// which cannot lie under any absolute root - the safe default is deny, never allow.
+fn resolve_write_target(cwd: &str, raw: &str) -> PathBuf {
+    let raw_path = Path::new(raw);
+    let base = if raw_path.is_absolute() {
+        raw_path.to_path_buf()
+    } else {
+        Path::new(cwd).join(raw_path)
+    };
+    let mut budget = SYMLINK_RESOLVE_BUDGET;
+    resolve_lexical_realpath(&base, &mut budget)
+}
+
+/// Whether `target` (already resolved by [`resolve_write_target`]) lies under `root`.
+/// `root` is resolved through the SAME symlink-aware walk (never a second, divergent
+/// containment rule), so a root that is itself reached through a symlink still compares
+/// correctly. Equal to `root` counts as under it.
+fn write_target_under_root(target: &Path, root: &str) -> bool {
+    let mut budget = SYMLINK_RESOLVE_BUDGET;
+    let resolved_root = resolve_lexical_realpath(Path::new(root), &mut budget);
+    target.starts_with(&resolved_root)
+}
+
+/// THE WRITE GUARD's pure decision core (spec 104 criterion 4): a target outside every
+/// root is denied naming the FIRST root (`roots` is never empty - [`parse_guard_write_roots`]
+/// enforces that before this is ever called); no target (a tool this guard does not cover)
+/// is always allowed. Reuses [`GuardDecision`] - the SAME verdict type `rigger grep-guard`
+/// reports through, never a second parallel one - though this guard never rewrites a
+/// tool call, so its `AllowWithUpdatedInput` arm never arises here.
+fn guard_write_decision(roots: &[String], cwd: &str, target: Option<&str>) -> GuardDecision {
+    let Some(raw) = target else {
+        return GuardDecision::Allow;
+    };
+    let resolved = resolve_write_target(cwd, raw);
+    if roots
+        .iter()
+        .any(|root| write_target_under_root(&resolved, root))
+    {
+        GuardDecision::Allow
+    } else {
+        let first_root = roots.first().map(String::as_str).unwrap_or("");
+        GuardDecision::Deny(format!(
+            "write target is outside the allowed root: {first_root}"
+        ))
+    }
+}
+
+/// `rigger guard-write --root <dir> [--root <dir> ...]`: THE WRITE GUARD (spec 104
+/// criterion 4) - the `PreToolUse` command hook for `Edit`/`Write`/`NotebookEdit` the host
+/// injects into a launched agent's settings (the injection half of this same criterion:
+/// [`crate::driver::claude_code::install_write_guard_hook`]). Reads ONE PreToolUse payload
+/// as JSON on stdin (`{"tool_name","tool_input","cwd"}`) and allows a target under one of
+/// `roots`, denying every other - absolute, relative, `..`, symlink-escaping - with the
+/// reason naming the first root. It reads no store: every fact the decision needs travels
+/// on argv or stdin, exactly like [`cmd_grep_guard`]'s own pure/no-store discipline, and it
+/// always exits 0 - the verdict rides in the JSON body, a transport failure stays a
+/// SEPARATE, tellable channel from a deliberate block.
+fn cmd_guard_write(args: &[String]) -> Res {
+    let roots = parse_guard_write_roots(args)?;
+
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    let payload: serde_json::Value =
+        serde_json::from_str(input.trim()).unwrap_or_else(|_| serde_json::json!({}));
+    let tool_name = payload
+        .get("tool_name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let tool_input = payload
+        .get("tool_input")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let cwd = payload
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let target = guard_write_target(tool_name, &tool_input);
+    let decision = guard_write_decision(&roots, cwd, target.as_deref());
+
+    let out = match decision {
+        GuardDecision::Allow => serde_json::json!({}),
+        GuardDecision::Deny(reason) => serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }),
+        GuardDecision::AllowWithUpdatedInput(_) => {
+            unreachable!("guard-write never rewrites a tool call's input")
+        }
     };
     println!("{out}");
     Ok(())
@@ -26897,5 +27100,237 @@ mod tests {
             GuardDecision::Allow,
             "a path-qualified different command must not be treated as grep"
         );
+    }
+
+    // ---- rigger guard-write (spec 104 criterion 4, THE WRITE GUARD) ----
+
+    #[test]
+    fn guard_write_target_reads_edit_and_write_file_path() {
+        for tool in ["Edit", "Write"] {
+            assert_eq!(
+                guard_write_target(tool, &serde_json::json!({"file_path": "src/main.rs"})),
+                Some("src/main.rs".to_string()),
+                "{tool} must read tool_input.file_path"
+            );
+        }
+    }
+
+    #[test]
+    fn guard_write_target_reads_notebook_edit_notebook_path() {
+        assert_eq!(
+            guard_write_target(
+                "NotebookEdit",
+                &serde_json::json!({"notebook_path": "nb.ipynb"})
+            ),
+            Some("nb.ipynb".to_string())
+        );
+    }
+
+    #[test]
+    fn guard_write_target_ignores_every_other_tool() {
+        for tool in ["Read", "Bash", "Grep", ""] {
+            assert_eq!(
+                guard_write_target(tool, &serde_json::json!({"file_path": "src/main.rs"})),
+                None,
+                "{tool:?} carries no target this guard covers"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_write_target_passes_an_absolute_path_through() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize the fixture's own path up front: `resolve_write_target` resolves
+        // symlinks in whatever ancestors already exist, so if the OS temp dir itself is
+        // reached through one, the un-canonicalized `dir.path()` would not textually match
+        // the function's own (correct) output - an environment quirk, not a logic bug.
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let want = real.join("f.txt");
+        assert_eq!(
+            resolve_write_target("/somewhere/else", want.to_str().unwrap()),
+            want
+        );
+    }
+
+    #[test]
+    fn resolve_write_target_joins_a_relative_path_onto_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let cwd = real.to_str().unwrap();
+        assert_eq!(
+            resolve_write_target(cwd, "sub/f.txt"),
+            real.join("sub/f.txt")
+        );
+    }
+
+    #[test]
+    fn resolve_write_target_normalizes_dot_and_dot_dot() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let cwd = real.to_str().unwrap();
+        assert_eq!(
+            resolve_write_target(cwd, "./a/../b.txt"),
+            real.join("b.txt")
+        );
+    }
+
+    #[test]
+    fn resolve_write_target_walks_dot_dot_past_the_process_root_without_panicking() {
+        // A relative target with more `..` than the resolved path has components must not
+        // panic (`PathBuf::pop()` is a documented no-op once there is no parent) - it
+        // bottoms out at the filesystem root and keeps resolving from there. Synthetic,
+        // guaranteed-nonexistent names so no real symlink on the test machine can interfere
+        // with the assertion.
+        let resolved =
+            resolve_write_target("/", "../../../nonexistent-guard-write-probe-dir/leaf.txt");
+        assert_eq!(
+            resolved,
+            Path::new("/nonexistent-guard-write-probe-dir/leaf.txt")
+        );
+    }
+
+    #[test]
+    fn resolve_write_target_follows_a_symlinked_ancestor_directory() {
+        // A root-relative `..` that walks back out through an ancestor symlink must land
+        // where the symlink actually points, not where the raw text suggests.
+        let base = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let workspace = base.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let link = workspace.join("escape");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+
+        let resolved = resolve_write_target(workspace.to_str().unwrap(), "escape/secret.txt");
+        let want = std::fs::canonicalize(outside.path())
+            .unwrap()
+            .join("secret.txt");
+        assert_eq!(
+            resolved, want,
+            "must resolve through the symlink, landing outside workspace"
+        );
+    }
+
+    #[test]
+    fn write_target_under_root_rejects_a_sibling_whose_name_merely_shares_a_prefix() {
+        // A component-aware comparison, not a raw string prefix: "/root-extra" must NOT
+        // count as under "/root".
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let mut sibling_name = real.file_name().unwrap().to_os_string();
+        sibling_name.push("-extra");
+        let sibling = real.with_file_name(sibling_name);
+        assert!(
+            !write_target_under_root(&sibling, real.to_str().unwrap()),
+            "a sibling whose name merely starts with the root's own last component must \
+             not be treated as inside it"
+        );
+    }
+
+    #[test]
+    fn write_target_under_root_treats_equal_as_under() {
+        let dir = tempfile::tempdir().unwrap();
+        // Canonicalize the fixture path itself (not just what the function resolves) so
+        // this assertion is robust on a machine where the OS temp dir is itself reached
+        // through a symlink - both sides of the comparison must start from the same real
+        // path, or the test would fail on environment quirks unrelated to the guard's logic.
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        assert!(write_target_under_root(&real, real.to_str().unwrap()));
+    }
+
+    #[test]
+    fn write_target_under_root_accepts_a_descendant_and_rejects_a_sibling() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(dir.path()).unwrap();
+        let root = real.to_str().unwrap();
+        assert!(write_target_under_root(&real.join("a/b.txt"), root));
+
+        let sibling = tempfile::tempdir().unwrap();
+        let sibling_real = std::fs::canonicalize(sibling.path()).unwrap();
+        assert!(!write_target_under_root(&sibling_real.join("b.txt"), root));
+    }
+
+    #[test]
+    fn guard_write_decision_allows_a_target_under_any_configured_root() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let roots = vec![
+            first.path().to_str().unwrap().to_string(),
+            second.path().to_str().unwrap().to_string(),
+        ];
+        let target = second.path().join("scratch/out.txt");
+        assert_eq!(
+            guard_write_decision(&roots, "/irrelevant", Some(target.to_str().unwrap())),
+            GuardDecision::Allow,
+            "a target under the SECOND root must still be allowed"
+        );
+    }
+
+    #[test]
+    fn guard_write_decision_denies_outside_every_root_naming_the_first() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let roots = vec![
+            first.path().to_str().unwrap().to_string(),
+            second.path().to_str().unwrap().to_string(),
+        ];
+        let target = outside.path().join("f.txt");
+        let decision = guard_write_decision(&roots, "/irrelevant", Some(target.to_str().unwrap()));
+        assert_eq!(
+            decision,
+            GuardDecision::Deny(format!(
+                "write target is outside the allowed root: {}",
+                first.path().to_str().unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn guard_write_decision_denies_a_dot_dot_escape() {
+        let root = tempfile::tempdir().unwrap();
+        let inside = root.path().join("inside");
+        std::fs::create_dir_all(&inside).unwrap();
+        let roots = vec![root.path().to_str().unwrap().to_string()];
+        let decision =
+            guard_write_decision(&roots, inside.to_str().unwrap(), Some("../../outside.txt"));
+        assert!(matches!(decision, GuardDecision::Deny(_)), "{decision:?}");
+    }
+
+    #[test]
+    fn guard_write_decision_allows_when_there_is_no_target() {
+        let roots = vec!["/some/root".to_string()];
+        assert_eq!(
+            guard_write_decision(&roots, "/cwd", None),
+            GuardDecision::Allow
+        );
+    }
+
+    #[test]
+    fn parse_guard_write_roots_collects_every_root_in_order() {
+        let args: Vec<String> = ["--root", "/a", "--root", "/b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            parse_guard_write_roots(&args).unwrap(),
+            vec!["/a".to_string(), "/b".to_string()]
+        );
+    }
+
+    #[test]
+    fn parse_guard_write_roots_requires_at_least_one() {
+        assert!(parse_guard_write_roots(&[]).is_err());
+    }
+
+    #[test]
+    fn parse_guard_write_roots_rejects_a_dangling_flag() {
+        let args = vec!["--root".to_string()];
+        assert!(parse_guard_write_roots(&args).is_err());
+    }
+
+    #[test]
+    fn parse_guard_write_roots_rejects_an_unknown_argument() {
+        let args = vec!["--spawn".to_string(), "x".to_string()];
+        assert!(parse_guard_write_roots(&args).is_err());
     }
 }

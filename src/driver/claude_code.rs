@@ -20,6 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::conductor::{Error, SpawnOpts};
 use crate::config::AgentDef;
 use crate::eventstore::EventStore;
+use crate::hooks;
 use crate::progress::SpawnLaunched;
 use crate::progress_store;
 
@@ -193,6 +194,62 @@ fn mcp_config_json(spawn_id: &str, rigger_bin: &str) -> String {
     .to_string()
 }
 
+/// Single-quote `s` for embedding in a POSIX shell command line: wraps it in `'...'` and
+/// replaces every embedded `'` with `'\''` (close the quote, an escaped literal quote, reopen
+/// it) - the standard shell-safe encoding, so a root containing a space or a shell
+/// metacharacter can never split an argument or be reinterpreted. A hook's `command` (see
+/// [`install_write_guard_hook`]) is a shell command line Claude Code runs through the
+/// operator's shell, never a bare argv array, so every value threaded into one needs this,
+/// not just a join with spaces.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// The exact `rigger guard-write --root <dir> [--root <dir> ...]` shell command line THE
+/// WRITE GUARD's installed hook runs (spec 104 criterion 4, Design's "THE WRITE GUARD"):
+/// one `--root` per root, each single-quoted, in the given order - so the printed command
+/// is deterministic and matches `rigger guard-write`'s own "the first root" deny wording
+/// (`--root` given first is the root a reader of this exact command line sees first too).
+fn write_guard_command(roots: &[String], rigger_bin: &str) -> String {
+    let mut cmd = shell_single_quote(rigger_bin);
+    cmd.push_str(" guard-write");
+    for root in roots {
+        cmd.push_str(" --root ");
+        cmd.push_str(&shell_single_quote(root));
+    }
+    cmd
+}
+
+/// THE WRITE GUARD's injection half (spec 104 criterion 4: "criterion 4's, command and
+/// injection both"): merges the `PreToolUse` hook entry that runs
+/// `rigger guard-write --root <dir>...` for `Edit|Write|NotebookEdit` into a spawn's
+/// settings JSON. Reuses [`hooks::install_pretooluse_hook`] - the SAME merge authority
+/// `rigger setup`'s own PreToolUse installs use (spec 92's graph-first lookup hook), never
+/// a second, parallel hook-merging implementation - so this composes cleanly with whatever
+/// `existing` already carries: empty (nothing yet), or criterion 5's `StopFailure` family
+/// already merged in under its OWN top-level event key, left untouched by this call (THE
+/// HOOKS: "the per-spawn settings JSON carries exactly two hook families ... assembled ...
+/// from their two owners"). `roots` is the spawn's `dir` and its scratch container (THE
+/// WRITE GUARD's own stated roots); `existing` may be empty.
+pub fn install_write_guard_hook(
+    existing: &[u8],
+    roots: &[String],
+    rigger_bin: &str,
+) -> Result<Vec<u8>, hooks::Error> {
+    let command = write_guard_command(roots, rigger_bin);
+    hooks::install_pretooluse_hook(existing, "Edit|Write|NotebookEdit", &command)
+}
+
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
 /// ONE argv authority for this driver, exactly as `cli::build_args` is for the cli driver
 /// - every field below is a fact, never inferred at read time.
@@ -301,6 +358,90 @@ mod tests {
         assert_eq!(get_val("--permission-prompts"), "none");
         assert!(args.iter().any(|x| x == "--strict-mcp-config"));
         assert_eq!(get_val("--settings"), "{\"hooks\":{}}");
+    }
+
+    // ---- THE WRITE GUARD's injection half (spec 104 criterion 4) ----
+
+    #[test]
+    fn write_guard_command_shapes_one_root_flag_per_root_in_order() {
+        let roots = vec!["/spawn/dir".to_string(), "/spawn/scratch".to_string()];
+        assert_eq!(
+            write_guard_command(&roots, "rigger"),
+            "'rigger' guard-write --root '/spawn/dir' --root '/spawn/scratch'"
+        );
+    }
+
+    #[test]
+    fn write_guard_command_escapes_an_embedded_single_quote() {
+        let roots = vec!["/a b/it's/weird".to_string()];
+        let cmd = write_guard_command(&roots, "rigger");
+        // Round-trip: a POSIX shell splitting this exact string must recover the ORIGINAL
+        // root text, embedded quote and space both - not a mis-split argument.
+        assert_eq!(cmd, "'rigger' guard-write --root '/a b/it'\\''s/weird'");
+    }
+
+    #[test]
+    fn install_write_guard_hook_merges_the_pretooluse_entry_into_empty_settings() {
+        let roots = vec!["/spawn/dir".to_string()];
+        let out = install_write_guard_hook(b"", &roots, "rigger").unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0]["matcher"],
+            "Edit|Write|NotebookEdit"
+        );
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
+            "'rigger' guard-write --root '/spawn/dir'"
+        );
+    }
+
+    #[test]
+    fn install_write_guard_hook_passes_both_the_dir_and_the_scratch_container_as_roots() {
+        let roots = vec!["/spawn/dir".to_string(), "/spawn/scratch".to_string()];
+        let out = install_write_guard_hook(b"", &roots, "rigger").unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let command = v["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap();
+        assert!(command.contains("--root '/spawn/dir'"));
+        assert!(command.contains("--root '/spawn/scratch'"));
+    }
+
+    #[test]
+    fn install_write_guard_hook_composes_with_an_existing_stopfailure_family() {
+        // THE HOOKS: exactly two hook families, assembled from their two owners. Simulate
+        // criterion 5's StopFailure entries already present under their OWN event key, and
+        // prove this call adds PreToolUse alongside it without touching StopFailure.
+        let existing = br#"{
+            "hooks": {
+                "StopFailure": [
+                    {"matcher": "", "hooks": [{"type": "command", "command": "rigger hook stop-failure --spawn u1/implementer#0 --class rate_limit"}]}
+                ]
+            }
+        }"#;
+        let roots = vec!["/spawn/dir".to_string()];
+        let out = install_write_guard_hook(existing, &roots, "rigger").unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            v["hooks"]["StopFailure"][0]["hooks"][0]["command"],
+            "rigger hook stop-failure --spawn u1/implementer#0 --class rate_limit",
+            "the StopFailure family must survive untouched"
+        );
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0]["matcher"],
+            "Edit|Write|NotebookEdit"
+        );
+    }
+
+    #[test]
+    fn install_write_guard_hook_is_idempotent() {
+        let roots = vec!["/spawn/dir".to_string()];
+        let first = install_write_guard_hook(b"", &roots, "rigger").unwrap();
+        let second = install_write_guard_hook(&first, &roots, "rigger").unwrap();
+        assert_eq!(
+            first, second,
+            "installing the same roots twice must not duplicate the hook entry"
+        );
     }
 
     #[test]

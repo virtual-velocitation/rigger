@@ -3809,6 +3809,16 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         ("src/dash.rs", "pid_is_alive") => 5,
         ("src/dash.rs", "serve") => 3,
         ("src/distiller.rs", "rebuild") => 15,
+        // install_write_guard_hook (src/driver/claude_code.rs, spec 104 criterion 4, new,
+        // unmerged): 5 test-only call sites, all in this file's own `#[cfg(test)] mod tests`
+        // (install_write_guard_hook_merges_the_pretooluse_entry_into_empty_settings,
+        // install_write_guard_hook_passes_both_the_dir_and_the_scratch_container_as_roots,
+        // install_write_guard_hook_composes_with_an_existing_stopfailure_family,
+        // install_write_guard_hook_is_idempotent - 2 calls, first and second) plus 2 local
+        // outgoing calls (write_guard_command, hooks::install_pretooluse_hook) = 7. Hand-derived
+        // the same two-part way frame/hit's own precedent above documents (`rigger graph --show`
+        // cannot see this unmerged unit branch's new file), not a live tool run.
+        ("src/driver/claude_code.rs", "install_write_guard_hook") => 7,
         ("src/eventstore/sqlite.rs", "with_content_identity") => 32,
         ("src/gate.rs", "resolve_wrapper_name") => 3,
         ("src/grounder/symbols/events.rs", "index_events") => 17,
@@ -6310,6 +6320,27 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              --rebuild); distiller::rebuild is the equivalent primitive awaiting its own call \
              site (a rigger distill command, or a hook into rigger reset), never spec'd as a \
              Done-when criterion of spec 27 itself, which is why it shipped unwired.",
+        ),
+        ("src/driver/claude_code.rs", "install_write_guard_hook") => (
+            KeepPending,
+            "install_write_guard_hook (spec 104 criterion 4, THE WRITE GUARD's injection half) \
+             has no production caller yet: `rigger run` still composes agents through \
+             `cli::Driver` (main.rs:3667), unchanged until criterion 2's stream reader completes \
+             `impl AgentDriver for claude_code::Driver` (this file's own module doc: 'until it \
+             lands ... rigger run ... keeps using cli::Driver'), and no unit yet builds a live \
+             spawn's --settings string from this criterion's own hook fragment plus criterion \
+             5's StopFailure one (spec 104 Design's THE HOOKS paragraph: 'the per-spawn settings \
+             JSON carries exactly two hook families ... assembled ... from their two owners'). \
+             Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism \
+             THE WRITE GUARD's own Done-when text specifies ('the host injects it as the \
+             PreToolUse hook for Edit|Write|NotebookEdit') - deleting it would delete the \
+             criterion's own injection half before the composition-root wiring that calls it \
+             (assembling opts.settings_json from both hook owners) lands, mirroring \
+             SpawnOpts.settings_json's own already-disclosed inert-until-wired state (spec 104 \
+             criterion 1's own accounting: 'no live driver reads these fields yet'). \
+             keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard \
+             command and its injection') and THE HOOKS, which names criterion 4 this hook \
+             family's sole owner.",
         ),
         ("src/eventstore/sqlite.rs", "with_content_identity") => (
             KeepPending,
@@ -11106,9 +11137,18 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (42, 21, 16, 5),
+            (43, 21, 16, 6),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}\n\n\
+             Was (42, 21, 16, 5) before spec 104 criterion 4's own THE WRITE GUARD. ONE fresh \
+             keep-pending candidate lands in src/driver/claude_code.rs: \
+             install_write_guard_hook (THE WRITE GUARD's injection half) - no production caller \
+             yet, since the composition-root wiring that assembles a live spawn's --settings \
+             string from both hook owners (this criterion's own fragment plus criterion 5's \
+             StopFailure one, spec 104 Design's own THE HOOKS) is a later unit, mirroring the \
+             graph_load/graph_query keep-pending precedent below - candidates: +1, keep_pending: \
+             5 -> 6. Net: 42 + 1 = 43 candidates; 21 delete unchanged; 16 keep-public-surface \
+             unchanged; 5 + 1 = 6 keep-pending.\n\n\
              Was (41, 21, 15, 5) before spec 104 criterion 1's own THE LAUNCH IS TYPED. ONE \
              fresh keep-public-surface candidate lands in src/progress.rs: SpawnLaunched::\
              to_event, added `pub(crate)` alongside the new SpawnLaunched type so the impure \
