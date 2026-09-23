@@ -13830,6 +13830,97 @@ fn validate_reports_none_when_autos_discovered_wrapper_has_a_preexisting_unwrita
 }
 
 // ---------------------------------------------------------------------------
+// `defaults.max_parallel_units` scaffold + config-load (spec 102 criterion 2: THE
+// SCAFFOLD WRITES THE KEY). Criterion 1 (the wave-width bound `run_wave` enforces) and
+// criterion 3 (`deny_unknown_fields` naming the dotted path) are separate units - this
+// section covers only the scaffold-writes-the-key surface this unit's diff touches.
+// ---------------------------------------------------------------------------
+
+/// Spec 102 criterion 2, PERIPHERY: the scaffold text the implementer's in-process unit
+/// tests assert on (`scaffold_workflow_declares_max_parallel_units_two_with_a_sizing_comment`,
+/// `init_project_writes_max_parallel_units_with_its_sizing_comment` in `src/main.rs`, which
+/// call `init_project`/parse the constant directly) is what actually reaches disk THROUGH
+/// the compiled binary's real CLI wiring (`cmd_init` -> `init_project`), and the scaffolded
+/// `max_parallel_units: 2` key resolves cleanly all the way through `rigger validate`'s real
+/// `config_store::load` -> `Config::validate` path - not merely an in-process
+/// `serde_yaml::from_str` call. A regression that broke `cmd_init`'s wiring without
+/// touching `init_project` itself, or that broke `Deserialize` for `Defaults` in a way an
+/// in-process struct-level test would miss, fails here.
+#[test]
+fn a_fresh_scaffolded_init_writes_max_parallel_units_and_validates_through_the_binary() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let workflow_path = root.join(".rigger").join("workflow.yml");
+    let workflow = std::fs::read_to_string(&workflow_path).unwrap();
+    assert!(
+        workflow.contains("max_parallel_units: 2\n"),
+        "a fresh scaffold must declare max_parallel_units: 2 verbatim on disk; \
+         workflow.yml:\n{workflow}"
+    );
+    assert!(
+        workflow.contains("build cache"),
+        "the scaffold must carry the sizing comment next to max_parallel_units, not a \
+         bare unexplained number; workflow.yml:\n{workflow}"
+    );
+
+    let path = path_with_no_known_wrapper(root);
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "a fresh scaffold carrying max_parallel_units: 2 must validate cleanly through the \
+         real config-load path; stdout:\n{out}\nstderr:\n{err}"
+    );
+}
+
+/// Spec 102 criterion 2, PERIPHERY back-compat: the outside-in half of the in-process
+/// `defaults_max_parallel_units_is_unbounded_when_the_key_is_absent` unit test in
+/// `src/main.rs` (which parses a bare `Workflow` in-process and asserts the field resolves
+/// to `0`). That test cannot see a regression in the REAL load path a live operator's
+/// pre-102 `workflow.yml` runs through (`config_store::load` -> `Config::validate`, wired
+/// by `cmd_validate`); this one drives the compiled binary against a `workflow.yml` that
+/// never mentions `max_parallel_units` at all - exactly what every project scaffolded
+/// before spec 102 has on disk - and proves it still validates cleanly, never refusing a
+/// config that predates the key.
+#[test]
+fn a_workflow_without_max_parallel_units_still_validates_through_the_binary() {
+    let dir = temp_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let workflow_path = root.join(".rigger").join("workflow.yml");
+    let workflow = std::fs::read_to_string(&workflow_path).unwrap();
+    assert!(
+        workflow.contains("max_parallel_units"),
+        "precondition: the fresh scaffold must carry the key this test then strips; \
+         workflow.yml:\n{workflow}"
+    );
+    let stripped: String = workflow
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("max_parallel_units"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert!(
+        !stripped.contains("max_parallel_units"),
+        "the stripped fixture must never mention max_parallel_units at all, matching a \
+         pre-spec-102 workflow.yml; stripped:\n{stripped}"
+    );
+    std::fs::write(&workflow_path, &stripped).unwrap();
+
+    let path = path_with_no_known_wrapper(root);
+    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
+    assert!(
+        ok,
+        "a workflow.yml with no max_parallel_units key must still validate cleanly - the \
+         field must default to unbounded, never refuse a pre-102 config; \
+         stdout:\n{out}\nstderr:\n{err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // `rigger validate` mutation-gate resolution (spec 91: gates-list-driven, moved from the
 // retired per-round `build.mutation` switch spec 73 introduced)
 // ---------------------------------------------------------------------------

@@ -5740,6 +5740,16 @@
       {
         "file": "tests/cli.rs",
         "name": "\".rigger\"",
+        "content_hash": "c2dfa05b7c5ac948"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
+        "content_hash": "c2dfa05b7c5ac948"
+      },
+      {
+        "file": "tests/cli.rs",
+        "name": "\".rigger\"",
         "content_hash": "090bbeba5641ea09"
       },
       {
@@ -7929,7 +7939,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 758 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 760 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0070",
