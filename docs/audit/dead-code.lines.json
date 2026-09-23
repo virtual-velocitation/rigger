@@ -39,27 +39,27 @@
   {
     "file": "src/config.rs",
     "name": "sdet_author_enabled",
-    "line": 551,
+    "line": 536,
     "test_only_references": [
       {
         "file": "src/config_store.rs",
-        "line": 1129
+        "line": 1182
       },
       {
         "file": "src/config_store.rs",
-        "line": 1134
+        "line": 1187
       },
       {
         "file": "src/config_store.rs",
-        "line": 1139
+        "line": 1192
       },
       {
         "file": "src/config_store.rs",
-        "line": 1144
+        "line": 1197
       },
       {
         "file": "src/config_store.rs",
-        "line": 1150
+        "line": 1203
       }
     ]
   },

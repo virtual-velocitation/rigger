@@ -88,6 +88,12 @@ serde = { version = "1", features = ["derive"] }
 # that only the default (`symbols`) lane might supply.
 regex = "1"
 serde_json = "1"
+# Structural (not text-searched) dotted-path recovery for a `deny_unknown_fields`
+# violation on any workflow.yml-tree config struct (spec 102 Design amendment,
+# THE DOTTED PATH IS TRACKED STRUCTURALLY - the one admitted new dependency): wraps
+# the config deserializer so the path comes from the actual field/key accesses the
+# deserializer performs, never from searching the rendered error text.
+serde_path_to_error = "0.1"
 serde_yaml = "0.9"
 thiserror = "2"
 # Structural grounding (spec 15, `symbols` feature). tree-sitter parses source into a

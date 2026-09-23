@@ -15,8 +15,8 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::config::{
-    dotted_unknown_key, err, find_cycle, index_agents, parse_agent, resolve_wall_clocks, AgentDef,
-    Config, Defaults, Error, StoreConfig, Workflow,
+    err, find_cycle, index_agents, parse_agent, parse_yaml_naming_unknown_keys,
+    resolve_wall_clocks, AgentDef, Config, Defaults, Error, StoreConfig, Workflow,
 };
 // The rest of `config`'s pure surface this file's own PRODUCTION code never touches, but its
 // moved test module (spec 93, criterion 1 - see this file's own doc) does: Duration for a
@@ -86,8 +86,8 @@ pub fn read_agents_dir(dir: &Path) -> Result<Vec<(String, AgentDef)>, Error> {
 /// is malformed. [`load`] above stays the FULL, validating entry every run-starting path uses.
 pub(crate) fn load_workflow(path: &Path) -> Result<Workflow, Error> {
     let b = std::fs::read_to_string(path).map_err(|e| err(format!("read workflow: {e}")))?;
-    let mut wf: Workflow = serde_yaml::from_str(&b)
-        .map_err(|e| err(format!("parse workflow: {}", dotted_unknown_key(&e))))?;
+    let mut wf: Workflow =
+        parse_yaml_naming_unknown_keys(&b).map_err(|msg| err(format!("parse workflow: {msg}")))?;
     let names: Vec<String> = wf.stages.keys().cloned().collect();
     for name in names {
         if let Some(st) = wf.stages.get_mut(&name) {
@@ -127,8 +127,8 @@ pub fn read_store_config(rigger_dir: &Path) -> Result<StoreConfig, Error> {
         #[serde(default)]
         store: StoreConfig,
     }
-    let probe: Probe = serde_yaml::from_str(&body)
-        .map_err(|e| err(format!("parse store config: {}", dotted_unknown_key(&e))))?;
+    let probe: Probe = parse_yaml_naming_unknown_keys(&body)
+        .map_err(|msg| err(format!("parse store config: {msg}")))?;
     Ok(probe.store)
 }
 
@@ -179,8 +179,8 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
         #[serde(default)]
         defaults: Defaults,
     }
-    let probe: Probe = serde_yaml::from_str(&body)
-        .map_err(|e| err(format!("parse workflow: {}", dotted_unknown_key(&e))))?;
+    let probe: Probe = parse_yaml_naming_unknown_keys(&body)
+        .map_err(|msg| err(format!("parse workflow: {msg}")))?;
     Ok(probe.defaults)
 }
 
@@ -785,14 +785,37 @@ mod tests {
         assert_eq!(a.id, "researcher");
     }
 
-    /// The pure reformatter (spec 102, criterion 3): `serde_yaml` already tracks the dotted
-    /// parent path of a nested `deny_unknown_fields` violation internally and prefixes it to
-    /// the message; `dotted_unknown_key` recomposes that prefix and the leaf field name into
-    /// one dotted token. A nested violation names `parent.field`; a root-level violation (no
-    /// parent path) names the bare field; anything that is not this error shape (a type
-    /// mismatch here) passes through unchanged.
+    /// Spec 102's amended Design (THE DOTTED PATH IS TRACKED STRUCTURALLY) names the config
+    /// parse sites as "the workflow file and the agent frontmatter": `parse_agent` is wired
+    /// through the SAME [`crate::config::parse_yaml_naming_unknown_keys`] as `load_workflow`,
+    /// not a second, independently-maintained `serde_yaml::from_str` call. `AgentDef` stays
+    /// permissive of unknown keys (the test above), so this cannot pin an unknown-key
+    /// rejection here - it pins the OTHER half of the Design clause instead: a genuine parse
+    /// error (a type mismatch) still surfaces `serde_yaml`'s own message unchanged, proving
+    /// the shared function's passthrough branch, not a divergent one, is what runs here.
     #[test]
-    fn dotted_unknown_key_recomposes_the_nested_path_and_passes_through_other_errors() {
+    fn parse_agent_routes_a_type_mismatch_through_the_shared_structural_parser() {
+        let b = b"---\nid: builder\nrecurse: not-a-bool\n---\nBody.\n";
+        let raw = serde_yaml::from_str::<AgentDef>("id: builder\nrecurse: not-a-bool\n")
+            .expect_err("must fail to parse")
+            .to_string();
+        let msg = parse_agent(b).expect_err("a bool field given a string must fail to parse");
+        assert!(
+            msg.to_string().contains(&raw),
+            "a genuine type mismatch in agent frontmatter must still surface serde_yaml's own \
+             message unchanged, exactly as the shared parser's passthrough branch does for \
+             workflow.yml: {msg}"
+        );
+    }
+
+    /// The structural parser (spec 102, criterion 3): [`serde_path_to_error`] tracks the
+    /// dotted path from the ACTUAL field/key accesses the deserializer performs, so
+    /// [`parse_yaml_naming_unknown_keys`] never has to search the rendered error text for
+    /// it. A nested violation names `parent.field`; a root-level violation (no parent
+    /// path) names the bare field; anything that is not this error shape (a type mismatch
+    /// here) passes through with `serde_yaml`'s own message unchanged.
+    #[test]
+    fn parse_yaml_naming_unknown_keys_recomposes_the_nested_path_and_passes_through_other_errors() {
         #[derive(Debug, Default, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Inner {
@@ -809,18 +832,18 @@ mod tests {
         }
 
         let nested_err =
-            serde_yaml::from_str::<Outer>("inner:\n  knwon: x\n").expect_err("must fail to parse");
+            crate::config::parse_yaml_naming_unknown_keys::<Outer>("inner:\n  knwon: x\n")
+                .expect_err("must fail to parse");
         assert_eq!(
-            dotted_unknown_key(&nested_err),
-            "inner.knwon: unknown key",
-            "a nested unknown field recomposes serde_yaml's own path prefix and the leaf field \
-             name into one dotted token"
+            nested_err, "inner.knwon: unknown key",
+            "a nested unknown field recomposes the tracked path and the leaf field name into \
+             one dotted token"
         );
 
-        let root_err = serde_yaml::from_str::<Outer>("bogus: 1\n").expect_err("must fail to parse");
+        let root_err = crate::config::parse_yaml_naming_unknown_keys::<Outer>("bogus: 1\n")
+            .expect_err("must fail to parse");
         assert_eq!(
-            dotted_unknown_key(&root_err),
-            "bogus: unknown key",
+            root_err, "bogus: unknown key",
             "a root-level unknown field (no parent path) names the bare field"
         );
 
@@ -829,49 +852,52 @@ mod tests {
         struct TypeMismatch {
             n: u32,
         }
-        let type_err = serde_yaml::from_str::<TypeMismatch>("n: not-a-number\n")
-            .expect_err("must fail to parse");
+        let raw_type_err = serde_yaml::from_str::<TypeMismatch>("n: not-a-number\n")
+            .expect_err("must fail to parse")
+            .to_string();
+        let type_err =
+            crate::config::parse_yaml_naming_unknown_keys::<TypeMismatch>("n: not-a-number\n")
+                .expect_err("must fail to parse");
         assert_eq!(
-            dotted_unknown_key(&type_err),
-            type_err.to_string(),
+            type_err, raw_type_err,
             "a non-unknown-field error (a type mismatch here) passes through unchanged"
         );
 
         // adv-u102c3-dotted-unknown-key-corrupts-type-mismatch-errors: a type mismatch whose
         // own invalid-value TEXT happens to echo the unknown-field marker wording must still
         // pass through with serde_yaml's raw message, never be corrupted into a fabricated
-        // unknown-key report. The naive "find the marker anywhere in the message" reformatter
-        // matched this embedded text and rewrote the real type-mismatch error away entirely.
+        // unknown-key report. The structural path for this input is the KNOWN field `n`, not
+        // an unknown one, so the exact-prefix check below never even considers the marker text
+        // the value happens to contain.
+        let body = "n: unknown field `evil`, expected `n`\n";
+        let raw_embedded_err = serde_yaml::from_str::<TypeMismatch>(body)
+            .expect_err("must fail to parse")
+            .to_string();
         let type_err_with_embedded_marker =
-            serde_yaml::from_str::<TypeMismatch>("n: unknown field `evil`, expected `n`\n")
+            crate::config::parse_yaml_naming_unknown_keys::<TypeMismatch>(body)
                 .expect_err("must fail to parse");
         assert_eq!(
-            dotted_unknown_key(&type_err_with_embedded_marker),
-            type_err_with_embedded_marker.to_string(),
+            type_err_with_embedded_marker, raw_embedded_err,
             "a type-mismatch error whose own invalid-value text echoes the unknown-field \
              marker wording must still pass through unchanged, never be mistaken for a real \
              unknown-key violation"
         );
 
         // adv-u102c3-dotted-unknown-key-truncates-backtick-in-key-name: an unknown field whose
-        // own name contains a backtick must not be truncated at that embedded backtick - the
-        // field name ends at serde's actual "`, " terminator, not the first backtick seen.
+        // own name contains a backtick must be named in full - the tracker captures the exact
+        // key text it read, never a text-search substring of it.
         let backtick_field_err =
-            serde_yaml::from_str::<Outer>("weird`field: 1\n").expect_err("must fail to parse");
+            crate::config::parse_yaml_naming_unknown_keys::<Outer>("weird`field: 1\n")
+                .expect_err("must fail to parse");
         assert_eq!(
-            dotted_unknown_key(&backtick_field_err),
-            "weird`field: unknown key",
-            "a field name that itself contains a backtick is not truncated at the embedded \
-             backtick"
+            backtick_field_err, "weird`field: unknown key",
+            "a field name that itself contains a backtick is named in full"
         );
 
-        // adv-u102c3-r2-terminator-embedded-in-field-name-still-truncates: round 1's fix moved
-        // the search target from the first bare backtick to the first backtick-comma-space run,
-        // but a field name that itself CONTAINS that exact 3-char run still wins the .find()
-        // race and truncates. The field must be recovered in full regardless of how many
-        // expected names the struct being deserialized has (a struct with 3+ fields renders
-        // "expected one of `a`, `b`, `c`" - itself full of "`, " runs - so a fix that merely
-        // swapped `find` for `rfind` would break this same case the other way).
+        // adv-u102c3-r2-terminator-embedded-in-field-name-still-truncates: an unknown field
+        // whose own name contains the exact backtick-comma-space run `serde`'s own trailer
+        // uses defeated a text search anchored on that run. The tracker never searches the
+        // rendered trailer at all, so this is named in full regardless.
         #[derive(Debug, Default, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct ManyFields {
@@ -886,58 +912,63 @@ mod tests {
             c: String,
         }
         let terminator_embedded_err =
-            serde_yaml::from_str::<ManyFields>("\"z`, y\": 1\n").expect_err("must fail to parse");
+            crate::config::parse_yaml_naming_unknown_keys::<ManyFields>("\"z`, y\": 1\n")
+                .expect_err("must fail to parse");
         assert_eq!(
-            dotted_unknown_key(&terminator_embedded_err),
-            "z`, y: unknown key",
+            terminator_embedded_err, "z`, y: unknown key",
             "a field name that itself embeds the backtick-comma-space terminator is recovered \
-             in full, not cut off at the embedded run: {terminator_embedded_err}"
+             in full: {terminator_embedded_err}"
         );
 
         // A field name that embeds the marker text itself, at the document root, must not
-        // confuse the path/marker boundary search into inventing a bogus non-root path: the
-        // root short-circuit (message opens with the marker outright) wins regardless of what
-        // the field name goes on to contain.
+        // confuse the path/marker recovery into inventing a bogus non-root path.
         let marker_embedded_at_root_err =
-            serde_yaml::from_str::<ManyFields>("\"evil: unknown field `x\": 1\n")
-                .expect_err("must fail to parse");
+            crate::config::parse_yaml_naming_unknown_keys::<ManyFields>(
+                "\"evil: unknown field `x\": 1\n",
+            )
+            .expect_err("must fail to parse");
         assert_eq!(
-            dotted_unknown_key(&marker_embedded_at_root_err),
-            "evil: unknown field `x: unknown key",
+            marker_embedded_at_root_err, "evil: unknown field `x: unknown key",
             "a root-level field name that embeds marker-shaped text is still named in full, \
              not mistaken for a nested path: {marker_embedded_at_root_err}"
         );
 
-        // Ambiguous case: BOTH a genuine path segment and the field name would need their own
-        // embedded ": unknown field `" text for this to be reachable in practice, but when it
-        // is, this must never fabricate a wrong dotted path - it declines to guess and passes
-        // the raw message through unchanged, the same discipline the type-mismatch case above
-        // relies on.
+        // op-102-c3-dotted-path-structural-tracker: the case that DEFEATED every text-search
+        // round (an unknown key whose own name echoes the reformatter's own path/marker
+        // boundary, genuinely ambiguous to any scan) is no longer ambiguous at all once the
+        // path comes from the tracker: the final segment IS the literal key that was read,
+        // regardless of what text it contains.
         #[derive(Debug, Default, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct AmbiguousOuter {
+        struct BoundaryOuter {
             #[serde(default)]
             #[allow(dead_code)]
             inner: ManyFields,
         }
-        let ambiguous_err =
-            serde_yaml::from_str::<AmbiguousOuter>("inner:\n  \"a: unknown field `b\": 1\n")
-                .expect_err("must fail to parse");
+        let boundary_echoing_err = crate::config::parse_yaml_naming_unknown_keys::<BoundaryOuter>(
+            "inner:\n  \"a: unknown field `b\": 1\n",
+        )
+        .expect_err("must fail to parse");
         assert_eq!(
-            dotted_unknown_key(&ambiguous_err),
-            ambiguous_err.to_string(),
-            "when the path/marker boundary is genuinely ambiguous (more than one position a \
-             colon-space immediately precedes the marker), the raw message passes through \
-             unchanged rather than naming a guessed, possibly-wrong key: {ambiguous_err}"
+            boundary_echoing_err, "inner.a: unknown field `b: unknown key",
+            "a key that echoes the reformatter's own path/marker boundary text is still named \
+             in full, structurally, never declined: {boundary_echoing_err}"
         );
     }
 
-    /// sdet-u102c3-colon-in-map-key-path-defeats-reformat: a nested path segment sourced from a
-    /// YAML MAP KEY (unlike a struct field name, arbitrary operator text) can carry its own
-    /// ": " - the exact text the path/marker split anchors on. The true boundary is not always
-    /// the message's FIRST ": " when a map key embeds one of its own.
+    /// Two cases where the offending key or a path segment is sourced from arbitrary
+    /// operator-writable YAML text (a MAP KEY, unlike a plain struct field name) that echoes
+    /// text a naive path/marker split would anchor on - the tracker composes the path from
+    /// the actual map-key accesses instead, so both are recovered correctly with no split at
+    /// all:
+    /// - sdet-u102c3-colon-in-map-key-path-defeats-reformat: a `stages:` map key carrying its
+    ///   own `": "`.
+    /// - the round-3 case that made every text-search reformatter decline to guess (spec 102
+    ///   Design amendment, THE DOTTED PATH IS TRACKED STRUCTURALLY): an unknown key literally
+    ///   named `` `z: unknown field `y` `` under `defaults:`-shaped nesting, which makes the
+    ///   marker text appear twice in the rendered message.
     #[test]
-    fn dotted_unknown_key_recomposes_a_path_through_a_map_key_containing_its_own_colon_space() {
+    fn parse_yaml_naming_unknown_keys_recomposes_paths_through_colon_and_marker_bearing_map_keys() {
         #[derive(Debug, Default, serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Stage {
@@ -951,14 +982,36 @@ mod tests {
             #[allow(dead_code)]
             stages: BTreeMap<String, Stage>,
         }
-        let map_key_err =
-            serde_yaml::from_str::<WithStages>("stages:\n  \"foo: bar\":\n    gatez: x\n")
-                .expect_err("must fail to parse");
+        let map_key_err = crate::config::parse_yaml_naming_unknown_keys::<WithStages>(
+            "stages:\n  \"foo: bar\":\n    gatez: x\n",
+        )
+        .expect_err("must fail to parse");
         assert_eq!(
-            dotted_unknown_key(&map_key_err),
-            "stages.foo: bar.gatez: unknown key",
-            "a map-key path segment containing its own ': ' is recovered in full, not split \
-             at its embedded colon-space: {map_key_err}"
+            map_key_err, "stages.foo: bar.gatez: unknown key",
+            "a map-key path segment containing its own ': ' is recovered in full: {map_key_err}"
+        );
+
+        #[derive(Debug, Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Defaults {
+            #[serde(default)]
+            #[allow(dead_code)]
+            autonomy: String,
+        }
+        #[derive(Debug, Default, serde::Deserialize)]
+        struct Workflow {
+            #[serde(default)]
+            #[allow(dead_code)]
+            defaults: Defaults,
+        }
+        let boundary_err = crate::config::parse_yaml_naming_unknown_keys::<Workflow>(
+            "defaults:\n  \"z: unknown field `y\": 1\n",
+        )
+        .expect_err("must fail to parse");
+        assert_eq!(
+            boundary_err, "defaults.z: unknown field `y: unknown key",
+            "the dotted path is named even when the key itself echoes the path/marker \
+             boundary text: {boundary_err}"
         );
     }
 

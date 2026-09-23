@@ -2364,8 +2364,8 @@
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1611,
-        "end_line": 1616
+        "start_line": 1664,
+        "end_line": 1669
       },
       {
         "file": "tests/canary_false_positives_periphery.rs",
@@ -3204,8 +3204,8 @@
       },
       {
         "file": "src/config.rs",
-        "start_line": 896,
-        "end_line": 902
+        "start_line": 881,
+        "end_line": 887
       }
     ]
   },
@@ -3949,53 +3949,53 @@
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1076,
-        "end_line": 1076
+        "start_line": 1129,
+        "end_line": 1129
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1077,
-        "end_line": 1077
+        "start_line": 1130,
+        "end_line": 1130
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1104,
-        "end_line": 1104
+        "start_line": 1157,
+        "end_line": 1157
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1105,
-        "end_line": 1105
+        "start_line": 1158,
+        "end_line": 1158
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1645,
-        "end_line": 1645
+        "start_line": 1698,
+        "end_line": 1698
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1646,
-        "end_line": 1646
+        "start_line": 1699,
+        "end_line": 1699
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1678,
-        "end_line": 1678
+        "start_line": 1731,
+        "end_line": 1731
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1679,
-        "end_line": 1679
+        "start_line": 1732,
+        "end_line": 1732
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1700,
-        "end_line": 1700
+        "start_line": 1753,
+        "end_line": 1753
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1701,
-        "end_line": 1701
+        "start_line": 1754,
+        "end_line": 1754
       },
       {
         "file": "src/contextgraph/sqlite.rs",
@@ -8864,8 +8864,8 @@
     "sites": [
       {
         "file": "src/config.rs",
-        "start_line": 318,
-        "end_line": 320
+        "start_line": 303,
+        "end_line": 305
       },
       {
         "file": "src/failure.rs",
@@ -8884,8 +8884,8 @@
     "sites": [
       {
         "file": "src/config.rs",
-        "start_line": 1536,
-        "end_line": 1538
+        "start_line": 1521,
+        "end_line": 1523
       },
       {
         "file": "tests/no_os_kill_audit.rs",
@@ -8964,8 +8964,8 @@
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 966,
-        "end_line": 975
+        "start_line": 1019,
+        "end_line": 1028
       }
     ]
   },
@@ -8999,33 +8999,33 @@
     "sites": [
       {
         "file": "src/config_store.rs",
-        "start_line": 1056,
-        "end_line": 1065
+        "start_line": 1109,
+        "end_line": 1118
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1619,
-        "end_line": 1635
+        "start_line": 1672,
+        "end_line": 1688
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1884,
-        "end_line": 1897
+        "start_line": 1937,
+        "end_line": 1950
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1906,
-        "end_line": 1921
+        "start_line": 1959,
+        "end_line": 1974
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1930,
-        "end_line": 1945
+        "start_line": 1983,
+        "end_line": 1998
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1993,
-        "end_line": 2006
+        "start_line": 2046,
+        "end_line": 2059
       }
     ]
   },
@@ -9034,13 +9034,13 @@
     "sites": [
       {
         "file": "src/config_store.rs",
-        "start_line": 1161,
-        "end_line": 1175
+        "start_line": 1214,
+        "end_line": 1228
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1181,
-        "end_line": 1195
+        "start_line": 1234,
+        "end_line": 1248
       }
     ]
   },
@@ -9049,13 +9049,13 @@
     "sites": [
       {
         "file": "src/config_store.rs",
-        "start_line": 1355,
-        "end_line": 1373
+        "start_line": 1408,
+        "end_line": 1426
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 2198,
-        "end_line": 2226
+        "start_line": 2251,
+        "end_line": 2279
       }
     ]
   },
@@ -9064,18 +9064,18 @@
     "sites": [
       {
         "file": "src/config_store.rs",
-        "start_line": 1465,
-        "end_line": 1488
+        "start_line": 1518,
+        "end_line": 1541
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1491,
-        "end_line": 1515
+        "start_line": 1544,
+        "end_line": 1568
       },
       {
         "file": "src/config_store.rs",
-        "start_line": 1546,
-        "end_line": 1573
+        "start_line": 1599,
+        "end_line": 1626
       }
     ]
   },

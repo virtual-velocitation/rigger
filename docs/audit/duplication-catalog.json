@@ -9290,12 +9290,12 @@
       {
         "file": "src/config_store.rs",
         "name": "read_store_config",
-        "content_hash": "fc757af8f4bb8f68"
+        "content_hash": "6e26fecb9da25f46"
       },
       {
         "file": "src/config_store.rs",
         "name": "read_scratch_defaults",
-        "content_hash": "e6dc0fb575d8e84c"
+        "content_hash": "e8b3133a255a081a"
       }
     ],
     "proposed_home": "config_store::support (consolidate these 2 sites into one function in this file)",

@@ -22,82 +22,67 @@ pub(crate) fn err(msg: impl Into<String>) -> Error {
     Error(msg.into())
 }
 
-/// Reformat a `serde_yaml` "unknown field" error into the dotted-path form spec 102
-/// criterion 3 requires - `<path.to.field>: unknown key` - so every `deny_unknown_fields`
-/// violation on any config struct, at any nesting depth, reads the same way. `serde_yaml`
-/// ALREADY tracks the dotted parent path of a nested deserialize failure internally (its
-/// own `path` module's doc example is literally `dependencies.serde.typo1`) and prefixes
-/// it onto the message as `"<path>: unknown field \`<field>\`, expected ..."` (empty when
-/// the field is at the document root); this just recomposes that existing prefix and the
-/// leaf field name into ONE dotted token instead of adding a second, independent path
-/// tracker (`serde_path_to_error` or a hand-rolled schema walk) - config.rs and every
-/// downstream config struct stay a zero-new-dependency surface (spec 102's own global
-/// constraint forbids one). Any OTHER parse error (a type mismatch, a missing field,
-/// malformed YAML, ...) is not this shape and passes through with `serde_yaml`'s own
-/// message unchanged.
+/// Parse `body` as YAML into `T`, naming the dotted path of a `deny_unknown_fields`
+/// violation as `<path>.<field>: unknown key` (spec 102 criterion 3) so every such
+/// violation, on any config struct, at any nesting depth, reads the same way. Every OTHER
+/// parse error (a type mismatch, a missing field, malformed YAML, ...) is not this shape
+/// and passes through with `serde_yaml`'s own message unchanged.
 ///
-/// BOTH the dotted PATH and the leaf FIELD name are built from YAML text an operator
-/// wrote (a struct field name is safe - always a plain Rust identifier - but a `path`
-/// segment sourced from a MAP KEY, e.g. a `stages` name, or the unknown field's own name,
-/// is arbitrary text), so this cannot simply search the rendered message for the first (or
-/// last) occurrence of a short delimiter: either side can echo it. Two rounds of review
-/// found exactly that - a value that echoes the marker text (round 1), a field name that
-/// embeds a backtick (round 1), a field name that embeds the terminator itself (round 2),
-/// and a path segment that embeds its own ": " (round 2) - so this anchors on the LONGEST
-/// unambiguous literal available at each boundary instead of patching the delimiter search
-/// a further time:
-/// - the marker `"unknown field \`"` only ever opens the message outright (root) or right
-///   after a literal `": "` (non-root); scanning every position the marker occurs at and
-///   keeping only the ones a `": "` immediately precedes finds that boundary exactly once
-///   in every real case (however many `": "` runs a map-key path segment embeds elsewhere,
-///   none of them is immediately followed by the marker) - MORE than one such position
-///   means a field or path segment has gone out of its way to embed the marker text right
-///   after a colon-space too, which this cannot tell apart from the truth, so it declines
-///   to guess rather than risk naming the wrong key (same discipline as passing an
-///   unrelated error through unchanged).
-/// - the field name ends where the trailer `serde`'s formatter always appends begins -
-///   `"\`, expected "` (one, two, or "one of" N expected names all open this way) or
-///   `"\`, there are no fields"` - and because that trailer is fixed, always appended
-///   LAST, and never recurs (each of "expected"/"there are no fields" appears at most
-///   once), its true position is always the RIGHTMOST match of either anchor: whatever a
-///   crafted field name echoes of this text can only land to its left, never past it.
-pub(crate) fn dotted_unknown_key(e: &serde_yaml::Error) -> String {
-    let msg = e.to_string();
-    const MARKER: &str = "unknown field `";
-    const EXPECTED_ANCHOR: &str = "`, expected ";
-    const NO_FIELDS_ANCHOR: &str = "`, there are no fields";
-
-    let (path, after_marker): (&str, &str) = if let Some(rest) = msg.strip_prefix(MARKER) {
-        ("", rest)
-    } else {
-        let boundaries: Vec<usize> = msg
-            .match_indices(MARKER)
-            .map(|(i, _)| i)
-            .filter(|&i| i >= 2 && msg.get(i - 2..i) == Some(": "))
-            .collect();
-        match boundaries.as_slice() {
-            [only] => (&msg[..only - 2], &msg[only + MARKER.len()..]),
-            // Zero: not this error shape at all (a type mismatch, ...) - pass the raw
-            // message through. More than one: genuinely ambiguous - never guess.
-            _ => return msg,
+/// THE DOTTED PATH IS TRACKED STRUCTURALLY (spec 102 Design, amended at
+/// rigger-run@3df56f8): it comes from [`serde_path_to_error`] wrapping the `serde_yaml`
+/// deserializer, never from searching the rendered error text. Three earlier rounds tried
+/// exactly that - reformatting `serde_yaml`'s own already-path-prefixed message by
+/// scanning it for delimiters (`": "`, `` "unknown field `" ``, `` "`, expected " ``) -
+/// and each round's fix admitted a new way an operator-controlled key or value could echo
+/// whichever delimiter the scan anchored on, up to a genuinely ambiguous input (an unknown
+/// key literally named `` `z: unknown field `y` `` under `defaults:`) that made every scan
+/// see more than one candidate boundary and fall back to the raw, un-reformatted message -
+/// unmet criterion, not just an ugly one. A string search over untrusted content can never
+/// fully close that class: only a tracker built from the actual field/key accesses the
+/// deserializer performs, not from the text it renders afterward, is immune to what that
+/// text happens to contain. [`serde_path_to_error::Error::path`] gives exactly that: its
+/// final segment IS the literal key that was being read when the error fired, captured
+/// (`serde_path_to_error`'s `CaptureKey`) before that key's own `deny_unknown_fields` check
+/// ever runs, so it is the offending field's exact text even when the violation is a
+/// rejected key rather than a successfully-read one.
+///
+/// Classifying an "unknown field" violation (vs. every other parse error, e.g. a type
+/// mismatch whose invalid VALUE happens to contain the text `"unknown field \`"`) reuses
+/// that same structural certainty instead of scanning for a marker: with the exact,
+/// already-trusted parent path and field name in hand, the only question left is whether
+/// `serde_yaml`'s own message is literally `"<parent>: unknown field \`<field>\`..."` (or,
+/// at the document root, `"unknown field \`<field>\`..."`) - a plain prefix check against
+/// two known strings, never a search for a delimiter that content elsewhere in the message
+/// could also contain, so it cannot be fooled by what either string happens to hold.
+pub(crate) fn parse_yaml_naming_unknown_keys<T>(body: &str) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let de = serde_yaml::Deserializer::from_str(body);
+    serde_path_to_error::deserialize(de).map_err(|e| {
+        // Both computed from the tracker's path BEFORE `into_inner` consumes `e` -
+        // `path` for the final `<path>: unknown key` line, `segments` (its parsed pieces)
+        // to split the offending field from its parent for the prefix check below.
+        let path = e.path().to_string();
+        let segments: Vec<String> = e.path().iter().map(ToString::to_string).collect();
+        let inner_msg = e.into_inner().to_string();
+        let Some(field) = segments.last() else {
+            // No segment at all (e.g. the document itself is not a mapping): not an
+            // unknown-key shape by construction.
+            return inner_msg;
+        };
+        let parent = segments[..segments.len() - 1].join(".");
+        let expected_prefix = if parent.is_empty() {
+            format!("unknown field `{field}`")
+        } else {
+            format!("{parent}: unknown field `{field}`")
+        };
+        if inner_msg.starts_with(&expected_prefix) {
+            format!("{path}: unknown key")
+        } else {
+            inner_msg
         }
-    };
-    let end = [
-        after_marker.rfind(EXPECTED_ANCHOR),
-        after_marker.rfind(NO_FIELDS_ANCHOR),
-    ]
-    .into_iter()
-    .flatten()
-    .max();
-    let Some(end) = end else {
-        return msg;
-    };
-    let field = &after_marker[..end];
-    if path.is_empty() {
-        format!("{field}: unknown key")
-    } else {
-        format!("{path}.{field}: unknown key")
-    }
+    })
 }
 
 /// AgentDef is one agent, declared in a .rigger/agents/<id>.md file: YAML
@@ -987,7 +972,7 @@ pub fn parse_agent(b: &[u8]) -> Result<AgentDef, Error> {
     let s = std::str::from_utf8(b).map_err(|e| err(e.to_string()))?;
     let (front, body) = split_frontmatter(s)?;
     let mut a: AgentDef =
-        serde_yaml::from_str(front).map_err(|e| err(format!("frontmatter: {e}")))?;
+        parse_yaml_naming_unknown_keys(front).map_err(|msg| err(format!("frontmatter: {msg}")))?;
     a.prompt = body.trim().to_string();
     Ok(a)
 }
