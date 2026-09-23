@@ -78,13 +78,21 @@ pub fn read_agents_dir(dir: &Path) -> Result<Vec<(String, AgentDef)>, Error> {
 }
 
 /// Parse the workflow definition at `path` (no agents-dir read, no referential validation) -
-/// `pub(crate)` (spec 92 criterion 2) so the workflow-DEFINITION graph indexer
-/// (`grounder::workflowdef`) can read stages/gates/agents straight off `.rigger/workflow.yml`
-/// without depending on the agents directory being valid, mirroring the reasoning
-/// [`read_store_config`] below already established for the lightweight `store:`-only probe:
-/// indexing what the definition NAMES must not fail because an unrelated agent frontmatter file
-/// is malformed. [`load`] above stays the FULL, validating entry every run-starting path uses.
-pub(crate) fn load_workflow(path: &Path) -> Result<Workflow, Error> {
+/// `pub` (widened from `pub(crate)` at spec 92 criterion 2, checkin round) so this is the ONE
+/// canonical, `deny_unknown_fields`-honoring workflow parser every caller across BOTH crates
+/// routes through, never a second ad hoc `serde_yaml::from_str::<Workflow>` reimplementing it.
+/// Originally exposed to the workflow-DEFINITION graph indexer (`grounder::workflowdef`,
+/// same crate) so it can read stages/gates/agents straight off `.rigger/workflow.yml` without
+/// depending on the agents directory being valid, mirroring the reasoning [`read_store_config`]
+/// below already established for the lightweight `store:`-only probe: indexing what the
+/// definition NAMES must not fail because an unrelated agent frontmatter file is malformed.
+/// Now also the binary crate's (`main.rs::get_referenced_agent_ids`) entry - a bare
+/// `serde_yaml::from_str` there bypassed this function's unknown-key rejection entirely, and
+/// its caller's `.unwrap_or_default()` folded THAT parse error into the same empty set an
+/// absent workflow.yml legitimately produces, so a typo'd key made `rigger init`/`setup`
+/// silently re-scaffold the full default agent fleet over an operator's deliberately curated
+/// one. [`load`] above stays the FULL, validating entry every run-starting path uses.
+pub fn load_workflow(path: &Path) -> Result<Workflow, Error> {
     let b = std::fs::read_to_string(path).map_err(|e| err(format!("read workflow: {e}")))?;
     let mut wf: Workflow =
         parse_yaml_naming_unknown_keys(&b).map_err(|msg| err(format!("parse workflow: {msg}")))?;

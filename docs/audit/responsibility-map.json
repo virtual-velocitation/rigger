@@ -8253,7 +8253,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "a81e7c6513679332"
+    "content_hash": "3cebc2e8e5bf8110"
   },
   {
     "file": "src/main.rs",
@@ -8285,7 +8285,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "6ee32d0f5e9c27a9"
+    "content_hash": "2b339f8002c1b9e8"
   },
   {
     "file": "src/main.rs",
@@ -10409,11 +10409,27 @@
   },
   {
     "file": "src/main.rs",
+    "name": "init_project_errors_loudly_on_an_unknown_key_and_does_not_scaffold_agents",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "da1041e68aa281c2"
+  },
+  {
+    "file": "src/main.rs",
     "name": "get_referenced_agent_ids_reads_the_scaffolded_workflows_fleet",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "f6740a8b5f89735f"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "get_referenced_agent_ids_errors_loudly_on_an_unknown_key_instead_of_returning_empty",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "4c6181c51a88af54"
   },
   {
     "file": "src/main.rs",

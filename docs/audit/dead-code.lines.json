@@ -43,23 +43,23 @@
     "test_only_references": [
       {
         "file": "src/config_store.rs",
-        "line": 1289
+        "line": 1297
       },
       {
         "file": "src/config_store.rs",
-        "line": 1294
+        "line": 1302
       },
       {
         "file": "src/config_store.rs",
-        "line": 1299
+        "line": 1307
       },
       {
         "file": "src/config_store.rs",
-        "line": 1304
+        "line": 1312
       },
       {
         "file": "src/config_store.rs",
-        "line": 1310
+        "line": 1318
       }
     ]
   },
@@ -588,15 +588,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 14231
+        "line": 14243
       },
       {
         "file": "src/main.rs",
-        "line": 14252
+        "line": 14264
       },
       {
         "file": "src/main.rs",
-        "line": 14767
+        "line": 14779
       },
       {
         "file": "tests/cli.rs",
@@ -1470,47 +1470,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 17440
+        "line": 17452
       },
       {
         "file": "src/main.rs",
-        "line": 17473
+        "line": 17485
       },
       {
         "file": "src/main.rs",
-        "line": 17492
+        "line": 17504
       },
       {
         "file": "src/main.rs",
-        "line": 17495
+        "line": 17507
       },
       {
         "file": "src/main.rs",
-        "line": 17498
+        "line": 17510
       },
       {
         "file": "src/main.rs",
-        "line": 19368
+        "line": 19380
       },
       {
         "file": "src/main.rs",
-        "line": 19381
+        "line": 19393
       },
       {
         "file": "src/main.rs",
-        "line": 19396
+        "line": 19408
       },
       {
         "file": "src/main.rs",
-        "line": 24895
+        "line": 24991
       },
       {
         "file": "src/main.rs",
-        "line": 24896
+        "line": 24992
       },
       {
         "file": "src/main.rs",
-        "line": 24897
+        "line": 24993
       },
       {
         "file": "src/mcpserver.rs",

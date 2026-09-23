@@ -1394,6 +1394,11 @@
         "content_hash": "583982587bb6b9ca"
       },
       {
+        "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
+        "name": "Command::new",
+        "content_hash": "583982587bb6b9ca"
+      },
+      {
         "file": "tests/integrate_conflict_merge_periphery.rs",
         "name": "Command::new",
         "content_hash": "7266da144e21471d"
@@ -2345,7 +2350,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 437 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 438 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -7058,6 +7063,26 @@
         "content_hash": "6381403cc55e857d"
       },
       {
+        "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
+        "name": "\"create .rigger\"",
+        "content_hash": "647e8aea340be175"
+      },
+      {
+        "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
+        "name": "\".rigger\"",
+        "content_hash": "b4f6780144fa9e9f"
+      },
+      {
+        "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
+        "name": "\"create .rigger/agents\"",
+        "content_hash": "647e8aea340be175"
+      },
+      {
         "file": "tests/integrate_conflict_merge_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
@@ -8014,7 +8039,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 774 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 778 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0070",
@@ -17727,6 +17752,11 @@
         "content_hash": "978c8d8e25e7dad4"
       },
       {
+        "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
+        "name": "temp_project",
+        "content_hash": "5d1bf3d7ac2d7c7c"
+      },
+      {
         "file": "tests/reset_build_cache_periphery.rs",
         "name": "temp_project",
         "content_hash": "5d1bf3d7ac2d7c7c"
@@ -17772,7 +17802,7 @@
         "content_hash": "978c8d8e25e7dad4"
       }
     ],
-    "proposed_home": "a new shared module (sites span 20 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/cli.rs, tests/config_unknown_key_dotted_path_periphery.rs, tests/console_status_periphery.rs, tests/escalation_resume_periphery.rs, tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/reset_build_cache_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/spec_lint.rs, tests/statusline_command_periphery.rs, tests/validate_footprint_default_scratch_root_periphery.rs, tests/watchdog_cli_periphery.rs, tests/workflow_definition_and_js_constants_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 21 files: tests/canary_model_drift_periphery.rs, tests/cause_wire_periphery.rs, tests/cli.rs, tests/config_unknown_key_dotted_path_periphery.rs, tests/console_status_periphery.rs, tests/escalation_resume_periphery.rs, tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/init_setup_unknown_key_agent_fleet_periphery.rs, tests/reset_build_cache_periphery.rs, tests/reset_menu.rs, tests/reset_menu_identity_migration_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/spec_lint.rs, tests/statusline_command_periphery.rs, tests/validate_footprint_default_scratch_root_periphery.rs, tests/watchdog_cli_periphery.rs, tests/workflow_definition_and_js_constants_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -17833,6 +17863,11 @@
         "file": "tests/graph_show_surface.rs",
         "name": "temp_project",
         "content_hash": "978c8d8e25e7dad4"
+      },
+      {
+        "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
+        "name": "temp_project",
+        "content_hash": "5d1bf3d7ac2d7c7c"
       },
       {
         "file": "tests/migration_is_deliberate_periphery.rs",
@@ -17916,7 +17951,7 @@
       }
     ],
     "proposed_home": "one shared `temp_project` helper (e.g. relocated into `tests/common`) rather than each file defining its own",
-    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 27 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 28 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0469",
@@ -18600,6 +18635,11 @@
         "content_hash": "267b45a7793e2f59"
       },
       {
+        "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
+        "name": "run_rigger",
+        "content_hash": "363fed405ffd99b6"
+      },
+      {
         "file": "tests/relocated_worktree_store_resolution_periphery.rs",
         "name": "run_rigger",
         "content_hash": "f55b412f06bc7c85"
@@ -18615,7 +18655,7 @@
         "content_hash": "4fd0a772f4f82752"
       }
     ],
-    "proposed_home": "a new shared module (sites span 11 files: tests/change_path_revert_periphery.rs, tests/config_unknown_key_dotted_path_periphery.rs, tests/dedup_seeding_periphery.rs, tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/relocated_worktree_store_resolution_periphery.rs, tests/validate_footprint_default_scratch_root_periphery.rs, tests/workflow_definition_and_js_constants_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 12 files: tests/change_path_revert_periphery.rs, tests/config_unknown_key_dotted_path_periphery.rs, tests/dedup_seeding_periphery.rs, tests/graph_around_code_first.rs, tests/graph_around_governance_boundaries.rs, tests/graph_show_periphery.rs, tests/graph_show_staleness.rs, tests/graph_show_surface.rs, tests/init_setup_unknown_key_agent_fleet_periphery.rs, tests/relocated_worktree_store_resolution_periphery.rs, tests/validate_footprint_default_scratch_root_periphery.rs, tests/workflow_definition_and_js_constants_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

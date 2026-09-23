@@ -11809,12 +11809,20 @@ fn init_project(root: &Path) -> Result<ScaffoldReport, Box<dyn std::error::Error
 
     // 2. Load the workflow to determine which agents are referenced, then only
     // scaffold those agents. This allows setup to skip scaffolding when the
-    // workflow's referenced agents already exist (§05 setup hygiene).
-    let referenced_agents = get_referenced_agent_ids(root).unwrap_or_default();
+    // workflow's referenced agents already exist (§05 setup hygiene). A genuine parse
+    // failure (most importantly an unrecognized key) escalates as a real `Err` here -
+    // never `.unwrap_or_default()` - because folding it into the empty set would make
+    // `init_project` treat a broken PRESENT workflow.yml the same as a genuinely ABSENT
+    // one, below, and silently re-scaffold the full default fleet over whatever agents the
+    // operator had deliberately curated (spec 102's own goal: a config key rigger does not
+    // read is an error, never silence).
+    let referenced_agents = get_referenced_agent_ids(root)?;
 
     // If the workflow references agents, scaffold only those. If it references
     // nothing (should not happen with a valid workflow), scaffold all defaults
-    // for backward compatibility (empty repo case).
+    // for backward compatibility (empty repo case) - reached now only when
+    // `get_referenced_agent_ids` returned the empty set because workflow.yml is
+    // genuinely ABSENT, never because a present one failed to parse.
     let agents_to_scaffold: Vec<(&str, &str)> = if referenced_agents.is_empty() {
         SCAFFOLD_AGENTS.to_vec()
     } else {
@@ -11998,8 +12006,13 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
     Ok(true)
 }
 
-/// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml.
-/// Returns an empty set if the workflow cannot be loaded or parsed.
+/// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml. Returns an
+/// empty set ONLY when the file is genuinely ABSENT (the legitimate empty-repo signal
+/// `init_project` seeds the full default fleet on); a PRESENT-but-unparseable file - most
+/// importantly one carrying an unrecognized key - is a real `Err`, never folded into that
+/// same empty set. Routed through [`config_store::load_workflow`], the one canonical
+/// `deny_unknown_fields`-honoring parser, rather than a second ad hoc
+/// `serde_yaml::from_str::<Workflow>` that would silently accept what that parser rejects.
 fn get_referenced_agent_ids(
     root: &Path,
 ) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
@@ -12010,8 +12023,7 @@ fn get_referenced_agent_ids(
         return Ok(HashSet::new());
     }
 
-    let content = std::fs::read_to_string(&workflow_path)?;
-    let workflow: rigger::config::Workflow = serde_yaml::from_str(&content)?;
+    let workflow = config_store::load_workflow(&workflow_path)?;
 
     let mut ids = HashSet::new();
 
@@ -21947,6 +21959,61 @@ mod tests {
         );
     }
 
+    /// Checkin-round fix: `init_project` must fail loudly on a workflow.yml carrying an
+    /// unrecognized key, never silently reinterpret the parse error as the empty-repo
+    /// signal and scaffold every default agent over a deliberately curated fleet. A
+    /// pre-existing two-agent fleet (mirroring the test above) is left exactly as it was -
+    /// no new agent file appears - and `init_project` returns `Err` naming the dotted path.
+    #[test]
+    fn init_project_errors_loudly_on_an_unknown_key_and_does_not_scaffold_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let rigger = root.join(RIGGER_DIR);
+        let agents = rigger.join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+
+        // A pre-existing curated fleet (only `planner` + `adversary` referenced) whose
+        // workflow.yml has since picked up a typo'd key.
+        std::fs::write(
+            rigger.join("workflow.yml"),
+            "name: t\nstages:\n  plan:\n    agent: planner\n  go:\n    agent: adversary\n  \
+             bad:\n    agent: planner\n    gatez: [build]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("planner.md"),
+            "---\nid: planner\n---\nCustom.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("adversary.md"),
+            "---\nid: adversary\n---\nCustom.\n",
+        )
+        .unwrap();
+
+        let err = init_project(root).expect_err(
+            "a workflow.yml carrying an unknown key must fail init, not silently \
+                          re-scaffold the default fleet",
+        );
+        assert!(
+            err.to_string().contains("stages.bad.gatez: unknown key"),
+            "must name the dotted path of the unrecognized key: {err}"
+        );
+
+        for skipped in [
+            "rust-engineer.md",
+            "architecture-reviewer.md",
+            "sdet.md",
+            "adjudicator.md",
+        ] {
+            assert!(
+                !agents.join(skipped).exists(),
+                "a failed load must NEVER fall back to scaffolding the full default fleet: \
+                 {skipped} must not have been written"
+            );
+        }
+    }
+
     /// Spec 08 item 3: `get_referenced_agent_ids` - the source of truth the scaffold-skip
     /// filter reads - returns exactly the agent ids the workflow references, and an empty
     /// set when there is no workflow (the empty-repo signal `init_project` uses to seed the
@@ -21980,6 +22047,35 @@ mod tests {
         assert!(
             get_referenced_agent_ids(empty.path()).unwrap().is_empty(),
             "no workflow.yml yields an empty referenced set (the empty-repo seed signal)"
+        );
+    }
+
+    /// Checkin-round fix (rejecting `arch-checkin-c3-get-referenced-agent-ids-bypasses-
+    /// canonical-parser` / `adv-checkin-uphold-sharpen-arch-agent-ids-silent-swallow`): a
+    /// workflow.yml carrying an unrecognized key must fail `get_referenced_agent_ids` with
+    /// a real `Err` naming the dotted path, not the empty-repo `Ok(HashSet::new())` a raw
+    /// `serde_yaml::from_str` bypassing `deny_unknown_fields`'s canonical parser used to
+    /// produce. A PRESENT-but-malformed workflow is never the same signal as an ABSENT one
+    /// (the empty-repo case the prior test above still covers): only the latter may resolve
+    /// to an empty set.
+    #[test]
+    fn get_referenced_agent_ids_errors_loudly_on_an_unknown_key_instead_of_returning_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let rigger = root.join(RIGGER_DIR);
+        std::fs::create_dir_all(&rigger).unwrap();
+        std::fs::write(
+            rigger.join("workflow.yml"),
+            "name: t\ndefaults:\n  max_parallel_unitz: 2\n",
+        )
+        .unwrap();
+
+        let err = get_referenced_agent_ids(root)
+            .expect_err("an unknown key must fail to load, never resolve to an empty set");
+        assert!(
+            err.to_string()
+                .contains("defaults.max_parallel_unitz: unknown key"),
+            "must name the dotted path of the unrecognized key through the canonical parser: {err}"
         );
     }
 
