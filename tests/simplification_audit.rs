@@ -3544,7 +3544,7 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
          port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s \
          trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) \
          already excludes from clustering by design; and `gate_verdict_event` \
-         (`src/conductor.rs:37469-37478`) together with the `verdict` closure inside \
+         (`src/conductor.rs:37733-37742`) together with the `verdict` closure inside \
          `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` \
          (`src/conductor.rs:39138-39147`) do the identical job - find the recorded `GateVerdict` \
          for a `\"<unit>/gate:g#<attempt>\"` replay key, panicking with the same message when none \
