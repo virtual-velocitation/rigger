@@ -29403,6 +29403,92 @@ fn mcp_without_spawn_reports_progress_and_scratch_as_unknown_tools_over_stdio() 
     );
 }
 
+/// PERIPHERY (round 2, closes `sdet-u104-mcp-spawn-scratch-no-real-parity-test-with-cmd-scratch`,
+/// upheld non-blocking by review): `rigger mcp --spawn <id>`'s `rigger_scratch` tool
+/// (`cmd_mcp`'s own `scratch_root` resolution, main.rs) and `rigger scratch <id>`
+/// (`cmd_scratch`) both claim to resolve the SAME `spawn_scratch_path` formula over the same
+/// `scratch_defaults`/`run_id` inputs, but every existing test proving either one right
+/// compares it only to a value HARD-CODED or RE-DERIVED on the test side
+/// (`spawn_bound_scratch_answers_with_the_bound_spawns_own_path` in `mcpserver.rs`,
+/// `mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio`'s bare non-empty check
+/// above) - never to what the OTHER real command prints for the exact same seeded
+/// project/run. Mirrors `scratch_prints_the_exact_container_rigger_result_reclaims`'s
+/// real-behavior-over-hard-coded-string method: run both commands against the same
+/// environment and require them to agree with EACH OTHER, so a future edit to only one call
+/// site's resolution (`cmd_mcp` inlines its own copy of `cmd_scratch`'s repo/workdir
+/// derivation rather than sharing it) would be caught even though it would leave every
+/// single-sided test above green.
+#[test]
+fn mcp_spawn_scratch_tool_agrees_byte_for_byte_with_rigger_scratch() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    seed_store(root);
+    seed_run_events(root, &[("RunStarted", r#"{"run":"r1","criteria":["c"]}"#)]);
+
+    let spawn_id = "u104-spawn-mcp/implementer#0";
+
+    let (scratch_out, scratch_err, scratch_ok) = run_rigger(root, &["scratch", spawn_id]);
+    assert!(
+        scratch_ok,
+        "rigger scratch {spawn_id} must succeed for a live run; stderr: {scratch_err}"
+    );
+    let cmd_scratch_path = scratch_out.trim().to_string();
+    assert!(
+        !cmd_scratch_path.is_empty(),
+        "rigger scratch must print a non-empty path"
+    );
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp", "--spawn", spawn_id])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp --spawn");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "rigger_scratch", "arguments": {}}
+    });
+    writeln!(stdin, "{req}").unwrap();
+    stdin.flush().unwrap();
+    let mut line = String::new();
+    stdout
+        .read_line(&mut line)
+        .expect("rigger mcp --spawn must answer");
+    let resp: serde_json::Value = serde_json::from_str(&line)
+        .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"));
+    let mcp_scratch_path = resp["result"]["structuredContent"]["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("rigger_scratch must answer with a path; got:\n{resp}"))
+        .to_string();
+
+    drop(stdin);
+    let out = child
+        .wait_with_output()
+        .expect("rigger mcp --spawn must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp --spawn must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(
+        mcp_scratch_path, cmd_scratch_path,
+        "rigger mcp --spawn's rigger_scratch tool must answer the EXACT path `rigger \
+         scratch {spawn_id}` prints for the same seeded run - not a divergent, \
+         independently-resolved one"
+    );
+}
+
 /// Spawn `rigger grep-guard` in `root`, write one PreToolUse `payload` to its stdin, and
 /// parse its one printed JSON object. Shared by every end-to-end `grep-guard` test below (the
 /// happy-path test and the SDET periphery additions that follow it): each drives a DIFFERENT

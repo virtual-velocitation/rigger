@@ -615,11 +615,11 @@
     "test_only_references": [
       {
         "file": "src/mcpserver.rs",
-        "line": 1088
+        "line": 1101
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 1129
+        "line": 1142
       }
     ]
   },
@@ -1514,7 +1514,7 @@
       },
       {
         "file": "src/mcpserver.rs",
-        "line": 1241
+        "line": 1294
       },
       {
         "file": "src/metrics.rs",
