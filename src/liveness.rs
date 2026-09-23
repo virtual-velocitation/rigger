@@ -148,13 +148,20 @@ pub fn decode_marker_filename(encoded: &str) -> Option<String> {
 /// bogus multi-hour `silent_for`. An empty `run_id` (a caller outside a run - the pure-fold
 /// tests) omits the run subdir, keeping the path stable for the no-run case.
 ///
-/// Returns `None` when `run_id` or `spawn_id` maps to the ONE remaining degenerate
-/// [`marker_filename`] shape (an empty INPUT - never a non-empty one, since the injective
-/// encoding gives every non-empty input its own unique, never-empty output), so every
-/// caller treats a degenerate id exactly like the existing "marker absent" no-op
-/// ([`sweep`]'s own doc comment: "a spawn with NO marker is left alone") instead of
-/// stat-ing or touching a fabricated placeholder path.
+/// Returns `None` when `scratch_root` is empty (no scratch root configured - a caller
+/// that does not care, mirroring [`any_marker_fresh`]'s own empty-root degrade), or when
+/// `run_id` or `spawn_id` maps to the ONE remaining degenerate [`marker_filename`] shape
+/// (an empty INPUT - never a non-empty one, since the injective encoding gives every
+/// non-empty input its own unique, never-empty output), so every caller treats a
+/// degenerate id exactly like the existing "marker absent" no-op ([`sweep`]'s own doc
+/// comment: "a spawn with NO marker is left alone") instead of stat-ing or touching a
+/// fabricated placeholder path. Without this, `Path::new("").join(MARKER_SUBDIR)` would
+/// yield a RELATIVE path (`"agent-live/..."`), scattering the marker into the caller's
+/// current directory instead of no-op-ing.
 pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<std::path::PathBuf> {
+    if scratch_root.is_empty() {
+        return None;
+    }
     let dir = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
     let dir = match marker_filename(run_id) {
         Some(safe) => dir.join(safe),

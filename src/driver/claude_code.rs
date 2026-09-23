@@ -357,14 +357,19 @@ const AGENT_STREAM_SUBDIR: &str = "agent-stream";
 
 /// The raw stream-json transcript path for one launch:
 /// `<scratch_root>/agent-stream/<sanitized run_id>/<sanitized spawn_id>.<launch>.jsonl`
-/// (an EMPTY `run_id` omits the run subdir, and an empty `scratch_root` still yields a
-/// path - the caller decides whether persisting it is meaningful). Mirrors
+/// (an EMPTY `run_id` omits the run subdir). Mirrors
 /// [`crate::driver::replay::spawn_scratch_path`]'s layout and sanitizing rule
 /// ([`crate::liveness::marker_filename`], the ONE injective id-to-filename encoding) so a
 /// spawn's stream, scratch and liveness marker can never alias a sibling's path. Returns
-/// `None` only for the same degenerate case `marker_filename` itself declines: an empty
-/// `spawn_id`.
+/// `None` for an empty `scratch_root` (no scratch root configured - a caller that does
+/// not care, mirroring [`liveness::marker_path`]'s own empty-root degrade; without this,
+/// `Path::new("").join(AGENT_STREAM_SUBDIR)` would yield a RELATIVE path that scatters
+/// the transcript into the caller's current directory instead of no-op-ing) or for the
+/// same degenerate case `marker_filename` itself declines: an empty `spawn_id`.
 fn stream_path(scratch_root: &str, run_id: &str, spawn_id: &str, launch: u32) -> Option<PathBuf> {
+    if scratch_root.is_empty() {
+        return None;
+    }
     let dir = Path::new(scratch_root).join(AGENT_STREAM_SUBDIR);
     let dir = match liveness::marker_filename(run_id) {
         Some(safe) => dir.join(safe),
