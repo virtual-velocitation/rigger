@@ -36,15 +36,35 @@ pub(crate) fn err(msg: impl Into<String>) -> Error {
 /// through with `serde_yaml`'s own message unchanged.
 pub(crate) fn dotted_unknown_key(e: &serde_yaml::Error) -> String {
     let msg = e.to_string();
-    let Some(field_at) = msg.find("unknown field `") else {
+    const MARKER: &str = "unknown field `";
+    // `serde_yaml`'s Display renders EXACTLY `"<path>: "` (only when the path is non-root;
+    // root-level is un-prefixed) followed by the raw `serde::de::Error::unknown_field`
+    // message, followed by an optional " at line N column M" location suffix - so a genuine
+    // unknown-field violation has the marker OPENING the message outright (root) or opening
+    // right after a "<path>: " prefix, never merely appearing somewhere later in it.
+    // Anchoring here (rather than searching the whole message for the marker) is what a
+    // type-mismatch error whose own quoted invalid-value TEXT happens to echo this exact
+    // wording needs: that text can only ever land after the real path/message boundary, so it
+    // never satisfies either anchor and the message passes through unchanged instead of being
+    // corrupted into a bogus unknown-key report.
+    let (path, after_marker) = if let Some(rest) = msg.strip_prefix(MARKER) {
+        ("", rest)
+    } else if let Some(colon) = msg.find(": ") {
+        match msg[colon + 2..].strip_prefix(MARKER) {
+            Some(rest) => (&msg[..colon], rest),
+            None => return msg,
+        }
+    } else {
         return msg;
     };
-    let after = &msg[field_at + "unknown field `".len()..];
-    let Some(end) = after.find('`') else {
+    // The field name ends at its own closing backtick, which `serde`'s formatter always
+    // follows with a literal "`, " (either "...`, expected ..." or "...`, there are no
+    // fields") - search for that exact terminator, not the first backtick encountered, so a
+    // field name that itself embeds a backtick is never truncated mid-name.
+    let Some(end) = after_marker.find("`, ") else {
         return msg;
     };
-    let field = &after[..end];
-    let path = msg[..field_at].trim_end_matches(": ").trim();
+    let field = &after_marker[..end];
     if path.is_empty() {
         format!("{field}: unknown key")
     } else {

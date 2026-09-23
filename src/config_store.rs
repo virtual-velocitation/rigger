@@ -836,6 +836,34 @@ mod tests {
             type_err.to_string(),
             "a non-unknown-field error (a type mismatch here) passes through unchanged"
         );
+
+        // adv-u102c3-dotted-unknown-key-corrupts-type-mismatch-errors: a type mismatch whose
+        // own invalid-value TEXT happens to echo the unknown-field marker wording must still
+        // pass through with serde_yaml's raw message, never be corrupted into a fabricated
+        // unknown-key report. The naive "find the marker anywhere in the message" reformatter
+        // matched this embedded text and rewrote the real type-mismatch error away entirely.
+        let type_err_with_embedded_marker =
+            serde_yaml::from_str::<TypeMismatch>("n: unknown field `evil`, expected `n`\n")
+                .expect_err("must fail to parse");
+        assert_eq!(
+            dotted_unknown_key(&type_err_with_embedded_marker),
+            type_err_with_embedded_marker.to_string(),
+            "a type-mismatch error whose own invalid-value text echoes the unknown-field \
+             marker wording must still pass through unchanged, never be mistaken for a real \
+             unknown-key violation"
+        );
+
+        // adv-u102c3-dotted-unknown-key-truncates-backtick-in-key-name: an unknown field whose
+        // own name contains a backtick must not be truncated at that embedded backtick - the
+        // field name ends at serde's actual "`, " terminator, not the first backtick seen.
+        let backtick_field_err =
+            serde_yaml::from_str::<Outer>("weird`field: 1\n").expect_err("must fail to parse");
+        assert_eq!(
+            dotted_unknown_key(&backtick_field_err),
+            "weird`field: unknown key",
+            "a field name that itself contains a backtick is not truncated at the embedded \
+             backtick"
+        );
     }
 
     #[test]
