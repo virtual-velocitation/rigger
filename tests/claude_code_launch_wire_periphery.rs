@@ -101,6 +101,19 @@ fn opts(id: &str) -> SpawnOpts {
     }
 }
 
+/// Throwaway in-memory stores for a test that only exercises `launch()` (which takes ITS
+/// OWN store as an explicit parameter - see this file's module doc, point 2): criterion
+/// 2 added `Driver.progress_store`/`.run_store`, read only by `read_stream`/`spawn()`,
+/// which none of these tests calls - but the fields still need real values to construct
+/// the type. The caller binds the returned pair to a local so both outlive the `Driver`
+/// that borrows them.
+fn no_stream_extras() -> (Store, Store) {
+    (
+        Store::open(":memory:").expect("in-memory progress store"),
+        Store::open(":memory:").expect("in-memory run store"),
+    )
+}
+
 /// Reap a fixture child exactly as the implementer's own `read_fixture_lines` does - the
 /// fixture reads one stdin line then exits on its own, so this only drains and waits on
 /// the handle rigger's own no-os-kill discipline requires (never a signal, never a pid
@@ -125,9 +138,13 @@ fn spawn_launched_survives_a_cold_start_a_second_store_instance_reads_the_first_
         .expect("utf8 scratch path")
         .to_string();
 
+    let (progress_store, run_store) = no_stream_extras();
     let driver = Driver {
         bin: fixture_bin(),
         rigger_bin: "rigger".to_string(),
+        progress_store: &progress_store,
+        run_store: &run_store,
+        scratch_root: String::new(),
     };
 
     // First "process": open the store, perform one launch, then DROP the store - the
@@ -247,9 +264,13 @@ fn launch_resolves_an_empty_rigger_bin_to_the_literal_rigger_on_path() {
     // build `Driver { rigger_bin: String::new(), .. }` directly, not only through
     // `Driver::default()`, which sets a literal non-empty value and so never exercises
     // this branch.
+    let (progress_store, run_store) = no_stream_extras();
     let driver = Driver {
         bin: fixture_bin(),
         rigger_bin: String::new(),
+        progress_store: &progress_store,
+        run_store: &run_store,
+        scratch_root: String::new(),
     };
     let store = Store::open(":memory:").expect("in-memory store for a pure-argv assertion");
     let mut launch = driver
@@ -314,9 +335,13 @@ fn launch_resolves_an_empty_bin_to_the_literal_claude_found_on_path() {
     .expect("join synthetic PATH");
     std::env::set_var("PATH", new_path);
 
+    let (progress_store, run_store) = no_stream_extras();
     let driver = Driver {
         bin: String::new(),
         rigger_bin: "rigger".to_string(),
+        progress_store: &progress_store,
+        run_store: &run_store,
+        scratch_root: String::new(),
     };
     let store = Store::open(":memory:").expect("in-memory store");
     let result = driver.launch(
@@ -351,9 +376,13 @@ fn launch_reaps_the_child_when_the_stdin_write_fails() {
     // which point it fails with a broken pipe. That holds regardless of how the write and
     // the fixture's exit interleave in time, so - unlike racing a write against a process
     // that might close stdin fast - there is no flake window here.
+    let (progress_store, run_store) = no_stream_extras();
     let driver = Driver {
         bin: fixture_path("claude-code-never-reads-stdin-agent.sh"),
         rigger_bin: "rigger".to_string(),
+        progress_store: &progress_store,
+        run_store: &run_store,
+        scratch_root: String::new(),
     };
     let store = Store::open(":memory:").expect("in-memory store");
     let pid_dir = tempfile::tempdir().expect("throwaway dir for the fixture's pid file");

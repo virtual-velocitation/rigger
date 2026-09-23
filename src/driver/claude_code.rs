@@ -7,21 +7,27 @@
 //!
 //! This file lands incrementally, criterion by criterion (spec 104's own "one host, ship
 //! it whole" intent still holds - the criteria are a delivery split, not a design split):
-//! criterion 1 (THE LAUNCH IS TYPED, this module's current content) owns argv, cwd,
-//! environment and the open half of the launch record. THE STREAM (criterion 2) reads
-//! what this criterion starts and completes `impl AgentDriver for Driver`; until it
-//! lands, `Driver` here is not yet a conforming `AgentDriver` and `rigger run`
-//! (`src/main.rs`) keeps using `cli::Driver`.
+//! criterion 1 (THE LAUNCH IS TYPED) owns argv, cwd, environment and the open half of the
+//! launch record. THE STREAM (criterion 2, this module's addition below `Launch`) reads
+//! what criterion 1 starts: one reader per child, line by line, closing
+//! `impl AgentDriver for Driver` - `rigger run` (`src/main.rs`) now launches its agents
+//! through this host instead of `cli::Driver`.
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::conductor::{Error, SpawnOpts};
+use serde_json::Value;
+
+use crate::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use crate::config::AgentDef;
 use crate::eventstore::EventStore;
+use crate::liveness;
 use crate::progress::SpawnLaunched;
 use crate::progress_store;
+use crate::spawn::SpawnResult;
+use crate::spawn_store;
 
 /// The permission mode this host always passes (architecture addendum §4.1): paired with
 /// `--permission-prompts none`, whatever would otherwise prompt is DENIED and reported on
@@ -31,7 +37,7 @@ use crate::progress_store;
 const PERMISSION_MODE: &str = "default";
 
 /// Spawns agents as headless Claude Code sessions.
-pub struct Driver {
+pub struct Driver<'a> {
     /// The `claude` binary to run. Empty resolves to `"claude"` on `$PATH`, same
     /// fallback convention as [`crate::driver::cli::Driver`].
     pub bin: String,
@@ -39,13 +45,40 @@ pub struct Driver {
     /// (`<rigger_bin> mcp --spawn <id>`, §4.3). Empty resolves to `"rigger"` on `$PATH` -
     /// a test points this at a fixture binary instead of a real `rigger` install.
     pub rigger_bin: String,
+    /// The progress store `launch` records `SpawnLaunched` to and THE STREAM (criterion
+    /// 2) records every waiting/denied/unparseable line to (`crate::progress_store`,
+    /// `.rigger/progress.db` at the composition root) - injected, never opened by this
+    /// driver itself, mirroring how every other store-touching port in this codebase
+    /// takes its store by reference rather than a path it resolves on its own.
+    pub progress_store: &'a dyn EventStore,
+    /// The run's own event store (`.rigger/events.db`). THE STREAM records the `result`
+    /// message here as a [`SpawnResult`] (spec 104 criterion 2) - the host does this
+    /// FOR the agent, since a host-launched prompt carries no self-report instruction.
+    pub run_store: &'a dyn EventStore,
+    /// The run's scratch root (architecture addendum §4.2): the raw stream-json
+    /// transcript lands at `<scratch_root>/agent-stream/<run>/<spawn>.<launch>.jsonl`
+    /// (see [`stream_path`]) and the liveness marker at
+    /// `<scratch_root>/agent-live/<run>/<spawn>` (see [`crate::liveness::marker_path`]).
+    /// Empty disables both (no scratch root configured / a test that does not care).
+    pub scratch_root: String,
 }
 
-impl Default for Driver {
+// `Default` is a TEST convenience only: production always constructs `Driver` with real
+// injected stores at the composition root (`src/main.rs`), so a value that reads through
+// `self.progress_store`/`self.run_store` without one is a test bug, never a real launch -
+// the same contract `crate::eventstore::SilentStore` (also `#[cfg(test)]`) documents.
+#[cfg(test)]
+static SILENT: crate::eventstore::SilentStore = crate::eventstore::SilentStore;
+
+#[cfg(test)]
+impl Default for Driver<'static> {
     fn default() -> Self {
         Driver {
             bin: "claude".to_string(),
             rigger_bin: "rigger".to_string(),
+            progress_store: &SILENT,
+            run_store: &SILENT,
+            scratch_root: String::new(),
         }
     }
 }
@@ -60,7 +93,7 @@ pub struct Launch {
     pub args: Vec<String>,
 }
 
-impl Driver {
+impl Driver<'_> {
     /// THE LAUNCH (spec 104 criterion 1): start one child process for this spawn launch.
     ///
     /// Ordering is the criterion: `SpawnLaunched` is appended to the progress store
@@ -166,6 +199,250 @@ impl Driver {
             &self.rigger_bin
         }
     }
+
+    /// THE STREAM (spec 104 criterion 2): read `launch`'s child stdout line by line to
+    /// completion, close the input after the first `result`, and reap the child. Every
+    /// line touches the spawn's liveness marker and is persisted to the raw stream file
+    /// (architecture addendum §4.2) before this function looks at its content, so a line
+    /// this reader cannot parse is never silently lost - it still lands liveness, the
+    /// transcript file, AND a progress line (below), just no structured record.
+    fn read_stream(&self, launch: &mut Launch, opts: &SpawnOpts) -> Result<AgentResult, Error> {
+        let stdout = launch.child.stdout.take().ok_or_else(|| {
+            Error(format!(
+                "claude_code driver: {:?}: launch carried no stdout pipe",
+                opts.id
+            ))
+        })?;
+        let marker = liveness::marker_path(&self.scratch_root, &opts.run_id, &opts.id);
+        let mut stream_file = open_stream_file(
+            stream_path(&self.scratch_root, &opts.run_id, &opts.id, opts.launch).as_deref(),
+        );
+
+        let mut resolved_model = String::new();
+        let mut permission_denials: u64 = 0;
+        let mut result: Option<AgentResult> = None;
+
+        for line in BufReader::new(stdout).lines() {
+            let line = line.map_err(|e| {
+                Error(format!(
+                    "claude_code driver: {:?}: read agent stream: {e}",
+                    opts.id
+                ))
+            })?;
+
+            // "every line touches the spawn's liveness marker - the host proves life,
+            // the agent is never asked to" (architecture addendum §4.2).
+            touch_liveness_marker(marker.as_deref());
+            if let Some(f) = stream_file.as_mut() {
+                // Best-effort: the transcript is a diagnostic/audit artifact, never the
+                // record of truth (the progress store and the run store are), so a full
+                // disk here must not fail an otherwise-healthy spawn.
+                let _ = writeln!(f, "{line}");
+            }
+
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                // "a line that is not JSON is recorded as a progress line and skipped."
+                self.record_progress(opts, &format!("stream (unparseable): {line}"));
+                continue;
+            };
+
+            match (
+                v.get("type").and_then(Value::as_str),
+                v.get("subtype").and_then(Value::as_str),
+            ) {
+                (Some("system"), Some("init")) => {
+                    resolved_model = v
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    // The MCP connection status is noted for the record but does not
+                    // gate this criterion - "a rigger server that did not connect fails
+                    // the launch as a fault" is failure-class territory (criterion 5's,
+                    // NOT this one's).
+                    if let Some(servers) = v.get("mcp_servers").and_then(Value::as_array) {
+                        self.record_progress(opts, &format!("mcp servers: {servers:?}"));
+                    }
+                }
+                (Some("system"), Some("api_retry")) => {
+                    self.record_progress(opts, &api_retry_line(&v));
+                }
+                (Some("system"), Some("permission_denied")) => {
+                    permission_denials += 1;
+                    self.record_progress(opts, "permission denied");
+                }
+                (Some("result"), _) => {
+                    let res = spawn_result_from(&v, opts, &resolved_model, permission_denials);
+                    spawn_store::record_result_if_absent(self.run_store, &res)?;
+                    result = Some(AgentResult {
+                        output: res.output,
+                        resolved_model: resolved_model.clone(),
+                    });
+                    // "the host closes the input after the first `result`" - dropping the
+                    // handle closes the pipe; a session that would otherwise wait on more
+                    // input can now exit. Only the FIRST result acts - "the log holds one
+                    // result" (CONSTRAINTS WALK).
+                    drop(launch.child.stdin.take());
+                }
+                _ => {
+                    // assistant/user turns, hook events, and every other subtype: raw
+                    // persistence + liveness already happened above; no structured
+                    // record for this criterion (out of THE STREAM's Done-when scope).
+                }
+            }
+        }
+
+        launch.child.wait().map_err(|e| {
+            Error(format!(
+                "claude_code driver: {:?}: reap the child: {e}",
+                opts.id
+            ))
+        })?;
+
+        result.ok_or_else(|| {
+            Error(format!(
+                "claude_code driver: {:?}: the agent stream ended with no result",
+                opts.id
+            ))
+        })
+    }
+
+    /// Best-effort progress line (spec 14's mechanism, spec 104's own writer): a lost
+    /// progress line is a smaller loss than a lost launch record or a lost result, so
+    /// this never fails the spawn the way [`Driver::launch`]'s `SpawnLaunched` write does.
+    fn record_progress(&self, opts: &SpawnOpts, activity: &str) {
+        let _ = progress_store::record(self.progress_store, &opts.run_id, &opts.id, activity);
+    }
+}
+
+impl AgentDriver for Driver<'_> {
+    /// Completes THE LAUNCH (criterion 1) with THE STREAM (criterion 2): start the child
+    /// and read it to its `result`, exactly as `docs/architecture-addendum-claude-code-integration.md`
+    /// §4 describes. `emit` is unused: unlike the cli driver (a subprocess with no live
+    /// channel, so its decisions are bridged from stdout after the fact), this host's
+    /// agent records its own decisions LIVE through its bound MCP server
+    /// (`rigger mcp --spawn <id>`, criterion 3) - there is nothing left to bridge here.
+    fn spawn(
+        &self,
+        agent: &AgentDef,
+        prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        let mut launch = self.launch(agent, prompt, opts, self.progress_store)?;
+        self.read_stream(&mut launch, opts)
+    }
+}
+
+/// Touch `marker` (create it, or bump its mtime if it already exists) so a fresh liveness
+/// read from `rigger step`/the dash sees this spawn as alive - the pure filesystem side
+/// of `liveness::marker_path`'s contract. `None` (no scratch root, or a degenerate id
+/// `marker_path` itself declines - see its doc) is a silent no-op, mirroring every other
+/// caller's "no marker: leave it alone" convention. Best-effort throughout: a liveness
+/// touch that failed is a slightly-staler marker, never a reason to abort the spawn whose
+/// aliveness it exists to prove.
+fn touch_liveness_marker(marker: Option<&Path>) {
+    let Some(marker) = marker else { return };
+    if let Some(parent) = marker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::File::create(marker);
+}
+
+/// The scratch subdirectory a spawn's raw stream-json transcript lives under (spec 104
+/// criterion 2, architecture addendum §4.2) - a sibling of `agent-live`
+/// ([`crate::liveness::MARKER_SUBDIR`]) and `agent-scratch`
+/// ([`crate::driver::replay::spawn_scratch_path`]).
+const AGENT_STREAM_SUBDIR: &str = "agent-stream";
+
+/// The raw stream-json transcript path for one launch:
+/// `<scratch_root>/agent-stream/<sanitized run_id>/<sanitized spawn_id>.<launch>.jsonl`
+/// (an EMPTY `run_id` omits the run subdir, and an empty `scratch_root` still yields a
+/// path - the caller decides whether persisting it is meaningful). Mirrors
+/// [`crate::driver::replay::spawn_scratch_path`]'s layout and sanitizing rule
+/// ([`crate::liveness::marker_filename`], the ONE injective id-to-filename encoding) so a
+/// spawn's stream, scratch and liveness marker can never alias a sibling's path. Returns
+/// `None` only for the same degenerate case `marker_filename` itself declines: an empty
+/// `spawn_id`.
+fn stream_path(scratch_root: &str, run_id: &str, spawn_id: &str, launch: u32) -> Option<PathBuf> {
+    let dir = Path::new(scratch_root).join(AGENT_STREAM_SUBDIR);
+    let dir = match liveness::marker_filename(run_id) {
+        Some(safe) => dir.join(safe),
+        None => dir,
+    };
+    liveness::marker_filename(spawn_id).map(|safe| dir.join(format!("{safe}.{launch}.jsonl")))
+}
+
+/// Open (creating parent directories) the raw stream file at `path` for a fresh write -
+/// one file per launch, matching [`stream_path`]'s one-launch-one-file naming. `None`
+/// (an empty scratch root or spawn id) or an open failure both degrade to "do not persist
+/// the transcript" rather than failing the spawn: see [`Driver::read_stream`]'s doc on why
+/// this artifact is best-effort.
+fn open_stream_file(path: Option<&Path>) -> Option<std::fs::File> {
+    let path = path?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::File::create(path).ok()
+}
+
+/// The waiting progress line for a `system/api_retry` message (architecture addendum
+/// §4.2: "carrying category, attempt and delay"), grounded on the exact shape a probe of
+/// the real CLI showed (spec 104 Problem section):
+/// `{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,
+/// "retry_delay_ms":618,"error_status":401,"error":"authentication_failed"}`. The
+/// CATEGORY is `error` (Claude Code's own error-category string, e.g.
+/// `authentication_failed`) - failure CLASSIFICATION from it is criterion 5's job; this
+/// is a human-readable line only.
+fn api_retry_line(v: &Value) -> String {
+    let category = v.get("error").and_then(Value::as_str).unwrap_or("unknown");
+    let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0);
+    let delay_ms = v.get("retry_delay_ms").and_then(Value::as_u64).unwrap_or(0);
+    format!("waiting: {category} (attempt {attempt}, retrying in {delay_ms}ms)")
+}
+
+/// Map a `result` stream message to the [`SpawnResult`] THE STREAM records (Design:
+/// "the `result` message becomes the `SpawnResult`: `output`, and `meta` with
+/// `resolved_model`, `session_id`, `usage` (`input`, `output`, `cache_creation`,
+/// `cache_read`), `turns`, `cost_usd`, `permission_denials`"). `permission_denials` is the
+/// count THIS reader accumulated from `system/permission_denied` lines seen earlier in
+/// THIS launch's own stream - "the count rides on the result" - rather than trusting a
+/// same-named field on the result message itself, so the count is correct even against a
+/// Claude Code version whose result message omits or names that field differently.
+/// Every numeric field defaults to its zero value when the real message omits it, so a
+/// result line missing a field it usually carries still yields a well-formed record
+/// rather than failing the whole spawn over one absent number.
+fn spawn_result_from(
+    v: &Value,
+    opts: &SpawnOpts,
+    resolved_model: &str,
+    permission_denials: u64,
+) -> SpawnResult {
+    let output = v
+        .get("result")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let session_id = v
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let usage = v.get("usage").cloned().unwrap_or(Value::Null);
+    let get_u64 = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let meta = serde_json::json!({
+        "resolved_model": resolved_model,
+        "session_id": session_id,
+        "usage": {
+            "input": get_u64("input_tokens"),
+            "output": get_u64("output_tokens"),
+            "cache_creation": get_u64("cache_creation_input_tokens"),
+            "cache_read": get_u64("cache_read_input_tokens"),
+        },
+        "turns": v.get("num_turns").and_then(Value::as_u64).unwrap_or(0),
+        "cost_usd": v.get("total_cost_usd").and_then(Value::as_f64).unwrap_or(0.0),
+        "permission_denials": permission_denials,
+    });
+    SpawnResult::ok(opts.id.clone(), output).with_meta(meta)
 }
 
 /// The typed stream-json first input message: `{"type":"user","message":{"role":"user",
@@ -379,6 +656,7 @@ mod tests {
         let driver = Driver {
             bin: "/definitely/does/not/exist/claude-xyz".to_string(),
             rigger_bin: "rigger".to_string(),
+            ..Driver::default()
         };
         let store = Store::open(":memory:").unwrap();
         let mut o = opts("u104-launch/implementer#0");
@@ -427,6 +705,7 @@ mod tests {
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),
+            ..Driver::default()
         };
         let store = Store::open(":memory:").unwrap();
         let mut o = opts("u/implementer#0");
@@ -472,6 +751,7 @@ mod tests {
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),
+            ..Driver::default()
         };
         let store = Store::open(":memory:").unwrap();
         let mut o = opts("u/implementer#0");
@@ -501,6 +781,7 @@ mod tests {
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),
+            ..Driver::default()
         };
         let store = Store::open(":memory:").unwrap();
         let o = opts("u/implementer#0");
@@ -528,6 +809,7 @@ mod tests {
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),
+            ..Driver::default()
         };
         let store = Store::open(":memory:").unwrap();
         let o = opts("u/implementer#0");
@@ -553,6 +835,7 @@ mod tests {
         let driver = Driver {
             bin: fixture_bin(),
             rigger_bin: "rigger".to_string(),
+            ..Driver::default()
         };
         let store = Store::open(":memory:").unwrap();
         let mut o = opts("u/implementer#0");
@@ -582,5 +865,93 @@ mod tests {
             })
             .collect();
         assert_eq!(launches, vec![0, 1]);
+    }
+
+    // ---- THE STREAM (spec 104 criterion 2): the pure per-line mappings ----
+
+    #[test]
+    fn stream_path_mirrors_spawn_scratch_paths_layout() {
+        let p = stream_path("/scratch", "run-1", "u1/implementer#0", 2).unwrap();
+        assert_eq!(
+            p,
+            std::path::PathBuf::from("/scratch/agent-stream/run-1/u1_2fimplementer_230.2.jsonl")
+        );
+    }
+
+    #[test]
+    fn stream_path_omits_the_run_subdir_for_an_empty_run_id() {
+        let p = stream_path("/scratch", "", "u1/implementer#0", 0).unwrap();
+        assert_eq!(
+            p,
+            std::path::PathBuf::from("/scratch/agent-stream/u1_2fimplementer_230.0.jsonl")
+        );
+    }
+
+    #[test]
+    fn stream_path_is_none_for_an_empty_spawn_id() {
+        assert_eq!(stream_path("/scratch", "run-1", "", 0), None);
+    }
+
+    #[test]
+    fn api_retry_line_carries_category_attempt_and_delay() {
+        // The exact shape a probe of the real CLI showed (spec 104 Problem section).
+        let v: Value = serde_json::from_str(
+            r#"{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,
+                "retry_delay_ms":618,"error_status":401,"error":"authentication_failed"}"#,
+        )
+        .unwrap();
+        let line = api_retry_line(&v);
+        assert!(line.contains("authentication_failed"), "{line}");
+        assert!(line.contains('1'), "{line}");
+        assert!(line.contains("618"), "{line}");
+    }
+
+    #[test]
+    fn api_retry_line_degrades_gracefully_on_missing_fields() {
+        let v: Value = serde_json::from_str(r#"{"type":"system","subtype":"api_retry"}"#).unwrap();
+        let line = api_retry_line(&v);
+        assert!(line.contains("unknown"), "{line}");
+    }
+
+    #[test]
+    fn spawn_result_from_maps_the_real_results_shape() {
+        // Grounded on a real `claude -p --output-format stream-json` result line.
+        let v: Value = serde_json::from_str(
+            r#"{"type":"result","subtype":"success","is_error":false,"num_turns":3,
+                "result":"done: the answer is 42","session_id":"sess-42",
+                "total_cost_usd":0.0456,
+                "usage":{"input_tokens":100,"output_tokens":50,
+                         "cache_creation_input_tokens":20,"cache_read_input_tokens":10},
+                "permission_denials":[]}"#,
+        )
+        .unwrap();
+        let o = opts("u1/implementer#0");
+        let res = spawn_result_from(&v, &o, "claude-sonnet-4-5-20250929", 2);
+
+        assert_eq!(res.id, "u1/implementer#0");
+        assert_eq!(res.output, "done: the answer is 42");
+        assert!(!res.is_error());
+        assert_eq!(res.resolved_model(), "claude-sonnet-4-5-20250929");
+        assert_eq!(res.meta["session_id"], "sess-42");
+        assert_eq!(res.meta["usage"]["input"], 100);
+        assert_eq!(res.meta["usage"]["output"], 50);
+        assert_eq!(res.meta["usage"]["cache_creation"], 20);
+        assert_eq!(res.meta["usage"]["cache_read"], 10);
+        assert_eq!(res.meta["turns"], 3);
+        assert_eq!(res.meta["cost_usd"], 0.0456);
+        // The reader's OWN accumulated count wins over whatever the result message
+        // itself carries (here an empty array) - see spawn_result_from's doc.
+        assert_eq!(res.meta["permission_denials"], 2);
+    }
+
+    #[test]
+    fn spawn_result_from_degrades_gracefully_on_missing_fields() {
+        let v: Value = serde_json::from_str(r#"{"type":"result","result":"ok"}"#).unwrap();
+        let o = opts("u/implementer#0");
+        let res = spawn_result_from(&v, &o, "", 0);
+        assert_eq!(res.output, "ok");
+        assert_eq!(res.meta["usage"]["input"], 0);
+        assert_eq!(res.meta["turns"], 0);
+        assert_eq!(res.meta["cost_usd"], 0.0);
     }
 }

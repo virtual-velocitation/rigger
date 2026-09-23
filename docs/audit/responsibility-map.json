@@ -6869,7 +6869,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "47e81bd7b7d98d8d"
+    "content_hash": "aa2d884dbd45d36b"
   },
   {
     "file": "src/main.rs",

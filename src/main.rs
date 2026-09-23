@@ -3664,6 +3664,17 @@ fn run_cli(parsed: &RunArgs) -> Res {
     // human-facing channel and the `--fresh` notice belongs there, unchanged.
     fresh_run_if_requested(parsed, &store, &criteria, false, &base_tip)?;
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
+    // NOT YET the agent host (spec 104 criterion 2 decision d-u104-stream-defer-composition-
+    // swap): `driver::claude_code::Driver` now conforms to `AgentDriver` (this criterion),
+    // but flipping THIS composition root breaks the argv/stdio CONTRACT `tests/cli.rs`'s own
+    // fake-`claude`-on-PATH fixtures assume (`cli::Driver`'s `-p <prompt>` plus plain-text
+    // stdout) across dozens of existing, real-subprocess, end-to-end tests - empirically
+    // confirmed by running them against this swap. Migrating every such fixture to the
+    // stream-json protocol is a real body of work of its own, out of this criterion's blast
+    // radius ("OWNS the reader and the result mapping", nothing in `tests/cli.rs`), and this
+    // host cannot usefully run unattended yet regardless (no failure-class relaunch or hold -
+    // criterion 5 / spec 105 - so a bare `api_retry` would end the run instead of riding it
+    // out). The swap stays `cli::Driver::default()` until that migration + spec 105 land.
     let driver = cli::Driver::default();
     let grounder = select_grounder(&cfg.workflow.defaults.grounder)?;
     let deps = Deps {
