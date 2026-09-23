@@ -39,7 +39,7 @@
   {
     "file": "src/config.rs",
     "name": "sdet_author_enabled",
-    "line": 456,
+    "line": 464,
     "test_only_references": [
       {
         "file": "src/config_store.rs",
@@ -588,15 +588,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 14226
+        "line": 14231
       },
       {
         "file": "src/main.rs",
-        "line": 14247
+        "line": 14252
       },
       {
         "file": "src/main.rs",
-        "line": 14762
+        "line": 14767
       },
       {
         "file": "tests/cli.rs",
@@ -1470,47 +1470,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 17435
+        "line": 17440
       },
       {
         "file": "src/main.rs",
-        "line": 17468
+        "line": 17473
       },
       {
         "file": "src/main.rs",
-        "line": 17487
+        "line": 17492
       },
       {
         "file": "src/main.rs",
-        "line": 17490
+        "line": 17495
       },
       {
         "file": "src/main.rs",
-        "line": 17493
+        "line": 17498
       },
       {
         "file": "src/main.rs",
-        "line": 19363
+        "line": 19368
       },
       {
         "file": "src/main.rs",
-        "line": 19376
+        "line": 19381
       },
       {
         "file": "src/main.rs",
-        "line": 19391
+        "line": 19396
       },
       {
         "file": "src/main.rs",
-        "line": 24836
+        "line": 24895
       },
       {
         "file": "src/main.rs",
-        "line": 24837
+        "line": 24896
       },
       {
         "file": "src/main.rs",
-        "line": 24838
+        "line": 24897
       },
       {
         "file": "src/mcpserver.rs",
@@ -1658,43 +1658,43 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 5159
-      },
-      {
-        "file": "src/worktree.rs",
-        "line": 5182
-      },
-      {
-        "file": "src/worktree.rs",
         "line": 5218
       },
       {
         "file": "src/worktree.rs",
-        "line": 5250
+        "line": 5241
       },
       {
         "file": "src/worktree.rs",
-        "line": 5285
+        "line": 5277
       },
       {
         "file": "src/worktree.rs",
-        "line": 5301
+        "line": 5309
       },
       {
         "file": "src/worktree.rs",
-        "line": 5328
+        "line": 5344
       },
       {
         "file": "src/worktree.rs",
-        "line": 5358
+        "line": 5360
       },
       {
         "file": "src/worktree.rs",
-        "line": 5365
+        "line": 5387
       },
       {
         "file": "src/worktree.rs",
-        "line": 5373
+        "line": 5417
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 5424
+      },
+      {
+        "file": "src/worktree.rs",
+        "line": 5432
       },
       {
         "file": "tests/cli.rs",
@@ -2161,7 +2161,7 @@
   {
     "file": "src/worktree.rs",
     "name": "is_dirty",
-    "line": 717,
+    "line": 725,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
@@ -2181,23 +2181,23 @@
       },
       {
         "file": "src/worktree.rs",
-        "line": 4677
+        "line": 4736
       },
       {
         "file": "src/worktree.rs",
-        "line": 4687
+        "line": 4746
       },
       {
         "file": "src/worktree.rs",
-        "line": 4753
+        "line": 4812
       },
       {
         "file": "src/worktree.rs",
-        "line": 4788
+        "line": 4847
       },
       {
         "file": "src/worktree.rs",
-        "line": 4800
+        "line": 4859
       }
     ]
   }

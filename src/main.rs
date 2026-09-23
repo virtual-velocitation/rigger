@@ -13935,6 +13935,11 @@ budget: 60\n  \
 # escalating prematurely. It loosens the depth limit, never the review bar. Absent\n  \
 # falls back to 3 (the historical default); bounded by `budget` above.\n  \
 max_retries: 3\n  \
+# How many implement units build at once (spec 102, per-unit pipelining). Each\n  \
+# live unit owns its own build cache, and unbounded parallelism can fill disk on\n  \
+# a wide fan-out. 0 (the default) is unbounded, unchanged until you set this; 2\n  \
+# bounds the worst case to two live per-unit build caches at a time.\n  \
+max_parallel_units: 2\n  \
 # The three-tier review panel applied to EVERY implement unit. Declared once\n  \
 # here, inherited by the implement stage and every planner-proposed unit.\n  \
 review:\n    \
@@ -24536,6 +24541,60 @@ mod tests {
         assert_eq!(
             wf.build.wrapper, "auto",
             "a freshly scaffolded workflow.yml must default build.wrapper to auto"
+        );
+    }
+
+    /// Spec 102 criterion 2 (THE SCAFFOLD WRITES THE KEY): `rigger init`/`setup` scaffold
+    /// `defaults.max_parallel_units: 2`, the wave-width bound `run_wave` (spec 102) enforces,
+    /// WITH a sizing comment explaining why 2 - not a bare unexplained number. This test owns
+    /// the key's scaffolded value and the presence of its comment; the byte-for-byte
+    /// file-write path is covered separately below.
+    #[test]
+    fn scaffold_workflow_declares_max_parallel_units_two_with_a_sizing_comment() {
+        let wf: config::Workflow =
+            serde_yaml::from_str(SCAFFOLD_WORKFLOW).expect("the scaffolded workflow must parse");
+        assert_eq!(
+            wf.defaults.max_parallel_units, 2,
+            "a freshly scaffolded workflow.yml must default max_parallel_units to 2"
+        );
+        assert!(
+            SCAFFOLD_WORKFLOW.contains("build cache")
+                && SCAFFOLD_WORKFLOW.contains("max_parallel_units: 2"),
+            "the scaffold must carry a sizing comment (explaining the per-unit build-cache \
+             cost) next to max_parallel_units, not a bare number"
+        );
+    }
+
+    /// Spec 102 criterion 2: `rigger init` on a FRESH project actually WRITES
+    /// `defaults.max_parallel_units: 2` with its sizing comment to disk - the scaffold
+    /// constant proven above must be what `init_project` emits, not just what it declares.
+    #[test]
+    fn init_project_writes_max_parallel_units_with_its_sizing_comment() {
+        let dir = tempfile::tempdir().unwrap();
+        init_project(dir.path()).expect("a fresh project must scaffold cleanly");
+        let workflow_path = dir.path().join(RIGGER_DIR).join("workflow.yml");
+        let written = std::fs::read_to_string(&workflow_path).unwrap();
+        assert!(
+            written.contains("max_parallel_units: 2"),
+            "rigger init must write defaults.max_parallel_units: 2; got:\n{written}"
+        );
+        assert!(
+            written.contains("build cache"),
+            "rigger init must write the sizing comment alongside max_parallel_units; got:\n{written}"
+        );
+    }
+
+    /// Spec 102 criterion 2: a config that never sets `defaults.max_parallel_units` loads as
+    /// UNBOUNDED (`0`), so an existing consumer's behavior is unchanged until it writes the
+    /// key - the scaffold's `2` above is a fresh-project opinion, never a forced default onto
+    /// an already-authored workflow.yml.
+    #[test]
+    fn defaults_max_parallel_units_is_unbounded_when_the_key_is_absent() {
+        let wf: config::Workflow = serde_yaml::from_str("stages: {}\ngates: {}\n")
+            .expect("a workflow with no defaults: block must still parse");
+        assert_eq!(
+            wf.defaults.max_parallel_units, 0,
+            "an absent max_parallel_units key must load as 0 (unbounded), not a forced bound"
         );
     }
 
