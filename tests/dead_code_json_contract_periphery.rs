@@ -829,9 +829,16 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// `console::palette_commands` (src/console/mod.rs) lands as a fresh `keep-public-surface`
 /// candidate, the SAME cross-crate shape `scrub_track` above already carries (its one real
 /// caller, console-core's `palette_commands` op, lives outside `src/`). Candidates +1
-/// (40 -> 41), keep-public-surface +1 (14 -> 15), delete and keep-pending unchanged.
+/// (40 -> 41), keep-public-surface +1 (14 -> 15), delete and keep-pending unchanged. Now
+/// 42/21/16/5 (was 41/21/15/5) after spec 104 criterion 1's THE LAUNCH IS TYPED:
+/// `SpawnLaunched::to_event` (src/progress.rs) lands as a fresh `keep-public-surface`
+/// candidate under the SAME `(file, name)` table key `AgentProgress::to_event` already
+/// occupies there (both are structurally identical `Event::new` + `with_meta` wrappers, so
+/// they share one content hash too) - its real consumer is the new
+/// `progress_store::record_launch`, not test-only code. Candidates +1 (41 -> 42),
+/// keep-public-surface +1 (15 -> 16), delete and keep-pending unchanged.
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_15_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_16_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -848,7 +855,7 @@ fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_15
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (41, 21, 15, 5),
+        (42, 21, 16, 5),
         "the committed disposition split has changed since this criterion's research"
     );
 }

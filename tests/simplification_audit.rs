@@ -6186,14 +6186,21 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
         ),
         ("src/progress.rs", "to_event") => (
             KeepPublicSurface,
-            "AgentProgress::to_event, newly surfaced as a candidate by spec 93 criterion 1's \
-             read/write split of the old progress.rs: before the split its only caller lived in \
-             this same file, so no cross-file visibility (and no separate candidacy-scan entry) \
-             was needed; now it is `pub(crate)` so its real consumer in the write half can reach \
-             it - called from the production write path `progress_store::record` \
-             (progress_store.rs:27), not test-only code. Keep-public-surface: a real, non-test \
-             consumer in a sibling module, the same reason the split needed `pub(crate)` at all \
-             rather than a narrower visibility.",
+            "to_event names two methods in this file (AgentProgress::to_event, progress.rs:71; \
+             SpawnLaunched::to_event, progress.rs:119), both structurally identical wrappers \
+             around `Event::new` + `with_meta`, which is exactly why they share one content \
+             hash and this one table entry. AgentProgress::to_event was newly surfaced as a \
+             candidate by spec 93 criterion 1's read/write split of the old progress.rs: before \
+             the split its only caller lived in this same file, so no cross-file visibility (and \
+             no separate candidacy-scan entry) was needed; now it is `pub(crate)` so its real \
+             consumer in the write half can reach it - called from the production write path \
+             `progress_store::record` (progress_store.rs:16). SpawnLaunched::to_event was added \
+             directly `pub(crate)` by spec 104 criterion 1 (THE LAUNCH IS TYPED), mirroring that \
+             same split on day one rather than repeating it later: its real consumer is \
+             `progress_store::record_launch` (progress_store.rs:39). Neither caller is test-only \
+             code. Keep-public-surface: a real, non-test consumer in a sibling module for each, \
+             the same reason the split needed `pub(crate)` at all rather than a narrower \
+             visibility.",
         ),
         ("src/run.rs", "to_event") => (
             KeepPublicSurface,
@@ -11099,9 +11106,19 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (41, 21, 15, 5),
+            (42, 21, 16, 5),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}\n\n\
+             Was (41, 21, 15, 5) before spec 104 criterion 1's own THE LAUNCH IS TYPED. ONE \
+             fresh keep-public-surface candidate lands in src/progress.rs: SpawnLaunched::\
+             to_event, added `pub(crate)` alongside the new SpawnLaunched type so the impure \
+             write half (`progress_store::record_launch`) can reach it - the SAME reason \
+             AgentProgress::to_event already carries. It shares that existing (file, name) \
+             table key and, since the two methods are structurally identical wrappers around \
+             `Event::new` + `with_meta`, the SAME content hash - so this is one new JSON row \
+             under an updated two-method reason, not a new match arm - candidates: +1, \
+             keep_public: 15 -> 16. Net: 41 + 1 = 42 candidates; 21 delete unchanged; 15 + 1 = 16 \
+             keep-public-surface; 5 keep-pending unchanged.\n\n\
              Was (40, 21, 14, 5) before spec 94 criterion 4's own THE PALETTE. ONE fresh \
              keep-public-surface candidate lands in src/console/mod.rs, the SAME cross-crate \
              shape scrub_track above already carries: palette_commands (console-core's real \

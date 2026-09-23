@@ -78,6 +78,54 @@ impl AgentProgress {
     }
 }
 
+/// The event type a [`SpawnLaunched`] record serializes as (spec 104 criterion 1: THE
+/// LAUNCH IS TYPED). Recorded to the progress store - never the run stream, same file
+/// boundary as [`TYPE_AGENT_PROGRESS`] - the moment the host starts a child agent process,
+/// so a fresh process can always tell whether a spawn's latest launch ever actually
+/// started, from the log alone.
+pub const TYPE_SPAWN_LAUNCHED: &str = "SpawnLaunched";
+
+/// One host-issued launch of a spawn's agent process
+/// (`docs/architecture-addendum-claude-code-integration.md` §4.1). The host mints
+/// [`session_id`](Self::session_id) and records this BEFORE starting the child - "before
+/// the child starts" is the caller's ordering to keep, not something this pure type can
+/// enforce itself. This is the OPEN half of the record only: `started`, no `ended`/`class`
+/// pair - closing it on exit belongs to whichever later criterion reads the stream.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnLaunched {
+    /// The deterministic spawn id this launch belongs to (e.g. `u/implementer#0`).
+    pub spawn: String,
+    /// The 0-based ordinal of this launch within the spawn's current attempt: 0 for the
+    /// first launch, N for the Nth relaunch after an API-side fault. Distinct from the
+    /// spawn id's own `#<attempt>` remediation counter.
+    pub launch: u32,
+    /// The session id the host minted for this launch (`--session-id`/`--resume`).
+    pub session_id: String,
+    /// The session this launch CONTINUES (`claude -p --resume <session_id>`), or `None`
+    /// for a fresh launch - every launch this spec (104) itself performs, since resuming
+    /// a held session is spec 105's concern.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumed_from: Option<String>,
+    /// Unix seconds the host started this launch. Caller-supplied: this type never reads
+    /// the clock itself, so it stays usable from a pure/core call site.
+    pub started: u64,
+}
+
+impl SpawnLaunched {
+    /// Build the appendable event, stamped with the run it belongs to exactly like
+    /// [`AgentProgress::to_event`] - `pub(crate)` for the same reason: only the impure
+    /// write path ([`crate::progress_store::record_launch`]) calls it.
+    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))]
+    pub(crate) fn to_event(&self, run_id: &str) -> Result<Event, serde_json::Error> {
+        let ev = Event::new(TYPE_SPAWN_LAUNCHED, serde_json::to_vec(self)?);
+        Ok(if run_id.is_empty() {
+            ev
+        } else {
+            ev.with_meta(META_RUN_ID, run_id)
+        })
+    }
+}
+
 /// A live per-agent view (spec 14, unit 2): for one in-flight spawn, what stage it is at,
 /// what it is currently doing (the latest progress report), how long since it last reported
 /// activity and last touched its liveness marker, and its last run-stream milestone with its
@@ -253,5 +301,64 @@ mod tests {
         assert_eq!(view[0].activity_age_s, None);
         assert_eq!(view[0].liveness_age_s, None);
         assert_eq!(view[0].last_milestone, None);
+    }
+
+    #[test]
+    fn spawn_launched_to_event_carries_the_type_and_run_stamp() {
+        // spec 104 criterion 1: the launch record serializes as SpawnLaunched, stamped
+        // with its run exactly like AgentProgress - the event boundary this store's
+        // isolation depends on, not a new mechanism.
+        let launched = SpawnLaunched {
+            spawn: "u104-launch/implementer#0".into(),
+            launch: 0,
+            session_id: "11111111-1111-4111-8111-111111111111".into(),
+            resumed_from: None,
+            started: 1_700_000_000,
+        };
+        let ev = launched.to_event("run-9").unwrap();
+        assert_eq!(ev.type_, TYPE_SPAWN_LAUNCHED);
+        assert_eq!(ev.meta.get(META_RUN_ID).map(String::as_str), Some("run-9"));
+        let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
+        assert_eq!(back, launched);
+    }
+
+    #[test]
+    fn spawn_launched_omits_resumed_from_when_none() {
+        // A fresh launch (every launch spec 104 itself performs) must not serialize a
+        // `resumed_from` field at all - the future resume reader (spec 105) can then
+        // treat "field absent" and "field null" the same way, and today's payload stays
+        // minimal.
+        let launched = SpawnLaunched {
+            spawn: "u/implementer#0".into(),
+            launch: 0,
+            session_id: "s".into(),
+            resumed_from: None,
+            started: 1,
+        };
+        let ev = launched.to_event("").unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&ev.data).unwrap();
+        assert!(
+            v.get("resumed_from").is_none(),
+            "resumed_from must be omitted, not null: {v:?}"
+        );
+        assert!(
+            !ev.meta.contains_key(META_RUN_ID),
+            "an empty run_id carries no stamp, same as AgentProgress"
+        );
+    }
+
+    #[test]
+    fn spawn_launched_carries_a_relaunchs_resumed_from() {
+        let launched = SpawnLaunched {
+            spawn: "u/implementer#0".into(),
+            launch: 1,
+            session_id: "new-session".into(),
+            resumed_from: Some("old-session".into()),
+            started: 2,
+        };
+        let ev = launched.to_event("run-1").unwrap();
+        let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
+        assert_eq!(back.resumed_from.as_deref(), Some("old-session"));
+        assert_eq!(back.launch, 1);
     }
 }

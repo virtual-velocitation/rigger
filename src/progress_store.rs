@@ -7,7 +7,7 @@
 //! inside `progress.rs`) so the pure half can compile for `wasm32-unknown-unknown`.
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position};
-use crate::progress::{AgentProgress, STREAM};
+use crate::progress::{AgentProgress, SpawnLaunched, STREAM};
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
 /// and side-effect-free beyond the one event: a pure write, cheap to call after every
@@ -29,6 +29,27 @@ pub fn record(
     store
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
         .one(&format!("the progress report of {id}"))
+}
+
+/// Record one [`SpawnLaunched`] open-launch report to the progress `store`, stamped with
+/// `run_id` (spec 104 criterion 1: THE LAUNCH IS TYPED). The caller's ordering - append
+/// this BEFORE starting the child - is what makes the record trustworthy; this function
+/// only guarantees the append itself is durable (the position the store issued, or the
+/// failure a store that wrote nothing has earned), same contract as [`record`].
+pub fn record_launch(
+    store: &dyn EventStore,
+    run_id: &str,
+    launch: &SpawnLaunched,
+) -> Result<Position, Error> {
+    let ev = launch
+        .to_event(run_id)
+        .map_err(|e| Error::Backend(format!("serialize SpawnLaunched: {e}")))?;
+    store
+        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
+        .one(&format!(
+            "the launch record of {} (launch {})",
+            launch.spawn, launch.launch
+        ))
 }
 
 #[cfg(test)]
@@ -141,5 +162,62 @@ mod tests {
             message.contains("u1/implementer#0"),
             "and names the spawn whose report was lost: {message}"
         );
+    }
+
+    #[test]
+    fn record_launch_lands_in_the_progress_store_never_the_run_stream() {
+        // spec 104 criterion 1: SpawnLaunched is a progress-store record (design
+        // decision u104c1-spawnlaunched-shape), not a run-stream event type - same
+        // isolation `record` above already proves for AgentProgress.
+        let run = Store::open(":memory:").unwrap();
+        let progress = Store::open(":memory:").unwrap();
+
+        record_launch(
+            &progress,
+            "run-1",
+            &crate::progress::SpawnLaunched {
+                spawn: "u104-launch/implementer#0".into(),
+                launch: 0,
+                session_id: "sess-1".into(),
+                resumed_from: None,
+                started: 1_700_000_000,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            run.read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .is_empty(),
+            "no SpawnLaunched may land in the run store"
+        );
+        let p = progress.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].type_, crate::progress::TYPE_SPAWN_LAUNCHED);
+        assert_eq!(
+            p[0].meta.get(META_RUN_ID).map(String::as_str),
+            Some("run-1")
+        );
+        let sl: crate::progress::SpawnLaunched = serde_json::from_slice(&p[0].data).unwrap();
+        assert_eq!(sl.spawn, "u104-launch/implementer#0");
+        assert_eq!(sl.session_id, "sess-1");
+    }
+
+    #[test]
+    fn record_launch_a_report_the_store_did_not_write_is_reported_as_lost() {
+        let err = record_launch(
+            &crate::eventstore::SilentStore,
+            "run-1",
+            &crate::progress::SpawnLaunched {
+                spawn: "u1/implementer#0".into(),
+                launch: 0,
+                session_id: "s".into(),
+                resumed_from: None,
+                started: 1,
+            },
+        )
+        .expect_err("a launch record nobody can find was not recorded");
+        let message = err.to_string();
+        assert!(message.contains("u1/implementer#0"), "message: {message}");
     }
 }

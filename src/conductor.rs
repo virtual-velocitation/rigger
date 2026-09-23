@@ -1471,6 +1471,22 @@ pub struct SpawnOpts {
     /// [`SpawnRequest::reviews`](crate::spawn::SpawnRequest::reviews) for the thin
     /// driver to render inside the action phrase.
     pub reviews: Vec<String>,
+    /// The per-spawn `--settings` JSON string (spec 104 criterion 1): the PreToolUse
+    /// write-guard and StopFailure hooks, assembled by their two owning criteria (4 and
+    /// 5) - this struct only carries the finished string through to the argv. Empty
+    /// omits `--settings` entirely; the cli/workflow drivers ignore this field.
+    pub settings_json: String,
+    /// The 0-based ordinal of this launch within the spawn's current attempt (spec 104
+    /// criterion 1): 0 for the first launch, N for the Nth relaunch after an API-side
+    /// fault (spec 104's own FAULT class) or a hold-release resume (spec 105). Distinct
+    /// from `attempt`, the remediation counter the deterministic id encodes. 0 for the
+    /// cli/workflow drivers, which never relaunch a live session.
+    pub launch: u32,
+    /// The session id this launch CONTINUES (`claude -p --resume <session_id>`), empty
+    /// for a fresh launch - every launch spec 104's own host performs itself, since
+    /// resuming a held session is spec 105's hold-release concern. The cli/workflow
+    /// drivers ignore this field.
+    pub resumed_from: String,
 }
 
 /// AgentDriver spawns an agent to completion. The agent records events it emits
@@ -4524,6 +4540,11 @@ impl RunCtx<'_> {
             // invocations share both.
             env: Self::spawn_env(&build_env, dir),
             reviews: reviews.to_vec(),
+            // The existing blocking drivers (cli/workflow) ignore these; spec 104's host
+            // is not wired in here yet.
+            settings_json: String::new(),
+            launch: 0,
+            resumed_from: String::new(),
         })
     }
 
@@ -5423,6 +5444,11 @@ impl RunCtx<'_> {
                             // An implementer is never a review tier: no roster to render
                             // (spec 67, criterion 4).
                             reviews: Vec::new(),
+                            // The existing blocking drivers (cli/workflow) ignore these;
+                            // spec 104's host is not wired in here yet.
+                            settings_json: String::new(),
+                            launch: 0,
+                            resumed_from: String::new(),
                         },
                         &emit,
                     )
@@ -5983,6 +6009,11 @@ impl RunCtx<'_> {
                         // A speculation candidate is an implementer lane, never a review
                         // tier: no roster to render (spec 67, criterion 4).
                         reviews: Vec::new(),
+                        // The existing blocking drivers (cli/workflow) ignore these;
+                        // spec 104's host is not wired in here yet.
+                        settings_json: String::new(),
+                        launch: 0,
+                        resumed_from: String::new(),
                     },
                     &emit,
                 )
@@ -7473,6 +7504,11 @@ impl RunCtx<'_> {
                     // The planner/re-planner is never a review tier: no roster to render
                     // (spec 67, criterion 4).
                     reviews: Vec::new(),
+                    // The existing blocking drivers (cli/workflow) ignore these; spec
+                    // 104's host is not wired in here yet.
+                    settings_json: String::new(),
+                    launch: 0,
+                    resumed_from: String::new(),
                 },
                 &emit,
             )
@@ -10155,6 +10191,9 @@ impl RunCtx<'_> {
                 run_id: self.run_id.clone(),
                 env: Self::spawn_env(&build_env, &wt.dir),
                 reviews: Vec::new(),
+                settings_json: String::new(),
+                launch: 0,
+                resumed_from: String::new(),
             },
             &emit,
         )?;

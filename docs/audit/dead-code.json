@@ -8,6 +8,7 @@
     "ambiguous_with": [
       "src/canary.rs#0d30fb5da09b2118",
       "src/progress.rs#52f451adb9c69d21",
+      "src/progress.rs#52f451adb9c69d21",
       "src/run.rs#0b4a268e8a1da81d"
     ],
     "test_only_references": [],
@@ -22,6 +23,7 @@
     "ambiguous": true,
     "ambiguous_with": [
       "src/canary.rs#0be5e50870d7f0aa",
+      "src/progress.rs#52f451adb9c69d21",
       "src/progress.rs#52f451adb9c69d21",
       "src/run.rs#0b4a268e8a1da81d"
     ],
@@ -1415,11 +1417,28 @@
     "ambiguous_with": [
       "src/canary.rs#0be5e50870d7f0aa",
       "src/canary.rs#0d30fb5da09b2118",
+      "src/progress.rs#52f451adb9c69d21",
       "src/run.rs#0b4a268e8a1da81d"
     ],
     "test_only_references": [],
     "disposition": "keep-public-surface",
-    "reason": "AgentProgress::to_event, newly surfaced as a candidate by spec 93 criterion 1's read/write split of the old progress.rs: before the split its only caller lived in this same file, so no cross-file visibility (and no separate candidacy-scan entry) was needed; now it is `pub(crate)` so its real consumer in the write half can reach it - called from the production write path `progress_store::record` (progress_store.rs:27), not test-only code. Keep-public-surface: a real, non-test consumer in a sibling module, the same reason the split needed `pub(crate)` at all rather than a narrower visibility."
+    "reason": "to_event names two methods in this file (AgentProgress::to_event, progress.rs:71; SpawnLaunched::to_event, progress.rs:119), both structurally identical wrappers around `Event::new` + `with_meta`, which is exactly why they share one content hash and this one table entry. AgentProgress::to_event was newly surfaced as a candidate by spec 93 criterion 1's read/write split of the old progress.rs: before the split its only caller lived in this same file, so no cross-file visibility (and no separate candidacy-scan entry) was needed; now it is `pub(crate)` so its real consumer in the write half can reach it - called from the production write path `progress_store::record` (progress_store.rs:16). SpawnLaunched::to_event was added directly `pub(crate)` by spec 104 criterion 1 (THE LAUNCH IS TYPED), mirroring that same split on day one rather than repeating it later: its real consumer is `progress_store::record_launch` (progress_store.rs:39). Neither caller is test-only code. Keep-public-surface: a real, non-test consumer in a sibling module for each, the same reason the split needed `pub(crate)` at all rather than a narrower visibility."
+  },
+  {
+    "name": "to_event",
+    "file": "src/progress.rs",
+    "content_hash": "52f451adb9c69d21",
+    "visibility": "pub(crate)",
+    "ambiguous": true,
+    "ambiguous_with": [
+      "src/canary.rs#0be5e50870d7f0aa",
+      "src/canary.rs#0d30fb5da09b2118",
+      "src/progress.rs#52f451adb9c69d21",
+      "src/run.rs#0b4a268e8a1da81d"
+    ],
+    "test_only_references": [],
+    "disposition": "keep-public-surface",
+    "reason": "to_event names two methods in this file (AgentProgress::to_event, progress.rs:71; SpawnLaunched::to_event, progress.rs:119), both structurally identical wrappers around `Event::new` + `with_meta`, which is exactly why they share one content hash and this one table entry. AgentProgress::to_event was newly surfaced as a candidate by spec 93 criterion 1's read/write split of the old progress.rs: before the split its only caller lived in this same file, so no cross-file visibility (and no separate candidacy-scan entry) was needed; now it is `pub(crate)` so its real consumer in the write half can reach it - called from the production write path `progress_store::record` (progress_store.rs:16). SpawnLaunched::to_event was added directly `pub(crate)` by spec 104 criterion 1 (THE LAUNCH IS TYPED), mirroring that same split on day one rather than repeating it later: its real consumer is `progress_store::record_launch` (progress_store.rs:39). Neither caller is test-only code. Keep-public-surface: a real, non-test consumer in a sibling module for each, the same reason the split needed `pub(crate)` at all rather than a narrower visibility."
   },
   {
     "name": "to_event",
@@ -1430,6 +1449,7 @@
     "ambiguous_with": [
       "src/canary.rs#0be5e50870d7f0aa",
       "src/canary.rs#0d30fb5da09b2118",
+      "src/progress.rs#52f451adb9c69d21",
       "src/progress.rs#52f451adb9c69d21"
     ],
     "test_only_references": [],

@@ -600,6 +600,11 @@ fn canary_opts(item: &CanaryItem, role: &str, agent: &AgentDef) -> SpawnOpts {
         // A canary reviewer judges one synthetic corpus item alone, not a real unit's
         // multi-tier panel, so it carries no routed review roster (spec 67, criterion 4).
         reviews: Vec::new(),
+        // A canary drives the existing blocking drivers only (spec 104's host is not
+        // wired in yet), which ignore these fields.
+        settings_json: String::new(),
+        launch: 0,
+        resumed_from: String::new(),
     }
 }
 

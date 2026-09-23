@@ -6,6 +6,7 @@
     "ambiguous_with": [
       "src/canary.rs:185",
       "src/progress.rs:71",
+      "src/progress.rs:119",
       "src/run.rs:132"
     ],
     "test_only_references": []
@@ -17,6 +18,7 @@
     "ambiguous_with": [
       "src/canary.rs:94",
       "src/progress.rs:71",
+      "src/progress.rs:119",
       "src/run.rs:132"
     ],
     "test_only_references": []
@@ -28,11 +30,11 @@
     "test_only_references": [
       {
         "file": "src/canary_store.rs",
-        "line": 1247
+        "line": 1252
       },
       {
         "file": "src/canary_store.rs",
-        "line": 1261
+        "line": 1266
       }
     ]
   },
@@ -656,7 +658,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 20665
+        "line": 20704
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -1118,7 +1120,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 10009
+        "line": 10016
       }
     ]
   },
@@ -1243,15 +1245,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 41901
+        "line": 41940
       },
       {
         "file": "src/conductor.rs",
-        "line": 41968
+        "line": 42007
       },
       {
         "file": "src/conductor.rs",
-        "line": 42743
+        "line": 42782
       },
       {
         "file": "src/ledger.rs",
@@ -1297,6 +1299,19 @@
     "ambiguous_with": [
       "src/canary.rs:94",
       "src/canary.rs:185",
+      "src/progress.rs:119",
+      "src/run.rs:132"
+    ],
+    "test_only_references": []
+  },
+  {
+    "file": "src/progress.rs",
+    "name": "to_event",
+    "line": 119,
+    "ambiguous_with": [
+      "src/canary.rs:94",
+      "src/canary.rs:185",
+      "src/progress.rs:71",
       "src/run.rs:132"
     ],
     "test_only_references": []
@@ -1308,7 +1323,8 @@
     "ambiguous_with": [
       "src/canary.rs:94",
       "src/canary.rs:185",
-      "src/progress.rs:71"
+      "src/progress.rs:71",
+      "src/progress.rs:119"
     ],
     "test_only_references": []
   },
@@ -1334,51 +1350,51 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 14655
+        "line": 14694
       },
       {
         "file": "src/conductor.rs",
-        "line": 14872
+        "line": 14911
       },
       {
         "file": "src/conductor.rs",
-        "line": 14883
+        "line": 14922
       },
       {
         "file": "src/conductor.rs",
-        "line": 14963
+        "line": 15002
       },
       {
         "file": "src/conductor.rs",
-        "line": 22980
+        "line": 23019
       },
       {
         "file": "src/conductor.rs",
-        "line": 23057
+        "line": 23096
       },
       {
         "file": "src/conductor.rs",
-        "line": 23151
+        "line": 23190
       },
       {
         "file": "src/conductor.rs",
-        "line": 23238
+        "line": 23277
       },
       {
         "file": "src/conductor.rs",
-        "line": 23333
+        "line": 23372
       },
       {
         "file": "src/conductor.rs",
-        "line": 30468
+        "line": 30507
       },
       {
         "file": "src/conductor.rs",
-        "line": 30473
+        "line": 30512
       },
       {
         "file": "src/conductor.rs",
-        "line": 30536
+        "line": 30575
       },
       {
         "file": "src/console/mod.rs",
@@ -1522,11 +1538,11 @@
       },
       {
         "file": "src/progress.rs",
-        "line": 200
+        "line": 248
       },
       {
         "file": "src/progress.rs",
-        "line": 249
+        "line": 297
       },
       {
         "file": "src/spawn.rs",
@@ -2042,31 +2058,31 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 14653
+        "line": 14692
       },
       {
         "file": "src/conductor.rs",
-        "line": 14870
+        "line": 14909
       },
       {
         "file": "src/conductor.rs",
-        "line": 14891
+        "line": 14930
       },
       {
         "file": "src/conductor.rs",
-        "line": 14961
+        "line": 15000
       },
       {
         "file": "src/conductor.rs",
-        "line": 30466
+        "line": 30505
       },
       {
         "file": "src/conductor.rs",
-        "line": 30471
+        "line": 30510
       },
       {
         "file": "src/conductor.rs",
-        "line": 30534
+        "line": 30573
       },
       {
         "file": "src/driver/replay.rs",
@@ -2165,19 +2181,19 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 14636
+        "line": 14675
       },
       {
         "file": "src/conductor.rs",
-        "line": 14784
+        "line": 14823
       },
       {
         "file": "src/conductor.rs",
-        "line": 14861
+        "line": 14900
       },
       {
         "file": "src/conductor.rs",
-        "line": 14984
+        "line": 15023
       },
       {
         "file": "src/worktree.rs",
