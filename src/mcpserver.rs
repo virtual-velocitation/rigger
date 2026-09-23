@@ -452,13 +452,7 @@ impl<'a> Server<'a> {
             Some(o) => o,
             None => return args,
         };
-        let meta = obj.entry("meta").or_insert_with(|| json!({}));
-        if let Some(meta) = meta.as_object_mut() {
-            meta.insert(
-                crate::conductor::META_SPAWN.to_string(),
-                Value::String(spawn),
-            );
-        }
+        Self::stamp_spawn_meta(obj, &spawn);
         args
     }
 
@@ -471,7 +465,9 @@ impl<'a> Server<'a> {
     /// with the workflow bridge's `rigger_emit`) is the one vector through which a
     /// spawn-bound session could otherwise misattribute a decision to a sibling spawn it
     /// shares no memory with. Naming the server's OWN bound spawn is not "another spawn" -
-    /// it is accepted exactly like an unstamped emit.
+    /// it is accepted exactly like an unstamped emit. The stamp itself goes through
+    /// [`stamp_spawn_meta`](Server::stamp_spawn_meta), shared with `stamp_current_spawn`, so a
+    /// present-but-non-object `meta` (e.g. a stray `meta: null`) can never silently bypass it.
     fn tool_emit_bound(&self, args: &Value) -> Result<Value, ToolError> {
         let bound = self.bound_spawn();
         if let Some(named) = args
@@ -490,16 +486,33 @@ impl<'a> Server<'a> {
         let obj = stamped
             .as_object_mut()
             .ok_or("rigger_emit: arguments must be a JSON object")?;
-        let meta = obj.entry("meta").or_insert_with(|| json!({}));
-        if let Some(meta) = meta.as_object_mut() {
-            meta.insert(
-                crate::conductor::META_SPAWN.to_string(),
-                Value::String(bound.to_string()),
-            );
-        }
+        Self::stamp_spawn_meta(obj, bound);
         emit_event(self.store, &self.stream, self.graph, &stamped)
             .map(|_| json!({}))
             .map_err(ToolError::internal)
+    }
+
+    /// Insert `meta.spawn = spawn` into an args object's `meta` field - the ONE stamping site
+    /// both [`tool_emit_bound`](Server::tool_emit_bound) and
+    /// [`stamp_current_spawn`](Server::stamp_current_spawn) call, so the two attribution paths
+    /// can never drift apart (spec 104 review round 1 upheld their duplicate, byte-identical
+    /// inline copies as a DRY defect carrying the same latent bug). A `meta` that is present
+    /// but NOT an object (e.g. a stray `meta: null`, `[]`, or `"x"` a caller sends) is forced
+    /// to a fresh empty object first: `obj.entry("meta").or_insert_with(...)` alone is not
+    /// enough, because it only runs its closure on a VACANT entry, so an occupied non-object
+    /// `meta` would leave the stamp silently skipped - the exact attribution bypass this
+    /// helper exists to close.
+    fn stamp_spawn_meta(obj: &mut serde_json::Map<String, Value>, spawn: &str) {
+        let meta = obj.entry("meta").or_insert_with(|| json!({}));
+        if !meta.is_object() {
+            *meta = json!({});
+        }
+        meta.as_object_mut()
+            .expect("meta was just forced to a JSON object")
+            .insert(
+                crate::conductor::META_SPAWN.to_string(),
+                Value::String(spawn.to_string()),
+            );
     }
 
     /// The id this server is bound to. Panics if called off the spawn-bound surface - every
@@ -1140,6 +1153,46 @@ mod tests {
                 .tool_result(&json!({"id": sibling_id, "output": "done"}))
                 .unwrap();
         });
+    }
+
+    /// Reject-fix (spec 104 review round 1): `stamp_current_spawn` shares
+    /// `tool_emit_bound`'s latent gap - `obj.entry("meta").or_insert_with(...)` only runs its
+    /// closure on a VACANT entry, so a caller-supplied non-object `meta` (e.g. a stray
+    /// `meta: null`) occupies the key and the stamping `if let` used to skip it silently,
+    /// landing the event with NO `META_SPAWN` at all while `rigger_emit` still reported
+    /// success. Drives `tool_emit` (the workflow-bridge surface `rigger_emit` uses while a
+    /// spawn is being served) with each non-object shape and proves the stamp still lands.
+    #[test]
+    fn stray_emit_with_non_object_meta_while_served_is_still_stamped() {
+        use crate::conductor::META_SPAWN;
+
+        for meta in [Value::Null, json!([]), json!("x")] {
+            let store = Store::open(":memory:").unwrap();
+            let driver = Driver::new();
+            let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+            let server = Server::new(&driver, &store, "run", &peers);
+
+            // A spawn currently being served: the exact state `rigger_next` leaves the
+            // server in, set directly here since the next/result machinery that produces
+            // it is proven separately by `emit_is_stamped_with_the_serially_served_spawn_id`.
+            *server.current_spawn.lock().unwrap() = Some("adj/implementer#0".to_string());
+
+            server
+                .tool_emit(&json!({"type":"DecisionMade","data":{"id":"d1"},"meta":meta.clone()}))
+                .unwrap();
+
+            let events = store.read_stream("run", 0, Direction::Forward).unwrap();
+            let recorded = events
+                .iter()
+                .find(|e| e.type_ == "DecisionMade")
+                .expect("the emit must still land in the store");
+            assert_eq!(
+                recorded.meta.get(META_SPAWN).map(String::as_str),
+                Some("adj/implementer#0"),
+                "a non-object meta ({meta:?}) must be force-replaced and stamped, never \
+                 silently dropped and left unattributed"
+            );
+        }
     }
 
     /// Reject-fix (spec 61 c10 round 2): the prior round's `meta.resolved_model` never
@@ -2223,6 +2276,51 @@ mod tests {
             resp2.get("result").is_some(),
             "naming the server's OWN bound spawn must be allowed; got:\n{resp2}"
         );
+    }
+
+    /// Reject-fix (spec 104 review round 1): a present-but-non-object `meta` (e.g. a stray
+    /// `meta: null` a launched agent sends) must never silently bypass the "ATTRIBUTION BY
+    /// CONSTRUCTION" stamp this tool's own doc comment promises.
+    /// `obj.entry("meta").or_insert_with(...)` only runs its closure on a VACANT entry, so an
+    /// OCCUPIED non-object `meta` used to leave the stamping `if let` skipped entirely while
+    /// `emit_event` still reported success - the event landed with no `META_SPAWN` key at
+    /// all, unattributed. Drives each non-object shape through the REAL `tools/call` path and
+    /// proves the write still lands, correctly stamped with the bound spawn.
+    #[test]
+    fn spawn_bound_emit_forces_a_non_object_meta_to_a_stamped_object() {
+        use crate::conductor::META_SPAWN;
+
+        for meta in [Value::Null, json!([]), json!("x")] {
+            let store = Store::open(":memory:").unwrap();
+            let driver = Driver::new();
+            let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+            let server = Server::new(&driver, &store, "run", &peers)
+                .with_spawn("u104-spawn-mcp/implementer#0");
+
+            let meta_json = meta.to_string();
+            let input = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"rigger_emit","arguments":{{"type":"DecisionMade","data":{{"id":"d1"}},"meta":{meta_json}}}}}}}"#
+            );
+            let mut out = Vec::new();
+            server.run(Cursor::new(input), &mut out).unwrap();
+            let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
+            assert!(
+                resp.get("result").is_some(),
+                "a non-object meta ({meta:?}) must not fail the emit; got:\n{resp}"
+            );
+
+            let events = store.read_stream("run", 0, Direction::Forward).unwrap();
+            let recorded = events
+                .iter()
+                .find(|e| e.type_ == "DecisionMade")
+                .expect("the emit must still land in the store");
+            assert_eq!(
+                recorded.meta.get(META_SPAWN).map(String::as_str),
+                Some("u104-spawn-mcp/implementer#0"),
+                "a non-object meta ({meta:?}) must be force-replaced and stamped, never \
+                 silently dropped and left unattributed"
+            );
+        }
     }
 
     /// `rigger_progress` records a live activity line for the bound spawn, with no
