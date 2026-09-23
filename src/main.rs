@@ -13570,7 +13570,36 @@ fn git_repo_at(root: &Path) -> String {
 /// `rigger_peers`/`rigger_graph` have nothing to do with grounding and must keep answering.
 /// A resolution failure is instead recorded via `with_grounder_unavailable`, so only
 /// `rigger_ground` itself reports it, lazily, exactly as the pre-fix operator surface did.
-fn cmd_mcp(_args: &[String]) -> Res {
+/// Parse `rigger mcp`'s one optional flag: `--spawn <id>` (spec 104, criterion 3) binds the
+/// server to one spawn - see [`mcpserver::Server::with_spawn`]'s doc comment for what that
+/// switches this instance to serve. No positional arguments; an unknown flag, a second
+/// argument, or a valueless `--spawn` is a clear error rather than silently ignored (the
+/// pre-spec-104 `cmd_mcp` accepted and discarded every argument).
+fn parse_mcp_spawn_flag(args: &[String]) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    match args {
+        [] => Ok(None),
+        [flag, id] if flag == "--spawn" => {
+            if id.is_empty() {
+                return Err("mcp: --spawn expects a non-empty spawn id".into());
+            }
+            Ok(Some(id.clone()))
+        }
+        [flag] if flag == "--spawn" => {
+            Err("mcp: --spawn expects a spawn id: rigger mcp --spawn <id>".into())
+        }
+        _ => Err(format!("mcp: unexpected arguments {args:?}: rigger mcp [--spawn <id>]").into()),
+    }
+}
+
+/// `rigger mcp [--spawn <id>]`: serve MCP over stdio. With no `--spawn`, the operator's
+/// read-only lookup surface (`rigger_peers`/`rigger_ground`/`rigger_graph`) `rigger setup`
+/// registers into `.mcp.json`. With `--spawn <id>` (spec 104, THE SPAWN MCP SERVER,
+/// criterion 3), the launched agent's own spawn-bound surface instead - every write it
+/// serves (`rigger_emit`, `rigger_progress`) attributed to `id` BY CONSTRUCTION, over the
+/// SAME progress-store + scratch-root resolution `cmd_progress`/`cmd_scratch` already use,
+/// never a second parallel one.
+fn cmd_mcp(args: &[String]) -> Res {
+    let spawn = parse_mcp_spawn_flag(args)?;
     let (loc, selection) = require_store_dir()?;
     let backend = resolve_store(&selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
@@ -13581,12 +13610,40 @@ fn cmd_mcp(_args: &[String]) -> Res {
     let grounder = select_grounder(&grounder_name);
     let graph = Projector::open(&db_path("graph.db"), &project_identity())?;
     let driver = rigger::driver::workflow::Driver::new();
+
+    // Only opened/resolved when `--spawn` is given - a plain `rigger mcp` (the operator's
+    // lookup surface) must not conjure `.rigger/progress.db` or a scratch root it never uses.
+    let prog_backend: Option<Store> = spawn
+        .is_some()
+        .then(|| Store::open(&loc.file("progress.db")))
+        .transpose()?;
+    let prog_store = prog_backend
+        .as_ref()
+        .map(|b| Namespaced::new(b, &loc.identity()));
+    let scratch_root = if spawn.is_some() {
+        let repo = loc
+            .dir
+            .parent()
+            .and_then(|p| p.to_str())
+            .ok_or("mcp: could not resolve the project root")?;
+        let (workdir, _max_retries) = scratch_defaults(&loc);
+        rigger::worktree::scratch_root_path_from_env(repo, &workdir)
+    } else {
+        String::new()
+    };
+
     let mut server =
         mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers).with_graph(&graph);
     server = match &grounder {
         Ok(g) => server.with_grounder(g.as_ref()),
         Err(e) => server.with_grounder_unavailable(e.to_string()),
     };
+    if let Some(ps) = &prog_store {
+        server = server.with_progress(ps, &scratch_root);
+    }
+    if let Some(id) = spawn {
+        server = server.with_spawn(id);
+    }
     server.run(std::io::stdin().lock(), std::io::stdout().lock())?;
     Ok(())
 }

@@ -29064,6 +29064,182 @@ fn mcp_serves_peers_ground_and_graph_over_stdio() {
     );
 }
 
+/// `rigger mcp --spawn <id>` (spec 104, criterion 3, THE SPAWN MCP SERVER): the launched
+/// agent's own MCP server over real stdio. Serves exactly the six named tools (no
+/// `rigger_next`/`rigger_result` - there is no result tool), stamps `rigger_emit` and
+/// `rigger_progress` with the bound spawn BY CONSTRUCTION with no argument naming it, and
+/// refuses a `rigger_emit` whose `meta.spawn` names a DIFFERENT spawn.
+#[test]
+fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
+    use rigger::eventstore::namespace::Namespaced;
+    use rigger::eventstore::sqlite::Store as SqliteStore;
+    use rigger::eventstore::{Direction, EventStore};
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    seed_store(root);
+
+    let bound_spawn = "u104-spawn-mcp/implementer#0";
+    let other_spawn = "u104-launch/implementer#0";
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp", "--spawn", bound_spawn])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp --spawn");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout
+            .read_line(&mut line)
+            .expect("rigger mcp --spawn must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    let list = call("tools/list", serde_json::json!({}));
+    let tool_names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        tool_names,
+        vec![
+            "rigger_emit",
+            "rigger_peers",
+            "rigger_ground",
+            "rigger_graph",
+            "rigger_progress",
+            "rigger_scratch",
+        ],
+        "the spawn-bound surface must serve exactly these six tools, in this order"
+    );
+
+    // No result tool: rigger_next / rigger_result are UNDISPATCHABLE, not merely unadvertised.
+    for name in ["rigger_next", "rigger_result"] {
+        let resp = call(
+            "tools/call",
+            serde_json::json!({"name": name, "arguments": {}}),
+        );
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "{name} must not exist on the spawn-bound surface; got:\n{resp}"
+        );
+    }
+
+    // rigger_emit with no meta at all still lands stamped with the BOUND spawn.
+    let emit_ok = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_emit", "arguments": {"type": "DecisionMade", "data": {"id": "d1", "summary": "x"}}}),
+    );
+    assert!(
+        emit_ok.get("result").is_some(),
+        "an unstamped emit must succeed; got:\n{emit_ok}"
+    );
+
+    // rigger_emit naming a DIFFERENT spawn is refused outright.
+    let emit_refused = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_emit", "arguments": {"type": "DecisionMade", "data": {"id": "d2"}, "meta": {"spawn": other_spawn}}}),
+    );
+    assert_eq!(
+        emit_refused["error"]["code"], -32602,
+        "an emit naming a DIFFERENT spawn must be refused; got:\n{emit_refused}"
+    );
+
+    // rigger_progress records for the bound spawn with no spawn-naming argument.
+    let progress_ok = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_progress", "arguments": {"activity": "ran the gates"}}),
+    );
+    assert!(
+        progress_ok.get("result").is_some(),
+        "rigger_progress must succeed; got:\n{progress_ok}"
+    );
+
+    // rigger_scratch answers with a real, non-empty path under this spawn's own container.
+    let scratch = call(
+        "tools/call",
+        serde_json::json!({"name": "rigger_scratch", "arguments": {}}),
+    );
+    let scratch_path = scratch["result"]["structuredContent"]["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("rigger_scratch must answer with a path; got:\n{scratch}"));
+    assert!(
+        !scratch_path.is_empty(),
+        "rigger_scratch must answer a non-empty path; got:\n{scratch}"
+    );
+
+    drop(stdin);
+    let out = child
+        .wait_with_output()
+        .expect("rigger mcp --spawn must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp --spawn must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // The DECISION landed, stamped with the bound spawn; the REFUSED one landed nothing.
+    let events_backend =
+        SqliteStore::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
+    let events_store = Namespaced::new(&events_backend, &run_stream_identity(root));
+    let recorded = events_store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let decisions: Vec<_> = recorded
+        .iter()
+        .filter(|e| e.type_ == "DecisionMade")
+        .collect();
+    assert_eq!(
+        decisions.len(),
+        1,
+        "the refused emit must land NOTHING; got: {decisions:?}"
+    );
+    assert_eq!(
+        decisions[0]
+            .meta
+            .get(rigger::conductor::META_SPAWN)
+            .map(String::as_str),
+        Some(bound_spawn),
+        "the surviving decision must be stamped with the BOUND spawn"
+    );
+
+    // The progress report landed in the SEPARATE progress store, attributed to the bound spawn.
+    let progress_backend =
+        SqliteStore::open(root.join(".rigger").join("progress.db").to_str().unwrap()).unwrap();
+    let progress_store = Namespaced::new(&progress_backend, &run_stream_identity(root));
+    let progress_events = progress_store
+        .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let reports: Vec<rigger::progress::AgentProgress> = progress_events
+        .iter()
+        .filter(|e| e.type_ == rigger::progress::TYPE_AGENT_PROGRESS)
+        .map(|e| serde_json::from_slice(&e.data).unwrap())
+        .collect();
+    assert_eq!(
+        reports,
+        vec![rigger::progress::AgentProgress {
+            id: bound_spawn.to_string(),
+            activity: "ran the gates".to_string(),
+        }]
+    );
+}
+
 /// Spawn `rigger grep-guard` in `root`, write one PreToolUse `payload` to its stdin, and
 /// parse its one printed JSON object. Shared by every end-to-end `grep-guard` test below (the
 /// happy-path test and the SDET periphery additions that follow it): each drives a DIFFERENT

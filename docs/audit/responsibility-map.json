@@ -8625,11 +8625,19 @@
   },
   {
     "file": "src/main.rs",
+    "name": "parse_mcp_spawn_flag",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"parse_\" (argument/input parsing); grouped under `main::support`.",
+    "content_hash": "9929a90872ee084a"
+  },
+  {
+    "file": "src/main.rs",
     "name": "cmd_mcp",
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "0f72900af6ee8ef9"
+    "content_hash": "9f9218af6940c8af"
   },
   {
     "file": "src/main.rs",
