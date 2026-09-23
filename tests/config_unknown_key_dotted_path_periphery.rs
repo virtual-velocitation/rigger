@@ -7,11 +7,13 @@
 //! resolve through: both are driven against the byte-identical fixture file in one test, so
 //! "same text" is measured, not assumed from the two call sites sharing code.
 //!
-//! The criterion OWNS unknown-key rejection "at every config level" - and `dotted_unknown_key`
-//! is wired at THREE independent call sites (`config.rs`'s own doc comment on the commit that
-//! added it), not one: `load_workflow` (proven above), `read_store_config`, and
-//! `read_scratch_defaults`. The second test below closes `read_store_config`'s own wiring,
-//! which no other test (unit or periphery) reaches - it is a SEPARATE `.map_err` call over a
+//! The criterion OWNS unknown-key rejection "at every config level" - and the shared parser
+//! (`dotted_unknown_key`, then `config::parse_yaml_naming_unknown_keys` from commit 9bfb4a9
+//! on) is wired at multiple independent call sites, not one: `load_workflow` (proven
+//! above), `read_store_config`, and `read_scratch_defaults` from round one; `parse_agent`
+//! joins them in round four (see the file's last paragraph below). The second test below
+//! closes `read_store_config`'s own wiring, which no other test (unit or periphery) reaches
+//! - it is a SEPARATE `.map_err` call over a
 //! DIFFERENT struct (`StoreConfig`, not `Workflow`/`Defaults`), driven by `rigger status`
 //! rather than `rigger validate` because `read_store_config` is the store-selection probe
 //! (§48 rung 4) every store-opening command resolves through BEFORE it ever requires an
@@ -44,22 +46,37 @@
 //! `Workflow`/`Defaults`/`stages:` schema or the compiled binary. These two tests close
 //! that gap the same way the pair above does.
 //!
-//! The LAST two tests below test the criterion itself, not any one round's patch, per
-//! spec 102's Design amendment (rigger-run@3df56f8, "THE DOTTED PATH IS TRACKED
-//! STRUCTURALLY"): the path must come from a structural tracker (`serde_path_to_error`),
-//! never from searching the rendered message, because a key OR a value can echo any
-//! delimiter that search anchors on. The round-3 fix (`addc1d0`) is still a string search
-//! under a `"`, "`/`": "`-anchored scan that DECLINES TO GUESS - passes the raw,
-//! un-reformatted message through - whenever a key or value makes that scan see more than
-//! one candidate boundary. The first test below drives that exact ambiguity through the
-//! real `defaults:` field and proves the criterion ("an error naming that dotted path") is
-//! NOT met for it: `rigger validate`/`config_store::load` fail, but with no dotted-path
-//! line at all, only serde_yaml's raw message - this is EXPECTED TO FAIL until the
-//! structural tracker replaces the string search. The second test pins a Design clause the
-//! CURRENT code already satisfies and must keep satisfying: a genuinely nested (two-level)
+//! The next two tests prove the criterion itself, not any one round's patch, per spec 102's
+//! Design amendment (rigger-run@3df56f8, "THE DOTTED PATH IS TRACKED STRUCTURALLY"): the
+//! path must come from a structural tracker (`serde_path_to_error`), never from searching
+//! the rendered message, because a key OR a value can echo any delimiter that search
+//! anchors on. Round 3's fix (`addc1d0`) was still a string search that DECLINED TO GUESS -
+//! passed the raw, un-reformatted message through - on exactly this ambiguity, so this test
+//! was EXPECTED TO FAIL there (`op-102-c3-r3-review-note-stale-spec-in-worktree`); the
+//! implementer's round-4 rewrite (`config::parse_yaml_naming_unknown_keys`, wrapping
+//! `serde_path_to_error`, commit 9bfb4a9) closes it - the tracker's path IS the literal key
+//! text, so the same crafted input that defeated every text search is no longer ambiguous
+//! at all. This test now asserts the PASSING criterion, not the documented gap: a
+//! regression back to a string-search reformatter would make it fail again. The second test
+//! pins the other half of the same Design clause: a genuinely nested (two-level)
 //! non-unknown-key parse error (a real type mismatch) keeps its dotted path prefix in the
-//! message, because `serde_yaml` already carries it natively and the passthrough branch
-//! leaves it untouched.
+//! message, under the structural tracker exactly as it did under the passthrough branch the
+//! earlier string-search rounds relied on.
+//!
+//! The LAST two tests close a FOURTH gap this same round opened: the structural-tracker
+//! rewrite (commit 9bfb4a9) wires a genuinely NEW call site into the shared parser -
+//! `config::parse_agent`, previously a bare `serde_yaml::from_str` and explicitly OUT of
+//! every earlier round's scope ("not testing parse_agent ... untouched by this diff"). It
+//! is a real cross-module seam (`.rigger/agents/*.md` frontmatter, driven through
+//! `read_agents_dir` -> `config_store::load` -> `rigger validate`, exactly like the
+//! workflow-side call sites above) and a genuine behavior-mechanism change (the whole
+//! deserialization path, not just an error-formatting detail), so it gets the same
+//! real-schema, real-binary treatment as every other call site in this file rather than
+//! resting on the implementer's own synthetic-struct unit test. The first proves a real
+//! type mismatch in agent frontmatter still surfaces unchanged (never misreported as an
+//! unknown key); the second proves `AgentDef`'s deliberate non-`deny_unknown_fields`
+//! exemption (foreign frontmatter import) survives the rewrite of the mechanism it now
+//! shares with every `deny_unknown_fields` struct.
 
 mod common;
 
@@ -377,18 +394,20 @@ fn rigger_validate_recomposes_a_stage_path_through_a_stage_name_containing_its_o
 /// Spec 102's Design (amended at rigger-run@3df56f8) requires the dotted path come from a
 /// STRUCTURAL tracker: "it is never recovered by searching the rendered error text, because
 /// a key or a value can echo any delimiter the search would anchor on and the recovered
-/// message is then wrong." Round 3's fix is still a string search - it improved the anchor
-/// (a marker position must be immediately preceded by `": "`), but when a crafted key makes
-/// TWO such positions exist, it declines to guess and returns the raw, un-reformatted
-/// message rather than a wrong one. That is safer than corrupting the message, but it means
-/// the criterion itself - "an error naming that dotted path" - is unmet for this input: no
-/// dotted-path line is produced at all. An unknown key literally named
-/// `` z: unknown field `y `` under `defaults:` is real operator-writable YAML text (quoted),
-/// not a contrived internal fixture, and it makes the scan see its own real path/marker
-/// boundary AND a second, embedded one inside the key's own name - genuinely ambiguous by
-/// the function's own documented rule. EXPECTED TO FAIL on the current string-search
-/// implementation; closes only once the structural tracker (`serde_path_to_error`) replaces
-/// it, per `op-102-c3-dotted-path-structural-tracker`.
+/// message is then wrong." Every earlier round was still a string search - round 3
+/// (`addc1d0`) improved the anchor (a marker position must be immediately preceded by
+/// `": "`), but when a crafted key made TWO such positions exist, it declined to guess and
+/// returned the raw, un-reformatted message rather than a wrong one; the criterion itself -
+/// "an error naming that dotted path" - was unmet for this input under that round. An
+/// unknown key literally named `` z: unknown field `y `` under `defaults:` is real
+/// operator-writable YAML text (quoted), not a contrived internal fixture, and it makes a
+/// string scan see its own real path/marker boundary AND a second, embedded one inside the
+/// key's own name - genuinely ambiguous by construction to anything that searches rendered
+/// text. `config::parse_yaml_naming_unknown_keys` (commit 9bfb4a9, wrapping
+/// `serde_path_to_error`) is immune: its path comes from the actual key the deserializer
+/// read, never from scanning what it rendered afterward, so this is no longer ambiguous at
+/// all. This test now PINS that fix at the real CLI boundary - a regression back to any
+/// text-search reformatter would fail it again.
 #[test]
 fn rigger_validate_names_the_dotted_path_even_when_the_unknown_key_echoes_the_marker_boundary() {
     let dir = temp_project();
@@ -482,5 +501,116 @@ fn rigger_validate_keeps_the_nested_dotted_path_on_a_genuine_type_mismatch() {
         cli_err.contains(&lib_err),
         "rigger validate and config_store::load must fail with the SAME text: \
          lib=\"{lib_err}\" cli=\"{cli_err}\""
+    );
+}
+
+/// Spec 102's amended Design names TWO parse sites for the structural tracker: "the
+/// workflow file ... and the agent frontmatter" (`op-102-c3-dotted-path-structural-tracker`,
+/// `op-102-c3-r3-review-note-stale-spec-in-worktree`). `config::parse_agent` is wired
+/// through the SAME [`rigger::config::parse_yaml_naming_unknown_keys`] `load_workflow`
+/// uses (`src/config.rs`, the `frontmatter:` call site) - a genuinely NEW cross-module
+/// seam this diff adds (round 1/2 explicitly scoped it OUT: "not testing parse_agent,
+/// untouched by this diff"). The implementer's own unit test
+/// (`parse_agent_routes_a_type_mismatch_through_the_shared_structural_parser`,
+/// `src/config_store.rs`) pins this against a synthetic hand-rolled `AgentDef`-shaped
+/// struct with a loose `.contains()` check, never through the real `AgentDef` schema, a
+/// real on-disk `.rigger/agents/*.md` file, or the compiled binary. This proves the SAME
+/// property end to end: a real `recurse: not-a-bool` type mismatch in a real agent
+/// frontmatter file, loaded by [`rigger::config_store::load`] and by `rigger validate`,
+/// must surface `serde_yaml`'s own message UNCHANGED (not merely a superstring of it,
+/// exact byte-for-byte) - proving the shared parser's passthrough branch runs here with
+/// no divergence, and is never misclassified as an unknown-key violation.
+#[test]
+fn rigger_validate_and_config_store_load_preserve_an_agent_frontmatter_type_mismatch_unchanged() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    // The exact raw message a direct serde_yaml parse of the same frontmatter produces,
+    // measured (not assumed) in this same test run, so "unchanged" is a real comparison.
+    let raw = serde_yaml::from_str::<rigger::config::AgentDef>("id: probe\nrecurse: not-a-bool\n")
+        .expect_err("a bool field given a string must fail to parse")
+        .to_string();
+
+    std::fs::write(
+        root.join(".rigger").join("agents").join("zzz-probe.md"),
+        "---\nid: probe\nrecurse: not-a-bool\n---\nBody.\n",
+    )
+    .expect("add the type-mismatch agent fixture");
+
+    let lib_err = rigger::config_store::load(root.to_str().unwrap())
+        .expect_err("an agent frontmatter type mismatch must fail to load")
+        .to_string();
+    assert!(
+        !lib_err.contains("unknown key"),
+        "a type mismatch in agent frontmatter must never be misreported as an unknown key: \
+         {lib_err}"
+    );
+    assert!(
+        lib_err.contains(&raw),
+        "config_store::load must surface serde_yaml's real type-mismatch message unchanged, \
+         byte-for-byte, through the shared structural parser: raw=\"{raw}\" got=\"{lib_err}\""
+    );
+
+    let (_out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
+    assert!(
+        !cli_ok,
+        "rigger validate must fail on the wrongly-typed agent field"
+    );
+    assert!(
+        !cli_err.contains("unknown key"),
+        "rigger validate's stderr must never misreport a type mismatch as an unknown key; \
+         stderr:\n{cli_err}"
+    );
+    assert!(
+        cli_err.contains(&lib_err),
+        "rigger validate and config_store::load must fail with the SAME text: \
+         lib=\"{lib_err}\" cli=\"{cli_err}\""
+    );
+}
+
+/// The other half of the same new seam: `AgentDef` is deliberately NOT
+/// `#[serde(deny_unknown_fields)]` (`src/config.rs`'s own doc comment on the struct) so
+/// `rigger setup --agents` can import foreign frontmatter carrying fields Rigger does not
+/// model. Routing `parse_agent` through the shared structural parser is a genuine rewrite
+/// of ITS deserialization mechanism (`serde_yaml::from_str` directly, to
+/// `serde_path_to_error::deserialize` wrapping a `serde_yaml::Deserializer`) - a
+/// regression risk this criterion's own accounting must rule out, not assume: an unknown
+/// key in agent frontmatter must still parse cleanly, exactly as before this diff, through
+/// the real compiled binary.
+#[test]
+fn rigger_validate_still_ignores_an_unrecognized_agent_frontmatter_key() {
+    let dir = temp_project();
+    let root = dir.path();
+
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    std::fs::write(
+        root.join(".rigger").join("agents").join("zzz-foreign.md"),
+        "---\nid: zzz-foreign\ndescription: a foreign field rigger does not model\n---\nBody.\n",
+    )
+    .expect("add the foreign-key agent fixture");
+
+    let cfg = rigger::config_store::load(root.to_str().unwrap())
+        .expect("an unrecognized agent frontmatter key must still load cleanly");
+    assert!(
+        cfg.agents.contains_key("zzz-foreign"),
+        "the foreign-keyed agent must be present in the loaded fleet: {:?}",
+        cfg.agents.keys().collect::<Vec<_>>()
+    );
+
+    let (out, cli_err, cli_ok) = run_rigger(root, &["validate"]);
+    assert!(
+        cli_ok,
+        "rigger validate must still succeed on an agent file carrying an unrecognized key; \
+         stderr:\n{cli_err}"
+    );
+    assert!(
+        out.contains("7 agents"),
+        "rigger validate must count the foreign-keyed agent among the loaded fleet (the 6 \
+         scaffolded defaults plus this one): {out}"
     );
 }

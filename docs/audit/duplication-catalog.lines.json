@@ -1034,8 +1034,8 @@
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 71,
-        "end_line": 71
+        "start_line": 88,
+        "end_line": 88
       },
       {
         "file": "tests/console_status_periphery.rs",
@@ -6339,48 +6339,58 @@
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 107,
-        "end_line": 107
+        "start_line": 124,
+        "end_line": 124
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 155,
-        "end_line": 155
+        "start_line": 172,
+        "end_line": 172
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 161,
-        "end_line": 161
+        "start_line": 178,
+        "end_line": 178
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 210,
-        "end_line": 210
+        "start_line": 227,
+        "end_line": 227
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 254,
-        "end_line": 254
+        "start_line": 271,
+        "end_line": 271
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 300,
-        "end_line": 300
+        "start_line": 317,
+        "end_line": 317
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 347,
-        "end_line": 347
+        "start_line": 364,
+        "end_line": 364
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 401,
-        "end_line": 401
+        "start_line": 420,
+        "end_line": 420
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 450,
-        "end_line": 450
+        "start_line": 469,
+        "end_line": 469
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 538,
+        "end_line": 538
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 592,
+        "end_line": 592
       },
       {
         "file": "tests/console_status_periphery.rs",
@@ -16239,8 +16249,8 @@
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 69,
-        "end_line": 76
+        "start_line": 86,
+        "end_line": 93
       },
       {
         "file": "tests/console_status_periphery.rs",
@@ -16344,8 +16354,8 @@
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 69,
-        "end_line": 76
+        "start_line": 86,
+        "end_line": 93
       },
       {
         "file": "tests/console_status_periphery.rs",
@@ -17084,8 +17094,8 @@
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 78,
-        "end_line": 90
+        "start_line": 95,
+        "end_line": 107
       },
       {
         "file": "tests/dedup_seeding_periphery.rs",
@@ -20289,43 +20299,48 @@
     "sites": [
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 99,
-        "end_line": 139
+        "start_line": 116,
+        "end_line": 156
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 147,
-        "end_line": 187
+        "start_line": 164,
+        "end_line": 204
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 202,
-        "end_line": 241
+        "start_line": 219,
+        "end_line": 258
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 246,
-        "end_line": 281
+        "start_line": 263,
+        "end_line": 298
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 292,
-        "end_line": 328
+        "start_line": 309,
+        "end_line": 345
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 339,
-        "end_line": 375
+        "start_line": 356,
+        "end_line": 392
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 393,
-        "end_line": 431
+        "start_line": 412,
+        "end_line": 450
       },
       {
         "file": "tests/config_unknown_key_dotted_path_periphery.rs",
-        "start_line": 442,
-        "end_line": 486
+        "start_line": 461,
+        "end_line": 505
+      },
+      {
+        "file": "tests/config_unknown_key_dotted_path_periphery.rs",
+        "start_line": 524,
+        "end_line": 572
       }
     ]
   },
