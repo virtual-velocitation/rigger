@@ -19,7 +19,7 @@
 //! landed on this branch); the spawn-bound MCP server, the write guard and the
 //! StopFailure hooks (criteria 3 and 4, separate units, already landed independently).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use rigger::conductor::{AgentDriver, SpawnOpts};
@@ -280,4 +280,127 @@ fn spawn_ignores_the_emit_callback_the_agent_reports_its_own_decisions_live() {
         .unwrap();
 
     assert_eq!(*calls.lock().unwrap(), 0);
+}
+
+#[test]
+fn spawn_propagates_a_launch_failure_never_reading_a_stream_that_never_started() {
+    // `spawn()` (the `AgentDriver` method every other test in this file drives) is
+    // `launch()` composed with `read_stream()` - the implementer's own `mod tests`
+    // proves `launch()`'s failure in isolation (a nonexistent `bin`); this proves the
+    // SAME failure surfaces through the composed call, not just the half-call.
+    let fx = Fixture::new();
+    let bin = "/definitely/does/not/exist/claude-code-xyz".to_string();
+    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
+    let o = opts("u104-stream/implementer#0");
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let err = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .expect_err("spawning a nonexistent binary must fail through spawn(), not just launch()");
+    assert!(err.0.contains("u104-stream/implementer#0"), "{}", err.0);
+
+    // No SpawnResult landed either - a launch that never started a process never
+    // produced a stream to read a result from.
+    let events = fx
+        .run_store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(!events.iter().any(|e| e.type_ == TYPE_SPAWN_RESULT));
+}
+
+/// Restores the process's current directory on drop, however the guarded scope exits -
+/// used only by [`spawn_with_an_empty_scratch_root_never_writes_relative_to_cwd`], the
+/// one test in this file that mutates this process-global resource.
+struct CwdGuard(PathBuf);
+
+impl CwdGuard {
+    fn enter(dir: &Path) -> Self {
+        let original = std::env::current_dir().expect("read the current directory");
+        std::env::set_current_dir(dir).expect("enter the throwaway directory");
+        CwdGuard(original)
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
+#[test]
+#[serial_test::serial(claude_code_stream_cwd)]
+fn spawn_with_an_empty_scratch_root_never_writes_relative_to_cwd() {
+    // `Driver::scratch_root`'s own doc: "Empty disables both [the liveness marker and
+    // the raw stream file] - no scratch root configured / a test that does not care."
+    // PROVE it rather than trust it: every OTHER test in this file supplies a real
+    // scratch root, so this is the one place that exercises the degenerate case a
+    // caller who does not care is explicitly invited to pass. Run `spawn()` from
+    // inside a throwaway directory (never the real worktree; `#[serial]` because this
+    // mutates the process-global cwd, matching this crate's own convention - see
+    // Cargo.toml's `serial_test` comment - for cwd-sensitive tests) and assert neither
+    // `agent-live` nor `agent-stream` appears anywhere under it: an empty scratch root
+    // must be a true no-op, never a RELATIVE path that scatters files into whatever
+    // directory the caller happened to be running in (which, for a real `rigger run`
+    // invocation, would be the operator's own repository checkout).
+    let throwaway = tempfile::tempdir().unwrap();
+    let _cwd_guard = CwdGuard::enter(throwaway.path());
+
+    let fx = Fixture::new();
+    let driver = rigger::driver::claude_code::Driver {
+        bin: fixture_bin(),
+        rigger_bin: "rigger".to_string(),
+        progress_store: &fx.progress_store,
+        run_store: &fx.run_store,
+        scratch_root: String::new(),
+    };
+    let o = opts("u104-stream/implementer#0");
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .expect("an empty scratch root must still let the spawn succeed");
+
+    assert!(
+        !throwaway.path().join("agent-live").exists(),
+        "an empty scratch_root must not create a liveness marker relative to cwd"
+    );
+    assert!(
+        !throwaway.path().join("agent-stream").exists(),
+        "an empty scratch_root must not create a stream transcript relative to cwd"
+    );
+}
+
+#[test]
+fn spawn_records_the_mcp_connection_status_from_system_init_as_a_progress_line() {
+    // `system/init`'s `mcp_servers` array is "noted for the record" (Design) - this
+    // file's other progress-line assertions cover api_retry/denied/unparseable but
+    // never this branch of the same match arm; close it.
+    let fx = Fixture::new();
+    let o = opts("u104-stream/implementer#0");
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    fx.driver()
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .unwrap();
+
+    let events = fx
+        .progress_store
+        .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let activities: Vec<String> = events
+        .iter()
+        .filter(|e| e.type_ == TYPE_AGENT_PROGRESS)
+        .map(|e| {
+            serde_json::from_slice::<AgentProgress>(&e.data)
+                .unwrap()
+                .activity
+        })
+        .collect();
+
+    assert!(
+        activities
+            .iter()
+            .any(|a| a.contains("mcp servers") && a.contains("rigger") && a.contains("connected")),
+        "activities: {activities:?}"
+    );
 }
