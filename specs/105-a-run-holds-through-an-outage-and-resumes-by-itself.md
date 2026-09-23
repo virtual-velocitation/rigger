@@ -19,6 +19,14 @@ retries; HOLD when a session ends of it. `invalid_request`, `max_output_tokens`,
 FAULT under spec 104's bound; three consecutive FAULTs across the run - HOLD with cause
 `api-unstable`. Spec 104's halt-after-two-relaunches is replaced by these rules.
 
+THE COMPOSITION ROOT, decided: this spec's first unit swaps `src/main.rs:3667` from
+`cli::Driver` to spec 104's `claude_code::Driver`, so `rigger run` hosts its agents as headless
+sessions, and migrates the `tests/cli.rs` end-to-end fixtures (the fake `claude` on PATH) from
+the `-p <prompt>` plain-text contract to the stream-json contract the host speaks. Spec 104
+deliberately left the root on `cli::Driver` because without the hold below a bare `api_retry`
+ends an unattended run; the swap and the hold land in the same spec for that reason. The
+`rigger step` path (`src/main.rs:5726`) keeps `cli::Driver` until spec 106 retires it.
+
 THE EVENTS, decided: `RunHeld {cause, detail, action, by}` and `RunReleased {by, held_for_s}`
 are the two new run-stream event types; `by` is `host`, `probe` or `operator`. A run is held
 when a `RunHeld` has no later `RunReleased`. While held the conductor requests no launch; a
@@ -71,6 +79,10 @@ step-driven path writes no beats and keeps wall-clock liveness until spec 106 re
 
 ## Done when
 
+- [ ] a test proves RIGGER RUN HOSTS ITS AGENTS: `rigger run` builds `claude_code::Driver` at
+  its composition root, and the end-to-end CLI fixtures drive a fake `claude` that speaks the
+  stream-json contract, both lanes green. This criterion OWNS the composition-root swap and the
+  fixture migration; the hold rules are criterion 2's, NOT this one's.
 - [ ] a test proves THE DISPOSITION TABLE: each category maps to hold, wait or fault as
   decided; the first hold-class sighting appends `RunHeld` with its cause and action; a
   session ending of a wait-class category and the third consecutive fault each append one.
