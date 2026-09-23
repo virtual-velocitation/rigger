@@ -389,7 +389,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "cc821d954f5d0e93"
+    "content_hash": "0dd8bcb62f4a294f"
   },
   {
     "file": "src/conductor.rs",
@@ -669,7 +669,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "dc04fb1df5e954e0"
+    "content_hash": "f3f015ca9f839c85"
   },
   {
     "file": "src/conductor.rs",
@@ -4894,6 +4894,22 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "dca1ea51b9f65553"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "run_wave_admits_at_most_max_parallel_units_leaving_the_rest_neither_failed_nor_terminal",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "3b6ae9e4e63c7f6f"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "occupancy_survives_a_crash_resume_so_a_still_parked_unit_keeps_its_slot_over_a_fresh_one",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "4714922628fc71e1"
   },
   {
     "file": "src/conductor.rs",
@@ -11006,6 +11022,30 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "eaa952d327dd2be7"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "scaffold_workflow_declares_max_parallel_units_two_with_a_sizing_comment",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "3438e3995abbeab2"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "init_project_writes_max_parallel_units_with_its_sizing_comment",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "ca1836c161656017"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "defaults_max_parallel_units_is_unbounded_when_the_key_is_absent",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1c00219ab009a368"
   },
   {
     "file": "src/main.rs",

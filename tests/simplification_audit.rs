@@ -3530,26 +3530,29 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
          `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. \
          Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) \
          excluded this criterion's own citation-guard periphery file from the draw's population \
-         (see this subsection's opening paragraph) and redrew the sample; every one of the 19 \
-         functions above marked \"no duplicate found by reading\" was re-read by hand against \
-         its host file's surrounding context, exactly as this THOROUGHNESS check requires \
-         whenever the draw changes. 18 of the 19 are genuinely not duplicates; `apply` at \
-         `src/conductor.rs:29832-29834` is one shape worth naming so it is not mistaken for a \
-         miss - a `Projection` test double's own required trait-impl body, the same \
+         (see this subsection's opening paragraph); that exclusion still applies unchanged. A \
+         later round's own second commit grew the scanned population from 7513 to 7517 \
+         functions, reshuffling the draw; every one of the functions above marked \"no duplicate \
+         found by reading\" was re-read by hand against its host file's surrounding context, \
+         exactly as this THOROUGHNESS check requires whenever the draw changes, and all are \
+         genuinely not duplicates - this redraw surfaced no new recall gap. Two standing shapes \
+         an earlier round's reading pass named, neither drawn this time but both still present \
+         and still correctly excluded, are restated here so neither is mistaken for a miss on a \
+         future draw: `apply` at `src/conductor.rs:38374-38376` \
+         (`grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grep_superset`) is a \
+         `Projection` test double's own required trait-impl body, the same \
          port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s \
          trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) \
-         already excludes from clustering by design, confirmed to still hold for this draw's own \
-         instance of it. The 19th is a genuine small duplicate this catalog's `fn`-only scanner \
-         (module doc, THE SCANNER) structurally cannot represent as a cluster: `gate_verdict_event` \
-         (`src/conductor.rs:29191-29200`) and the `verdict` closure inside \
+         already excludes from clustering by design; and `gate_verdict_event` \
+         (`src/conductor.rs:37733-37742`) together with the `verdict` closure inside \
          `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` \
-         (`src/conductor.rs:30596-30605`) do the identical job - find the recorded `GateVerdict` \
+         (`src/conductor.rs:39138-39147`) do the identical job - find the recorded `GateVerdict` \
          for a `\"<unit>/gate:g#<attempt>\"` replay key, panicking with the same message when none \
          exists - differing only in whether the unit segment is the literal `\"s\"` or a \
-         parameter. A `let`-bound closure is not a `fn` item, so no change to this scanner short \
-         of teaching it to see closures could catalog this pair as a cluster; named here, \
-         prominently, rather than silently, so a later refactor - or a scanner that learns to see \
-         closures - does not miss it."
+         parameter. A `let`-bound closure is not a `fn` item, so no change to this catalog's \
+         `fn`-only scanner (module doc, THE SCANNER) short of teaching it to see closures could \
+         catalog this pair as a cluster; named here, prominently, rather than silently, so a \
+         later refactor - or a scanner that learns to see closures - does not miss it."
     );
     let _ = writeln!(out);
     out
