@@ -29240,6 +29240,169 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
     );
 }
 
+// ===========================================================================================
+// SDET periphery additions (spec 104, criterion 3): the CLI-flag surface `parse_mcp_spawn_flag`
+// introduces has no unit test of its own (it is a private free function; the implementer's
+// tests all construct `mcpserver::Server` directly and never touch argument parsing or
+// `cmd_mcp`'s own file-system decisions), so these drive the real compiled binary to prove
+// its error edges and the two behavioral contracts `cmd_mcp`'s doc comment states but the
+// happy-path test above cannot observe.
+// ===========================================================================================
+
+/// `rigger mcp`'s argument surface (spec 104, criterion 3): a valueless `--spawn`, an
+/// explicitly empty spawn id, and any unrecognized or trailing argument are each a clear,
+/// nonzero-exit CLI error - never silently accepted. The pre-spec-104 `cmd_mcp` took
+/// `_args: &[String]` and discarded every argument it was given; this proves the new
+/// contract from OUTSIDE the process, driving the real binary, so a regression back to
+/// "accept and ignore" shows up here even though `parse_mcp_spawn_flag` carries no unit
+/// test of its own to catch it.
+#[test]
+fn mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_store(root);
+
+    // `--spawn` with no id following it.
+    let (out, err, ok) = run_rigger(root, &["mcp", "--spawn"]);
+    assert!(!ok, "mcp --spawn with no id must fail; stdout: {out:?}");
+    assert!(
+        err.contains("mcp: --spawn expects a spawn id"),
+        "got: {err:?}"
+    );
+
+    // `--spawn` with an explicitly empty id.
+    let (out, err, ok) = run_rigger(root, &["mcp", "--spawn", ""]);
+    assert!(!ok, "mcp --spawn '' must fail; stdout: {out:?}");
+    assert!(
+        err.contains("mcp: --spawn expects a non-empty spawn id"),
+        "got: {err:?}"
+    );
+
+    // A bare unrecognized argument, with no `--spawn` at all.
+    let (out, err, ok) = run_rigger(root, &["mcp", "not-a-flag"]);
+    assert!(
+        !ok,
+        "mcp with an unrecognized argument must fail; stdout: {out:?}"
+    );
+    assert!(err.contains("mcp: unexpected arguments"), "got: {err:?}");
+
+    // A trailing argument after an otherwise well-formed `--spawn <id>`.
+    let (out, err, ok) = run_rigger(root, &["mcp", "--spawn", "u/implementer#0", "extra"]);
+    assert!(!ok, "mcp --spawn <id> <extra> must fail; stdout: {out:?}");
+    assert!(err.contains("mcp: unexpected arguments"), "got: {err:?}");
+}
+
+/// Contract stated in `cmd_mcp`'s own doc comment (spec 104): a plain `rigger mcp` with no
+/// `--spawn` is the operator's read-only lookup surface and must NEVER conjure
+/// `.rigger/progress.db` or touch a scratch root it has no use for - only `--spawn <id>`
+/// opens the progress store. The `Server` unit tests build their `EventStore`s directly
+/// (always `:memory:`) and can never observe this file-system side effect either way; only
+/// driving the real `cmd_mcp` composition, end to end, can.
+#[test]
+fn mcp_without_spawn_never_creates_the_progress_store() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    seed_store(root);
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let req = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
+    writeln!(stdin, "{req}").unwrap();
+    stdin.flush().unwrap();
+    let mut line = String::new();
+    stdout.read_line(&mut line).expect("rigger mcp must answer");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&line).is_ok(),
+        "not one JSON-RPC response line: {line:?}"
+    );
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp must exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !root.join(".rigger").join("progress.db").exists(),
+        "a plain `rigger mcp` with no --spawn must never create progress.db"
+    );
+}
+
+/// The two spawn-bound-only write tools (`rigger_progress`, `rigger_scratch`) are not merely
+/// unadvertised but UNDISPATCHABLE on a plain `rigger mcp` (no `--spawn`): calling either by
+/// name anyway must come back as an ordinary JSON-RPC "unknown tool" error over the wire,
+/// never a crash - proof that the real subprocess survives an out-of-schema call to a tool
+/// whose handler (`tool_progress`/`tool_scratch`) assumes a bound spawn that, off the
+/// spawn-bound surface, does not exist (each panics via `bound_spawn()` if ever reached
+/// there). The unit tests never drive `call_tool` with a mismatched surface/name pair
+/// through the real dispatch table over real stdio, so this is the only place that proves
+/// the mismatch fails soft.
+#[test]
+fn mcp_without_spawn_reports_progress_and_scratch_as_unknown_tools_over_stdio() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::Stdio;
+
+    let dir = temp_project();
+    let root = dir.path();
+    write_grounder_workflow(root, "grep");
+    seed_store(root);
+
+    let mut cmd = common::rigger_courier();
+    cmd.args(["mcp"])
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let mut next_id = 0i64;
+    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
+        next_id += 1;
+        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
+        writeln!(stdin, "{req}").unwrap();
+        stdin.flush().unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).expect("rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    };
+
+    for name in ["rigger_progress", "rigger_scratch"] {
+        let resp = call(
+            "tools/call",
+            serde_json::json!({"name": name, "arguments": {"activity": "x"}}),
+        );
+        assert_eq!(
+            resp["error"]["code"], -32602,
+            "{name} must be an ordinary unknown-tool error off the spawn-bound surface; \
+             got:\n{resp}"
+        );
+    }
+
+    drop(stdin);
+    let out = child.wait_with_output().expect("rigger mcp must exit");
+    assert!(
+        out.status.success(),
+        "rigger mcp must survive and exit 0 after the refused calls; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// Spawn `rigger grep-guard` in `root`, write one PreToolUse `payload` to its stdin, and
 /// parse its one printed JSON object. Shared by every end-to-end `grep-guard` test below (the
 /// happy-path test and the SDET periphery additions that follow it): each drives a DIFFERENT
