@@ -29,13 +29,22 @@ driver would resume with every slot free while spawns are still running).
 (`defaults.max_parallel_unitz: unknown key`). `rigger validate` surfaces the same error, so
 the mistake is found before a run spends a step on it.
 
+**THE DOTTED PATH IS TRACKED STRUCTURALLY, decided here so no unit has to.** The path comes
+from `serde_path_to_error` wrapping the deserializer at the config parse sites (the
+workflow file and the agent frontmatter); it is never recovered by searching the rendered
+error text, because a key or a value can echo any delimiter the search would anchor on and
+the recovered message is then wrong. The unknown-key line is composed from the tracker's
+path and the inner error's field name; every other parse error is rendered with the same
+tracked path prefix and its message otherwise unchanged.
+
 **REVIEWER BUILD CONCURRENCY IS OUT OF SCOPE.** A spawn's own `cargo test` runs outside
 `build.max_concurrent` (spec 65); bounding them is a separate spec.
 
 ## Global constraints
 
 - Hyphens, never em dashes, in every added line.
-- No new event type; no new dependency.
+- No new event type; no new dependency except `serde_path_to_error`, the standard serde path
+  tracker, which the dotted-path rule above requires.
 - Both feature lanes green (fmt, clippy, test on default and --no-default-features).
 
 ## Done when
