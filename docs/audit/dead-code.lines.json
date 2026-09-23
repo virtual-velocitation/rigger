@@ -675,6 +675,14 @@
       {
         "file": "src/driver/claude_code.rs",
         "line": 440
+      },
+      {
+        "file": "tests/write_guard_hook_periphery.rs",
+        "line": 38
+      },
+      {
+        "file": "tests/write_guard_hook_periphery.rs",
+        "line": 48
       }
     ]
   },
@@ -1147,7 +1155,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 10047
+        "line": 10052
       }
     ]
   },

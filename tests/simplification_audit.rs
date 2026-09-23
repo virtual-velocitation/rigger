@@ -3810,15 +3810,20 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         ("src/dash.rs", "serve") => 3,
         ("src/distiller.rs", "rebuild") => 15,
         // install_write_guard_hook (src/driver/claude_code.rs, spec 104 criterion 4, new,
-        // unmerged): 5 test-only call sites, all in this file's own `#[cfg(test)] mod tests`
+        // unmerged): 5 test-only call sites in this file's own `#[cfg(test)] mod tests`
         // (install_write_guard_hook_merges_the_pretooluse_entry_into_empty_settings,
         // install_write_guard_hook_passes_both_the_dir_and_the_scratch_container_as_roots,
         // install_write_guard_hook_composes_with_an_existing_stopfailure_family,
-        // install_write_guard_hook_is_idempotent - 2 calls, first and second) plus 2 local
-        // outgoing calls (write_guard_command, hooks::install_pretooluse_hook) = 7. Hand-derived
-        // the same two-part way frame/hit's own precedent above documents (`rigger graph --show`
-        // cannot see this unmerged unit branch's new file), not a live tool run.
-        ("src/driver/claude_code.rs", "install_write_guard_hook") => 7,
+        // install_write_guard_hook_is_idempotent - 2 calls, first and second), plus 2 more
+        // test-only references added by this criterion's own periphery layer
+        // (tests/write_guard_hook_periphery.rs's `use` import line and its one call
+        // expression, inside write_guard_hook_command - itself called from every test in
+        // that file, but one call EXPRESSION is one line-span reference), for 7 test-only
+        // references, plus 2 local outgoing calls (write_guard_command,
+        // hooks::install_pretooluse_hook) = 9. Hand-derived the same two-part way frame/hit's
+        // own precedent above documents (`rigger graph --show` cannot see this unmerged unit
+        // branch's new files), not a live tool run.
+        ("src/driver/claude_code.rs", "install_write_guard_hook") => 9,
         ("src/eventstore/sqlite.rs", "with_content_identity") => 32,
         ("src/gate.rs", "resolve_wrapper_name") => 3,
         ("src/grounder/symbols/events.rs", "index_events") => 17,

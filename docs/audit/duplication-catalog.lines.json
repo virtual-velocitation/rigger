@@ -2336,6 +2336,11 @@
         "file": "tests/worktree_remove_relocated_scratch_base_guard_periphery.rs",
         "start_line": 83,
         "end_line": 83
+      },
+      {
+        "file": "tests/write_guard_hook_periphery.rs",
+        "start_line": 64,
+        "end_line": 64
       }
     ]
   },
@@ -7394,33 +7399,33 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4357,
-        "end_line": 4357
+        "start_line": 4362,
+        "end_line": 4362
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4671,
-        "end_line": 4671
+        "start_line": 4676,
+        "end_line": 4676
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4987,
-        "end_line": 4987
+        "start_line": 4992,
+        "end_line": 4992
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4991,
-        "end_line": 4991
+        "start_line": 4996,
+        "end_line": 4996
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8366,
-        "end_line": 8366
+        "start_line": 8371,
+        "end_line": 8371
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8369,
-        "end_line": 8369
+        "start_line": 8374,
+        "end_line": 8374
       },
       {
         "file": "tests/spawn_scratch_reap_authorized_root_periphery.rs",
@@ -9029,8 +9034,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8373,
-        "end_line": 8381
+        "start_line": 8378,
+        "end_line": 8386
       }
     ]
   },
@@ -9234,28 +9239,28 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7320,
-        "end_line": 7331
+        "start_line": 7325,
+        "end_line": 7336
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7339,
-        "end_line": 7350
+        "start_line": 7344,
+        "end_line": 7355
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7388,
-        "end_line": 7394
+        "start_line": 7393,
+        "end_line": 7399
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7436,
-        "end_line": 7440
+        "start_line": 7441,
+        "end_line": 7445
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8011,
-        "end_line": 8021
+        "start_line": 8016,
+        "end_line": 8026
       }
     ]
   },
@@ -9304,13 +9309,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7334,
-        "end_line": 7336
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 7362,
-        "end_line": 7364
+        "start_line": 7339,
+        "end_line": 7341
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -9320,12 +9320,17 @@
       {
         "file": "tests/simplification_audit.rs",
         "start_line": 7372,
-        "end_line": 7377
+        "end_line": 7374
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7380,
-        "end_line": 7385
+        "start_line": 7377,
+        "end_line": 7382
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 7385,
+        "end_line": 7390
       },
       {
         "file": "tests/store_secrets_periphery.rs",
@@ -10834,23 +10839,18 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4671,
-        "end_line": 4671
+        "start_line": 4676,
+        "end_line": 4676
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4805,
-        "end_line": 4805
+        "start_line": 4810,
+        "end_line": 4810
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4808,
-        "end_line": 4808
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8251,
-        "end_line": 8251
+        "start_line": 4813,
+        "end_line": 4813
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -10864,13 +10864,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8352,
-        "end_line": 8352
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 8355,
-        "end_line": 8355
+        "start_line": 8266,
+        "end_line": 8266
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -10879,8 +10874,18 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8421,
-        "end_line": 8421
+        "start_line": 8360,
+        "end_line": 8360
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8362,
+        "end_line": 8362
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "start_line": 8426,
+        "end_line": 8426
       }
     ]
   },
@@ -10944,23 +10949,23 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4649,
-        "end_line": 5207
+        "start_line": 4654,
+        "end_line": 5212
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8243,
-        "end_line": 8269
+        "start_line": 8248,
+        "end_line": 8274
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8347,
-        "end_line": 8358
+        "start_line": 8352,
+        "end_line": 8363
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8415,
-        "end_line": 8428
+        "start_line": 8420,
+        "end_line": 8433
       }
     ]
   },
@@ -11879,8 +11884,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 3978,
-        "end_line": 3984
+        "start_line": 3983,
+        "end_line": 3989
       }
     ]
   },
@@ -15079,8 +15084,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6923,
-        "end_line": 6927
+        "start_line": 6928,
+        "end_line": 6932
       }
     ]
   },
@@ -21544,8 +21549,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 11124,
-        "end_line": 11247
+        "start_line": 11129,
+        "end_line": 11252
       }
     ]
   },
@@ -21884,18 +21889,18 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7202,
-        "end_line": 7210
+        "start_line": 7207,
+        "end_line": 7215
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7213,
-        "end_line": 7220
+        "start_line": 7218,
+        "end_line": 7225
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7223,
-        "end_line": 7227
+        "start_line": 7228,
+        "end_line": 7232
       }
     ]
   },
@@ -24109,13 +24114,13 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6721,
-        "end_line": 6727
+        "start_line": 6726,
+        "end_line": 6732
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6732,
-        "end_line": 6738
+        "start_line": 6737,
+        "end_line": 6743
       }
     ]
   },
@@ -24149,13 +24154,13 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6679,
-        "end_line": 6698
+        "start_line": 6684,
+        "end_line": 6703
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6700,
-        "end_line": 6715
+        "start_line": 6705,
+        "end_line": 6720
       }
     ]
   },
@@ -24169,8 +24174,8 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4317,
-        "end_line": 4560
+        "start_line": 4322,
+        "end_line": 4565
       }
     ]
   },
@@ -24179,13 +24184,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4123,
-        "end_line": 4310
+        "start_line": 4128,
+        "end_line": 4315
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 4649,
-        "end_line": 5207
+        "start_line": 4654,
+        "end_line": 5212
       }
     ]
   },
@@ -24194,13 +24199,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6805,
-        "end_line": 6814
+        "start_line": 6810,
+        "end_line": 6819
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7045,
-        "end_line": 7051
+        "start_line": 7050,
+        "end_line": 7056
       }
     ]
   },
@@ -24209,58 +24214,58 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6835,
-        "end_line": 6840
+        "start_line": 6840,
+        "end_line": 6845
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6847,
-        "end_line": 6852
+        "start_line": 6852,
+        "end_line": 6857
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6855,
-        "end_line": 6860
+        "start_line": 6860,
+        "end_line": 6865
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6863,
-        "end_line": 6868
+        "start_line": 6868,
+        "end_line": 6873
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6871,
-        "end_line": 6876
+        "start_line": 6876,
+        "end_line": 6881
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6879,
-        "end_line": 6884
+        "start_line": 6884,
+        "end_line": 6889
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6887,
-        "end_line": 6892
+        "start_line": 6892,
+        "end_line": 6897
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6895,
-        "end_line": 6900
+        "start_line": 6900,
+        "end_line": 6905
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6903,
-        "end_line": 6908
+        "start_line": 6908,
+        "end_line": 6913
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6911,
-        "end_line": 6916
+        "start_line": 6916,
+        "end_line": 6921
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6930,
-        "end_line": 6935
+        "start_line": 6935,
+        "end_line": 6940
       }
     ]
   },
@@ -24269,28 +24274,28 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6959,
-        "end_line": 6965
+        "start_line": 6964,
+        "end_line": 6970
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6968,
-        "end_line": 6976
+        "start_line": 6973,
+        "end_line": 6981
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6979,
-        "end_line": 6991
+        "start_line": 6984,
+        "end_line": 6996
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 6994,
-        "end_line": 7003
+        "start_line": 6999,
+        "end_line": 7008
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7125,
-        "end_line": 7133
+        "start_line": 7130,
+        "end_line": 7138
       }
     ]
   },
@@ -24299,13 +24304,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7016,
-        "end_line": 7022
+        "start_line": 7021,
+        "end_line": 7027
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7025,
-        "end_line": 7034
+        "start_line": 7030,
+        "end_line": 7039
       }
     ]
   },
@@ -24314,18 +24319,18 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7083,
-        "end_line": 7086
+        "start_line": 7088,
+        "end_line": 7091
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7096,
-        "end_line": 7099
+        "start_line": 7101,
+        "end_line": 7104
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7102,
-        "end_line": 7105
+        "start_line": 7107,
+        "end_line": 7110
       }
     ]
   },
@@ -24334,13 +24339,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7145,
-        "end_line": 7149
+        "start_line": 7150,
+        "end_line": 7154
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7230,
-        "end_line": 7235
+        "start_line": 7235,
+        "end_line": 7240
       }
     ]
   },
@@ -24349,18 +24354,18 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7152,
-        "end_line": 7163
+        "start_line": 7157,
+        "end_line": 7168
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7166,
-        "end_line": 7184
+        "start_line": 7171,
+        "end_line": 7189
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7187,
-        "end_line": 7199
+        "start_line": 7192,
+        "end_line": 7204
       }
     ]
   },
@@ -24369,18 +24374,18 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7299,
-        "end_line": 7305
+        "start_line": 7304,
+        "end_line": 7310
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7308,
-        "end_line": 7317
+        "start_line": 7313,
+        "end_line": 7322
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7397,
-        "end_line": 7402
+        "start_line": 7402,
+        "end_line": 7407
       }
     ]
   },
@@ -24389,13 +24394,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7458,
-        "end_line": 7490
+        "start_line": 7463,
+        "end_line": 7495
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7493,
-        "end_line": 7507
+        "start_line": 7498,
+        "end_line": 7512
       }
     ]
   },
@@ -24404,18 +24409,18 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7523,
-        "end_line": 7529
+        "start_line": 7528,
+        "end_line": 7534
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8829,
-        "end_line": 8836
+        "start_line": 8834,
+        "end_line": 8841
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9667,
-        "end_line": 9684
+        "start_line": 9672,
+        "end_line": 9689
       }
     ]
   },
@@ -24424,18 +24429,18 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7573,
-        "end_line": 7596
+        "start_line": 7578,
+        "end_line": 7601
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8975,
-        "end_line": 9002
+        "start_line": 8980,
+        "end_line": 9007
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10857,
-        "end_line": 10884
+        "start_line": 10862,
+        "end_line": 10889
       }
     ]
   },
@@ -24444,13 +24449,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7635,
-        "end_line": 7659
+        "start_line": 7640,
+        "end_line": 7664
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10949,
-        "end_line": 10976
+        "start_line": 10954,
+        "end_line": 10981
       }
     ]
   },
@@ -24459,13 +24464,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7685,
-        "end_line": 7748
+        "start_line": 7690,
+        "end_line": 7753
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10986,
-        "end_line": 11064
+        "start_line": 10991,
+        "end_line": 11069
       }
     ]
   },
@@ -24474,13 +24479,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7965,
-        "end_line": 7973
+        "start_line": 7970,
+        "end_line": 7978
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 7985,
-        "end_line": 7993
+        "start_line": 7990,
+        "end_line": 7998
       }
     ]
   },
@@ -24489,13 +24494,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8243,
-        "end_line": 8269
+        "start_line": 8248,
+        "end_line": 8274
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8272,
-        "end_line": 8290
+        "start_line": 8277,
+        "end_line": 8295
       }
     ]
   },
@@ -24504,13 +24509,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8415,
-        "end_line": 8428
+        "start_line": 8420,
+        "end_line": 8433
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8675,
-        "end_line": 8692
+        "start_line": 8680,
+        "end_line": 8697
       }
     ]
   },
@@ -24519,13 +24524,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8435,
-        "end_line": 8448
+        "start_line": 8440,
+        "end_line": 8453
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8547,
-        "end_line": 8562
+        "start_line": 8552,
+        "end_line": 8567
       }
     ]
   },
@@ -24534,13 +24539,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8451,
-        "end_line": 8458
+        "start_line": 8456,
+        "end_line": 8463
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8461,
-        "end_line": 8469
+        "start_line": 8466,
+        "end_line": 8474
       }
     ]
   },
@@ -24549,13 +24554,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8495,
-        "end_line": 8513
+        "start_line": 8500,
+        "end_line": 8518
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8699,
-        "end_line": 8716
+        "start_line": 8704,
+        "end_line": 8721
       }
     ]
   },
@@ -24564,18 +24569,18 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8565,
-        "end_line": 8593
+        "start_line": 8570,
+        "end_line": 8598
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8596,
-        "end_line": 8625
+        "start_line": 8601,
+        "end_line": 8630
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8628,
-        "end_line": 8652
+        "start_line": 8633,
+        "end_line": 8657
       }
     ]
   },
@@ -24584,13 +24589,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8752,
-        "end_line": 8775
+        "start_line": 8757,
+        "end_line": 8780
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8778,
-        "end_line": 8800
+        "start_line": 8783,
+        "end_line": 8805
       }
     ]
   },
@@ -24599,13 +24604,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8840,
-        "end_line": 8845
+        "start_line": 8845,
+        "end_line": 8850
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9697,
-        "end_line": 9702
+        "start_line": 9702,
+        "end_line": 9707
       }
     ]
   },
@@ -24614,13 +24619,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8852,
-        "end_line": 8856
+        "start_line": 8857,
+        "end_line": 8861
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 8882,
-        "end_line": 8886
+        "start_line": 8887,
+        "end_line": 8891
       }
     ]
   },
@@ -24629,13 +24634,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9052,
-        "end_line": 9079
+        "start_line": 9057,
+        "end_line": 9084
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9089,
-        "end_line": 9140
+        "start_line": 9094,
+        "end_line": 9145
       }
     ]
   },
@@ -24644,13 +24649,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9324,
-        "end_line": 9355
+        "start_line": 9329,
+        "end_line": 9360
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9517,
-        "end_line": 9562
+        "start_line": 9522,
+        "end_line": 9567
       }
     ]
   },
@@ -24659,13 +24664,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9363,
-        "end_line": 9387
+        "start_line": 9368,
+        "end_line": 9392
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9390,
-        "end_line": 9407
+        "start_line": 9395,
+        "end_line": 9412
       }
     ]
   },
@@ -24674,13 +24679,13 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9452,
-        "end_line": 9505
+        "start_line": 9457,
+        "end_line": 9510
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9781,
-        "end_line": 9837
+        "start_line": 9786,
+        "end_line": 9842
       }
     ]
   },
@@ -24689,28 +24694,28 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9910,
-        "end_line": 9920
+        "start_line": 9915,
+        "end_line": 9925
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9923,
-        "end_line": 9936
+        "start_line": 9928,
+        "end_line": 9941
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9939,
-        "end_line": 9955
+        "start_line": 9944,
+        "end_line": 9960
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9958,
-        "end_line": 9976
+        "start_line": 9963,
+        "end_line": 9981
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 9979,
-        "end_line": 10000
+        "start_line": 9984,
+        "end_line": 10005
       }
     ]
   },
@@ -24719,23 +24724,23 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10085,
-        "end_line": 10096
+        "start_line": 10090,
+        "end_line": 10101
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10100,
-        "end_line": 10111
+        "start_line": 10105,
+        "end_line": 10116
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10115,
-        "end_line": 10131
+        "start_line": 10120,
+        "end_line": 10136
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10135,
-        "end_line": 10143
+        "start_line": 10140,
+        "end_line": 10148
       }
     ]
   },
@@ -24744,93 +24749,93 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10168,
-        "end_line": 10182
+        "start_line": 10173,
+        "end_line": 10187
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10185,
-        "end_line": 10199
+        "start_line": 10190,
+        "end_line": 10204
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10248,
-        "end_line": 10260
+        "start_line": 10253,
+        "end_line": 10265
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10263,
-        "end_line": 10273
+        "start_line": 10268,
+        "end_line": 10278
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10285,
-        "end_line": 10297
+        "start_line": 10290,
+        "end_line": 10302
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10300,
-        "end_line": 10317
+        "start_line": 10305,
+        "end_line": 10322
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10337,
-        "end_line": 10356
+        "start_line": 10342,
+        "end_line": 10361
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10359,
-        "end_line": 10374
+        "start_line": 10364,
+        "end_line": 10379
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10561,
-        "end_line": 10574
+        "start_line": 10566,
+        "end_line": 10579
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10595,
-        "end_line": 10610
+        "start_line": 10600,
+        "end_line": 10615
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10685,
-        "end_line": 10699
+        "start_line": 10690,
+        "end_line": 10704
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10716,
-        "end_line": 10729
+        "start_line": 10721,
+        "end_line": 10734
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10732,
-        "end_line": 10747
+        "start_line": 10737,
+        "end_line": 10752
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10750,
-        "end_line": 10760
+        "start_line": 10755,
+        "end_line": 10765
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10763,
-        "end_line": 10774
+        "start_line": 10768,
+        "end_line": 10779
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10777,
-        "end_line": 10788
+        "start_line": 10782,
+        "end_line": 10793
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10791,
-        "end_line": 10801
+        "start_line": 10796,
+        "end_line": 10806
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10804,
-        "end_line": 10817
+        "start_line": 10809,
+        "end_line": 10822
       }
     ]
   },
@@ -24839,23 +24844,23 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10320,
-        "end_line": 10328
+        "start_line": 10325,
+        "end_line": 10333
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10377,
-        "end_line": 10393
+        "start_line": 10382,
+        "end_line": 10398
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10530,
-        "end_line": 10545
+        "start_line": 10535,
+        "end_line": 10550
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10577,
-        "end_line": 10592
+        "start_line": 10582,
+        "end_line": 10597
       }
     ]
   },
@@ -24864,43 +24869,43 @@
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10396,
-        "end_line": 10429
+        "start_line": 10401,
+        "end_line": 10434
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10432,
-        "end_line": 10454
+        "start_line": 10437,
+        "end_line": 10459
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10457,
-        "end_line": 10483
+        "start_line": 10462,
+        "end_line": 10488
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10486,
-        "end_line": 10512
+        "start_line": 10491,
+        "end_line": 10517
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10515,
-        "end_line": 10527
+        "start_line": 10520,
+        "end_line": 10532
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10613,
-        "end_line": 10624
+        "start_line": 10618,
+        "end_line": 10629
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10627,
-        "end_line": 10647
+        "start_line": 10632,
+        "end_line": 10652
       },
       {
         "file": "tests/simplification_audit.rs",
-        "start_line": 10650,
-        "end_line": 10682
+        "start_line": 10655,
+        "end_line": 10687
       }
     ]
   },

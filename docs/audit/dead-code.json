@@ -757,6 +757,14 @@
       {
         "file": "src/driver/claude_code.rs",
         "content_hash": "d99cd5083544c380"
+      },
+      {
+        "file": "tests/write_guard_hook_periphery.rs",
+        "content_hash": "6b8b7019db0e6e00"
+      },
+      {
+        "file": "tests/write_guard_hook_periphery.rs",
+        "content_hash": "9cc4408300ed086b"
       }
     ],
     "disposition": "keep-pending",
