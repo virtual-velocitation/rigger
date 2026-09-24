@@ -12270,6 +12270,11 @@
         "content_hash": "d0a1e03973768f8e"
       },
       {
+        "file": "tests/agent_fallback_model_config_periphery.rs",
+        "name": "opts",
+        "content_hash": "d5fe9a4b579df857"
+      },
+      {
         "file": "tests/claude_code_launch_wire_periphery.rs",
         "name": "opts",
         "content_hash": "d5fe9a4b579df857"
@@ -12280,7 +12285,7 @@
         "content_hash": "7257c2c43eb0439c"
       }
     ],
-    "proposed_home": "a new shared module (sites span 4 files: src/driver/claude_code.rs, src/driver/replay.rs, tests/claude_code_launch_wire_periphery.rs, tests/claude_code_stream_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 5 files: src/driver/claude_code.rs, src/driver/replay.rs, tests/agent_fallback_model_config_periphery.rs, tests/claude_code_launch_wire_periphery.rs, tests/claude_code_stream_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

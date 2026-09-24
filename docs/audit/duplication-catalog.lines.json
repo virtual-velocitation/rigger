@@ -11603,6 +11603,11 @@
         "end_line": 402
       },
       {
+        "file": "tests/agent_fallback_model_config_periphery.rs",
+        "start_line": 23,
+        "end_line": 30
+      },
+      {
         "file": "tests/claude_code_launch_wire_periphery.rs",
         "start_line": 95,
         "end_line": 102
