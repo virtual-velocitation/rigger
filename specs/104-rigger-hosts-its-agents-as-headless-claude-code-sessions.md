@@ -9,8 +9,9 @@ surface already carries all of it: a probe with an invalid credential emitted
 `{"type":"system","subtype":"api_retry","error_status":401,"error":"authentication_failed"}`
 within one second. This spec ships the agent host of
 docs/architecture-addendum-claude-code-integration.md (section 4) behind the `AgentDriver`
-port (`src/conductor.rs:1479`) as the driver `rigger run` uses (`src/main.rs:3667`). The hold
-that consumes its failure classes is spec 105's.
+port (`src/conductor.rs:1479`). The swap of the `rigger run` composition root
+(`src/main.rs:3667`) onto this host, and the hold that consumes its failure classes, are
+spec 105's.
 
 ## Design
 
@@ -55,6 +56,15 @@ for `Edit|Write|NotebookEdit` is criterion 4's, command and injection both. The 
 entries, one per error category, each invoking `rigger hook stop-failure --spawn <id>
 --class <category>`, are criterion 5's, command, record and injection both. Criterion 1 passes
 the assembled `--settings` string on the argv and owns none of the hooks' content.
+
+THE COMPOSITION ROOT, decided here so no unit has to: `src/main.rs:3667` keeps `cli::Driver`
+through this spec. Criterion 2 lands `impl AgentDriver for claude_code::Driver`, selectable by
+construction and exercised by its own tests through the `bin` fake; the swap that makes
+`rigger run` build `claude_code::Driver` is spec 105's first unit, landing with the hold that
+lets an unattended headless run ride out an `api_retry`, and it carries the migration of the
+`tests/cli.rs` end-to-end fixtures from the `-p <prompt>` plain-text contract to the
+stream-json contract. No spec-104 criterion owns the swap; a review that asks for it here is
+asking for spec 105's work.
 
 FAILURE CLASS, decided: `AgentFailure` is Claude Code's error category: `rate_limit`,
 `overloaded`, `server_error`, `authentication_failed`, `oauth_org_not_allowed`,
