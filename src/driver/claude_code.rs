@@ -219,13 +219,22 @@ impl Driver<'_> {
     /// standing one-reaping-mechanism precedent). `launch.child` is moved into it before
     /// the stdout loop below, so the missing-stdout-pipe guard, a read error before any
     /// result, and a `record_result_if_absent` write failure all leave `reaper` in scope
-    /// with the process still possibly running behind it; dropping it - explicitly, right
-    /// after the loop, on every exit alike - ends it: `try_wait` first (a clean EOF means
-    /// the child has typically already exited, so this alone reaps it with no signal
-    /// sent), falling back to a best-effort end-then-collect through the same handle
-    /// otherwise. That mirrors `launch()`'s own "never returns `Err` with an
-    /// unaccounted-for child still running behind it" contract without this function
-    /// needing to track which shape of exit it hit.
+    /// with the process still possibly running behind it; dropping it ends it either way:
+    /// `try_wait` first, falling back to a best-effort end-then-collect through the same
+    /// handle when the process is not yet known to have exited. That mirrors `launch()`'s
+    /// own "never returns `Err` with an unaccounted-for child still running behind it"
+    /// contract.
+    ///
+    /// A CLEAN EOF is different (adj-u104-stream round-5 REQUIRED FIX,
+    /// op-104-stream-clean-eof-waits-before-the-reap): the child closing its OWN stdout
+    /// pipe is not proof it has exited - real post-output teardown (flushing telemetry,
+    /// releasing a lock) can still be running - so THIS function tracks that one exit
+    /// shape (`ended_via_break` below) and, on a clean EOF ONLY, blocks on the child's own
+    /// handle (`reaper.child_mut().wait()`, no signal) BEFORE the trailing `drop(reaper)`,
+    /// so that teardown always finishes on its own first. Every other exit path (missing
+    /// stdout pipe, a read error before any result, the post-result-read-error `break`
+    /// below, a `record_result_if_absent` failure) is unchanged: straight to the
+    /// signal-capable drop, since none of those is evidence the child is mid-teardown.
     ///
     /// A read error AFTER a result is already captured (adj-u104-stream round-2 REQUIRED
     /// FIX) is handled the same uniform way: the loop below just stops reading (`break`)
@@ -267,6 +276,11 @@ impl Driver<'_> {
         let mut resolved_model = String::new();
         let mut permission_denials: u64 = 0;
         let mut result: Option<AgentResult> = None;
+        // adj-u104-stream round-5 REQUIRED FIX (op-104-stream-clean-eof-waits-before-the-reap):
+        // distinguishes the loop's two exit shapes below. `false` when the loop instead runs
+        // to real exhaustion (a clean EOF: the child closed its stdout pipe on its own,
+        // with no read error) - see the `wait()` this flag gates, just past the loop.
+        let mut ended_via_break = false;
 
         for line in BufReader::new(stdout).lines() {
             let line = match line {
@@ -288,6 +302,7 @@ impl Driver<'_> {
                         opts,
                         &format!("stream (read error after result, ignored): {e}"),
                     );
+                    ended_via_break = true;
                     break;
                 }
                 Err(e) => {
@@ -373,14 +388,32 @@ impl Driver<'_> {
             }
         }
 
+        // adj-u104-stream round-5 REQUIRED FIX (op-104-stream-clean-eof-waits-before-the-reap):
+        // a clean EOF means the child closed ITS OWN stdout pipe, not that it has exited -
+        // legitimate post-output work (flushing telemetry, releasing a lock) can still be
+        // running. round-4's consolidation onto `ReapedChild::drop`'s non-blocking
+        // `try_wait` treated "not yet known to have exited" the same as "gone missing",
+        // so a child still finishing that teardown got force-ended mid-flight.
+        // A direct BLOCKING wait - no signal - here on the clean-EOF path ONLY lets that
+        // teardown finish on its own first; `ReapedChild::drop` just below then finds
+        // `Ok(Some(_))` via its own `try_wait` and sends nothing.
+        //
+        // The `break` path (a post-result read error) is UNCHANGED: a read error is not
+        // evidence of in-progress teardown, so it keeps going straight to the
+        // signal-capable drop exactly as before this fix.
+        if !ended_via_break {
+            let _ = reaper.child_mut().wait();
+        }
+
         // Reap through the ONE canonical mechanism, on every exit path alike (a clean
         // EOF, or the `break` above on a post-result read error): `ReapedChild::drop`
-        // tries a non-blocking `try_wait` first - on a clean EOF the child has typically
-        // already exited, so this alone reaps it with no signal sent - and falls back to
-        // a best-effort end-then-collect through the same handle only when the process
-        // is not yet known to have exited. Explicit, right here, rather than left to run
-        // at the function's end: the join just below depends on the child's stderr pipe
-        // having already closed.
+        // tries a non-blocking `try_wait` first - on a clean EOF the explicit `wait()`
+        // just above already collected it, so this alone reaps it with no signal sent -
+        // and falls back to a best-effort end-then-collect through the same handle only
+        // when the process is not yet known to have exited (the break path above, which
+        // never waited). Explicit, right here, rather than left to run at the function's
+        // end: the join just below depends on the child's stderr pipe having already
+        // closed.
         drop(reaper);
         // Best-effort join: diagnostic-only drain (see the doc above), and the reap just
         // above guarantees the child's stderr pipe has closed by now, so the thread has

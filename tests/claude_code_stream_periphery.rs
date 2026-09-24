@@ -633,3 +633,48 @@ fn spawn_pins_the_returned_result_to_the_first_result_line_not_the_last() {
     assert_eq!(res.meta["turns"], 3);
     assert_eq!(res.meta["cost_usd"], 0.0456);
 }
+
+// ---- adj-u104-stream round-5 REQUIRED FIX (op-104-stream-clean-eof-waits-before-the-reap):
+// a clean EOF (the loop runs to real exhaustion, never the post-result read-error break)
+// waits for the child to exit on its own BEFORE the reap ever considers a signal - round
+// 4's consolidation onto `ReapedChild::drop`'s non-blocking `try_wait` force-ended a child
+// still doing legitimate post-output teardown the instant its stdout pipe read EOF ----
+
+#[test]
+fn spawn_waits_out_a_clean_eof_before_reaping_never_kills_mid_teardown() {
+    // The rejected round's exact finding, independently reproduced by sdet and the
+    // adversary: a real agent can close stdout slightly before it finishes its own
+    // teardown (flushing telemetry, releasing a lock). This fixture emits the real
+    // recorded success stream (durably recording the FIRST result exactly like every
+    // sibling fixture), closes its own stdout, THEN keeps running - a brief sleep
+    // standing in for that legitimate post-output work - and only touches its own marker
+    // once that work is done. A host that reaps on the bare EOF (the round-4 regression)
+    // kills this process mid-sleep, so the marker is never written; the fix must instead
+    // block until the child exits on its own, so `spawn()` returns the correct result
+    // AND the marker is already there by the time it does.
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-clean-eof-teardown-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
+    let marker = fx.scratch_root.path().join("teardown-done.marker");
+    let mut o = opts("u104-stream/implementer#0");
+    o.env = vec![(
+        "RIGGER_TEST_TEARDOWN_MARKER".to_string(),
+        marker.to_string_lossy().into_owned(),
+    )];
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let result = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .expect("a clean EOF followed by legitimate teardown must still return the result");
+
+    assert_eq!(result.output, "done: the answer is 42");
+    assert_eq!(result.resolved_model, "claude-sonnet-4-5-20250929");
+    assert!(
+        marker.exists(),
+        "the child's own post-output teardown must finish before spawn() reaps it - a \
+         child force-ended mid-teardown never gets to touch its marker"
+    );
+}
