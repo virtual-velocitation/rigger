@@ -13976,22 +13976,40 @@ fn parse_guard_write_roots(args: &[String]) -> Result<Vec<String>, Box<dyn std::
     Ok(roots)
 }
 
+/// THE WRITE GUARD's target axis (spec 104 criterion 4): what an incoming `PreToolUse`
+/// call means for the guard's decision. `NotCovered` (a tool name outside the three this
+/// guard matches) is nothing this guard protects, so it is allowed rather than guessed at.
+/// `TargetUnreadable` is the fail-safe case that a bare `Option::None` used to conflate
+/// with `NotCovered` (the defect this type exists to close): a COVERED tool name whose
+/// `tool_input` is missing the expected key, or carries it as a non-string - a payload
+/// shape this guard does not recognize, denied exactly like a resolved target outside
+/// every root, never silently allowed. `Target` carries the raw string to resolve and
+/// check against the configured roots.
+#[derive(Debug, PartialEq, Eq)]
+enum WriteTarget {
+    NotCovered,
+    TargetUnreadable,
+    Target(String),
+}
+
 /// THE WRITE GUARD's target axis (spec 104 criterion 4): the path an `Edit`/`Write`/
 /// `NotebookEdit` call would touch, straight from that tool's own documented `tool_input`
-/// shape - `file_path` for `Edit`/`Write`, `notebook_path` for `NotebookEdit`. `None` for
-/// every other tool name (the installed hook's own matcher already scopes calls to these
-/// three; a stray call under a different name is nothing this guard protects, so it is
-/// allowed rather than guessed at).
-fn guard_write_target(tool_name: &str, tool_input: &serde_json::Value) -> Option<String> {
+/// shape - `file_path` for `Edit`/`Write`, `notebook_path` for `NotebookEdit`.
+/// `WriteTarget::NotCovered` for every other tool name (the installed hook's own matcher
+/// already scopes calls to these three). `WriteTarget::TargetUnreadable` for a covered
+/// tool whose `tool_input` lacks the expected key, or carries it as a non-string - this
+/// guard's entire purpose is containment, so a payload it cannot read is denied, never
+/// folded into the same outcome as a tool it does not cover.
+fn guard_write_target(tool_name: &str, tool_input: &serde_json::Value) -> WriteTarget {
     let key = match tool_name {
         "Edit" | "Write" => "file_path",
         "NotebookEdit" => "notebook_path",
-        _ => return None,
+        _ => return WriteTarget::NotCovered,
     };
-    tool_input
-        .get(key)
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string)
+    match tool_input.get(key).and_then(serde_json::Value::as_str) {
+        Some(raw) => WriteTarget::Target(raw.to_string()),
+        None => WriteTarget::TargetUnreadable,
+    }
 }
 
 /// Resolve one path component's symlink chain against `result` (the caller's
@@ -14070,27 +14088,41 @@ fn write_target_under_root(target: &Path, root: &str) -> bool {
     target.starts_with(&resolved_root)
 }
 
+/// The shared "outside every root" verdict, naming the FIRST root (`roots` is never
+/// empty - [`parse_guard_write_roots`] enforces that before [`guard_write_decision`] is
+/// ever called). Used both for a target actually resolved outside every root and for
+/// `WriteTarget::TargetUnreadable` - the fail-safe default is deny, never allow, and both
+/// cases read identically to whatever consumes the decision.
+fn guard_write_deny_outside_first_root(roots: &[String]) -> GuardDecision {
+    let first_root = roots.first().map(String::as_str).unwrap_or("");
+    GuardDecision::Deny(format!(
+        "write target is outside the allowed root: {first_root}"
+    ))
+}
+
 /// THE WRITE GUARD's pure decision core (spec 104 criterion 4): a target outside every
-/// root is denied naming the FIRST root (`roots` is never empty - [`parse_guard_write_roots`]
-/// enforces that before this is ever called); no target (a tool this guard does not cover)
-/// is always allowed. Reuses [`GuardDecision`] - the SAME verdict type `rigger grep-guard`
-/// reports through, never a second parallel one - though this guard never rewrites a
-/// tool call, so its `AllowWithUpdatedInput` arm never arises here.
-fn guard_write_decision(roots: &[String], cwd: &str, target: Option<&str>) -> GuardDecision {
-    let Some(raw) = target else {
-        return GuardDecision::Allow;
+/// root is denied naming the FIRST root; a covered tool whose target this guard could not
+/// read (`WriteTarget::TargetUnreadable`) is denied the SAME way, never allowed - a
+/// malformed payload for a tool this guard covers is not evidence of safety, it is
+/// evidence the guard cannot see what the call would do; `WriteTarget::NotCovered` (a tool
+/// this guard does not cover) is always allowed. Reuses [`GuardDecision`] - the SAME
+/// verdict type `rigger grep-guard` reports through, never a second parallel one - though
+/// this guard never rewrites a tool call, so its `AllowWithUpdatedInput` arm never arises
+/// here.
+fn guard_write_decision(roots: &[String], cwd: &str, target: WriteTarget) -> GuardDecision {
+    let raw = match target {
+        WriteTarget::NotCovered => return GuardDecision::Allow,
+        WriteTarget::TargetUnreadable => return guard_write_deny_outside_first_root(roots),
+        WriteTarget::Target(raw) => raw,
     };
-    let resolved = resolve_write_target(cwd, raw);
+    let resolved = resolve_write_target(cwd, &raw);
     if roots
         .iter()
         .any(|root| write_target_under_root(&resolved, root))
     {
         GuardDecision::Allow
     } else {
-        let first_root = roots.first().map(String::as_str).unwrap_or("");
-        GuardDecision::Deny(format!(
-            "write target is outside the allowed root: {first_root}"
-        ))
+        guard_write_deny_outside_first_root(roots)
     }
 }
 
@@ -14099,32 +14131,40 @@ fn guard_write_decision(roots: &[String], cwd: &str, target: Option<&str>) -> Gu
 /// injects into a launched agent's settings (the injection half of this same criterion:
 /// [`crate::driver::claude_code::install_write_guard_hook`]). Reads ONE PreToolUse payload
 /// as JSON on stdin (`{"tool_name","tool_input","cwd"}`) and allows a target under one of
-/// `roots`, denying every other - absolute, relative, `..`, symlink-escaping - with the
-/// reason naming the first root. It reads no store: every fact the decision needs travels
-/// on argv or stdin, exactly like [`cmd_grep_guard`]'s own pure/no-store discipline, and it
-/// always exits 0 - the verdict rides in the JSON body, a transport failure stays a
-/// SEPARATE, tellable channel from a deliberate block.
+/// `roots`, denying every other - absolute, relative, `..`, symlink-escaping, or a
+/// top-level payload that fails to parse as JSON at all - with the reason naming the first
+/// root. An unparseable top-level payload is `WriteTarget::TargetUnreadable`, never a
+/// silent fold into an empty object: this guard cannot tell whether the call it could not
+/// parse was a covered tool writing outside every root, so it denies rather than guesses.
+/// It reads no store: every fact the decision needs travels on argv or stdin, exactly like
+/// [`cmd_grep_guard`]'s own pure/no-store discipline, and it always exits 0 - the verdict
+/// rides in the JSON body, a transport failure stays a SEPARATE, tellable channel from a
+/// deliberate block.
 fn cmd_guard_write(args: &[String]) -> Res {
     let roots = parse_guard_write_roots(args)?;
 
     let mut input = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
-    let payload: serde_json::Value =
-        serde_json::from_str(input.trim()).unwrap_or_else(|_| serde_json::json!({}));
-    let tool_name = payload
-        .get("tool_name")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let tool_input = payload
-        .get("tool_input")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    let cwd = payload
-        .get("cwd")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let target = guard_write_target(tool_name, &tool_input);
-    let decision = guard_write_decision(&roots, cwd, target.as_deref());
+    let (target, cwd) = match serde_json::from_str::<serde_json::Value>(input.trim()) {
+        Ok(payload) => {
+            let tool_name = payload
+                .get("tool_name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let tool_input = payload
+                .get("tool_input")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let cwd = payload
+                .get("cwd")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            (guard_write_target(tool_name, &tool_input), cwd)
+        }
+        Err(_) => (WriteTarget::TargetUnreadable, String::new()),
+    };
+    let decision = guard_write_decision(&roots, &cwd, target);
 
     let out = match decision {
         GuardDecision::Allow => serde_json::json!({}),
@@ -27109,7 +27149,7 @@ mod tests {
         for tool in ["Edit", "Write"] {
             assert_eq!(
                 guard_write_target(tool, &serde_json::json!({"file_path": "src/main.rs"})),
-                Some("src/main.rs".to_string()),
+                WriteTarget::Target("src/main.rs".to_string()),
                 "{tool} must read tool_input.file_path"
             );
         }
@@ -27122,7 +27162,7 @@ mod tests {
                 "NotebookEdit",
                 &serde_json::json!({"notebook_path": "nb.ipynb"})
             ),
-            Some("nb.ipynb".to_string())
+            WriteTarget::Target("nb.ipynb".to_string())
         );
     }
 
@@ -27131,10 +27171,42 @@ mod tests {
         for tool in ["Read", "Bash", "Grep", ""] {
             assert_eq!(
                 guard_write_target(tool, &serde_json::json!({"file_path": "src/main.rs"})),
-                None,
+                WriteTarget::NotCovered,
                 "{tool:?} carries no target this guard covers"
             );
         }
+    }
+
+    /// The defect this type exists to close: a COVERED tool name must never fold a
+    /// missing or non-string field into the SAME outcome as a tool this guard does not
+    /// cover - each is a distinct, distinguishable `WriteTarget` variant.
+    #[test]
+    fn guard_write_target_reports_target_unreadable_for_a_covered_tool_missing_the_field() {
+        for tool in ["Edit", "Write", "NotebookEdit"] {
+            assert_eq!(
+                guard_write_target(tool, &serde_json::json!({})),
+                WriteTarget::TargetUnreadable,
+                "{tool} with no path field at all must be TargetUnreadable, never NotCovered \
+                 or a silently-allowed target"
+            );
+        }
+    }
+
+    #[test]
+    fn guard_write_target_reports_target_unreadable_for_a_non_string_field() {
+        assert_eq!(
+            guard_write_target("Write", &serde_json::json!({"file_path": 42})),
+            WriteTarget::TargetUnreadable,
+            "a non-string file_path must be TargetUnreadable, never read as if absent-and-allowed"
+        );
+        assert_eq!(
+            guard_write_target(
+                "NotebookEdit",
+                &serde_json::json!({"notebook_path": ["a", "b"]})
+            ),
+            WriteTarget::TargetUnreadable,
+            "a non-string notebook_path must be TargetUnreadable"
+        );
     }
 
     #[test]
@@ -27259,7 +27331,11 @@ mod tests {
         ];
         let target = second.path().join("scratch/out.txt");
         assert_eq!(
-            guard_write_decision(&roots, "/irrelevant", Some(target.to_str().unwrap())),
+            guard_write_decision(
+                &roots,
+                "/irrelevant",
+                WriteTarget::Target(target.to_str().unwrap().to_string())
+            ),
             GuardDecision::Allow,
             "a target under the SECOND root must still be allowed"
         );
@@ -27275,7 +27351,11 @@ mod tests {
             second.path().to_str().unwrap().to_string(),
         ];
         let target = outside.path().join("f.txt");
-        let decision = guard_write_decision(&roots, "/irrelevant", Some(target.to_str().unwrap()));
+        let decision = guard_write_decision(
+            &roots,
+            "/irrelevant",
+            WriteTarget::Target(target.to_str().unwrap().to_string()),
+        );
         assert_eq!(
             decision,
             GuardDecision::Deny(format!(
@@ -27291,17 +27371,36 @@ mod tests {
         let inside = root.path().join("inside");
         std::fs::create_dir_all(&inside).unwrap();
         let roots = vec![root.path().to_str().unwrap().to_string()];
-        let decision =
-            guard_write_decision(&roots, inside.to_str().unwrap(), Some("../../outside.txt"));
+        let decision = guard_write_decision(
+            &roots,
+            inside.to_str().unwrap(),
+            WriteTarget::Target("../../outside.txt".to_string()),
+        );
         assert!(matches!(decision, GuardDecision::Deny(_)), "{decision:?}");
     }
 
     #[test]
-    fn guard_write_decision_allows_when_there_is_no_target() {
+    fn guard_write_decision_allows_a_tool_this_guard_does_not_cover() {
         let roots = vec!["/some/root".to_string()];
         assert_eq!(
-            guard_write_decision(&roots, "/cwd", None),
+            guard_write_decision(&roots, "/cwd", WriteTarget::NotCovered),
             GuardDecision::Allow
+        );
+    }
+
+    /// The fix this criterion's prior round was rejected for missing: a covered tool whose
+    /// target this guard could not read must be DENIED, naming the first root exactly as a
+    /// resolved out-of-root target is - never folded into the same Allow as `NotCovered`.
+    #[test]
+    fn guard_write_decision_denies_target_unreadable_naming_the_first_root() {
+        let roots = vec!["/first/root".to_string(), "/second/root".to_string()];
+        assert_eq!(
+            guard_write_decision(&roots, "/cwd", WriteTarget::TargetUnreadable),
+            GuardDecision::Deny(
+                "write target is outside the allowed root: /first/root".to_string()
+            ),
+            "an unreadable target for a covered tool must deny naming the FIRST root, the \
+             fail-safe default, never allow"
         );
     }
 

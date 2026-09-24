@@ -29866,6 +29866,90 @@ fn guard_write_without_a_root_fails_loudly_rather_than_allowing_everything() {
     );
 }
 
+/// The regression this criterion's prior round was rejected for: a malformed PreToolUse
+/// payload must DENY, naming the first root exactly as a resolved out-of-root target does,
+/// never folding into the same `{}` (Allow) as a tool this guard does not cover. Three
+/// distinct malformed shapes, each proven against the real compiled binary: a top-level
+/// payload that is not JSON at all, a covered tool whose target field is missing, and a
+/// covered tool whose target field is present but not a string.
+#[test]
+fn guard_write_denies_every_malformed_payload_shape_for_a_covered_tool() {
+    let cwd_dir = temp_project();
+    let root = tempfile::tempdir().unwrap();
+    let root_real = std::fs::canonicalize(root.path()).unwrap();
+    let root_str = root_real.to_str().unwrap();
+    let expect_denied = |out: &serde_json::Value, why: &str| {
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecisionReason"],
+            serde_json::json!(format!(
+                "write target is outside the allowed root: {root_str}"
+            )),
+            "{why}; got:\n{out}"
+        );
+    };
+
+    // 1. The top-level stdin payload is not JSON at all.
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut cmd = common::rigger_courier();
+    cmd.arg("guard-write")
+        .arg("--root")
+        .arg(root_str)
+        .current_dir(cwd_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger guard-write");
+    child.stdin.take().unwrap().write_all(b"not-json").unwrap();
+    let out = child
+        .wait_with_output()
+        .expect("rigger guard-write must exit");
+    assert!(
+        out.status.success(),
+        "guard-write must still exit 0 on an unparseable payload - the verdict rides in \
+         the JSON body; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("guard-write must print one JSON object");
+    expect_denied(
+        &parsed,
+        "an unparseable top-level payload must deny naming the root, never Allow",
+    );
+
+    // 2. A covered tool (`Write`) whose `tool_input` is missing `file_path` entirely.
+    let missing_field = run_guard_write(
+        cwd_dir.path(),
+        &[root_str],
+        &serde_json::json!({
+            "tool_name": "Write",
+            "cwd": root_str,
+            "tool_input": {},
+        })
+        .to_string(),
+    );
+    expect_denied(
+        &missing_field,
+        "a covered tool with no file_path field must deny naming the root, never Allow",
+    );
+
+    // 3. A covered tool (`Write`) whose `file_path` is present but not a string.
+    let non_string_field = run_guard_write(
+        cwd_dir.path(),
+        &[root_str],
+        &serde_json::json!({
+            "tool_name": "Write",
+            "cwd": root_str,
+            "tool_input": {"file_path": 42},
+        })
+        .to_string(),
+    );
+    expect_denied(
+        &non_string_field,
+        "a covered tool with a non-string file_path must deny naming the root, never Allow",
+    );
+}
+
 // ===========================================================================================
 // SDET periphery layer, spec 92 criterion 4 (IN EVERY SESSION'S HAND). The three tests above
 // (authored at the build seam this criterion's implementer round emitted) drive the happy
