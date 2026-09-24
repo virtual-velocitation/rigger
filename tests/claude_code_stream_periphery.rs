@@ -512,3 +512,65 @@ fn spawn_drains_stderr_concurrently_so_a_stderr_flood_cannot_deadlock_the_host()
         .expect("spawn() must return rather than deadlock on a stderr-flooding agent");
     assert_eq!(outcome, Ok("done: the answer is 42".to_string()));
 }
+
+// ---- adj-u104-stream round-2 REQUIRED FIX: once `result` is `Some`, a later per-line
+// read error on the SAME stream must not overturn the durably-recorded success ----
+
+#[cfg(unix)]
+#[test]
+fn spawn_survives_a_read_error_that_arrives_after_the_result_line() {
+    // The rejected round's exact finding: `read_stream` keeps consuming stdout lines
+    // after capturing `result` (by design - only the FIRST result acts, so more lines,
+    // including a duplicate result, are anticipated), but a bare `?` on any LATER
+    // line's read error still discarded the already-recorded success. This fixture
+    // emits the real recorded result line first - durably recording it via
+    // `record_result_if_absent`, exactly like every other test in this file - THEN one
+    // line of invalid UTF-8: the opposite order from
+    // `spawn_reaps_the_child_on_a_mid_stream_read_error`'s error-before-any-result
+    // shape.
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-post-result-read-error-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
+    let pid_file = fx.scratch_root.path().join("agent.pid");
+    let mut o = opts("u104-stream/implementer#0");
+    o.env = vec![(
+        "RIGGER_TEST_POST_RESULT_PID_FILE".to_string(),
+        pid_file.to_string_lossy().into_owned(),
+    )];
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let result = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .expect("a read error strictly after the result must not overturn it");
+    assert_eq!(result.output, "done: the answer is 42");
+    assert_eq!(result.resolved_model, "claude-sonnet-4-5-20250929");
+
+    // Exactly one SpawnResult landed - the real one, durably recorded before the
+    // later read error ever happened.
+    let events = fx
+        .run_store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let results: Vec<_> = events
+        .iter()
+        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
+        .collect();
+    assert_eq!(results.len(), 1, "exactly one SpawnResult landed");
+
+    // The child is still reaped through its own handle, never leaked, even though a
+    // read error - not a clean EOF - is what ended this loop.
+    let pid_text = std::fs::read_to_string(&pid_file)
+        .expect("the fixture recorded its pid before writing invalid utf-8");
+    let pid: u32 = pid_text
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    assert!(
+        !common::is_alive(pid),
+        "child pid {pid} must not survive a post-result read error - it must still be \
+         reaped (kill()+wait() through ChildReaper), never leaked"
+    );
+}

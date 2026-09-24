@@ -1336,7 +1336,7 @@
       "src/budget.rs:57",
       "src/contextgraph/query.rs:306",
       "src/dash.rs:3827",
-      "src/driver/claude_code.rs:372",
+      "src/driver/claude_code.rs:413",
       "src/driver/replay.rs:237",
       "src/driver/workflow.rs:83",
       "src/eventstore/mod.rs:109",

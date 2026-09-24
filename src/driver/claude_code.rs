@@ -214,12 +214,19 @@ impl Driver<'_> {
     ///
     /// Every exit reaps the child through ONE path, [`ChildReaper`], rather than a
     /// per-branch patch (adj-u104-stream REQUIRED FIX 1): the missing-stdout-pipe guard
-    /// below, a mid-stream read error, and a `record_result_if_absent` write failure all
-    /// leave the guard armed, so its `Drop` ends the child through its own handle before
-    /// the `Err` propagates - mirroring `launch()`'s own "never returns `Err` with an
-    /// unaccounted-for child still running behind it" contract. Only the clean EOF path
-    /// disarms it (the child has already exited on its own by then; `wait()` alone reaps
-    /// it, no `kill()` needed).
+    /// below, a read error before any result, and a `record_result_if_absent` write
+    /// failure all leave the guard armed, so its `Drop` ends the child through its own
+    /// handle before the `Err` propagates - mirroring `launch()`'s own "never returns
+    /// `Err` with an unaccounted-for child still running behind it" contract. Only the
+    /// clean EOF path disarms it (the child has already exited on its own by then;
+    /// `wait()` alone reaps it, no `kill()` needed).
+    ///
+    /// A read error AFTER a result is already captured is neither of those two shapes
+    /// (adj-u104-stream round-2 REQUIRED FIX): the guard stays armed - the process is
+    /// not known to have exited the way a clean EOF proves - but this function still
+    /// returns the already-recorded `Ok(AgentResult)` rather than discarding it into an
+    /// `Err`, since `record_result_if_absent` already wrote the real result to the run
+    /// store one line earlier and only the FIRST result ever acts.
     ///
     /// stderr is drained on its own thread, started before the stdout loop below and
     /// running the whole time this function blocks reading stdout (REQUIRED FIX 2): the
@@ -252,14 +259,37 @@ impl Driver<'_> {
         let mut resolved_model = String::new();
         let mut permission_denials: u64 = 0;
         let mut result: Option<AgentResult> = None;
+        let mut post_result_read_error = false;
 
         for line in BufReader::new(stdout).lines() {
-            let line = line.map_err(|e| {
-                Error(format!(
-                    "claude_code driver: {:?}: read agent stream: {e}",
-                    opts.id
-                ))
-            })?;
+            let line = match line {
+                Ok(line) => line,
+                // adj-u104-stream round-2 REQUIRED FIX: `record_result_if_absent` may
+                // already have durably written the real `SpawnResult` one line ago (the
+                // loop keeps reading after the FIRST result by design - a duplicate
+                // result, or more transcript, is anticipated, not an error). A read
+                // error on one of those LATER lines must never overturn that already-
+                // recorded success by turning it into an `Err` here - record it as a
+                // best-effort progress line instead and stop reading; the child is
+                // reaped below exactly like any other non-clean-EOF exit (the process
+                // has not necessarily exited merely because reading its stdout failed).
+                // Before any result exists, an unreadable line is still the genuine
+                // failure it always was.
+                Err(e) if result.is_some() => {
+                    self.record_progress(
+                        opts,
+                        &format!("stream (read error after result, ignored): {e}"),
+                    );
+                    post_result_read_error = true;
+                    break;
+                }
+                Err(e) => {
+                    return Err(Error(format!(
+                        "claude_code driver: {:?}: read agent stream: {e}",
+                        opts.id
+                    )));
+                }
+            };
 
             // "every line touches the spawn's liveness marker - the host proves life,
             // the agent is never asked to" (architecture addendum §4.2).
@@ -323,16 +353,27 @@ impl Driver<'_> {
             }
         }
 
-        // The stream read to EOF without an early return - the child has already exited
-        // on its own (that is what produced EOF), so `disarm_and_wait` reaps it without
-        // `kill()`. Every OTHER exit above returned before reaching this line, leaving the
-        // guard armed so its `Drop` ends the child instead.
-        reaper.disarm_and_wait().map_err(|e| {
-            Error(format!(
-                "claude_code driver: {:?}: reap the child: {e}",
-                opts.id
-            ))
-        })?;
+        if post_result_read_error {
+            // The loop above broke on a read error AFTER a result was already durably
+            // recorded - NOT a clean EOF, so the child is not known to have exited on
+            // its own. Leave the guard armed and drop it here: its `Drop` ends the
+            // child through the exact same handle-bound `kill()` + `wait()` path any
+            // other non-clean-EOF exit uses (process-lifecycle discipline), rather than
+            // this function claiming the "already exited" precondition
+            // `disarm_and_wait`'s own doc requires.
+            drop(reaper);
+        } else {
+            // The stream read to EOF without an early return - the child has already
+            // exited on its own (that is what produced EOF), so `disarm_and_wait` reaps
+            // it without `kill()`. Every OTHER exit above returned before reaching this
+            // line, leaving the guard armed so its `Drop` ends the child instead.
+            reaper.disarm_and_wait().map_err(|e| {
+                Error(format!(
+                    "claude_code driver: {:?}: reap the child: {e}",
+                    opts.id
+                ))
+            })?;
+        }
         // Best-effort join: diagnostic-only drain (see the doc above), and the reap just
         // above guarantees the child's stderr pipe has closed by now, so the thread has
         // already hit EOF or is about to - never a caller-visible wait for its own sake.
