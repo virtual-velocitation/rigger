@@ -7,7 +7,7 @@
 //! inside `progress.rs`) so the pure half can compile for `wasm32-unknown-unknown`.
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position};
-use crate::progress::{AgentProgress, SpawnLaunched, STREAM};
+use crate::progress::{AgentProgress, SpawnLaunched, StopFailure, STREAM};
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
 /// and side-effect-free beyond the one event: a pure write, cheap to call after every
@@ -49,6 +49,26 @@ pub fn record_launch(
         .one(&format!(
             "the launch record of {} (launch {})",
             launch.spawn, launch.launch
+        ))
+}
+
+/// Record one [`StopFailure`] hook firing to the progress `store`, stamped with `run_id`
+/// (spec 104 criterion 5: A FAILURE HAS A CLASS - THE HOOKS' "record" half). Called by
+/// `rigger hook stop-failure --spawn <id> --class <category>`, the installed hook command
+/// itself; same append contract as [`record`]/[`record_launch`].
+pub fn record_stop_failure(
+    store: &dyn EventStore,
+    run_id: &str,
+    stop_failure: &StopFailure,
+) -> Result<Position, Error> {
+    let ev = stop_failure
+        .to_event(run_id)
+        .map_err(|e| Error::Backend(format!("serialize StopFailure: {e}")))?;
+    store
+        .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
+        .one(&format!(
+            "the stop-failure record of {}",
+            stop_failure.spawn
         ))
 }
 
@@ -217,6 +237,56 @@ mod tests {
             },
         )
         .expect_err("a launch record nobody can find was not recorded");
+        let message = err.to_string();
+        assert!(message.contains("u1/implementer#0"), "message: {message}");
+    }
+
+    #[test]
+    fn record_stop_failure_lands_in_the_progress_store_never_the_run_stream() {
+        // spec 104 criterion 5: StopFailure is a progress-store record, same isolation
+        // `record`/`record_launch` above already prove for their own types.
+        let run = Store::open(":memory:").unwrap();
+        let progress = Store::open(":memory:").unwrap();
+
+        record_stop_failure(
+            &progress,
+            "run-1",
+            &StopFailure {
+                spawn: "u104-fail-class/implementer#0".into(),
+                class: "rate_limit".into(),
+            },
+        )
+        .unwrap();
+
+        assert!(
+            run.read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .is_empty(),
+            "no StopFailure may land in the run store"
+        );
+        let p = progress.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].type_, crate::progress::TYPE_STOP_FAILURE);
+        assert_eq!(
+            p[0].meta.get(META_RUN_ID).map(String::as_str),
+            Some("run-1")
+        );
+        let sf: StopFailure = serde_json::from_slice(&p[0].data).unwrap();
+        assert_eq!(sf.spawn, "u104-fail-class/implementer#0");
+        assert_eq!(sf.class, "rate_limit");
+    }
+
+    #[test]
+    fn record_stop_failure_a_report_the_store_did_not_write_is_reported_as_lost() {
+        let err = record_stop_failure(
+            &crate::eventstore::SilentStore,
+            "run-1",
+            &StopFailure {
+                spawn: "u1/implementer#0".into(),
+                class: "unknown".into(),
+            },
+        )
+        .expect_err("a stop-failure record nobody can find was not recorded");
         let message = err.to_string();
         assert!(message.contains("u1/implementer#0"), "message: {message}");
     }

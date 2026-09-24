@@ -126,6 +126,68 @@ impl SpawnLaunched {
     }
 }
 
+/// The event type a [`StopFailure`] record serializes as (spec 104 criterion 5: A FAILURE
+/// HAS A CLASS). Recorded to the progress store - never the run stream, same file boundary
+/// as [`TYPE_SPAWN_LAUNCHED`] - by `rigger hook stop-failure --spawn <id> --class <category>`,
+/// the per-spawn settings' `StopFailure` hook family (Design's THE HOOKS: "criterion 5's,
+/// command, record and injection both"). Claude Code invokes that command the moment a turn
+/// ends on one of [`crate::driver::claude_code::AgentFailure`]'s categories, so the class
+/// survives even when the stream's own last line never arrives.
+pub const TYPE_STOP_FAILURE: &str = "StopFailure";
+
+/// One `StopFailure` hook firing: the spawn it ended and the error category Claude Code
+/// reported for it. Keyed by [`spawn`](Self::spawn) ALONE - the hook command's own argv
+/// (`--spawn <id> --class <category>`) carries no launch ordinal - so
+/// [`latest_stop_failure_class`] folds "latest wins" exactly like [`AgentProgress`]'s own
+/// per-id fold does, never a second per-launch scoping scheme the command has no argument
+/// to carry.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopFailure {
+    /// The deterministic spawn id this firing belongs to (e.g. `u/implementer#0`).
+    pub spawn: String,
+    /// Claude Code's own error-category string (e.g. `authentication_failed`), exactly as
+    /// carried on the hook's installed `--class` argument - never re-derived or normalized
+    /// here, so a category this crate's [`crate::driver::claude_code::AgentFailure`] does
+    /// not yet recognize still records faithfully rather than being coerced at write time.
+    pub class: String,
+}
+
+impl StopFailure {
+    /// Build the appendable event, stamped with the run it belongs to exactly like
+    /// [`AgentProgress::to_event`] - `pub(crate)` for the same reason: only the impure
+    /// write path ([`crate::progress_store::record_stop_failure`]) calls it.
+    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))]
+    pub(crate) fn to_event(&self, run_id: &str) -> Result<Event, serde_json::Error> {
+        let ev = Event::new(TYPE_STOP_FAILURE, serde_json::to_vec(self)?);
+        Ok(if run_id.is_empty() {
+            ev
+        } else {
+            ev.with_meta(META_RUN_ID, run_id)
+        })
+    }
+}
+
+/// The latest `StopFailure` class recorded for `spawn_id` - "latest wins", the store's own
+/// append order breaking any tie, exactly like [`AgentProgress`]'s per-id fold in
+/// [`consolidate`]. PURE (no IO): `progress_events` is already-read progress-store events.
+/// This is FAILURE CLASS's first-priority source (spec 104 criterion 5, Design: "the class
+/// from, in order: the record written by the `StopFailure` hook ... else `unknown`"). `None`
+/// when no `StopFailure` event names this spawn.
+pub fn latest_stop_failure_class(progress_events: &[Event], spawn_id: &str) -> Option<String> {
+    let mut found = None;
+    for e in progress_events {
+        if e.type_ != TYPE_STOP_FAILURE {
+            continue;
+        }
+        if let Ok(sf) = serde_json::from_slice::<StopFailure>(&e.data) {
+            if sf.spawn == spawn_id {
+                found = Some(sf.class);
+            }
+        }
+    }
+    found
+}
+
 /// A live per-agent view (spec 14, unit 2): for one in-flight spawn, what stage it is at,
 /// what it is currently doing (the latest progress report), how long since it last reported
 /// activity and last touched its liveness marker, and its last run-stream milestone with its
@@ -360,5 +422,96 @@ mod tests {
         let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
         assert_eq!(back.resumed_from.as_deref(), Some("old-session"));
         assert_eq!(back.launch, 1);
+    }
+
+    // ---- StopFailure (spec 104 criterion 5: A FAILURE HAS A CLASS) ----
+
+    #[test]
+    fn stop_failure_to_event_carries_the_type_and_run_stamp() {
+        let sf = StopFailure {
+            spawn: "u104-fail-class/implementer#0".into(),
+            class: "authentication_failed".into(),
+        };
+        let ev = sf.to_event("run-9").unwrap();
+        assert_eq!(ev.type_, TYPE_STOP_FAILURE);
+        assert_eq!(ev.meta.get(META_RUN_ID).map(String::as_str), Some("run-9"));
+        let back: StopFailure = serde_json::from_slice(&ev.data).unwrap();
+        assert_eq!(back, sf);
+    }
+
+    #[test]
+    fn stop_failure_omits_the_run_stamp_when_run_id_is_empty() {
+        let sf = StopFailure {
+            spawn: "u/implementer#0".into(),
+            class: "rate_limit".into(),
+        };
+        let ev = sf.to_event("").unwrap();
+        assert!(
+            !ev.meta.contains_key(META_RUN_ID),
+            "an empty run_id carries no stamp, same as SpawnLaunched/AgentProgress"
+        );
+    }
+
+    #[test]
+    fn latest_stop_failure_class_returns_none_when_no_record_names_the_spawn() {
+        let events = vec![StopFailure {
+            spawn: "other/implementer#0".into(),
+            class: "rate_limit".into(),
+        }
+        .to_event("run-1")
+        .unwrap()];
+        assert_eq!(latest_stop_failure_class(&events, "u/implementer#0"), None);
+    }
+
+    #[test]
+    fn latest_stop_failure_class_the_latest_record_for_the_spawn_wins() {
+        // Two firings for the SAME spawn (a relaunch can each carry its own) - append order
+        // breaks the tie, "latest wins", exactly like AgentProgress's own per-id fold.
+        let events = vec![
+            StopFailure {
+                spawn: "u/implementer#0".into(),
+                class: "rate_limit".into(),
+            }
+            .to_event("run-1")
+            .unwrap(),
+            StopFailure {
+                spawn: "other/implementer#0".into(),
+                class: "overloaded".into(),
+            }
+            .to_event("run-1")
+            .unwrap(),
+            StopFailure {
+                spawn: "u/implementer#0".into(),
+                class: "authentication_failed".into(),
+            }
+            .to_event("run-1")
+            .unwrap(),
+        ];
+        assert_eq!(
+            latest_stop_failure_class(&events, "u/implementer#0").as_deref(),
+            Some("authentication_failed")
+        );
+    }
+
+    #[test]
+    fn latest_stop_failure_class_ignores_a_differently_typed_event() {
+        let mut events = vec![AgentProgress {
+            id: "u/implementer#0".into(),
+            activity: "not a stop failure".into(),
+        }
+        .to_event("run-1")
+        .unwrap()];
+        events.push(
+            StopFailure {
+                spawn: "u/implementer#0".into(),
+                class: "billing_error".into(),
+            }
+            .to_event("run-1")
+            .unwrap(),
+        );
+        assert_eq!(
+            latest_stop_failure_class(&events, "u/implementer#0").as_deref(),
+            Some("billing_error")
+        );
     }
 }

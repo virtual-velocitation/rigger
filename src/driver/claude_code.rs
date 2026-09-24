@@ -25,10 +25,10 @@ use serde_json::Value;
 
 use crate::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use crate::config::AgentDef;
-use crate::eventstore::EventStore;
+use crate::eventstore::{Direction, EventStore};
 use crate::hooks;
 use crate::liveness;
-use crate::progress::SpawnLaunched;
+use crate::progress::{self, SpawnLaunched};
 use crate::progress_store;
 use crate::spawn::SpawnResult;
 use crate::spawn_store;
@@ -252,8 +252,10 @@ impl Driver<'_> {
     /// Linux) that nobody else reads, so a real agent that writes more than that before
     /// its first stdout line would otherwise block the CHILD's write() forever while this
     /// host sits blocked reading stdout - a genuine two-sided deadlock, not merely a slow
-    /// path. The drained bytes are diagnostic only (never this criterion's record of
-    /// truth), so they are discarded.
+    /// path. The drain still discards everything but a bounded TAIL
+    /// ([`STDERR_TAIL_CAP`] bytes, [`drain_child_stderr_tail`]) - never this criterion's
+    /// record of truth - which criterion 5's no-result path below folds into the class it
+    /// reports (CONSTRAINTS WALK: "a fault of class `unknown` carrying the stderr tail").
     fn read_stream(&self, launch: Launch, opts: &SpawnOpts) -> Result<AgentResult, Error> {
         let mut reaper = crate::dash::ReapedChild::new(launch.child);
 
@@ -267,7 +269,7 @@ impl Driver<'_> {
             .child_mut()
             .stderr
             .take()
-            .map(|stderr| std::thread::spawn(move || drain_child_stderr(stderr)));
+            .map(|stderr| std::thread::spawn(move || drain_child_stderr_tail(stderr)));
 
         let marker = liveness::marker_path(&self.scratch_root, &opts.run_id, &opts.id);
         let mut stream_file = open_stream_file(
@@ -277,6 +279,12 @@ impl Driver<'_> {
         let mut resolved_model = String::new();
         let mut permission_denials: u64 = 0;
         let mut result: Option<AgentResult> = None;
+        // FAILURE CLASS's second-priority source (spec 104 criterion 5, Design: "the last
+        // `api_retry.error`"): the category of the MOST RECENT `system/api_retry` line THIS
+        // launch's own reader has seen so far - `None` until the first one arrives, then
+        // overwritten by every later one, so a session that ends without a result classifies
+        // from whichever category was live right before it stopped.
+        let mut last_api_retry_category: Option<String> = None;
         // adj-u104-stream round-5 REQUIRED FIX (op-104-stream-clean-eof-waits-before-the-reap):
         // distinguishes the loop's two exit shapes below. `false` when the loop instead runs
         // to real exhaustion (a clean EOF: the child closed its stdout pipe on its own,
@@ -350,6 +358,12 @@ impl Driver<'_> {
                 }
                 (Some("system"), Some("api_retry")) => {
                     self.record_progress(opts, &api_retry_line(&v));
+                    // FAILURE CLASS's second-priority source (criterion 5): the LATEST
+                    // category wins, a later line overwriting an earlier one exactly like
+                    // `resolved_model`/`permission_denials` accumulate as the stream plays.
+                    if let Some(category) = v.get("error").and_then(Value::as_str) {
+                        last_api_retry_category = Some(category.to_string());
+                    }
                 }
                 (Some("system"), Some("permission_denied")) => {
                     permission_denials += 1;
@@ -416,19 +430,54 @@ impl Driver<'_> {
         // end: the join just below depends on the child's stderr pipe having already
         // closed.
         drop(reaper);
-        // Best-effort join: diagnostic-only drain (see the doc above), and the reap just
-        // above guarantees the child's stderr pipe has closed by now, so the thread has
-        // already hit EOF or is about to - never a caller-visible wait for its own sake.
-        if let Some(handle) = stderr_drain {
-            let _ = handle.join();
-        }
+        // Best-effort join: the reap just above guarantees the child's stderr pipe has
+        // closed by now, so the thread has already hit EOF or is about to - never a
+        // caller-visible wait for its own sake. A failed join (the drain thread panicked)
+        // degrades to an empty tail, same as no stderr pipe at all.
+        let stderr_tail = stderr_drain.and_then(|h| h.join().ok()).unwrap_or_default();
 
-        result.ok_or_else(|| {
-            Error(format!(
-                "claude_code driver: {:?}: the agent stream ended with no result",
-                opts.id
-            ))
-        })
+        result.ok_or_else(|| self.classify_no_result(opts, &last_api_retry_category, &stderr_tail))
+    }
+
+    /// A FAILURE HAS A CLASS (spec 104 criterion 5): build the `Error` for a session that
+    /// ended with no `result` - the natural loop-exhaustion/clean-EOF exit
+    /// [`read_stream`](Self::read_stream)'s bottom falls through to, exactly the
+    /// CONSTRAINTS WALK shape ("the child exits before `system/init` ... a fault of class
+    /// `unknown` carrying the stderr tail, never a hang"). Reads the FIRST-priority source
+    /// (the `StopFailure` hook's record, keyed on `opts.id` alone -
+    /// [`progress::latest_stop_failure_class`]) from THIS driver's own progress store, folds
+    /// it against `last_api_retry_category` via [`classify_failure`], and embeds the result
+    /// as recoverable data ([`failure_class`]) via [`no_result_error`] ahead of a
+    /// human-readable message carrying the class and `stderr_tail` (lossily decoded,
+    /// trimmed). A progress-store read failure degrades to "no `StopFailure` record found"
+    /// (`None`) rather than failing the whole classification - the second source
+    /// (`last_api_retry_category`) and the `unknown` floor both still apply, so a store
+    /// hiccup here never turns a classifiable failure into an opaque one.
+    fn classify_no_result(
+        &self,
+        opts: &SpawnOpts,
+        last_api_retry_category: &Option<String>,
+        stderr_tail: &[u8],
+    ) -> Error {
+        let stop_failure_class = self
+            .progress_store
+            .read_stream(progress::STREAM, 0, Direction::Forward)
+            .ok()
+            .and_then(|events| progress::latest_stop_failure_class(&events, &opts.id));
+        let class = classify_failure(
+            stop_failure_class.as_deref(),
+            last_api_retry_category.as_deref(),
+        );
+        let tail = String::from_utf8_lossy(stderr_tail);
+        no_result_error(
+            class,
+            format!(
+                "claude_code driver: {:?}: the agent stream ended with no result (class \
+                 {class}; stderr tail: {})",
+                opts.id,
+                tail.trim()
+            ),
+        )
     }
 
     /// Best-effort progress line (spec 14's mechanism, spec 104's own writer): a lost
@@ -439,16 +488,44 @@ impl Driver<'_> {
     }
 }
 
-/// Read `stderr` to EOF, discarding every byte - the concurrent drain [`Driver::read_stream`]
-/// starts before its stdout loop so a chatty agent's stderr volume can never deadlock the
-/// host (REQUIRED FIX 2). Raw bytes, not lines: stderr carries no promise of being valid
-/// UTF-8 or line-delimited the way the stdout stream-json protocol is, and a `BufRead::lines`
-/// read that hit invalid UTF-8 would stop draining at exactly the moment the pipe still
-/// needs a reader. Diagnostic-only for this criterion (never a record of truth), so a read
-/// error just ends the drain - there is nothing for this background thread to report to.
-fn drain_child_stderr(mut stderr: ChildStderr) {
+/// The most stderr bytes [`drain_child_stderr_tail`] keeps: enough for a real diagnostic
+/// line or two (CONSTRAINTS WALK's "carrying the stderr tail"), small enough that a
+/// flooding agent (the stderr-flood fixture writes 1MiB) never grows this thread's own
+/// buffer past a bounded size.
+const STDERR_TAIL_CAP: usize = 4096;
+
+/// Read `stderr` to EOF, discarding every byte but the LAST [`STDERR_TAIL_CAP`] of them -
+/// the concurrent drain [`Driver::read_stream`] starts before its stdout loop so a chatty
+/// agent's stderr volume can never deadlock the host (REQUIRED FIX 2), and this criterion
+/// (spec 104 criterion 5) is the tail's only reader: a session that ends with no `result`
+/// folds it into the class it reports (CONSTRAINTS WALK: "a fault of class `unknown`
+/// carrying the stderr tail"). Raw bytes, not lines: stderr carries no promise of being
+/// valid UTF-8 or line-delimited the way the stdout stream-json protocol is, and a
+/// `BufRead::lines` read that hit invalid UTF-8 would stop draining at exactly the moment
+/// the pipe still needs a reader. A read error just ends the drain, returning whatever tail
+/// had accumulated so far - there is nothing for this background thread to report to.
+fn drain_child_stderr_tail(mut stderr: ChildStderr) -> Vec<u8> {
+    let mut tail: Vec<u8> = Vec::with_capacity(STDERR_TAIL_CAP);
     let mut buf = [0u8; 8192];
-    while matches!(stderr.read(&mut buf), Ok(n) if n > 0) {}
+    while let Ok(n) = stderr.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        push_bounded_tail(&mut tail, &buf[..n]);
+    }
+    tail
+}
+
+/// Append `chunk` to `tail`, then trim from the FRONT down to at most [`STDERR_TAIL_CAP`]
+/// bytes - the pure ring-buffer step [`drain_child_stderr_tail`]'s read loop calls on every
+/// chunk, split out so the bounding behavior itself is testable with no process, no pipe,
+/// no IO at all.
+fn push_bounded_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
+    tail.extend_from_slice(chunk);
+    if tail.len() > STDERR_TAIL_CAP {
+        let excess = tail.len() - STDERR_TAIL_CAP;
+        tail.drain(..excess);
+    }
 }
 
 impl AgentDriver for Driver<'_> {
@@ -659,6 +736,188 @@ pub fn install_write_guard_hook(
     hooks::install_pretooluse_hook(existing, "Edit|Write|NotebookEdit", &command)
 }
 
+// ---- FAILURE CLASS (spec 104 criterion 5: A FAILURE HAS A CLASS) ----
+
+/// Claude Code's own error category (Design's FAILURE CLASS; architecture addendum §5.1),
+/// plus `Unknown` for a session that ends with none of the below ever observed. Every
+/// variant is API-side (Design: "Every class is API-side") - the SAME bound
+/// ([`should_relaunch`]) applies no matter which one a session ends on; spec 105's hold
+/// controller is what gives each variant its own disposition (§5.1's table), NOT this
+/// criterion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AgentFailure {
+    RateLimit,
+    Overloaded,
+    ServerError,
+    AuthenticationFailed,
+    OauthOrgNotAllowed,
+    CloudCredentialError,
+    BillingError,
+    AccountOnHold,
+    ModelNotFound,
+    InvalidRequest,
+    MaxOutputTokens,
+    #[default]
+    Unknown,
+}
+
+impl AgentFailure {
+    /// Every category the `StopFailure` hook family installs one entry per (Design's THE
+    /// HOOKS: "one entry per error category") - the fixed iteration order
+    /// [`install_stop_failure_hooks`] walks, and the exhaustive set [`from_category`] and
+    /// the CLI's own `--class` validation both check membership against.
+    pub const CATEGORIES: [AgentFailure; 12] = [
+        AgentFailure::RateLimit,
+        AgentFailure::Overloaded,
+        AgentFailure::ServerError,
+        AgentFailure::AuthenticationFailed,
+        AgentFailure::OauthOrgNotAllowed,
+        AgentFailure::CloudCredentialError,
+        AgentFailure::BillingError,
+        AgentFailure::AccountOnHold,
+        AgentFailure::ModelNotFound,
+        AgentFailure::InvalidRequest,
+        AgentFailure::MaxOutputTokens,
+        AgentFailure::Unknown,
+    ];
+
+    /// Claude Code's own category string for this class, exactly as it appears in a
+    /// `system/api_retry` line's `error` field (Design's Problem section probe) and as
+    /// baked into the installed `--class <category>` hook command.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentFailure::RateLimit => "rate_limit",
+            AgentFailure::Overloaded => "overloaded",
+            AgentFailure::ServerError => "server_error",
+            AgentFailure::AuthenticationFailed => "authentication_failed",
+            AgentFailure::OauthOrgNotAllowed => "oauth_org_not_allowed",
+            AgentFailure::CloudCredentialError => "cloud_credential_error",
+            AgentFailure::BillingError => "billing_error",
+            AgentFailure::AccountOnHold => "account_on_hold",
+            AgentFailure::ModelNotFound => "model_not_found",
+            AgentFailure::InvalidRequest => "invalid_request",
+            AgentFailure::MaxOutputTokens => "max_output_tokens",
+            AgentFailure::Unknown => "unknown",
+        }
+    }
+
+    /// Parse Claude Code's category string back into a class - LENIENT: a category this
+    /// crate does not (yet) recognize degrades to [`AgentFailure::Unknown`] rather than
+    /// failing, exactly matching Design's own fallback ("else `unknown`") since the string
+    /// classified here can come from either of FAILURE CLASS's two sources (a `StopFailure`
+    /// record, or a live `system/api_retry` line) - either of which may carry a category
+    /// Claude Code adds after this crate is built, and a session must never fail to classify
+    /// merely because the string is unfamiliar.
+    pub fn from_category(category: &str) -> AgentFailure {
+        AgentFailure::CATEGORIES
+            .into_iter()
+            .find(|c| c.as_str() == category)
+            .unwrap_or(AgentFailure::Unknown)
+    }
+}
+
+impl std::fmt::Display for AgentFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A FAILURE HAS A CLASS (spec 104 criterion 5, Design): "a session that ends without a
+/// `result` takes its class from, in order: the record written by the `StopFailure` hook,
+/// ... the last `api_retry.error`, else `unknown`." PURE: both sources are already-resolved
+/// strings - the `StopFailure` record's class (`None` when no hook fired for this spawn,
+/// [`crate::progress::latest_stop_failure_class`]) and the last `system/api_retry` line's
+/// `error` THIS launch's own reader saw (`None` when none arrived) - so the priority order
+/// itself is testable with no store, no stream, no process.
+pub fn classify_failure(
+    stop_failure_class: Option<&str>,
+    last_api_retry_category: Option<&str>,
+) -> AgentFailure {
+    stop_failure_class
+        .or(last_api_retry_category)
+        .map(AgentFailure::from_category)
+        .unwrap_or(AgentFailure::Unknown)
+}
+
+/// THE BOUND (spec 104 criterion 5, Design's FAILURE CLASS): "the failure charges no
+/// remediation attempt, the spawn is relaunched at most twice, then the run halts naming
+/// the class." `prior_relaunches` is how many times THIS spawn has already been relaunched
+/// after an earlier fault (0 on the very first fault) - every [`AgentFailure`] variant
+/// shares this ONE bound (Design: "Every class is API-side"), so the class itself is not an
+/// input. PURE: spec 105's hold controller is the only production caller, once the
+/// composition root swaps onto this driver - this criterion only owns that the bound
+/// itself is correct and testable in isolation.
+pub fn should_relaunch(prior_relaunches: u32) -> bool {
+    prior_relaunches < 2
+}
+
+/// Sentinel embedding an [`AgentFailure`] class into a [`Error`] message so "the port
+/// returns the class as data" (Design, FAILURE CLASS) without widening the `AgentDriver`
+/// trait's `Result<AgentResult, Error>` signature - the SAME control-character-sentinel
+/// idiom `conductor::PARKED_MARKER`/`is_parked` already establishes for smuggling typed
+/// signal through this crate's plain-string driver `Error`, reused rather than a second,
+/// parallel convention. `\u{2}` (STX) never appears in ordinary error prose.
+const FAILURE_MARKER: char = '\u{2}';
+
+/// Build the `Error` [`read_stream`](Driver::read_stream) returns for a session that ended
+/// without a result, carrying `class` as recoverable data ([`failure_class`]) ahead of the
+/// human-readable `message`.
+fn no_result_error(class: AgentFailure, message: String) -> Error {
+    Error(format!("{FAILURE_MARKER}{class}{FAILURE_MARKER}{message}"))
+}
+
+/// Recover the [`AgentFailure`] class [`no_result_error`] embedded in `e`, or
+/// [`AgentFailure::Unknown`] for an `Error` no `read_stream` call produced (mirrors
+/// `conductor::is_parked`'s same graceful-default-on-absence contract). Spec 105's hold
+/// controller calls this on every `Err` from `Driver::spawn` to learn the class without
+/// parsing prose.
+pub fn failure_class(e: &Error) -> AgentFailure {
+    let Some(rest) = e.0.strip_prefix(FAILURE_MARKER) else {
+        return AgentFailure::Unknown;
+    };
+    let Some(end) = rest.find(FAILURE_MARKER) else {
+        return AgentFailure::Unknown;
+    };
+    AgentFailure::from_category(&rest[..end])
+}
+
+/// The exact `rigger hook stop-failure --spawn <id> --class <category>` shell command line
+/// THE HOOKS' `StopFailure` family runs for one category (Design's THE HOOKS paragraph,
+/// verbatim). Mirrors [`write_guard_command`]'s single-quoting discipline: `spawn_id` rides
+/// through a real POSIX shell exactly as [`shell_single_quote`] documents there.
+fn stop_failure_command(spawn_id: &str, class: AgentFailure, rigger_bin: &str) -> String {
+    format!(
+        "{} hook stop-failure --spawn {} --class {}",
+        shell_single_quote(rigger_bin),
+        shell_single_quote(spawn_id),
+        class,
+    )
+}
+
+/// THE STOPFAILURE HOOK's injection half (spec 104 criterion 5, Design's THE HOOKS:
+/// "criterion 5's, command, record and injection both"): merges ONE `StopFailure` hook
+/// entry per [`AgentFailure::CATEGORIES`] into a spawn's settings JSON, each running
+/// [`stop_failure_command`] for its own category and matched by that category's own name -
+/// mirroring [`install_write_guard_hook`]'s reuse of the shared merge authority
+/// ([`hooks::install_stopfailure_hook`], never a second, parallel hook-merging
+/// implementation) and composing cleanly with whatever `existing` already carries: empty,
+/// or criterion 4's `PreToolUse` write-guard family already merged in under its OWN
+/// top-level event key, left untouched by this call (THE HOOKS: "the per-spawn settings
+/// JSON carries exactly two hook families ... assembled ... from their two owners").
+/// `existing` may be empty.
+pub fn install_stop_failure_hooks(
+    existing: &[u8],
+    spawn_id: &str,
+    rigger_bin: &str,
+) -> Result<Vec<u8>, hooks::Error> {
+    let mut settings = existing.to_vec();
+    for class in AgentFailure::CATEGORIES {
+        let command = stop_failure_command(spawn_id, class, rigger_bin);
+        settings = hooks::install_stopfailure_hook(&settings, class.as_str(), &command)?;
+    }
+    Ok(settings)
+}
+
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
 /// ONE argv authority for this driver, exactly as `cli::build_args` is for the cli driver
 /// - every field below is a fact, never inferred at read time.
@@ -851,6 +1110,157 @@ mod tests {
             first, second,
             "installing the same roots twice must not duplicate the hook entry"
         );
+    }
+
+    // ---- FAILURE CLASS (spec 104 criterion 5): pure functions ----
+
+    #[test]
+    fn agent_failure_as_str_round_trips_through_from_category_for_every_category() {
+        for class in AgentFailure::CATEGORIES {
+            assert_eq!(AgentFailure::from_category(class.as_str()), class);
+        }
+    }
+
+    #[test]
+    fn agent_failure_from_category_degrades_an_unrecognized_string_to_unknown() {
+        assert_eq!(
+            AgentFailure::from_category("some_future_category_this_crate_does_not_know"),
+            AgentFailure::Unknown
+        );
+    }
+
+    #[test]
+    fn agent_failure_default_is_unknown() {
+        assert_eq!(AgentFailure::default(), AgentFailure::Unknown);
+    }
+
+    #[test]
+    fn classify_failure_prefers_the_stopfailure_record_over_api_retry() {
+        assert_eq!(
+            classify_failure(Some("billing_error"), Some("rate_limit")),
+            AgentFailure::BillingError
+        );
+    }
+
+    #[test]
+    fn classify_failure_falls_back_to_the_last_api_retry_category() {
+        assert_eq!(
+            classify_failure(None, Some("overloaded")),
+            AgentFailure::Overloaded
+        );
+    }
+
+    #[test]
+    fn classify_failure_falls_back_to_unknown_when_neither_source_has_anything() {
+        assert_eq!(classify_failure(None, None), AgentFailure::Unknown);
+    }
+
+    #[test]
+    fn should_relaunch_allows_up_to_two_relaunches_then_stops() {
+        assert!(should_relaunch(0));
+        assert!(should_relaunch(1));
+        assert!(!should_relaunch(2), "the bound is at most twice");
+        assert!(!should_relaunch(3));
+    }
+
+    #[test]
+    fn no_result_error_round_trips_through_failure_class() {
+        let e = no_result_error(AgentFailure::RateLimit, "boom".to_string());
+        assert_eq!(failure_class(&e), AgentFailure::RateLimit);
+        assert!(e.0.contains("boom"), "the human message survives: {}", e.0);
+    }
+
+    #[test]
+    fn failure_class_defaults_to_unknown_for_an_error_no_read_stream_call_produced() {
+        // Mirrors `conductor::is_parked`'s graceful-default-on-absence contract: an
+        // ordinary Error from anywhere else in the crate carries no marker at all.
+        assert_eq!(
+            failure_class(&Error("some unrelated error".to_string())),
+            AgentFailure::Unknown
+        );
+    }
+
+    #[test]
+    fn stop_failure_command_shapes_the_exact_hook_invocation() {
+        assert_eq!(
+            stop_failure_command("u1/implementer#0", AgentFailure::RateLimit, "rigger"),
+            "'rigger' hook stop-failure --spawn 'u1/implementer#0' --class rate_limit"
+        );
+    }
+
+    #[test]
+    fn install_stop_failure_hooks_merges_one_block_per_category() {
+        let out = install_stop_failure_hooks(b"", "u1/implementer#0", "rigger").unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let arr = v["hooks"]["StopFailure"].as_array().unwrap();
+        assert_eq!(
+            arr.len(),
+            AgentFailure::CATEGORIES.len(),
+            "one entry per error category (Design's THE HOOKS)"
+        );
+        for class in AgentFailure::CATEGORIES {
+            assert!(
+                arr.iter().any(|b| b["matcher"] == class.as_str()
+                    && b["hooks"][0]["command"]
+                        .as_str()
+                        .unwrap()
+                        .contains(&format!("--class {class}"))),
+                "missing entry for {class}: {arr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn install_stop_failure_hooks_is_idempotent() {
+        let first = install_stop_failure_hooks(b"", "u1/implementer#0", "rigger").unwrap();
+        let second = install_stop_failure_hooks(&first, "u1/implementer#0", "rigger").unwrap();
+        assert_eq!(
+            first, second,
+            "installing the same spawn's hooks twice must not duplicate"
+        );
+    }
+
+    #[test]
+    fn install_stop_failure_hooks_composes_with_the_write_guard_family() {
+        // THE HOOKS: exactly two hook families, assembled from their two owners - the
+        // reciprocal of install_write_guard_hook_composes_with_an_existing_stopfailure_family
+        // above.
+        let roots = vec!["/spawn/dir".to_string()];
+        let after_guard = install_write_guard_hook(b"", &roots, "rigger").unwrap();
+        let out = install_stop_failure_hooks(&after_guard, "u1/implementer#0", "rigger").unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0]["matcher"], "Edit|Write|NotebookEdit",
+            "the write-guard family must survive untouched"
+        );
+        assert_eq!(
+            v["hooks"]["StopFailure"].as_array().unwrap().len(),
+            AgentFailure::CATEGORIES.len()
+        );
+    }
+
+    #[test]
+    fn push_bounded_tail_keeps_only_the_last_stderr_tail_cap_bytes() {
+        let mut tail: Vec<u8> = Vec::new();
+        // More than STDERR_TAIL_CAP across several chunks, so the cap must actually trim
+        // across calls - exactly how `drain_child_stderr_tail`'s read loop drives this.
+        let chunk = vec![b'x'; 1024];
+        for _ in 0..8 {
+            push_bounded_tail(&mut tail, &chunk);
+        }
+        push_bounded_tail(&mut tail, b"TAIL-MARKER");
+        assert!(tail.len() <= STDERR_TAIL_CAP);
+        assert!(
+            String::from_utf8_lossy(&tail).ends_with("TAIL-MARKER"),
+            "the LATEST bytes survive, not the earliest"
+        );
+    }
+
+    #[test]
+    fn push_bounded_tail_is_a_no_op_shrink_when_under_the_cap() {
+        let mut tail: Vec<u8> = Vec::new();
+        push_bounded_tail(&mut tail, b"short");
+        assert_eq!(tail, b"short");
     }
 
     #[test]

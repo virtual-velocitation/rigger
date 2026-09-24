@@ -14,10 +14,15 @@
 //! the real wire shape, not a shape this unit invented for itself.
 //!
 //! NOT OWNED HERE: argv/cwd/env/the open launch record (criterion 1, already proven by
-//! `claude_code_launch_wire_periphery.rs`); failure classification, relaunch, and the
-//! composition-root swap's BEHAVIOR under an actual failing session (criterion 5, not
-//! landed on this branch); the spawn-bound MCP server, the write guard and the
-//! StopFailure hooks (criteria 3 and 4, separate units, already landed independently).
+//! `claude_code_launch_wire_periphery.rs`); relaunch and the composition-root swap's
+//! BEHAVIOR under an actual failing session (spec 105 - the class exists here, but nothing
+//! acts on it yet); the spawn-bound MCP server, the write guard and the StopFailure hooks'
+//! own injection/command shape (criteria 3 and 4, separate units, already landed
+//! independently - their tests, and `driver::claude_code`'s own in-file `mod tests` for
+//! `install_stop_failure_hooks`/`classify_failure`/`should_relaunch`, cover those). This
+//! file's own FAILURE CLASS tests below (criterion 5) add only what only a real subprocess
+//! can prove: the class a REAL child process's exit actually classifies as, stderr tail
+//! included.
 
 mod common;
 
@@ -262,6 +267,94 @@ fn spawn_errors_loudly_when_the_stream_ends_with_no_result() {
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
         .unwrap();
     assert!(!events.iter().any(|e| e.type_ == TYPE_SPAWN_RESULT));
+}
+
+// ---- FAILURE CLASS (spec 104 criterion 5): real-subprocess classification ----
+
+#[test]
+fn a_child_that_exits_before_init_classifies_unknown_and_carries_the_stderr_tail() {
+    // CONSTRAINTS WALK, verbatim: "the child exits before `system/init` (binary missing,
+    // unknown flag) - a fault of class `unknown` carrying the stderr tail, never a hang."
+    // No StopFailure record, no api_retry line - the `unknown` floor is all that is left.
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-exits-before-init-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
+    let o = opts("u104-fail-class/implementer#0");
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let err = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .expect_err("a child that never reaches system/init must not read as success");
+
+    assert_eq!(
+        rigger::driver::claude_code::failure_class(&err),
+        rigger::driver::claude_code::AgentFailure::Unknown
+    );
+    assert!(
+        err.0
+            .contains("unrecognized flag --this-flag-does-not-exist"),
+        "the stderr tail must be visible in the error: {}",
+        err.0
+    );
+}
+
+#[test]
+fn a_session_with_no_stopfailure_record_classifies_from_the_last_api_retry_category() {
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-api-retry-then-no-result-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
+    let o = opts("u104-fail-class/implementer#0");
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let err = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .expect_err("a session ending on an api_retry with no result must not succeed");
+
+    assert_eq!(
+        rigger::driver::claude_code::failure_class(&err),
+        rigger::driver::claude_code::AgentFailure::AuthenticationFailed
+    );
+}
+
+#[test]
+fn a_stopfailure_record_outranks_the_last_api_retry_category() {
+    // Design's FAILURE CLASS ordering: "the record written by the `StopFailure` hook ...
+    // else the last `api_retry.error`". Pre-seed a StopFailure record for a DIFFERENT
+    // category than the fixture's own api_retry line, as `rigger hook stop-failure` would
+    // have written it, and prove the record wins.
+    let fx = Fixture::new();
+    rigger::progress_store::record_stop_failure(
+        &fx.progress_store,
+        "run-1",
+        &rigger::progress::StopFailure {
+            spawn: "u104-fail-class/implementer#0".to_string(),
+            class: "billing_error".to_string(),
+        },
+    )
+    .unwrap();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-api-retry-then-no-result-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
+    let o = opts("u104-fail-class/implementer#0");
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let err = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .expect_err("a session ending with no result must not succeed");
+
+    assert_eq!(
+        rigger::driver::claude_code::failure_class(&err),
+        rigger::driver::claude_code::AgentFailure::BillingError,
+        "the StopFailure record must outrank the api_retry category"
+    );
 }
 
 #[test]

@@ -6581,7 +6581,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "2a820ac61f4397bb"
+    "content_hash": "704596fc7ee44533"
   },
   {
     "file": "src/main.rs",
@@ -8766,6 +8766,22 @@
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
     "content_hash": "db1c5213fed22a4b"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "cmd_hook",
+    "is_test": false,
+    "proposed_module": "main::commands",
+    "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
+    "content_hash": "7aace835969e6132"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "cmd_hook_stop_failure",
+    "is_test": false,
+    "proposed_module": "main::commands",
+    "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
+    "content_hash": "f7a3b0b21d77c9bb"
   },
   {
     "file": "src/main.rs",

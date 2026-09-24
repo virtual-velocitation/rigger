@@ -842,9 +842,19 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// injection half, no production caller yet since the composition-root wiring that assembles
 /// a live spawn's `--settings` string from both hook owners (this criterion's fragment plus
 /// criterion 5's `StopFailure` one) is a later unit. Candidates +1 (42 -> 43), keep-pending
-/// +1 (5 -> 6), delete and keep-public-surface unchanged.
+/// +1 (5 -> 6), delete and keep-public-surface unchanged. Now 47/21/17/9 (was 43/21/16/6) after
+/// spec 104 criterion 5's A FAILURE HAS A CLASS: three fresh `keep-pending` candidates in
+/// `src/driver/claude_code.rs` - `failure_class`, `should_relaunch`, and
+/// `install_stop_failure_hooks` - each a real production fn with no caller yet, since the same
+/// composition-root wiring criterion 4's `install_write_guard_hook` is still waiting on (spec
+/// 105) is what will call them too; plus one fresh `keep-public-surface` row,
+/// `StopFailure::to_event` (src/progress.rs), a third same-named, same-content-hash `to_event`
+/// definition joining `AgentProgress::to_event`/`SpawnLaunched::to_event` in the ambiguous bucket
+/// that table key already names - its real consumer is the new
+/// `progress_store::record_stop_failure`, not test-only code. Candidates +4 (43 -> 47),
+/// keep-pending +3 (6 -> 9), keep-public-surface +1 (16 -> 17), delete unchanged.
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_21_delete_6_keep_pending_16_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_21_delete_9_keep_pending_17_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -861,7 +871,7 @@ fn the_committed_dead_code_json_disposition_split_is_21_delete_6_keep_pending_16
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (43, 21, 16, 6),
+        (47, 21, 17, 9),
         "the committed disposition split has changed since this criterion's research"
     );
 }

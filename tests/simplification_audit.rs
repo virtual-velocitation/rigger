@@ -3823,7 +3823,33 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // hooks::install_pretooluse_hook) = 9. Hand-derived the same two-part way frame/hit's
         // own precedent above documents (`rigger graph --show` cannot see this unmerged unit
         // branch's new files), not a live tool run.
+        // failure_class (src/driver/claude_code.rs, spec 104 criterion 5, new, unmerged): 2
+        // test-only call sites in this file's own #[cfg(test)] mod tests
+        // (no_result_error_round_trips_through_failure_class,
+        // failure_class_defaults_to_unknown_for_an_error_no_read_stream_call_produced), plus 3
+        // test-only call sites in tests/claude_code_stream_periphery.rs's own new FAILURE CLASS
+        // tests, for 5 test-only references, plus 1 local outgoing call (AgentFailure::
+        // from_category) = 6. Hand-derived the same way install_write_guard_hook's own
+        // precedent above documents (`rigger graph --show` cannot see this unmerged unit
+        // branch's new lines), not a live tool run.
+        ("src/driver/claude_code.rs", "failure_class") => 6,
+        // install_stop_failure_hooks (src/driver/claude_code.rs, spec 104 criterion 5, new,
+        // unmerged): 4 test-only call sites in this file's own #[cfg(test)] mod tests
+        // (install_stop_failure_hooks_merges_one_block_per_category,
+        // install_stop_failure_hooks_is_idempotent - 2 calls, first and second,
+        // install_stop_failure_hooks_composes_with_the_write_guard_family), for 4 test-only
+        // references, plus 2 local outgoing calls (stop_failure_command,
+        // hooks::install_stopfailure_hook) = 6. Hand-derived the same way install_write_guard_
+        // hook's own precedent above documents, not a live tool run.
+        ("src/driver/claude_code.rs", "install_stop_failure_hooks") => 6,
         ("src/driver/claude_code.rs", "install_write_guard_hook") => 9,
+        // should_relaunch (src/driver/claude_code.rs, spec 104 criterion 5, new, unmerged): 4
+        // test-only call sites in this file's own #[cfg(test)] mod tests
+        // (should_relaunch_allows_up_to_two_relaunches_then_stops - 4 calls), for 4 test-only
+        // references, plus 0 local outgoing calls (a bare `prior_relaunches < 2` comparison) =
+        // 4. Hand-derived the same way install_write_guard_hook's own precedent above
+        // documents, not a live tool run.
+        ("src/driver/claude_code.rs", "should_relaunch") => 4,
         ("src/eventstore/sqlite.rs", "with_content_identity") => 32,
         ("src/gate.rs", "resolve_wrapper_name") => 3,
         ("src/grounder/symbols/events.rs", "index_events") => 17,
@@ -6201,21 +6227,26 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
         ),
         ("src/progress.rs", "to_event") => (
             KeepPublicSurface,
-            "to_event names two methods in this file (AgentProgress::to_event, progress.rs:71; \
-             SpawnLaunched::to_event, progress.rs:119), both structurally identical wrappers \
-             around `Event::new` + `with_meta`, which is exactly why they share one content \
-             hash and this one table entry. AgentProgress::to_event was newly surfaced as a \
-             candidate by spec 93 criterion 1's read/write split of the old progress.rs: before \
-             the split its only caller lived in this same file, so no cross-file visibility (and \
-             no separate candidacy-scan entry) was needed; now it is `pub(crate)` so its real \
-             consumer in the write half can reach it - called from the production write path \
+            "to_event names three methods in this file (AgentProgress::to_event, progress.rs:71; \
+             SpawnLaunched::to_event, progress.rs:119; StopFailure::to_event, added by spec 104 \
+             criterion 5), all structurally identical wrappers around `Event::new` + \
+             `with_meta`, which is exactly why they share one content hash and this one table \
+             entry. AgentProgress::to_event was newly surfaced as a candidate by spec 93 \
+             criterion 1's read/write split of the old progress.rs: before the split its only \
+             caller lived in this same file, so no cross-file visibility (and no separate \
+             candidacy-scan entry) was needed; now it is `pub(crate)` so its real consumer in \
+             the write half can reach it - called from the production write path \
              `progress_store::record` (progress_store.rs:16). SpawnLaunched::to_event was added \
              directly `pub(crate)` by spec 104 criterion 1 (THE LAUNCH IS TYPED), mirroring that \
              same split on day one rather than repeating it later: its real consumer is \
-             `progress_store::record_launch` (progress_store.rs:39). Neither caller is test-only \
-             code. Keep-public-surface: a real, non-test consumer in a sibling module for each, \
-             the same reason the split needed `pub(crate)` at all rather than a narrower \
-             visibility.",
+             `progress_store::record_launch` (progress_store.rs:39). StopFailure::to_event \
+             (spec 104 criterion 5, A FAILURE HAS A CLASS - THE HOOKS' 'record' half) was added \
+             the same direct-`pub(crate)` way: its real consumer is \
+             `progress_store::record_stop_failure`, called by `rigger hook stop-failure`'s own \
+             `cmd_hook_stop_failure` (main.rs) - a real, non-test production write path. None of \
+             the three callers is test-only code. Keep-public-surface: a real, non-test consumer \
+             in a sibling module for each, the same reason the split needed `pub(crate)` at all \
+             rather than a narrower visibility.",
         ),
         ("src/run.rs", "to_event") => (
             KeepPublicSurface,
@@ -6326,6 +6357,43 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              site (a rigger distill command, or a hook into rigger reset), never spec'd as a \
              Done-when criterion of spec 27 itself, which is why it shipped unwired.",
         ),
+        ("src/driver/claude_code.rs", "failure_class") => (
+            KeepPending,
+            "failure_class (spec 104 criterion 5, FAILURE CLASS's data-recovery half: 'the port \
+             returns the class as data') has no production caller yet: it is the reader half of \
+             the [`no_result_error`]/[`failure_class`] sentinel pair `read_stream`'s own \
+             no-result path writes through `classify_no_result` (a real, non-test call, so the \
+             WRITER is exercised end to end - see the criterion's own periphery tests), but the \
+             READER exists to let a caller recover the embedded class from an `Err`, and the only \
+             caller with an `Err` to recover it from is spec 105's hold controller, which does \
+             not exist on this branch (`rigger run` still composes agents through `cli::Driver`, \
+             unchanged - this criterion's own module doc). Unlike a stray convenience wrapper, \
+             its tested behavior IS the shipped mechanism the criterion's own Done-when text \
+             specifies ('a test proves A FAILURE HAS A CLASS ... This criterion OWNS the class, \
+             its sources and the bound') - deleting it would delete the one way anything outside \
+             this file can ever learn the class `classify_no_result` computed. keep-pending, \
+             citing spec 104 criterion 5 (this criterion's own OWNS) and spec 105 (the hold \
+             controller that consumes it, per this criterion's own Goal sentence: 'the hold that \
+             consumes its failure classes ... are spec 105's').",
+        ),
+        ("src/driver/claude_code.rs", "install_stop_failure_hooks") => (
+            KeepPending,
+            "install_stop_failure_hooks (spec 104 criterion 5, THE HOOKS' `StopFailure` family \
+             injection half: 'criterion 5's, command, record and injection both') has no \
+             production caller yet, for the identical reason install_write_guard_hook (criterion \
+             4's own injection half, immediately below) does not: `rigger run` still composes \
+             agents through `cli::Driver` (main.rs:3667), unchanged until spec 105's composition- \
+             root swap builds a live spawn's --settings string from this criterion's own \
+             `StopFailure` family plus criterion 4's `PreToolUse` one (Design's THE HOOKS: 'the \
+             per-spawn settings JSON carries exactly two hook families ... assembled ... from \
+             their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the \
+             shipped mechanism Design specifies ('one entry per error category') - deleting it \
+             would delete the criterion's own injection half before the composition-root wiring \
+             that calls it lands, mirroring install_write_guard_hook's own already-disclosed \
+             inert-until-wired state one entry below. keep-pending, citing spec 104 criterion 5 \
+             (this criterion's own OWNS: 'command, record and injection both') and THE HOOKS, \
+             which names criterion 5 the `StopFailure` family's sole owner.",
+        ),
         ("src/driver/claude_code.rs", "install_write_guard_hook") => (
             KeepPending,
             "install_write_guard_hook (spec 104 criterion 4, THE WRITE GUARD's injection half) \
@@ -6346,6 +6414,22 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard \
              command and its injection') and THE HOOKS, which names criterion 4 this hook \
              family's sole owner.",
+        ),
+        ("src/driver/claude_code.rs", "should_relaunch") => (
+            KeepPending,
+            "should_relaunch (spec 104 criterion 5, Design's THE BOUND: 'the spawn is relaunched \
+             at most twice, then the run halts naming the class') has no production caller yet: \
+             it is a pure decision primitive ('every AgentFailure variant shares this ONE \
+             bound ... the class itself is not an input', this function's own doc) that spec \
+             105's hold controller is the only production caller of, once the composition root \
+             swaps `rigger run` onto this driver - unchanged on this branch (`cli::Driver` never \
+             relaunches a live session, this file's own module doc). Unlike a stray convenience \
+             wrapper, its tested behavior IS the shipped mechanism the criterion's own Done-when \
+             text specifies ('relaunches the spawn at most twice, then halts the run naming the \
+             class ... This criterion OWNS the class, its sources and the bound') - deleting it \
+             would delete the one place that bound is proven correct in isolation. keep-pending, \
+             citing spec 104 criterion 5 (this criterion's own OWNS: 'the bound') and spec 105 \
+             (the hold controller that enforces it, per this criterion's own Goal sentence).",
         ),
         ("src/eventstore/sqlite.rs", "with_content_identity") => (
             KeepPending,
@@ -11142,9 +11226,24 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (43, 21, 16, 6),
+            (47, 21, 17, 9),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}\n\n\
+             Was (43, 21, 16, 6) before spec 104 criterion 5's own A FAILURE HAS A CLASS. FOUR \
+             fresh candidates land, all in src/driver/claude_code.rs. THREE are fresh \
+             keep-pending: failure_class (FAILURE CLASS's data-recovery half - only spec 105's \
+             not-yet-landed hold controller would call it), install_stop_failure_hooks (THE \
+             HOOKS' `StopFailure` family injection half, the direct sibling of \
+             install_write_guard_hook immediately below - same composition-root-not-landed \
+             reason), and should_relaunch (Design's THE BOUND - the same not-yet-landed hold \
+             controller's job) - candidates: +3, keep_pending: 6 -> 9. ONE is a fresh \
+             keep-public-surface candidate sharing the EXISTING src/progress.rs::to_event table \
+             key (StopFailure::to_event, added `pub(crate)` the same direct way \
+             SpawnLaunched::to_event was by criterion 1 immediately below, with a real non-test \
+             consumer: `progress_store::record_stop_failure`, called by `cmd_hook_stop_failure` \
+             in main.rs) - one updated JSON row under a three-method reason, not a new match arm \
+             - candidates: +1, keep_public: 16 -> 17. Net: 43 + 3 + 1 = 47 candidates; 21 delete \
+             unchanged; 16 + 1 = 17 keep-public-surface; 6 + 3 = 9 keep-pending.\n\n\
              Was (42, 21, 16, 5) before spec 104 criterion 4's own THE WRITE GUARD. ONE fresh \
              keep-pending candidate lands in src/driver/claude_code.rs: \
              install_write_guard_hook (THE WRITE GUARD's injection half) - no production caller \
