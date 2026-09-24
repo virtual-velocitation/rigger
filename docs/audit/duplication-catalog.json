@@ -19409,9 +19409,14 @@
         "file": "tests/claude_code_stream_periphery.rs",
         "name": "spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree",
         "content_hash": "f1599daf2039ea75"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "name": "spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe",
+        "content_hash": "730ab576205f6771"
       }
     ],
-    "proposed_home": "claude_code_stream_periphery::support (consolidate these 4 sites into one function in this file)",
+    "proposed_home": "claude_code_stream_periphery::support (consolidate these 5 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

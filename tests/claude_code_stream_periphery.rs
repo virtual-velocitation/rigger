@@ -1059,6 +1059,78 @@ fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_chi
 }
 
 #[test]
+fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe() {
+    // The round-4 bounded-join fix (op-104-stop-end-the-tree-and-bound-the-joins) applies
+    // Driver::join_within_grace at FOUR call sites, not just the two inside
+    // stop_for_wall_clock_silence the two tests above already prove: read_stream's own
+    // ORDINARY exit - a genuine result lands, no wall-clock silence, THE STOP never runs
+    // at all - hits the identical two joins right after dash::ReapedChild::drop, which
+    // ends only the ONE held child and (unlike reap::end_child) never walks a process
+    // tree. Before the round-4 fix this path's joins were bare `join()` calls, so a
+    // descendant inheriting the stdout pipe would have hung spawn() forever on a
+    // perfectly ordinary, successful run - a boundary bug with zero periphery coverage on
+    // this non-STOP path until now. This proves the ordinary-completion half: a real
+    // result is still captured and returned, within a bounded time, and the descendant
+    // itself is left running untouched (this path never attempts to end it - only THE
+    // STOP's own reap::end_child does that, by design).
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-descendant-survives-a-clean-result-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver {
+        bin,
+        stop_grace: Duration::from_millis(300),
+        ..fx.driver()
+    };
+    let descendant_pid_file = fx.scratch_root.path().join("descendant-clean-result.pid");
+    let mut o = opts("u104-stop/implementer#0");
+    o.env = vec![(
+        "RIGGER_TEST_DESCENDANT_PID_FILE".to_string(),
+        descendant_pid_file.to_string_lossy().into_owned(),
+    )];
+    let agent = AgentDef {
+        max_wall_clock: Some(1),
+        ..Default::default()
+    };
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let started = std::time::Instant::now();
+    let result = driver.spawn(&agent, "do the thing", &o, &emit).expect(
+        "a real result line must still be read back even though a descendant \
+                 outlives the driven child and keeps the stdout pipe's write end open",
+    );
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        result.output,
+        "done: a result survives a still-open descendant pipe"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "an ordinary completion must return within a bounded time even when a descendant \
+         still holds the stdout pipe open: {elapsed:?}"
+    );
+
+    let pid_text = std::fs::read_to_string(&descendant_pid_file)
+        .expect("the fixture recorded its forked descendant's pid before exiting");
+    let descendant_pid: u32 = pid_text
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    assert!(
+        common::is_alive(descendant_pid),
+        "pid {descendant_pid}: an ordinary completion's reap ends only the ONE held \
+         child (dash::ReapedChild::drop), never a descendant - this is the join bound's \
+         job, not a sweep, so the descendant must be left running"
+    );
+
+    // This test's own cleanup, through the sanctioned test-side signal call - never any
+    // process rigger's own ordinary completion path is responsible for reaping.
+    common::terminate_pid(descendant_pid);
+}
+
+#[test]
 fn reconcile_on_start_closes_an_open_launch_and_reaps_its_worktree_process_through_the_public_method(
 ) {
     // THE STOP's OTHER half (spec 104 criterion 6): a supervisor start-up reconciliation.
