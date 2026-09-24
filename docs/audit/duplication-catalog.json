@@ -829,6 +829,11 @@
         "content_hash": "7266da144e21471d"
       },
       {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "name": "Command::new",
+        "content_hash": "6aa60b3c37ad89ff"
+      },
+      {
         "file": "tests/cli.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
@@ -2370,7 +2375,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 442 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 443 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",
@@ -12271,7 +12276,7 @@
   },
   {
     "id": "dup-0226",
-    "classification": "exact",
+    "classification": "near",
     "sites": [
       {
         "file": "src/driver/claude_code.rs",
@@ -12287,6 +12292,11 @@
         "file": "src/reap.rs",
         "name": "wait_until",
         "content_hash": "a05e1a7bd5e7adcb"
+      },
+      {
+        "file": "tests/common/mod.rs",
+        "name": "wait_until",
+        "content_hash": "584477be498024f5"
       },
       {
         "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
@@ -12309,7 +12319,7 @@
         "content_hash": "a05e1a7bd5e7adcb"
       }
     ],
-    "proposed_home": "a new shared module (sites span 7 files: src/driver/claude_code.rs, src/gate.rs, src/reap.rs, tests/mutation_scratch_reap_base_guard_periphery.rs, tests/reap_before_removal_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/worktree_remove_relocated_scratch_base_guard_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 8 files: src/driver/claude_code.rs, src/gate.rs, src/reap.rs, tests/common/mod.rs, tests/mutation_scratch_reap_base_guard_periphery.rs, tests/reap_before_removal_periphery.rs, tests/spawn_scratch_reap_authorized_root_periphery.rs, tests/worktree_remove_relocated_scratch_base_guard_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

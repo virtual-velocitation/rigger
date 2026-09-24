@@ -2,9 +2,11 @@
 //! `mod common;`, so each suite uses the subset it needs (hence the module-wide `dead_code`
 //! allowance: an item used by one suite is genuinely unused in the next).
 //!
-//! Today it holds exactly one concern: WHERE the product binary is. That concern earns a shared
-//! home because it has sixteen readers and one correct answer, and because the obvious per-suite
-//! spelling is wrong in a way no suite can see on its own (see [`product_binary_from`]).
+//! Its first, still-largest concern is WHERE the product binary is: a shared home because it
+//! has sixteen readers and one correct answer, and because the obvious per-suite spelling is
+//! wrong in a way no suite can see on its own (see [`product_binary_from`]). Each later
+//! addition below earns its place here the same way - a helper two or more suites would
+//! otherwise define independently and identically (spec 85's mandatory duplication sweep).
 
 #![allow(dead_code)]
 
@@ -360,4 +362,22 @@ pub fn json_object_keys(v: &serde_json::Value) -> Vec<String> {
         .collect();
     keys.sort_unstable();
     keys
+}
+
+/// Poll up to 5s for `pred` to hold, sleeping 25ms between checks - the scan/escalation
+/// latency tolerance every reap-adjacent periphery test needs to observe an async OS-level
+/// effect (a signal delivered, a process reaped) without either a flaky zero-wait check or a
+/// fixed sleep long enough to slow the suite. Shared here (spec 85's own mandatory
+/// duplication sweep, the same rationale [`json_object_keys`]'s own doc states just above)
+/// rather than adding yet another per-file copy: this exact shape already exists,
+/// independently, in half a dozen periphery files under `tests/` - consolidating a NEW call
+/// site here instead of growing that count is the one-way door.
+pub fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
+    for _ in 0..200 {
+        if pred() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    false
 }

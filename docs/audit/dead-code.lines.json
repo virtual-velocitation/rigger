@@ -679,6 +679,10 @@
       {
         "file": "src/driver/claude_code.rs",
         "line": 1718
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "line": 869
       }
     ]
   },

@@ -819,3 +819,87 @@ fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_
          reap::end_child's escalation - never leaked"
     );
 }
+
+#[test]
+fn reconcile_on_start_closes_an_open_launch_and_reaps_its_worktree_process_through_the_public_method(
+) {
+    // THE STOP's OTHER half (spec 104 criterion 6): a supervisor start-up reconciliation.
+    // `src/driver/claude_code.rs`'s own `mod tests` prove `Driver::reconcile_on_start` IN
+    // PROCESS, co-located in the same module under test; no test anywhere drives it
+    // through the PUBLIC method the way a real supervisor start-up (spec 105's
+    // composition root) actually will. This proves the cross-module seam it crosses
+    // (driver -> conductor's worktree-dir formula -> reap's cwd-scanned process reaper)
+    // from outside the crate: a real child process, independently observed by a pid this
+    // test reads back itself (never the `Child` handle `reconcile_on_start` reaps
+    // through), rooted in the SAME worktree-dir formula `conductor::unit_worktree_dir`
+    // computes in production - replicated here, since that function is deliberately
+    // `pub(crate)` (no second, divergent path-assembly), from the SAME public
+    // `UNIT_WORKTREE_PREFIX` constant it itself is built from.
+    let fx = Fixture::new();
+    let scratch_root = fx.scratch_root.path().to_string_lossy().into_owned();
+    let unit_dir = format!(
+        "{scratch_root}/{}u1",
+        rigger::worktree::UNIT_WORKTREE_PREFIX
+    );
+    std::fs::create_dir_all(&unit_dir).unwrap();
+    let mut left_behind = std::process::Command::new("sleep")
+        .arg("300")
+        .current_dir(&unit_dir)
+        .spawn()
+        .expect("spawn sleep");
+    let pid = left_behind.id();
+
+    rigger::progress_store::record_launch(
+        &fx.progress_store,
+        "run-1",
+        &rigger::progress::SpawnLaunched {
+            spawn: "u1/implementer#0".to_string(),
+            launch: 0,
+            session_id: "sess-a".to_string(),
+            resumed_from: None,
+            started: 1,
+            ended: None,
+            class: None,
+        },
+    )
+    .unwrap();
+
+    let driver = fx.driver();
+    let events = fx
+        .progress_store
+        .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let reconciled = driver.reconcile_on_start(&events, "run-1").unwrap();
+    assert_eq!(reconciled, vec!["u1/implementer#0".to_string()]);
+
+    // `reap::reap_authorized` signals purely by PID (no `Child` handle at all - that is
+    // the whole point of a cwd-scanned, handle-less reap), so the OS delivering the kill
+    // does not by itself remove the process from the table: THIS test is the process's
+    // real parent (it holds `left_behind`), so the kernel keeps it a zombie - still
+    // visible to `common::is_alive`'s `kill(pid, 0)` probe - until the parent reaps it.
+    // `left_behind.wait()` is that reap: called first, on the ONE handle reconcile_on_start
+    // never touched (independent of its own handle-less mechanism), it blocks only for the
+    // signal's real delivery latency, then `is_alive` on the now-fully-gone pid closes the
+    // loop as a second, independent confirmation.
+    assert!(
+        common::wait_until(|| matches!(left_behind.try_wait(), Ok(Some(_)))),
+        "pid {pid}, still rooted in the spawn's worktree, must be reaped before a \
+         relaunch - proven here through the PUBLIC Driver::reconcile_on_start method"
+    );
+    assert!(
+        !common::is_alive(pid),
+        "pid {pid} must be fully gone (not merely signalled) once its parent has reaped it"
+    );
+
+    let after = fx
+        .progress_store
+        .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(
+        rigger::progress::open_launches(&after).unwrap().is_empty(),
+        "the launch must read as closed once reconcile_on_start has run"
+    );
+    let closing: rigger::progress::SpawnLaunched = serde_json::from_slice(&after[1].data).unwrap();
+    assert_eq!(closing.ended.as_deref(), Some("interrupted"));
+    assert_eq!(closing.spawn, "u1/implementer#0");
+}

@@ -813,6 +813,11 @@
         "end_line": 56
       },
       {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "start_line": 842,
+        "end_line": 842
+      },
+      {
         "file": "tests/cli.rs",
         "start_line": 24,
         "end_line": 24
@@ -11611,6 +11616,11 @@
         "file": "src/reap.rs",
         "start_line": 595,
         "end_line": 603
+      },
+      {
+        "file": "tests/common/mod.rs",
+        "start_line": 373,
+        "end_line": 381
       },
       {
         "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",

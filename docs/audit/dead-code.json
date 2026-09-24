@@ -761,6 +761,10 @@
       {
         "file": "src/driver/claude_code.rs",
         "content_hash": "1edc972a51e71931"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "content_hash": "1edc972a51e71931"
       }
     ],
     "disposition": "keep-pending",
