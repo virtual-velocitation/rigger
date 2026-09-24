@@ -3824,6 +3824,21 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // own precedent above documents (`rigger graph --show` cannot see this unmerged unit
         // branch's new files), not a live tool run.
         ("src/driver/claude_code.rs", "install_write_guard_hook") => 9,
+        // reconcile_on_start (src/driver/claude_code.rs, spec 104 criterion 6, new,
+        // unmerged): 6 test-only call sites, all in this file's own `#[cfg(test)] mod
+        // tests`, one call each (reconcile_on_start_closes_every_open_launch_as_interrupted,
+        // reconcile_on_start_is_a_noop_when_nothing_is_open,
+        // reconcile_on_start_leaves_an_already_closed_launch_alone,
+        // reconcile_on_start_skips_reaping_a_malformed_spawn_id_but_still_closes_it,
+        // reconcile_on_start_reaps_a_process_still_rooted_in_the_spawns_worktree,
+        // reconcile_on_start_reaps_nothing_when_no_scratch_root_is_configured), plus 6
+        // local outgoing calls (progress::open_launches, progress_store::record_launch,
+        // SpawnLaunched::closed, spawn::unit_of, conductor::unit_worktree_dir,
+        // reap::reap_processes_rooted_under) = 12. Hand-derived the same two-part way
+        // install_write_guard_hook's own precedent immediately above documents (`rigger
+        // graph --show` cannot see this unmerged unit branch's new function), not a live
+        // tool run.
+        ("src/driver/claude_code.rs", "reconcile_on_start") => 12,
         ("src/eventstore/sqlite.rs", "with_content_identity") => 32,
         ("src/gate.rs", "resolve_wrapper_name") => 3,
         ("src/grounder/symbols/events.rs", "index_events") => 17,
@@ -6346,6 +6361,26 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard \
              command and its injection') and THE HOOKS, which names criterion 4 this hook \
              family's sole owner.",
+        ),
+        ("src/driver/claude_code.rs", "reconcile_on_start") => (
+            KeepPending,
+            "reconcile_on_start (spec 104 criterion 6, STOP's supervisor start-up \
+             reconciliation half: 'on start the supervisor closes any SpawnLaunched left \
+             open as interrupted and reaps processes still rooted in that spawn's worktree \
+             before it relaunches') has no production caller yet, the SAME already-disclosed \
+             shape install_write_guard_hook's own entry above documents for criterion 4: \
+             `rigger run` still composes agents through cli::Driver (main.rs:3667), and no \
+             supervisor loop yet calls a claude_code::Driver method at start-up - that call \
+             site is spec 105's own composition-root swap, not this criterion's (spec 104's \
+             own Design, THE COMPOSITION ROOT paragraph: 'the swap that makes rigger run \
+             build claude_code::Driver is spec 105's first unit'). Unlike a stray convenience \
+             wrapper, its tested behavior IS the shipped mechanism criterion 6's own Done-when \
+             text specifies ('a supervisor start closes an open launch record and reaps the \
+             spawn's worktree before relaunching') - deleting it would delete the criterion's \
+             own start-up half before the supervisor loop that calls it once per boot lands. \
+             keep-pending, citing spec 104 criterion 6 (this criterion's own OWNS: 'stop and \
+             start-up reconciliation only') and spec 105 (the composition-root swap that will \
+             call it).",
         ),
         ("src/eventstore/sqlite.rs", "with_content_identity") => (
             KeepPending,
@@ -11142,9 +11177,17 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (43, 21, 16, 6),
+            (44, 21, 16, 7),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}\n\n\
+             Was (43, 21, 16, 6) before spec 104 criterion 6's own STOP. ONE fresh keep-pending \
+             candidate lands in src/driver/claude_code.rs: reconcile_on_start (STOP's \
+             supervisor start-up reconciliation half) - no production caller yet, the SAME \
+             already-disclosed shape install_write_guard_hook's own entry documents \
+             immediately below, since the supervisor loop that calls it once per boot is spec \
+             105's composition-root swap, not this criterion's - candidates: +1, keep_pending: \
+             6 -> 7. Net: 43 + 1 = 44 candidates; 21 delete unchanged; 16 keep-public-surface \
+             unchanged; 6 + 1 = 7 keep-pending.\n\n\
              Was (42, 21, 16, 5) before spec 104 criterion 4's own THE WRITE GUARD. ONE fresh \
              keep-pending candidate lands in src/driver/claude_code.rs: \
              install_write_guard_hook (THE WRITE GUARD's injection half) - no production caller \

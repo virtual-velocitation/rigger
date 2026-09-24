@@ -40,6 +40,13 @@ use crate::spawn_store;
 /// invariant 6: one host).
 const PERMISSION_MODE: &str = "default";
 
+/// How often [`Driver::read_stream`]'s loop wakes to re-check elapsed time when
+/// `max_wall_clock` is 0 (unbounded): a "wake up occasionally" budget, never itself a
+/// wall-clock bound - an unbounded spawn still polls rather than blocking forever on the
+/// channel, so a future caller with another reason to want the loop responsive is never
+/// shut out by this recv.
+const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Spawns agents as headless Claude Code sessions.
 pub struct Driver<'a> {
     /// The `claude` binary to run. Empty resolves to `"claude"` on `$PATH`, same
@@ -65,6 +72,17 @@ pub struct Driver<'a> {
     /// `<scratch_root>/agent-live/<run>/<spawn>` (see [`crate::liveness::marker_path`]).
     /// Empty disables both (no scratch root configured / a test that does not care).
     pub scratch_root: String,
+    /// THE STOP's own grace period (spec 104 criterion 6, architecture addendum §4.6):
+    /// how long [`Driver::stop_for_wall_clock_silence`] waits, after closing the
+    /// session's input, for the child to exit on its own before forcing it via
+    /// [`crate::reap::end_child`] - the literal 30 seconds the Design section names in
+    /// production. An INJECTED field, never a bare module constant - the same "the real
+    /// duration is a value a test overrides on the instance" seam this codebase already
+    /// uses for a waited duration elsewhere (`d-clock-seam`), so a test proving the FULL
+    /// stop sequence never has to sit out a real 30 seconds. `Driver::default()`
+    /// (test-only) resolves it to 30s; production sets it explicitly (the composition
+    /// root, spec 105).
+    pub stop_grace: std::time::Duration,
 }
 
 // `Default` is a TEST convenience only: production always constructs `Driver` with real
@@ -85,6 +103,7 @@ impl Default for Driver<'static> {
             progress_store: &crate::eventstore::SilentStore,
             run_store: &crate::eventstore::SilentStore,
             scratch_root: String::new(),
+            stop_grace: std::time::Duration::from_secs(30),
         }
     }
 }
@@ -139,6 +158,8 @@ impl Driver<'_> {
                     Some(opts.resumed_from.clone())
                 },
                 started,
+                ended: None,
+                class: None,
             },
         )?;
 
@@ -254,7 +275,30 @@ impl Driver<'_> {
     /// host sits blocked reading stdout - a genuine two-sided deadlock, not merely a slow
     /// path. The drained bytes are diagnostic only (never this criterion's record of
     /// truth), so they are discarded.
-    fn read_stream(&self, launch: Launch, opts: &SpawnOpts) -> Result<AgentResult, Error> {
+    ///
+    /// STOP (spec 104 criterion 6): stdout is likewise read on its OWN thread (the SAME
+    /// stderr-deadlock reasoning applies to it too - this function must never itself sit
+    /// blocked in `BufReader::lines()` with no way to notice silence), forwarding each
+    /// line (or `None` on a clean EOF) over a channel this function drains with
+    /// `recv_timeout`, so `max_wall_clock` (0 = unbounded, [`crate::config::AgentDef`]'s
+    /// own resolved bound) can be enforced against STREAM SILENCE - the wall time since
+    /// the last line, not total run time, mirroring `liveness::is_stale`'s own semantics
+    /// for the external stepwise driver, but enforced HERE because this host has no
+    /// external stepper polling a marker file. A genuine expiry before any result exists
+    /// runs THE STOP sequence (close the session's input, wait [`Driver::stop_grace`], end
+    /// the child via [`crate::reap::end_child`] - the handle-bound production helper, never a
+    /// computed pid) and records the EXISTING [`SpawnResult::liveness_fault`] shape, same
+    /// as `liveness::sweep`'s own fault for the stepwise driver, just recorded HERE rather
+    /// than by an external sweep. An expiry AFTER a result already landed is not a stop at
+    /// all - it degrades to the SAME soft-break the post-result read-error path already
+    /// takes (round-2 precedent), letting the existing reap decide the child's fate.
+    fn read_stream(
+        &self,
+        launch: Launch,
+        opts: &SpawnOpts,
+        max_wall_clock: u64,
+    ) -> Result<AgentResult, Error> {
+        let session_id = launch.session_id.clone();
         let mut reaper = crate::dash::ReapedChild::new(launch.child);
 
         let stdout = reaper.child_mut().stdout.take().ok_or_else(|| {
@@ -268,6 +312,19 @@ impl Driver<'_> {
             .stderr
             .take()
             .map(|stderr| std::thread::spawn(move || drain_child_stderr(stderr)));
+        // THE STOP watchdog needs a way to notice silence while blocked reading stdout,
+        // so stdout is read on its own thread too (see the doc above) and forwarded here
+        // over a channel this loop drains with a timeout instead of `BufRead::lines`'s
+        // own unbounded blocking iterator.
+        let (line_tx, line_rx) = std::sync::mpsc::channel::<Option<std::io::Result<String>>>();
+        let stdout_reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                if line_tx.send(Some(line)).is_err() {
+                    return; // the reader (this function) is gone; nothing left to feed.
+                }
+            }
+            let _ = line_tx.send(None); // clean EOF
+        });
 
         let marker = liveness::marker_path(&self.scratch_root, &opts.run_id, &opts.id);
         let mut stream_file = open_stream_file(
@@ -282,8 +339,66 @@ impl Driver<'_> {
         // to real exhaustion (a clean EOF: the child closed its stdout pipe on its own,
         // with no read error) - see the `wait()` this flag gates, just past the loop.
         let mut ended_via_break = false;
+        let mut last_activity = std::time::Instant::now();
 
-        for line in BufReader::new(stdout).lines() {
+        loop {
+            let recv_timeout = if max_wall_clock == 0 {
+                // Unbounded: still poll periodically rather than an infinite wait, so a
+                // future caller that DOES want to observe long-run liveness some other
+                // way is never blocked out by this recv - purely a "wake up occasionally"
+                // budget, never itself a wall-clock bound.
+                UNBOUNDED_POLL
+            } else {
+                let elapsed = last_activity.elapsed();
+                let bound = std::time::Duration::from_secs(max_wall_clock);
+                match bound.checked_sub(elapsed) {
+                    Some(remaining) if !remaining.is_zero() => remaining,
+                    _ => {
+                        // Already past the bound with no line since the last check -
+                        // expire without blocking on the channel at all.
+                        std::time::Duration::ZERO
+                    }
+                }
+            };
+
+            let received = if recv_timeout.is_zero() {
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            } else {
+                line_rx.recv_timeout(recv_timeout)
+            };
+
+            let line = match received {
+                Ok(None) => break, // clean EOF; ended_via_break stays false
+                Ok(Some(line)) => {
+                    last_activity = std::time::Instant::now();
+                    line
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break, // reader thread gone; treat as EOF
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if result.is_none() => {
+                    // THE STOP (spec 104 criterion 6): genuine wall-clock SILENCE with no
+                    // result yet. Runs the whole sequence inline (mirrors the pre-result
+                    // read-error arm below, which also returns directly) so the caller
+                    // sees exactly one outcome for "this launch never produced a result".
+                    return self.stop_for_wall_clock_silence(
+                        reaper,
+                        stderr_drain,
+                        stdout_reader,
+                        opts,
+                        &session_id,
+                        max_wall_clock,
+                    );
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // result.is_some(): silence AFTER a real result already landed is not
+                    // a stop - the SAME soft-break the post-result read-error path below
+                    // already takes (round-2 precedent): stop reading, let the existing
+                    // reap decide the child's fate.
+                    self.record_progress(opts, "stream (silent after result, stopping the read)");
+                    ended_via_break = true;
+                    break;
+                }
+            };
+
             let line = match line {
                 Ok(line) => line,
                 // adj-u104-stream round-2 REQUIRED FIX: `record_result_if_absent` may
@@ -399,9 +514,9 @@ impl Driver<'_> {
         // teardown finish on its own first; `ReapedChild::drop` just below then finds
         // `Ok(Some(_))` via its own `try_wait` and sends nothing.
         //
-        // The `break` path (a post-result read error) is UNCHANGED: a read error is not
-        // evidence of in-progress teardown, so it keeps going straight to the
-        // signal-capable drop exactly as before this fix.
+        // The `break` path (a post-result read error, or post-result silence) is
+        // UNCHANGED: neither is evidence of in-progress teardown, so it keeps going
+        // straight to the signal-capable drop exactly as before this fix.
         if !ended_via_break {
             let _ = reaper.child_mut().wait();
         }
@@ -422,6 +537,10 @@ impl Driver<'_> {
         if let Some(handle) = stderr_drain {
             let _ = handle.join();
         }
+        // The stdout reader thread's own pipe closed the moment the child (now reaped)
+        // exited, so its loop has already hit EOF or is about to - the same "never a
+        // caller-visible wait for its own sake" guarantee as the stderr join above.
+        let _ = stdout_reader.join();
 
         result.ok_or_else(|| {
             Error(format!(
@@ -431,11 +550,146 @@ impl Driver<'_> {
         })
     }
 
+    /// THE STOP sequence itself (spec 104 criterion 6), factored out of [`Driver::read_stream`]'s
+    /// loop so its one call site there reads as a single named step: "closes the session's
+    /// input stream, waits a grace period, then ends the child through the sanctioned
+    /// lifecycle helper on the child's own handle" (architecture addendum §4.6), then
+    /// records the EXISTING liveness-fault shape and closes the launch record `stopped`.
+    /// Always returns `Err` - a launch that never produced a result stays a failure from
+    /// this driver's own return value, exactly like the "agent stream ended with no
+    /// result" ending just above; a caller wanting the no-attempt-charged semantics reads
+    /// [`SpawnResult::is_liveness_fault`] off the run store this durably wrote, the SAME
+    /// way `liveness::sweep`'s callers already do for the stepwise driver's own fault.
+    fn stop_for_wall_clock_silence(
+        &self,
+        mut reaper: crate::dash::ReapedChild,
+        stderr_drain: Option<std::thread::JoinHandle<()>>,
+        stdout_reader: std::thread::JoinHandle<()>,
+        opts: &SpawnOpts,
+        session_id: &str,
+        max_wall_clock: u64,
+    ) -> Result<AgentResult, Error> {
+        let message = stop_message(&opts.id, max_wall_clock);
+        self.record_progress(opts, &format!("stream: {message}"));
+
+        // "closes the session's input stream" - the SAME handle-drop THE STREAM's own
+        // success path uses to end a session's turn (dropping the handle closes the pipe).
+        drop(reaper.child_mut().stdin.take());
+
+        // "waits a grace period" (self.stop_grace - 30s in production; an injected
+        // shorter one in a test proving the full sequence): poll for the child exiting on
+        // its own, without blocking the full grace when it already has.
+        let deadline = std::time::Instant::now() + self.stop_grace;
+        while std::time::Instant::now() < deadline {
+            if matches!(reaper.child_mut().try_wait(), Ok(Some(_))) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // "then ends the child through the sanctioned lifecycle helper on the child's own
+        // handle" - the NEW handle-bound production helper (reap.rs, spec 104 criterion
+        // 6's own decision `u104-stop-uses-reap-child-handle`): a no-op if the grace wait
+        // above already collected it.
+        crate::reap::end_child(reaper.child_mut());
+
+        // "the existing liveness-fault result is recorded" - the SAME [`SpawnResult`]
+        // shape `liveness::sweep` already records for the stepwise driver's own hung
+        // agent, so every downstream reader (the not-yet-recovered surface, last-write-
+        // wins recovery) treats a wall-clock STOP identically to a marker-staleness fault.
+        let fault = SpawnResult::liveness_fault(
+            opts.id.clone(),
+            message.clone(),
+            crate::failure::FailureClass::Infra.as_str(),
+        );
+        spawn_store::record_result_if_absent(self.run_store, &fault)?;
+
+        // "the launch ends `stopped`" - best-effort (spec 104: closing a record is a
+        // courtesy for reconciliation/observability, never the source of truth the
+        // liveness-fault result above already is; a lost close write only means a LATER
+        // supervisor sweep redundantly re-closes and re-reaps an already-gone process,
+        // never a correctness gap - the same convention [`Driver::record_progress`]
+        // documents for its own writes).
+        let _ = progress_store::record_launch(
+            self.progress_store,
+            &opts.run_id,
+            &SpawnLaunched::closed(opts.id.clone(), opts.launch, session_id, "stopped", ""),
+        );
+
+        drop(reaper);
+        if let Some(handle) = stderr_drain {
+            let _ = handle.join();
+        }
+        // The stdout reader's pipe closes the moment `end_child` above finishes the
+        // child (SIGTERM already sent it EOF; the SIGKILL fallback guarantees it), so
+        // this join never waits for its own sake either.
+        let _ = stdout_reader.join();
+
+        Err(Error(format!(
+            "claude_code driver: {:?}: {message}",
+            opts.id
+        )))
+    }
+
     /// Best-effort progress line (spec 14's mechanism, spec 104's own writer): a lost
     /// progress line is a smaller loss than a lost launch record or a lost result, so
     /// this never fails the spawn the way [`Driver::launch`]'s `SpawnLaunched` write does.
     fn record_progress(&self, opts: &SpawnOpts, activity: &str) {
         let _ = progress_store::record(self.progress_store, &opts.run_id, &opts.id, activity);
+    }
+
+    /// SUPERVISOR START-UP RECONCILIATION (spec 104 criterion 6, STOP's other half): "on
+    /// start the supervisor closes any `SpawnLaunched` left open as `interrupted` and
+    /// reaps processes still rooted in that spawn's worktree before it relaunches." Called
+    /// once, before any relaunch, with `progress_events` already scoped to `run_id` (the
+    /// SAME slice shape [`crate::progress::consolidate`]'s own caller already assembles) -
+    /// this function reads no store itself for that half, only writes the closures.
+    ///
+    /// CONSTRAINTS WALK ("cold start - the log and the progress store are the only
+    /// state"): a spawn's worktree dir needs NO event field of its own - it is the same
+    /// PURE function of the run's scratch root and the spawn's unit
+    /// ([`crate::conductor::unit_worktree_dir`]) every other worktree caller already uses,
+    /// via [`crate::spawn::unit_of`] on the open record's own spawn id. An empty
+    /// `scratch_root` (no scratch configured) or a spawn id `unit_of` cannot parse
+    /// degrades to "close the record, reap nothing" - the same conservative shape
+    /// [`crate::liveness`]'s marker functions use for a degenerate id, never a guess at a
+    /// path to reap.
+    ///
+    /// Returns the spawn ids reconciled (closed), in [`crate::progress::open_launches`]'s
+    /// deterministic order - callers with nothing to log can ignore it.
+    pub fn reconcile_on_start(
+        &self,
+        progress_events: &[crate::eventstore::Event],
+        run_id: &str,
+    ) -> Result<Vec<String>, Error> {
+        let open = crate::progress::open_launches(progress_events).map_err(|e| {
+            Error(format!(
+                "claude_code driver: reconcile: decode an open SpawnLaunched: {e}"
+            ))
+        })?;
+        let authorized_root = Path::new(&self.scratch_root);
+        let mut reconciled = Vec::with_capacity(open.len());
+        for sl in &open {
+            progress_store::record_launch(
+                self.progress_store,
+                run_id,
+                &SpawnLaunched::closed(
+                    sl.spawn.clone(),
+                    sl.launch,
+                    sl.session_id.clone(),
+                    "interrupted",
+                    "",
+                ),
+            )?;
+            if !self.scratch_root.is_empty() {
+                if let Some(unit) = crate::spawn::unit_of(&sl.spawn).filter(|u| !u.is_empty()) {
+                    let dir = crate::conductor::unit_worktree_dir(&self.scratch_root, unit);
+                    crate::reap::reap_processes_rooted_under(Path::new(&dir), authorized_root);
+                }
+            }
+            reconciled.push(sl.spawn.clone());
+        }
+        Ok(reconciled)
     }
 }
 
@@ -466,7 +720,11 @@ impl AgentDriver for Driver<'_> {
         _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
         let launch = self.launch(agent, prompt, opts, self.progress_store)?;
-        self.read_stream(launch, opts)
+        // THE STOP (spec 104 criterion 6): the agent's own resolved bound (spec 10 unit
+        // 3, `AgentDef::max_wall_clock`, already folded from `defaults.max_wall_clock` at
+        // config-load time) - 0 stays unbounded, the established convention this field's
+        // own doc already sets.
+        self.read_stream(launch, opts, agent.max_wall_clock.unwrap_or(0))
     }
 }
 
@@ -532,6 +790,22 @@ fn api_retry_line(v: &Value) -> String {
     let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0);
     let delay_ms = v.get("retry_delay_ms").and_then(Value::as_u64).unwrap_or(0);
     format!("waiting: {category} (attempt {attempt}, retrying in {delay_ms}ms)")
+}
+
+/// THE STOP's human-readable message (spec 104 criterion 6), recorded both as the
+/// [`SpawnResult::liveness_fault`]'s `error` text and this driver's own returned `Err` -
+/// the ONE place that wording is assembled, mirroring [`crate::liveness::stale_result_message`]'s
+/// role for the stepwise driver's own hung-agent fault, but naming THIS host's own
+/// mechanism (stream silence against `max_wall_clock`) rather than a stale marker file,
+/// since this driver enforces it in-process rather than through an external sweep.
+fn stop_message(spawn_id: &str, max_wall_clock: u64) -> String {
+    format!(
+        "spawn {spawn_id:?} stopped: its agent stream stayed silent for {max_wall_clock}s \
+         (its max_wall_clock bound) with no result - no remediation attempt is charged (the \
+         unit's code is not at fault). Re-drive it once the agent/driver is healthy: record \
+         a real result with `rigger result {spawn_id}` (last-write-wins supersedes this \
+         liveness fault)."
+    )
 }
 
 /// Map a `result` stream message to the [`SpawnResult`] THE STREAM records (Design:
@@ -1235,5 +1509,213 @@ mod tests {
         assert_eq!(res.meta["usage"]["input"], 0);
         assert_eq!(res.meta["turns"], 0);
         assert_eq!(res.meta["cost_usd"], 0.0);
+    }
+
+    // ---- reconcile_on_start (spec 104 criterion 6, supervisor start-up reconciliation) ----
+
+    /// A long-lived process rooted at `dir`, standing in for a hand-off-left-behind agent
+    /// process - mirrors `reap::tests::sleeper_in`'s exact shape (that helper is private
+    /// to its own module, so this is the local copy this module's own tests need).
+    fn sleeper_in(dir: &Path) -> Child {
+        Command::new("sleep")
+            .arg("300")
+            .current_dir(dir)
+            .spawn()
+            .expect("spawn sleep")
+    }
+
+    /// Poll until `pred` holds or a generous timeout elapses; returns whether it held.
+    fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
+        for _ in 0..200 {
+            if pred() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        false
+    }
+
+    fn open_launch(spawn: &str, launch: u32, session_id: &str) -> SpawnLaunched {
+        SpawnLaunched {
+            spawn: spawn.to_string(),
+            launch,
+            session_id: session_id.to_string(),
+            resumed_from: None,
+            started: 1,
+            ended: None,
+            class: None,
+        }
+    }
+
+    #[test]
+    fn reconcile_on_start_closes_every_open_launch_as_interrupted() {
+        let progress = Store::open(":memory:").unwrap();
+        progress_store::record_launch(
+            &progress,
+            "run-1",
+            &open_launch("u1/implementer#0", 0, "sess-a"),
+        )
+        .unwrap();
+
+        let driver = Driver {
+            progress_store: &progress,
+            ..Driver::default()
+        };
+        let events = progress
+            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
+            .unwrap();
+        let reconciled = driver.reconcile_on_start(&events, "run-1").unwrap();
+        assert_eq!(reconciled, vec!["u1/implementer#0".to_string()]);
+
+        let after = progress
+            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
+            .unwrap();
+        assert_eq!(
+            after.len(),
+            2,
+            "the open record plus its new closing record"
+        );
+        assert!(
+            crate::progress::open_launches(&after).unwrap().is_empty(),
+            "the launch must no longer read as open"
+        );
+        let closing: SpawnLaunched = serde_json::from_slice(&after[1].data).unwrap();
+        assert_eq!(closing.ended.as_deref(), Some("interrupted"));
+        assert_eq!(closing.spawn, "u1/implementer#0");
+        assert_eq!(closing.launch, 0);
+    }
+
+    #[test]
+    fn reconcile_on_start_is_a_noop_when_nothing_is_open() {
+        let progress = Store::open(":memory:").unwrap();
+        let driver = Driver {
+            progress_store: &progress,
+            ..Driver::default()
+        };
+        let reconciled = driver.reconcile_on_start(&[], "run-1").unwrap();
+        assert!(reconciled.is_empty());
+        assert!(
+            progress
+                .read_stream(crate::progress::STREAM, 0, Direction::Forward)
+                .unwrap()
+                .is_empty(),
+            "nothing open means nothing written"
+        );
+    }
+
+    #[test]
+    fn reconcile_on_start_leaves_an_already_closed_launch_alone() {
+        let progress = Store::open(":memory:").unwrap();
+        progress_store::record_launch(
+            &progress,
+            "run-1",
+            &open_launch("u1/implementer#0", 0, "sess-a"),
+        )
+        .unwrap();
+        progress_store::record_launch(
+            &progress,
+            "run-1",
+            &SpawnLaunched::closed("u1/implementer#0", 0, "sess-a", "completed", ""),
+        )
+        .unwrap();
+
+        let driver = Driver {
+            progress_store: &progress,
+            ..Driver::default()
+        };
+        let events = progress
+            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
+            .unwrap();
+        let reconciled = driver.reconcile_on_start(&events, "run-1").unwrap();
+        assert!(
+            reconciled.is_empty(),
+            "an already-closed launch is not re-closed"
+        );
+        assert_eq!(
+            progress
+                .read_stream(crate::progress::STREAM, 0, Direction::Forward)
+                .unwrap()
+                .len(),
+            2,
+            "no third event was appended"
+        );
+    }
+
+    #[test]
+    fn reconcile_on_start_skips_reaping_a_malformed_spawn_id_but_still_closes_it() {
+        let progress = Store::open(":memory:").unwrap();
+        progress_store::record_launch(&progress, "run-1", &open_launch("bare-id", 0, "sess-a"))
+            .unwrap();
+
+        let scratch = tempfile::tempdir().unwrap();
+        let driver = Driver {
+            progress_store: &progress,
+            scratch_root: scratch.path().to_string_lossy().into_owned(),
+            ..Driver::default()
+        };
+        let events = progress
+            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
+            .unwrap();
+        // Must not panic on an id with no `/unit` half (spawn::unit_of returns None).
+        let reconciled = driver.reconcile_on_start(&events, "run-1").unwrap();
+        assert_eq!(reconciled, vec!["bare-id".to_string()]);
+    }
+
+    #[test]
+    fn reconcile_on_start_reaps_a_process_still_rooted_in_the_spawns_worktree() {
+        let scratch = tempfile::tempdir().unwrap();
+        let scratch_root = scratch.path().to_string_lossy().into_owned();
+        // The SAME deterministic path every other worktree caller derives (spec 104
+        // criterion 6's own decision: no new `dir` field, this pure fn is the authority).
+        let unit_dir = crate::conductor::unit_worktree_dir(&scratch_root, "u1");
+        std::fs::create_dir_all(&unit_dir).unwrap();
+        let mut left_behind = sleeper_in(Path::new(&unit_dir));
+
+        let progress = Store::open(":memory:").unwrap();
+        progress_store::record_launch(
+            &progress,
+            "run-1",
+            &open_launch("u1/implementer#0", 0, "sess-a"),
+        )
+        .unwrap();
+
+        let driver = Driver {
+            progress_store: &progress,
+            scratch_root: scratch_root.clone(),
+            ..Driver::default()
+        };
+        let events = progress
+            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
+            .unwrap();
+        driver.reconcile_on_start(&events, "run-1").unwrap();
+
+        assert!(
+            wait_until(|| matches!(left_behind.try_wait(), Ok(Some(_)))),
+            "a process still rooted in the spawn's worktree must be reaped before relaunch"
+        );
+    }
+
+    #[test]
+    fn reconcile_on_start_reaps_nothing_when_no_scratch_root_is_configured() {
+        // An empty scratch_root (no scratch configured, or a test that does not care) must
+        // degrade to "close the record, reap nothing" - never guess a path to reap.
+        let progress = Store::open(":memory:").unwrap();
+        progress_store::record_launch(
+            &progress,
+            "run-1",
+            &open_launch("u1/implementer#0", 0, "sess-a"),
+        )
+        .unwrap();
+        let driver = Driver {
+            progress_store: &progress,
+            scratch_root: String::new(),
+            ..Driver::default()
+        };
+        let events = progress
+            .read_stream(crate::progress::STREAM, 0, Direction::Forward)
+            .unwrap();
+        // Must not panic reaping "/rigger-wt-u1" or any other guessed absolute path.
+        let reconciled = driver.reconcile_on_start(&events, "run-1").unwrap();
+        assert_eq!(reconciled, vec!["u1/implementer#0".to_string()]);
     }
 }

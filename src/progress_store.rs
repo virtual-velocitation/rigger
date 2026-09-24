@@ -181,6 +181,8 @@ mod tests {
                 session_id: "sess-1".into(),
                 resumed_from: None,
                 started: 1_700_000_000,
+                ended: None,
+                class: None,
             },
         )
         .unwrap();
@@ -214,6 +216,8 @@ mod tests {
                 session_id: "s".into(),
                 resumed_from: None,
                 started: 1,
+                ended: None,
+                class: None,
             },
         )
         .expect_err("a launch record nobody can find was not recorded");

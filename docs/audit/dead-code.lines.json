@@ -6,7 +6,7 @@
     "ambiguous_with": [
       "src/canary.rs:185",
       "src/progress.rs:71",
-      "src/progress.rs:119",
+      "src/progress.rs:138",
       "src/run.rs:132"
     ],
     "test_only_references": []
@@ -18,7 +18,7 @@
     "ambiguous_with": [
       "src/canary.rs:94",
       "src/progress.rs:71",
-      "src/progress.rs:119",
+      "src/progress.rs:138",
       "src/run.rs:132"
     ],
     "test_only_references": []
@@ -653,28 +653,59 @@
   },
   {
     "file": "src/driver/claude_code.rs",
-    "name": "install_write_guard_hook",
-    "line": 653,
+    "name": "reconcile_on_start",
+    "line": 660,
     "test_only_references": [
       {
         "file": "src/driver/claude_code.rs",
-        "line": 795
+        "line": 1567
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 810
+        "line": 1595
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 832
+        "line": 1629
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 848
+        "line": 1660
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 849
+        "line": 1690
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1718
+      }
+    ]
+  },
+  {
+    "file": "src/driver/claude_code.rs",
+    "name": "install_write_guard_hook",
+    "line": 927,
+    "test_only_references": [
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1069
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1084
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1106
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1122
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1123
       },
       {
         "file": "tests/write_guard_hook_periphery.rs",
@@ -693,7 +724,7 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 20704
+        "line": 20712
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -1155,7 +1186,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 10052
+        "line": 10087
       }
     ]
   },
@@ -1280,15 +1311,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 41940
+        "line": 41948
       },
       {
         "file": "src/conductor.rs",
-        "line": 42007
+        "line": 42015
       },
       {
         "file": "src/conductor.rs",
-        "line": 42782
+        "line": 42790
       },
       {
         "file": "src/ledger.rs",
@@ -1334,7 +1365,7 @@
     "ambiguous_with": [
       "src/canary.rs:94",
       "src/canary.rs:185",
-      "src/progress.rs:119",
+      "src/progress.rs:138",
       "src/run.rs:132"
     ],
     "test_only_references": []
@@ -1342,7 +1373,7 @@
   {
     "file": "src/progress.rs",
     "name": "to_event",
-    "line": 119,
+    "line": 138,
     "ambiguous_with": [
       "src/canary.rs:94",
       "src/canary.rs:185",
@@ -1359,7 +1390,7 @@
       "src/canary.rs:94",
       "src/canary.rs:185",
       "src/progress.rs:71",
-      "src/progress.rs:119"
+      "src/progress.rs:138"
     ],
     "test_only_references": []
   },
@@ -1385,51 +1416,51 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 14694
+        "line": 14702
       },
       {
         "file": "src/conductor.rs",
-        "line": 14911
+        "line": 14919
       },
       {
         "file": "src/conductor.rs",
-        "line": 14922
+        "line": 14930
       },
       {
         "file": "src/conductor.rs",
-        "line": 15002
+        "line": 15010
       },
       {
         "file": "src/conductor.rs",
-        "line": 23019
+        "line": 23027
       },
       {
         "file": "src/conductor.rs",
-        "line": 23096
+        "line": 23104
       },
       {
         "file": "src/conductor.rs",
-        "line": 23190
+        "line": 23198
       },
       {
         "file": "src/conductor.rs",
-        "line": 23277
+        "line": 23285
       },
       {
         "file": "src/conductor.rs",
-        "line": 23372
+        "line": 23380
       },
       {
         "file": "src/conductor.rs",
-        "line": 30507
+        "line": 30515
       },
       {
         "file": "src/conductor.rs",
-        "line": 30512
+        "line": 30520
       },
       {
         "file": "src/conductor.rs",
-        "line": 30575
+        "line": 30583
       },
       {
         "file": "src/console/mod.rs",
@@ -1573,11 +1604,11 @@
       },
       {
         "file": "src/progress.rs",
-        "line": 248
+        "line": 324
       },
       {
         "file": "src/progress.rs",
-        "line": 297
+        "line": 373
       },
       {
         "file": "src/spawn.rs",
@@ -2093,31 +2124,31 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 14692
+        "line": 14700
       },
       {
         "file": "src/conductor.rs",
-        "line": 14909
+        "line": 14917
       },
       {
         "file": "src/conductor.rs",
-        "line": 14930
+        "line": 14938
       },
       {
         "file": "src/conductor.rs",
-        "line": 15000
+        "line": 15008
       },
       {
         "file": "src/conductor.rs",
-        "line": 30505
+        "line": 30513
       },
       {
         "file": "src/conductor.rs",
-        "line": 30510
+        "line": 30518
       },
       {
         "file": "src/conductor.rs",
-        "line": 30573
+        "line": 30581
       },
       {
         "file": "src/driver/replay.rs",
@@ -2216,19 +2247,19 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 14675
+        "line": 14683
       },
       {
         "file": "src/conductor.rs",
-        "line": 14823
+        "line": 14831
       },
       {
         "file": "src/conductor.rs",
-        "line": 14900
+        "line": 14908
       },
       {
         "file": "src/conductor.rs",
-        "line": 15023
+        "line": 15031
       },
       {
         "file": "src/worktree.rs",

@@ -307,6 +307,43 @@ fn send_signal(signal: Signal, pid: u32) {
     let _ = rustix::process::kill_process(rpid, signal);
 }
 
+/// End a process rigger still holds a live [`std::process::Child`] handle to (spec 104
+/// criterion 6, STOP; `docs/architecture-addendum-claude-code-integration.md` §4.6: "a
+/// host-initiated stop ... closes the session's input stream, waits a grace period, then
+/// ends the child through the sanctioned lifecycle helper on the child's own handle. Never
+/// a pid, a group or a shell-out."): SIGTERM it, wait [`GRACE`] for it to exit on its own,
+/// then finish it through the handle itself (`kill()` + `wait()` - SIGKILL, never a second
+/// signal call) if it has not. This promotes the tests-only `cleanup()` fixture helper's
+/// pattern (same file, above) into production code, running the identical TERM-then-
+/// grace-then-KILL escalation [`reap_authorized`] already runs for a cwd-SCANNED base, but
+/// keyed on a HELD HANDLE instead: the `pid` [`send_signal`] receives is read directly off
+/// the live `child` the caller still owns (`child.id()`) - never a marker, a pidfile, or a
+/// `/proc` scan (never a COMPUTED pid) - so this is the handle-bound counterpart to
+/// [`send_signal`]'s cwd-scanned production callers, and [`send_signal`] stays the crate's
+/// ONE signalling call either way (no new signalling site). A `child` that has ALREADY
+/// exited (`try_wait` reports it) is a no-op: nothing left to end, and no signal reaches a
+/// pid the kernel may since have recycled onto an unrelated process.
+pub fn end_child(child: &mut std::process::Child) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
+    send_signal(Signal::TERM, child.id());
+    let deadline = std::time::Instant::now() + GRACE;
+    loop {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // Still alive past the grace: finish it through the SAME handle (SIGKILL, never a
+    // second signalling call) and collect it so no zombie survives this function.
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Validate that `base_dir` is a directory the reaper is authorized to touch (spec 78, THE
 /// REAPER; spec 78 round-2 amendment, decision `u78c2r2-authorized-root-caller-supplied`;
 /// spec 89 criterion 3, THE RECLAIM GUARD COMPARES PATHS): `authorized_root` must
@@ -570,6 +607,48 @@ mod tests {
     fn cleanup(child: &mut Child) {
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    // ---- end_child (spec 104 criterion 6, STOP): the handle-bound production reap ----
+
+    #[test]
+    fn end_child_term_stops_a_well_behaved_process_within_grace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = sleeper_in(dir.path());
+        let started = std::time::Instant::now();
+        end_child(&mut child);
+        assert!(
+            started.elapsed() < GRACE,
+            "a TERM-responsive child must exit on the signal, not wait out the full grace"
+        );
+        assert!(
+            matches!(child.try_wait(), Ok(Some(_))),
+            "the child must be reaped (no zombie left behind)"
+        );
+    }
+
+    #[test]
+    fn end_child_escalates_to_kill_when_the_process_ignores_term() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = sigterm_ignorer_in(dir.path());
+        end_child(&mut child);
+        assert!(
+            matches!(child.try_wait(), Ok(Some(_))),
+            "a TERM-ignoring child must still be ended, via the SIGKILL escalation"
+        );
+    }
+
+    #[test]
+    fn end_child_is_a_noop_on_an_already_exited_child() {
+        let mut child = StdCommand::new("true").spawn().expect("spawn true");
+        assert!(
+            wait_for_exit(&mut child),
+            "the fixture must exit on its own first"
+        );
+        // Must not panic, hang, or send a signal to a pid that may have been recycled -
+        // `try_wait` already reaped it, so this is a pure no-op.
+        end_child(&mut child);
+        assert!(matches!(child.try_wait(), Ok(Some(_))));
     }
 
     #[test]

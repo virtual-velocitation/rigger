@@ -12742,7 +12742,15 @@ pub fn unit_branch(unit_id: &str) -> String {
 /// resume/supersede, not true concurrency: rigger drives unit-worktree creation
 /// single-threaded within one `rigger step`.) Pairs with [`unit_branch`], which derives the
 /// unit's durable branch from the same id.
-fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
+///
+/// `pub(crate)` (spec 104 criterion 6, STOP): the supervisor start-up reconciliation in
+/// `driver::claude_code` derives a spawn's worktree dir the SAME way every other caller in
+/// this module already does - purely from the run's scratch root and the spawn's unit (via
+/// [`crate::spawn::unit_of`]) - rather than a second, divergent path-assembly. No event
+/// needs to carry a `dir` field: this function's own purity is what makes "the log and the
+/// progress store are the only state" (spec 104's CONSTRAINTS WALK, cold start) hold for
+/// the worktree location too.
+pub(crate) fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
     format!(
         "{scratch_root}/{}{}",
         crate::worktree::UNIT_WORKTREE_PREFIX,

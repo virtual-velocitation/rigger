@@ -64,6 +64,7 @@ impl Fixture {
             progress_store: &self.progress_store,
             run_store: &self.run_store,
             scratch_root: self.scratch_root.path().to_string_lossy().into_owned(),
+            stop_grace: std::time::Duration::from_secs(30),
         }
     }
 }
@@ -354,6 +355,7 @@ fn spawn_with_an_empty_scratch_root_never_writes_relative_to_cwd() {
         progress_store: &fx.progress_store,
         run_store: &fx.run_store,
         scratch_root: String::new(),
+        stop_grace: std::time::Duration::from_secs(30),
     };
     let o = opts("u104-stream/implementer#0");
     let emit = |_: &str, _: serde_json::Value| Ok(());
@@ -498,6 +500,7 @@ fn spawn_drains_stderr_concurrently_so_a_stderr_flood_cannot_deadlock_the_host()
             progress_store: &progress_store,
             run_store: &run_store,
             scratch_root,
+            stop_grace: std::time::Duration::from_secs(30),
         };
         let o = opts("u104-stream/implementer#0");
         let emit = |_: &str, _: serde_json::Value| Ok(());
@@ -676,5 +679,143 @@ fn spawn_waits_out_a_clean_eof_before_reaping_never_kills_mid_teardown() {
         marker.exists(),
         "the child's own post-output teardown must finish before spawn() reaps it - a \
          child force-ended mid-teardown never gets to touch its marker"
+    );
+}
+
+// ---- spec 104 criterion 6 (STOP): a wall-clock expiry against stream silence ----
+
+#[test]
+fn spawn_stops_gracefully_when_a_silent_child_winds_down_on_its_own() {
+    // THE STOP (architecture addendum §4.6): "closes the session's input stream, waits a
+    // grace period, then ends the child through the sanctioned lifecycle helper." This
+    // fixture goes silent after `system/init` but exits ON ITS OWN the moment its stdin
+    // closes - the well-behaved case, proving the grace period is honored rather than an
+    // immediate force-end, while `stop_grace` is injected short so the test itself stays
+    // fast (see `Driver::stop_grace`'s own doc).
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-silent-winds-down-on-eof-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver {
+        bin,
+        stop_grace: Duration::from_millis(300),
+        ..fx.driver()
+    };
+    let o = opts("u104-stop/implementer#0");
+    let agent = AgentDef {
+        max_wall_clock: Some(1),
+        ..Default::default()
+    };
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let started = std::time::Instant::now();
+    let err = driver
+        .spawn(&agent, "do the thing", &o, &emit)
+        .expect_err("a stream that never produces a result must not read as a success");
+    let elapsed = started.elapsed();
+
+    assert!(err.0.contains("stopped"), "{}", err.0);
+    assert!(err.0.contains("u104-stop/implementer#0"), "{}", err.0);
+    // 1s wall-clock bound + a short injected grace, nowhere near the real 30s default -
+    // proves the injected `stop_grace` seam actually reached the stop sequence.
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "the stop must honor the INJECTED grace, not the real 30s default: {elapsed:?}"
+    );
+
+    // "the existing liveness-fault result is recorded" - the SAME SpawnResult shape
+    // liveness::sweep records for the stepwise driver's own hung agent.
+    let events = fx
+        .run_store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let results: Vec<_> = events
+        .iter()
+        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
+        .collect();
+    assert_eq!(results.len(), 1, "exactly one liveness-fault result landed");
+    let res = spawn::SpawnResult::from_event(results[0]).unwrap();
+    assert_eq!(res.id, "u104-stop/implementer#0");
+    assert!(
+        res.is_liveness_fault(),
+        "a wall-clock STOP must record the EXISTING liveness-fault shape, meta: {:?}",
+        res.meta
+    );
+    assert_eq!(
+        res.liveness_class(),
+        rigger::failure::FailureClass::Infra.as_str()
+    );
+
+    // "the launch ends `stopped`" - the progress-store closing record.
+    let progress_events = fx
+        .progress_store
+        .read_stream(rigger::progress::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let launches: Vec<_> = progress_events
+        .iter()
+        .filter(|e| e.type_ == rigger::progress::TYPE_SPAWN_LAUNCHED)
+        .collect();
+    assert_eq!(
+        launches.len(),
+        2,
+        "the open launch record plus its stopped closing record"
+    );
+    let closing: rigger::progress::SpawnLaunched =
+        serde_json::from_slice(&launches[1].data).unwrap();
+    assert_eq!(closing.ended.as_deref(), Some("stopped"));
+    assert!(
+        rigger::progress::open_launches(&progress_events)
+            .unwrap()
+            .is_empty(),
+        "the launch must no longer read as open once STOP has closed it"
+    );
+}
+
+#[test]
+fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing() {
+    // The escalation half of THE STOP: a session that ignores its stdin closing entirely
+    // (never exits on its own) must still be ended - through `reap::end_child`'s
+    // handle-bound TERM-then-grace-then-KILL sequence, never a computed pid or a
+    // shell-out - once the injected grace elapses. Proven the SAME way this file's own
+    // mid-stream-read-error test proves a reap: a REAL pid the fixture wrote itself,
+    // checked via `common::is_alive` independently of the `Child` handle that reaped it.
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-silent-ignores-eof-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver {
+        bin,
+        stop_grace: Duration::from_millis(200),
+        ..fx.driver()
+    };
+    let pid_file = fx.scratch_root.path().join("ignores-eof.pid");
+    let mut o = opts("u104-stop/implementer#0");
+    o.env = vec![(
+        "RIGGER_TEST_IGNORES_EOF_PID_FILE".to_string(),
+        pid_file.to_string_lossy().into_owned(),
+    )];
+    let agent = AgentDef {
+        max_wall_clock: Some(1),
+        ..Default::default()
+    };
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let err = driver
+        .spawn(&agent, "do the thing", &o, &emit)
+        .expect_err("a stream that never produces a result must not read as a success");
+    assert!(err.0.contains("stopped"), "{}", err.0);
+
+    let pid_text = std::fs::read_to_string(&pid_file)
+        .expect("the fixture recorded its pid before going silent");
+    let pid: u32 = pid_text
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    assert!(
+        !common::is_alive(pid),
+        "child pid {pid} ignored its input closing and must still be ended by \
+         reap::end_child's escalation - never leaked"
     );
 }

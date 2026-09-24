@@ -842,9 +842,14 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// injection half, no production caller yet since the composition-root wiring that assembles
 /// a live spawn's `--settings` string from both hook owners (this criterion's fragment plus
 /// criterion 5's `StopFailure` one) is a later unit. Candidates +1 (42 -> 43), keep-pending
-/// +1 (5 -> 6), delete and keep-public-surface unchanged.
+/// +1 (5 -> 6), delete and keep-public-surface unchanged. Now 44/21/16/7 (was 43/21/16/6)
+/// after spec 104 criterion 6's STOP: `reconcile_on_start` (src/driver/claude_code.rs) lands
+/// as a fresh `keep-pending` candidate - a supervisor start-up's closing-and-reaping half, no
+/// production caller yet since the composition-root wiring that calls it before a fresh spawn
+/// launch is spec 105's. Candidates +1 (43 -> 44), keep-pending +1 (6 -> 7), delete and
+/// keep-public-surface unchanged.
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_21_delete_6_keep_pending_16_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_21_delete_7_keep_pending_16_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -861,7 +866,7 @@ fn the_committed_dead_code_json_disposition_split_is_21_delete_6_keep_pending_16
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (43, 21, 16, 6),
+        (44, 21, 16, 7),
         "the committed disposition split has changed since this criterion's research"
     );
 }

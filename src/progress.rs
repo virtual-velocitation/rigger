@@ -14,7 +14,7 @@
 //! store's `grep-fallback:` lines for the dash - never in a run-stream fold, so the isolation
 //! that keeps replay byte-identical is preserved.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -89,8 +89,11 @@ pub const TYPE_SPAWN_LAUNCHED: &str = "SpawnLaunched";
 /// (`docs/architecture-addendum-claude-code-integration.md` §4.1). The host mints
 /// [`session_id`](Self::session_id) and records this BEFORE starting the child - "before
 /// the child starts" is the caller's ordering to keep, not something this pure type can
-/// enforce itself. This is the OPEN half of the record only: `started`, no `ended`/`class`
-/// pair - closing it on exit belongs to whichever later criterion reads the stream.
+/// enforce itself. The SAME type serves both halves of the record (spec 104 criteria
+/// 5/6): an OPEN write carries `started` with `ended`/`class` both `None`; a CLOSING write
+/// ([`SpawnLaunched::closed`]) is a SEPARATE appended event (the progress store is
+/// append-only) for the same `spawn`/`launch`, with `ended`/`class` set - [`open_launches`]
+/// folds the two by reading only the LATEST record per (`spawn`, `launch`) key.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnLaunched {
     /// The deterministic spawn id this launch belongs to (e.g. `u/implementer#0`).
@@ -109,6 +112,22 @@ pub struct SpawnLaunched {
     /// Unix seconds the host started this launch. Caller-supplied: this type never reads
     /// the clock itself, so it stays usable from a pure/core call site.
     pub started: u64,
+    /// How this launch ENDED, or `None` while still open (spec 104 criteria 5/6; the
+    /// architecture addendum §4.1's own "at exit it closes the record with `ended:
+    /// completed | interrupted | fault | stopped` and the class"): one of `"completed"`
+    /// (a real result landed), `"interrupted"` (the supervisor found this record still
+    /// open at start-up - [`open_launches`]/the reconciliation caller), `"fault"`
+    /// (criterion 5's own no-result API-side ending), or `"stopped"` (criterion 6's
+    /// wall-clock expiry). Deliberately a plain string, not an enum: THE STREAM,
+    /// FAILURE CLASS and STOP each write their own literal, so none of the three has to
+    /// land before another can close a record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<String>,
+    /// The failure class this launch ended under (criterion 5's `AgentFailure` category,
+    /// or this driver's own infra class for a wall-clock STOP) - `None` for `completed`
+    /// and `interrupted`, which carry no failure to classify.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
 }
 
 impl SpawnLaunched {
@@ -124,6 +143,63 @@ impl SpawnLaunched {
             ev.with_meta(META_RUN_ID, run_id)
         })
     }
+
+    /// Build the CLOSING record for an already-open launch (spec 104 criteria 5/6): the
+    /// progress store is append-only (spec 93), so closing is a SEPARATE event, never a
+    /// mutation of the open record - this is the one place that shape is assembled, so
+    /// FAILURE CLASS, STOP and the supervisor reconciliation share it rather than each
+    /// building a divergent literal. `session_id` identifies WHICH launch is closing;
+    /// `started`/`resumed_from` are left at their defaults because [`open_launches`]'s
+    /// fold only reads the LATEST record's `ended` to decide open-vs-closed - the
+    /// original open record (already durable) is what carries those. An empty `class`
+    /// stores as `None` (the `completed`/`interrupted` endings carry no failure class).
+    pub fn closed(
+        spawn: impl Into<String>,
+        launch: u32,
+        session_id: impl Into<String>,
+        ended: &str,
+        class: &str,
+    ) -> SpawnLaunched {
+        SpawnLaunched {
+            spawn: spawn.into(),
+            launch,
+            session_id: session_id.into(),
+            resumed_from: None,
+            started: 0,
+            ended: Some(ended.to_string()),
+            class: if class.is_empty() {
+                None
+            } else {
+                Some(class.to_string())
+            },
+        }
+    }
+}
+
+/// Every OPEN launch in `events` (spec 104 criterion 6, start-up reconciliation): every
+/// [`TYPE_SPAWN_LAUNCHED`] record, grouped by its own identity (`spawn`, `launch`) since a
+/// spawn can relaunch, keeping only the LATEST record per key - the same "a later event
+/// for the same id overwrites the earlier one" convention [`consolidate`]'s own
+/// `latest_prog` fold already uses for [`AgentProgress`] - and returning the ones whose
+/// latest record still carries no [`SpawnLaunched::ended`]. `events` is assumed already in
+/// store append order (`EventStore::read_stream`'s forward direction), so "latest" is
+/// simply "last seen while iterating". A `BTreeMap` keeps the return order deterministic
+/// (by spawn id then launch ordinal) rather than a hash order that could vary process to
+/// process. PURE: no IO, no store - the caller reads the progress store's events once and
+/// hands them in.
+pub fn open_launches(events: &[Event]) -> Result<Vec<SpawnLaunched>, serde_json::Error> {
+    let mut latest: BTreeMap<(String, u32), SpawnLaunched> = BTreeMap::new();
+    for e in events {
+        if e.type_ != TYPE_SPAWN_LAUNCHED {
+            continue;
+        }
+        let sl: SpawnLaunched = serde_json::from_slice(&e.data)?;
+        latest.insert((sl.spawn.clone(), sl.launch), sl);
+    }
+    Ok(latest
+        .into_values()
+        .filter(|sl| sl.ended.is_none())
+        .collect())
 }
 
 /// A live per-agent view (spec 14, unit 2): for one in-flight spawn, what stage it is at,
@@ -314,6 +390,8 @@ mod tests {
             session_id: "11111111-1111-4111-8111-111111111111".into(),
             resumed_from: None,
             started: 1_700_000_000,
+            ended: None,
+            class: None,
         };
         let ev = launched.to_event("run-9").unwrap();
         assert_eq!(ev.type_, TYPE_SPAWN_LAUNCHED);
@@ -334,12 +412,22 @@ mod tests {
             session_id: "s".into(),
             resumed_from: None,
             started: 1,
+            ended: None,
+            class: None,
         };
         let ev = launched.to_event("").unwrap();
         let v: serde_json::Value = serde_json::from_slice(&ev.data).unwrap();
         assert!(
             v.get("resumed_from").is_none(),
             "resumed_from must be omitted, not null: {v:?}"
+        );
+        assert!(
+            v.get("ended").is_none(),
+            "ended must be omitted while open, not null: {v:?}"
+        );
+        assert!(
+            v.get("class").is_none(),
+            "class must be omitted while open, not null: {v:?}"
         );
         assert!(
             !ev.meta.contains_key(META_RUN_ID),
@@ -355,10 +443,133 @@ mod tests {
             session_id: "new-session".into(),
             resumed_from: Some("old-session".into()),
             started: 2,
+            ended: None,
+            class: None,
         };
         let ev = launched.to_event("run-1").unwrap();
         let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
         assert_eq!(back.resumed_from.as_deref(), Some("old-session"));
         assert_eq!(back.launch, 1);
+    }
+
+    // ---- ended/class closing (spec 104 criteria 5/6) ----
+
+    #[test]
+    fn spawn_launched_closed_builds_a_closing_record_with_ended_and_class() {
+        let closing = SpawnLaunched::closed("u/implementer#0", 0, "sess-1", "stopped", "infra");
+        assert_eq!(closing.spawn, "u/implementer#0");
+        assert_eq!(closing.launch, 0);
+        assert_eq!(closing.session_id, "sess-1");
+        assert_eq!(closing.ended.as_deref(), Some("stopped"));
+        assert_eq!(closing.class.as_deref(), Some("infra"));
+    }
+
+    #[test]
+    fn spawn_launched_closed_stores_an_empty_class_as_none() {
+        // completed/interrupted carry no failure class.
+        let closing = SpawnLaunched::closed("u/implementer#0", 0, "sess-1", "completed", "");
+        assert_eq!(closing.ended.as_deref(), Some("completed"));
+        assert_eq!(closing.class, None);
+    }
+
+    #[test]
+    fn spawn_launched_closed_round_trips_through_json() {
+        let closing = SpawnLaunched::closed("u/implementer#0", 2, "sess-9", "fault", "rate_limit");
+        let ev = closing.to_event("run-1").unwrap();
+        let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
+        assert_eq!(back, closing);
+    }
+
+    // ---- open_launches (spec 104 criterion 6, start-up reconciliation) ----
+
+    fn open_event(spawn: &str, launch: u32, session_id: &str) -> Event {
+        SpawnLaunched {
+            spawn: spawn.into(),
+            launch,
+            session_id: session_id.into(),
+            resumed_from: None,
+            started: 1,
+            ended: None,
+            class: None,
+        }
+        .to_event("run-1")
+        .unwrap()
+    }
+
+    #[test]
+    fn open_launches_returns_a_launch_with_no_closing_record() {
+        let events = vec![open_event("u1/implementer#0", 0, "sess-a")];
+        let open = open_launches(&events).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].spawn, "u1/implementer#0");
+    }
+
+    #[test]
+    fn open_launches_omits_a_launch_whose_closing_record_landed_later() {
+        let events = vec![
+            open_event("u1/implementer#0", 0, "sess-a"),
+            SpawnLaunched::closed("u1/implementer#0", 0, "sess-a", "completed", "")
+                .to_event("run-1")
+                .unwrap(),
+        ];
+        assert!(
+            open_launches(&events).unwrap().is_empty(),
+            "a closed launch must not be reported open"
+        );
+    }
+
+    #[test]
+    fn open_launches_keys_on_spawn_and_launch_so_a_relaunch_is_independent() {
+        // The spawn relaunched (launch 0 -> 1) after an interruption; launch 0's closing
+        // record must never suppress launch 1, still open.
+        let events = vec![
+            open_event("u1/implementer#0", 0, "sess-a"),
+            SpawnLaunched::closed("u1/implementer#0", 0, "sess-a", "interrupted", "")
+                .to_event("run-1")
+                .unwrap(),
+            open_event("u1/implementer#0", 1, "sess-b"),
+        ];
+        let open = open_launches(&events).unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].launch, 1);
+        assert_eq!(open[0].session_id, "sess-b");
+    }
+
+    #[test]
+    fn open_launches_ignores_other_progress_store_event_types() {
+        let mut events = vec![open_event("u1/implementer#0", 0, "sess-a")];
+        events.push(
+            AgentProgress {
+                id: "u1/implementer#0".into(),
+                activity: "grep #1".into(),
+            }
+            .to_event("run-1")
+            .unwrap(),
+        );
+        let open = open_launches(&events).unwrap();
+        assert_eq!(
+            open.len(),
+            1,
+            "the AgentProgress line must not be mistaken for a launch"
+        );
+    }
+
+    #[test]
+    fn open_launches_is_deterministically_ordered_by_spawn_then_launch() {
+        let events = vec![
+            open_event("u2/implementer#0", 0, "s2"),
+            open_event("u1/implementer#0", 1, "s1b"),
+            open_event("u1/implementer#0", 0, "s1a"),
+        ];
+        let open = open_launches(&events).unwrap();
+        let keys: Vec<(String, u32)> = open.iter().map(|s| (s.spawn.clone(), s.launch)).collect();
+        assert_eq!(
+            keys,
+            vec![
+                ("u1/implementer#0".to_string(), 0),
+                ("u1/implementer#0".to_string(), 1),
+                ("u2/implementer#0".to_string(), 0),
+            ]
+        );
     }
 }

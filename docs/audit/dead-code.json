@@ -732,6 +732,41 @@
     "reason": "rebuild (the digest-pool projection rebuild, spec 27) has no production caller anywhere - src/lib.rs's mod distiller; declaration is the only mention of the module outside distiller.rs itself, confirmed by a whole-tree recursive grep. Unlike a mere convenience wrapper, rebuild's own tested behavior IS spec 27's already-landed Done-when contract (clearing and re-deriving the digest pool, run-boundary scoping, determinism) - deleting it would delete the shipped mechanism those criteria proved, not an unused alternative to one. keep-pending, citing spec 27: it is modeled directly on playbooks::rebuild, which IS wired to a CLI surface (rigger playbooks --rebuild); distiller::rebuild is the equivalent primitive awaiting its own call site (a rigger distill command, or a hook into rigger reset), never spec'd as a Done-when criterion of spec 27 itself, which is why it shipped unwired."
   },
   {
+    "name": "reconcile_on_start",
+    "file": "src/driver/claude_code.rs",
+    "content_hash": "823d9407dec82665",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "1edc972a51e71931"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "9df275a19ff39624"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "1edc972a51e71931"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "1edc972a51e71931"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "8e0e22708552d2bc"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "1edc972a51e71931"
+      }
+    ],
+    "disposition": "keep-pending",
+    "reason": "reconcile_on_start (spec 104 criterion 6, STOP's supervisor start-up reconciliation half: 'on start the supervisor closes any SpawnLaunched left open as interrupted and reaps processes still rooted in that spawn's worktree before it relaunches') has no production caller yet, the SAME already-disclosed shape install_write_guard_hook's own entry above documents for criterion 4: `rigger run` still composes agents through cli::Driver (main.rs:3667), and no supervisor loop yet calls a claude_code::Driver method at start-up - that call site is spec 105's own composition-root swap, not this criterion's (spec 104's own Design, THE COMPOSITION ROOT paragraph: 'the swap that makes rigger run build claude_code::Driver is spec 105's first unit'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism criterion 6's own Done-when text specifies ('a supervisor start closes an open launch record and reaps the spawn's worktree before relaunching') - deleting it would delete the criterion's own start-up half before the supervisor loop that calls it once per boot lands. keep-pending, citing spec 104 criterion 6 (this criterion's own OWNS: 'stop and start-up reconciliation only') and spec 105 (the composition-root swap that will call it)."
+  },
+  {
     "name": "install_write_guard_hook",
     "file": "src/driver/claude_code.rs",
     "content_hash": "b175294160f7308f",
