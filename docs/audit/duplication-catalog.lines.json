@@ -419,8 +419,8 @@
       },
       {
         "file": "src/driver/claude_code.rs",
-        "start_line": 1540,
-        "end_line": 1540
+        "start_line": 1615,
+        "end_line": 1615
       },
       {
         "file": "src/driver/cli.rs",
@@ -819,8 +819,8 @@
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "start_line": 938,
-        "end_line": 938
+        "start_line": 1083,
+        "end_line": 1083
       },
       {
         "file": "tests/cli.rs",
@@ -2884,8 +2884,8 @@
       },
       {
         "file": "src/driver/claude_code.rs",
-        "start_line": 821,
-        "end_line": 829
+        "start_line": 896,
+        "end_line": 904
       },
       {
         "file": "src/spawn.rs",
@@ -4674,13 +4674,13 @@
       },
       {
         "file": "src/reap.rs",
-        "start_line": 555,
-        "end_line": 555
+        "start_line": 718,
+        "end_line": 718
       },
       {
         "file": "src/reap.rs",
-        "start_line": 954,
-        "end_line": 954
+        "start_line": 1120,
+        "end_line": 1120
       },
       {
         "file": "src/registry.rs",
@@ -10714,8 +10714,18 @@
       },
       {
         "file": "src/reap.rs",
-        "start_line": 276,
-        "end_line": 276
+        "start_line": 286,
+        "end_line": 286
+      },
+      {
+        "file": "src/reap.rs",
+        "start_line": 363,
+        "end_line": 363
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "start_line": 930,
+        "end_line": 930
       },
       {
         "file": "tests/cli.rs",
@@ -10936,6 +10946,11 @@
         "file": "src/reap.rs",
         "start_line": 225,
         "end_line": 231
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "start_line": 929,
+        "end_line": 937
       },
       {
         "file": "tests/cli.rs",
@@ -11514,8 +11529,8 @@
     "sites": [
       {
         "file": "src/driver/claude_code.rs",
-        "start_line": 1020,
-        "end_line": 1027
+        "start_line": 1095,
+        "end_line": 1102
       },
       {
         "file": "src/driver/replay.rs",
@@ -11539,13 +11554,13 @@
     "sites": [
       {
         "file": "src/driver/claude_code.rs",
-        "start_line": 1440,
-        "end_line": 1446
+        "start_line": 1515,
+        "end_line": 1521
       },
       {
         "file": "src/driver/claude_code.rs",
-        "start_line": 1449,
-        "end_line": 1455
+        "start_line": 1524,
+        "end_line": 1530
       }
     ]
   },
@@ -11554,13 +11569,13 @@
     "sites": [
       {
         "file": "src/driver/claude_code.rs",
-        "start_line": 1458,
-        "end_line": 1460
+        "start_line": 1533,
+        "end_line": 1535
       },
       {
         "file": "src/driver/claude_code.rs",
-        "start_line": 1463,
-        "end_line": 1469
+        "start_line": 1538,
+        "end_line": 1544
       }
     ]
   },
@@ -11569,18 +11584,18 @@
     "sites": [
       {
         "file": "src/driver/claude_code.rs",
-        "start_line": 1539,
-        "end_line": 1545
+        "start_line": 1614,
+        "end_line": 1620
       },
       {
         "file": "src/reap.rs",
-        "start_line": 573,
-        "end_line": 579
+        "start_line": 736,
+        "end_line": 742
       },
       {
         "file": "src/reap.rs",
-        "start_line": 583,
-        "end_line": 590
+        "start_line": 746,
+        "end_line": 753
       },
       {
         "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
@@ -11609,8 +11624,8 @@
     "sites": [
       {
         "file": "src/driver/claude_code.rs",
-        "start_line": 1548,
-        "end_line": 1556
+        "start_line": 1623,
+        "end_line": 1631
       },
       {
         "file": "src/gate.rs",
@@ -11619,8 +11634,8 @@
       },
       {
         "file": "src/reap.rs",
-        "start_line": 599,
-        "end_line": 607
+        "start_line": 762,
+        "end_line": 770
       },
       {
         "file": "tests/common/mod.rs",
@@ -11654,8 +11669,8 @@
     "sites": [
       {
         "file": "src/driver/claude_code.rs",
-        "start_line": 1558,
-        "end_line": 1568
+        "start_line": 1633,
+        "end_line": 1643
       },
       {
         "file": "src/progress.rs",
@@ -13554,8 +13569,8 @@
       },
       {
         "file": "src/reap.rs",
-        "start_line": 713,
-        "end_line": 720
+        "start_line": 879,
+        "end_line": 886
       }
     ]
   },
@@ -14394,8 +14409,8 @@
     "sites": [
       {
         "file": "src/reap.rs",
-        "start_line": 611,
-        "end_line": 614
+        "start_line": 774,
+        "end_line": 777
       },
       {
         "file": "tests/mutation_scratch_reap_base_guard_periphery.rs",
@@ -14419,13 +14434,13 @@
     "sites": [
       {
         "file": "src/reap.rs",
-        "start_line": 798,
-        "end_line": 803
+        "start_line": 964,
+        "end_line": 969
       },
       {
         "file": "src/reap.rs",
-        "start_line": 806,
-        "end_line": 809
+        "start_line": 972,
+        "end_line": 975
       }
     ]
   },
@@ -14434,13 +14449,13 @@
     "sites": [
       {
         "file": "src/reap.rs",
-        "start_line": 1154,
-        "end_line": 1180
+        "start_line": 1320,
+        "end_line": 1346
       },
       {
         "file": "src/reap.rs",
-        "start_line": 1183,
-        "end_line": 1210
+        "start_line": 1349,
+        "end_line": 1376
       }
     ]
   },
@@ -17856,6 +17871,16 @@
         "file": "tests/claude_code_stream_periphery.rs",
         "start_line": 824,
         "end_line": 914
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "start_line": 940,
+        "end_line": 994
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "start_line": 997,
+        "end_line": 1059
       }
     ]
   },

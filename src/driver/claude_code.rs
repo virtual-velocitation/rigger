@@ -531,16 +531,16 @@ impl Driver<'_> {
         // end: the join just below depends on the child's stderr pipe having already
         // closed.
         drop(reaper);
-        // Best-effort join: diagnostic-only drain (see the doc above), and the reap just
-        // above guarantees the child's stderr pipe has closed by now, so the thread has
-        // already hit EOF or is about to - never a caller-visible wait for its own sake.
+        // The reap just above ends only the ONE child handle it holds (spec 104 criterion 6
+        // round-4 fix): a descendant that inherited a copy of either pipe's write end
+        // before going silent keeps it open regardless, so both joins below are bounded
+        // ([`Driver::join_within_grace`]) rather than a bare `join()` that could wait on
+        // such a stranger forever - never a caller-visible wait for its own sake in the
+        // ordinary case, where the thread has already hit EOF or is about to.
         if let Some(handle) = stderr_drain {
-            let _ = handle.join();
+            self.join_within_grace(opts, "stderr", handle);
         }
-        // The stdout reader thread's own pipe closed the moment the child (now reaped)
-        // exited, so its loop has already hit EOF or is about to - the same "never a
-        // caller-visible wait for its own sake" guarantee as the stderr join above.
-        let _ = stdout_reader.join();
+        self.join_within_grace(opts, "stdout", stdout_reader);
 
         result.ok_or_else(|| {
             Error(format!(
@@ -555,19 +555,23 @@ impl Driver<'_> {
     /// input stream, waits a grace period, then ends the child through the sanctioned
     /// lifecycle helper on the child's own handle" (architecture addendum §4.6), then records
     /// the EXISTING liveness-fault shape and closes the launch record `stopped`. THE STOP
-    /// sweeps nothing beyond that one held handle - unlike [`Driver::reconcile_on_start`],
-    /// which safely sweeps its spawn's whole worktree because it runs at supervisor start-up,
-    /// before any spawn is dispatched, with no live siblings - a running spawn's worktree can
-    /// be shared concurrently by sibling spawns in the same unit (the review fan-out's own
-    /// lenses, `run_review_agents_concurrently`), and `reap`'s cwd-scanned matching has no
-    /// notion of which spawn owns a process, so a sweep here would signal a live sibling's own
-    /// legitimate process, not just this spawn's leftovers (`op-104-stop-no-sweep-at-wall-
-    /// clock-stop`, `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree`). Always returns
-    /// `Err` - a launch that never produced a result stays a failure from
-    /// this driver's own return value, exactly like the "agent stream ended with no
-    /// result" ending just above; a caller wanting the no-attempt-charged semantics reads
-    /// [`SpawnResult::is_liveness_fault`] off the run store this durably wrote, the SAME
-    /// way `liveness::sweep`'s callers already do for the stepwise driver's own fault.
+    /// sweeps nothing beyond that one child's own PID TREE - unlike [`Driver::reconcile_on_start`],
+    /// which safely sweeps its spawn's whole worktree by cwd because it runs at supervisor
+    /// start-up, before any spawn is dispatched, with no live siblings - a running spawn's
+    /// worktree can be shared concurrently by sibling spawns in the same unit (the review
+    /// fan-out's own lenses, `run_review_agents_concurrently`), and a cwd-scanned match has no
+    /// notion of which spawn owns a process, so a cwd sweep here would signal a live sibling's
+    /// own legitimate process, not just this spawn's leftovers (`op-104-stop-no-sweep-at-wall-
+    /// clock-stop`, `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree`); ending the
+    /// child's own descendants BY PROCESS TREE instead (round-4 fix, decision
+    /// `op-104-stop-end-the-tree-and-bound-the-joins`) carries no such risk, since a sibling's
+    /// process hangs off a different parent and can never appear in this walk regardless of
+    /// what it shares on disk. Always returns `Err` - a launch that never produced a result
+    /// stays a failure from this driver's own return value, exactly like the "agent stream
+    /// ended with no result" ending just above; a caller wanting the no-attempt-charged
+    /// semantics reads [`SpawnResult::is_liveness_fault`] off the run store this durably
+    /// wrote, the SAME way `liveness::sweep`'s callers already do for the stepwise driver's
+    /// own fault.
     fn stop_for_wall_clock_silence(
         &self,
         mut reaper: crate::dash::ReapedChild,
@@ -584,6 +588,17 @@ impl Driver<'_> {
         // success path uses to end a session's turn (dropping the handle closes the pipe).
         drop(reaper.child_mut().stdin.take());
 
+        // Snapshot the child's own descendants RIGHT NOW (spec 104 criterion 6 round-4
+        // fix, decision `op-104-stop-end-the-tree-and-bound-the-joins`) - BEFORE the
+        // passive grace wait just below, not after, and not inside `end_child` (which is
+        // not even called until that wait ends): a descendant a session forked but never
+        // `exec`'d reparents to its nearest surviving ancestor the INSTANT the session
+        // itself exits, gracefully or not, so a snapshot taken any later would already be
+        // too late for exactly the well-behaved case the grace wait below exists for - a
+        // session that notices its input closed and winds down entirely on its own,
+        // orphaning whatever it forked before reap::end_child ever gets a chance to look.
+        let descendants = crate::reap::snapshot_descendants(reaper.child_mut().id());
+
         // "waits a grace period" (self.stop_grace - 30s in production; an injected
         // shorter one in a test proving the full sequence): poll for the child exiting on
         // its own, without blocking the full grace when it already has.
@@ -596,22 +611,33 @@ impl Driver<'_> {
         }
 
         // "then ends the child through the sanctioned lifecycle helper on the child's own
-        // handle" - the NEW handle-bound production helper (reap.rs, spec 104 criterion
-        // 6's own decision `u104-stop-uses-reap-child-handle`): a no-op if the grace wait
-        // above already collected it.
-        crate::reap::end_child(reaper.child_mut());
+        // handle" - the handle-bound production helper (reap.rs, spec 104 criterion 6's own
+        // decision `u104-stop-uses-reap-child-handle`): a no-op on the child itself if the
+        // grace wait above already collected it. It also ends the descendants snapshotted
+        // above regardless (round-4 fix) - a process the session forked but never `exec`'d,
+        // so it is reaped too rather than merely outliving the one handle this function
+        // ever held, whether the session itself needed signalling or wound down on its own.
+        crate::reap::end_child(reaper.child_mut(), descendants);
 
-        // `end_child` above ends only the DIRECTLY HELD child handle - deliberately NO
-        // worktree-wide sweep here (unlike `reconcile_on_start`'s identical-looking one):
-        // this spawn's worktree can be shared, right now, by a live SIBLING spawn (the
-        // review fan-out's own concurrent lenses, `run_review_agents_concurrently`, all
-        // passed the same dir), and `reap`'s cwd-scanned matching has no notion of which
-        // spawn owns a process - a sweep here would signal that sibling's own legitimate,
-        // in-progress work, not just this spawn's leftovers (round-2 reject
-        // `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree`, upheld against the
-        // round-1 fix this replaces; `reconcile_on_start` keeps its own sweep because it
-        // runs only at supervisor start-up, before any spawn is dispatched, when no
-        // sibling can be alive - `op-104-stop-no-sweep-at-wall-clock-stop`).
+        // That descendant walk is matched by PID-TREE membership alone, deliberately NEVER
+        // by cwd - still NO worktree-wide sweep here (unlike `reconcile_on_start`'s
+        // identical-looking one): this spawn's worktree can be shared, right now, by a live
+        // SIBLING spawn (the review fan-out's own concurrent lenses,
+        // `run_review_agents_concurrently`, all passed the same dir), and a cwd-scanned
+        // match has no notion of which spawn owns a process - a sweep here would signal
+        // that sibling's own legitimate, in-progress work, not just this spawn's leftovers
+        // (round-2 reject `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree`, upheld
+        // against the round-1 fix this replaces). A sibling's process hangs off a DIFFERENT
+        // parent, so it can never appear in this child's own descendant tree regardless of
+        // what it shares on disk - safe by construction, not by omission.
+        // (`reconcile_on_start` keeps its own cwd sweep because it runs only at supervisor
+        // start-up, before any spawn is dispatched, when no sibling can be alive -
+        // `op-104-stop-no-sweep-at-wall-clock-stop`.)
+        //
+        // A descendant that had ALREADY escaped this child's process tree before the
+        // snapshot above ever ran (reparented to init by a double fork, say) is invisible
+        // to this walk and stays untouched - the bounded joins just below are what keep
+        // THE STOP returning regardless of what such a stranger still does with the pipe.
 
         // "the existing liveness-fault result is recorded" - the SAME [`SpawnResult`]
         // shape `liveness::sweep` already records for the stepwise driver's own hung
@@ -637,13 +663,15 @@ impl Driver<'_> {
         );
 
         drop(reaper);
+        // Bounded (spec 104 criterion 6 round-4 fix, [`Driver::join_within_grace`]): the
+        // child's own pipe copy closes the moment `end_child` above finishes it and its
+        // known descendants, but a descendant that had ALREADY escaped the tree before that
+        // snapshot ran still holds its own copy open, and no signal this function sent
+        // could ever reach it - this is the backstop that keeps THE STOP returning anyway.
         if let Some(handle) = stderr_drain {
-            let _ = handle.join();
+            self.join_within_grace(opts, "stderr", handle);
         }
-        // The stdout reader's pipe closes the moment `end_child` above finishes the
-        // child (SIGTERM already sent it EOF; the SIGKILL fallback guarantees it), so
-        // this join never waits for its own sake either.
-        let _ = stdout_reader.join();
+        self.join_within_grace(opts, "stdout", stdout_reader);
 
         Err(Error(format!(
             "claude_code driver: {:?}: {message}",
@@ -656,6 +684,53 @@ impl Driver<'_> {
     /// this never fails the spawn the way [`Driver::launch`]'s `SpawnLaunched` write does.
     fn record_progress(&self, opts: &SpawnOpts, activity: &str) {
         let _ = progress_store::record(self.progress_store, &opts.run_id, &opts.id, activity);
+    }
+
+    /// Join `handle` (a stdout-reader or stderr-drain thread), but never past
+    /// `self.stop_grace` (spec 104 criterion 6 round-4 fix, decision
+    /// `op-104-stop-end-the-tree-and-bound-the-joins`): a process the driven child forked
+    /// but never `exec`'d can inherit a copy of the stdout/stderr pipe's write end, and once
+    /// that copy has ALREADY escaped the child's own process tree - reparented before
+    /// [`crate::reap::end_child`]'s descendant snapshot ever ran, so no signal this host
+    /// sends can reach it - nothing this function does closes it: the thread blocked
+    /// reading that pipe would otherwise never see EOF, and neither [`Driver::read_stream`]
+    /// nor [`Driver::stop_for_wall_clock_silence`] would ever return. Polling
+    /// `JoinHandle::is_finished` against a deadline, rather than calling `join()` directly,
+    /// bounds the CALLER's own return time regardless of what such a stranger does with the
+    /// pipe - the SAME seam every join of a reader or drain thread in this file goes
+    /// through, so a stop (and an ordinary stream end) both return on a bounded clock no
+    /// matter who else holds the pipe.
+    ///
+    /// `label` names which pipe this was, for the progress line recorded when `handle`
+    /// outruns the deadline - the caller's only visible trace of a stranger it can neither
+    /// identify nor touch. A handle that outruns the deadline is left to run: dropping a
+    /// `JoinHandle` detaches its thread rather than cancelling it, so it keeps draining
+    /// (harmlessly - the bytes were always diagnostic-only, never this criterion's record
+    /// of truth) until whatever still holds the pipe finally closes it or exits on its own.
+    fn join_within_grace(
+        &self,
+        opts: &SpawnOpts,
+        label: &str,
+        handle: std::thread::JoinHandle<()>,
+    ) {
+        let deadline = std::time::Instant::now() + self.stop_grace;
+        loop {
+            if handle.is_finished() {
+                let _ = handle.join();
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                self.record_progress(
+                    opts,
+                    &format!(
+                        "stream: a process outside the child's tree still holds the {label} \
+                         pipe open - not waiting for it further"
+                    ),
+                );
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// SUPERVISOR START-UP RECONCILIATION (spec 104 criterion 6, STOP's other half): "on

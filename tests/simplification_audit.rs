@@ -4830,7 +4830,7 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:214-231`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0192`, 60 sites: `src/dash.rs`, `src/main.rs`, \
+        capstone previously caught (`dup-0192`, 62 sites: `src/dash.rs`, `src/main.rs`, \
         `src/reap.rs`, `tests/cli.rs`, `tests/duplication_catalog_contract_periphery.rs`, \
         `tests/mutation_runner_pdeathsig_periphery.rs`, `tests/simplification_audit.rs` - \
         spec 91's own launcher-exits proving test was an early addition to this \

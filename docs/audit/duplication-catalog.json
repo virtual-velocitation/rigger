@@ -11288,8 +11288,18 @@
       },
       {
         "file": "src/reap.rs",
+        "name": "\"/proc\"",
+        "content_hash": "e8f24cc59335ae47"
+      },
+      {
+        "file": "src/reap.rs",
         "name": "\"/proc/{}/cwd\"",
         "content_hash": "0e13eeda4dab6a69"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "name": "\"/proc/{pid}/stat\"",
+        "content_hash": "b155acfa73974133"
       },
       {
         "file": "tests/cli.rs",
@@ -11448,7 +11458,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "\"- Scope: `src/dash.rs::process_state` (`src/dash.rs:627-635`) and \\\n        `src/main.rs::pgid_of` (`src/main.rs:25030-25043`) each independently re-derive \\\n        `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \\\n        (`pid_starttime`/`read_ppid`, `src/reap.rs:214-231`) already parses - the exact \\\n        \\\"second mutation authority\\\" example spec 85's own Goal names and spec 62's \\\n        capstone previously caught (`dup-0192`, 60 sites: `src/dash.rs`, `src/main.rs`, \\\n        `src/reap.rs`, `tests/cli.rs`, `tests/duplication_catalog_contract_periphery.rs`, \\\n        `tests/mutation_runner_pdeathsig_periphery.rs`, `tests/simplification_audit.rs` - \\\n        spec 91's own launcher-exits proving test was an early addition to this \\\n        already-known cluster; a later semantic-classification pass widened it further, \\\n        including this file's own worked-example prose and fixtures (self-referential: the \\\n        scanner reads its own `/proc`-string-literal test fixtures as `/proc`-topic sites \\\n        too), which is why the count moved well past a one-site increment; `dup-0192`'s own \\\n        count in \\\n        `docs/audit/duplication-catalog.json` is the one live authority, so this paragraph's \\\n        number is a point-in-time snapshot, not a frozen fact), plus 60 raw `/proc`-path \\\n        string literals scattered across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four \\\n        test files with no shared composer (`dup-0190`). Both clusters' own `proposed_home` \\\n        agree: `src/reap.rs` \\\n        becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \\\n        re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \\\n        production server, so it is the actual active-correctness risk this tier-1 placement \\\n        is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:14089`) \\\n        and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \\\n        rides in this same item only because it shares `dup-0190`/`dup-0192`'s one root cause \\\n        and one proposed fix with `process_state`, not because retiring it retires any live \\\n        risk of its own.\\n\\\n        - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \\\n        `tests/cli.rs:24990-25003`, re-points at the same call).\\n\\\n        - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \\\n        parsing bodies in favor of calling `reap.rs`'s existing parser.\\n\\\n        - Risk: low for both halves, for two different reasons. Section 3's own disposition \\\n        already establishes `process_state` as a duplicate READ-only reimplementation, never a \\\n        bypassed mutation path - nothing this touches can signal or kill a process, so it \\\n        carries none of the no-os-kill gate's own risk surface. `pgid_of`'s own risk is lower \\\n        still: being test-only, retiring it is ordinary test cleanup, not a \\\n        correctness-risk retirement - it is sequenced here for shared-fix convenience, not \\\n        because it independently needed tier-1 urgency.\\n\\\n        - Unblocks: retires the codebase's only currently-known live instance of the \\\n        \\\"duplicate implementation reconciled after the fact\\\" pattern the operator's \\\n        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites - and, as a \\\n        free byproduct, `main.rs`'s own test-only duplicate parser.\\n\\n\"",
+        "name": "\"- Scope: `src/dash.rs::process_state` (`src/dash.rs:627-635`) and \\\n        `src/main.rs::pgid_of` (`src/main.rs:25030-25043`) each independently re-derive \\\n        `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \\\n        (`pid_starttime`/`read_ppid`, `src/reap.rs:214-231`) already parses - the exact \\\n        \\\"second mutation authority\\\" example spec 85's own Goal names and spec 62's \\\n        capstone previously caught (`dup-0192`, 62 sites: `src/dash.rs`, `src/main.rs`, \\\n        `src/reap.rs`, `tests/cli.rs`, `tests/duplication_catalog_contract_periphery.rs`, \\\n        `tests/mutation_runner_pdeathsig_periphery.rs`, `tests/simplification_audit.rs` - \\\n        spec 91's own launcher-exits proving test was an early addition to this \\\n        already-known cluster; a later semantic-classification pass widened it further, \\\n        including this file's own worked-example prose and fixtures (self-referential: the \\\n        scanner reads its own `/proc`-string-literal test fixtures as `/proc`-topic sites \\\n        too), which is why the count moved well past a one-site increment; `dup-0192`'s own \\\n        count in \\\n        `docs/audit/duplication-catalog.json` is the one live authority, so this paragraph's \\\n        number is a point-in-time snapshot, not a frozen fact), plus 60 raw `/proc`-path \\\n        string literals scattered across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four \\\n        test files with no shared composer (`dup-0190`). Both clusters' own `proposed_home` \\\n        agree: `src/reap.rs` \\\n        becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \\\n        re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \\\n        production server, so it is the actual active-correctness risk this tier-1 placement \\\n        is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:14089`) \\\n        and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \\\n        rides in this same item only because it shares `dup-0190`/`dup-0192`'s one root cause \\\n        and one proposed fix with `process_state`, not because retiring it retires any live \\\n        risk of its own.\\n\\\n        - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \\\n        `tests/cli.rs:24990-25003`, re-points at the same call).\\n\\\n        - Expected line delta: negative - retires `process_state`'s and `pgid_of`'s own \\\n        parsing bodies in favor of calling `reap.rs`'s existing parser.\\n\\\n        - Risk: low for both halves, for two different reasons. Section 3's own disposition \\\n        already establishes `process_state` as a duplicate READ-only reimplementation, never a \\\n        bypassed mutation path - nothing this touches can signal or kill a process, so it \\\n        carries none of the no-os-kill gate's own risk surface. `pgid_of`'s own risk is lower \\\n        still: being test-only, retiring it is ordinary test cleanup, not a \\\n        correctness-risk retirement - it is sequenced here for shared-fix convenience, not \\\n        because it independently needed tier-1 urgency.\\n\\\n        - Unblocks: retires the codebase's only currently-known live instance of the \\\n        \\\"duplicate implementation reconciled after the fact\\\" pattern the operator's \\\n        strict-DRY rule targets - the concrete precedent spec 85's own Goal cites - and, as a \\\n        free byproduct, `main.rs`'s own test-only duplicate parser.\\n\\n\"",
         "content_hash": "25597419b8dbb616"
       },
       {
@@ -11488,7 +11498,7 @@
       }
     ],
     "proposed_home": "src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)",
-    "note": "mandatory sweep: /proc-path string literals - 60 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: /proc-path string literals - 62 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0193",
@@ -11513,6 +11523,11 @@
         "file": "src/reap.rs",
         "name": "read_ppid",
         "content_hash": "f0d7d18a695764c7"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "name": "is_running",
+        "content_hash": "760abfc74b509858"
       },
       {
         "file": "tests/cli.rs",
@@ -11571,7 +11586,7 @@
       }
     ],
     "proposed_home": "src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning whichever field each caller needs, so dash.rs::process_state and reap.rs::pid_starttime/read_ppid stop each re-deriving the pid(comm)state... split",
-    "note": "mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functions - 15 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functions - 16 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0194",
@@ -19384,9 +19399,19 @@
         "file": "tests/claude_code_stream_periphery.rs",
         "name": "a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_clock_stop",
         "content_hash": "01a230103367e9c9"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "name": "spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree",
+        "content_hash": "8295a2f2f34a403f"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "name": "spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree",
+        "content_hash": "f1599daf2039ea75"
       }
     ],
-    "proposed_home": "claude_code_stream_periphery::support (consolidate these 2 sites into one function in this file)",
+    "proposed_home": "claude_code_stream_periphery::support (consolidate these 4 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {

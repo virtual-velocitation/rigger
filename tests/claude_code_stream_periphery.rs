@@ -913,6 +913,151 @@ fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_cloc
     let _ = sibling.wait();
 }
 
+// ---- spec 104 criterion 6 round-4 fix (decision op-104-stop-end-the-tree-and-bound-the-
+// joins): a descendant the driven child forked but never exec'd, inheriting a pipe fd ----
+
+/// Whether `pid` is still actually RUNNING - neither fully gone NOR a ZOMBIE awaiting reap
+/// by whatever process ends up adopting it - distinct from `common::is_alive`'s
+/// `kill(pid, 0)`-based "does this pid still occupy a process-table slot" check, which a
+/// SIGKILLed-but-not-yet-reaped zombie also satisfies. This test's own process is not the
+/// parent of the descendant it is checking (its real parent, the fixture's own shell, is
+/// ended by the SAME stop and so cannot `wait()` it either), so a genuinely-ended
+/// descendant may sit as a zombie - still "alive" by `kill(pid, 0)` - until whatever
+/// init/subreaper eventually collects it; reading its own reported state (`/proc/<pid>/stat`,
+/// the field right after `comm`'s closing paren, `Z` for zombie) is what tells "ended,
+/// awaiting reap by someone else" apart from "never signalled at all".
+fn is_running(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let Some((_, after_comm)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    !matches!(after_comm.trim_start().chars().next(), Some('Z') | None)
+}
+
+#[test]
+fn spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree() {
+    // adj-u104stop-r3-verdict-reject UPHELD adv-u104stop-r3-stop-can-still-hang-on-a-
+    // descendant: a descendant the driven child forked (`sleep 60 &`, never `exec`'d, so it
+    // stays a genuine CHILD of the fixture's own shell) inherits the stdout pipe's write
+    // end before the shell goes silent. reap::end_child's new PID-TREE walk
+    // (descendants_of, snapshotted before the child's own first signal) must find this
+    // descendant and end it too - never left running merely because THE STOP only ever
+    // held a `Child` handle to its direct parent - and THE STOP must still return promptly.
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-descendant-in-tree-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver {
+        bin,
+        stop_grace: Duration::from_millis(300),
+        ..fx.driver()
+    };
+    let descendant_pid_file = fx.scratch_root.path().join("descendant-in-tree.pid");
+    let mut o = opts("u104-stop/implementer#0");
+    o.env = vec![(
+        "RIGGER_TEST_DESCENDANT_PID_FILE".to_string(),
+        descendant_pid_file.to_string_lossy().into_owned(),
+    )];
+    let agent = AgentDef {
+        max_wall_clock: Some(1),
+        ..Default::default()
+    };
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let started = std::time::Instant::now();
+    let err = driver
+        .spawn(&agent, "do the thing", &o, &emit)
+        .expect_err("a stream that never produces a result must not read as a success");
+    let elapsed = started.elapsed();
+
+    assert!(err.0.contains("stopped"), "{}", err.0);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "THE STOP must return within a bounded time even while ending a forked \
+         descendant's own process tree: {elapsed:?}"
+    );
+
+    let pid_text = std::fs::read_to_string(&descendant_pid_file)
+        .expect("the fixture recorded its forked descendant's pid before going silent");
+    let descendant_pid: u32 = pid_text
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    assert!(
+        common::wait_until(|| !is_running(descendant_pid)),
+        "a descendant still in the child's own process tree (pid {descendant_pid}) must be \
+         ended by reap::end_child's new pid-tree walk, not merely left to outlive THE STOP"
+    );
+}
+
+#[test]
+fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree() {
+    // The bounded-join backstop half of the SAME round-4 fix: a descendant that had
+    // ALREADY double-forked itself out of the driven child's own process tree before THE
+    // STOP's pid-tree snapshot ever ran (reparented to init/a subreaper, so
+    // reap::end_child's walk can never find it) still holds a duplicate of the stdout
+    // pipe's write end open. THE STOP must still return within a bounded time regardless -
+    // Driver::join_within_grace, not reap::end_child, is what closes this gap - and must
+    // never touch this pid, since by the time the walk runs it is no longer any part of
+    // the child's own tree at all.
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-descendant-out-of-tree-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver {
+        bin,
+        stop_grace: Duration::from_millis(300),
+        ..fx.driver()
+    };
+    let descendant_pid_file = fx.scratch_root.path().join("descendant-out-of-tree.pid");
+    let mut o = opts("u104-stop/implementer#0");
+    o.env = vec![(
+        "RIGGER_TEST_DESCENDANT_PID_FILE".to_string(),
+        descendant_pid_file.to_string_lossy().into_owned(),
+    )];
+    let agent = AgentDef {
+        max_wall_clock: Some(1),
+        ..Default::default()
+    };
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let started = std::time::Instant::now();
+    let err = driver
+        .spawn(&agent, "do the thing", &o, &emit)
+        .expect_err("a stream that never produces a result must not read as a success");
+    let elapsed = started.elapsed();
+
+    assert!(err.0.contains("stopped"), "{}", err.0);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "THE STOP must return within a bounded time even when a descendant that already \
+         escaped the child's own process tree still holds the stdout pipe's write end \
+         open: {elapsed:?}"
+    );
+
+    let pid_text = std::fs::read_to_string(&descendant_pid_file)
+        .expect("the fixture recorded its escaped descendant's pid before going silent");
+    let descendant_pid: u32 = pid_text
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    assert!(
+        common::is_alive(descendant_pid),
+        "pid {descendant_pid}, standing in for a descendant that already escaped the \
+         child's own process tree, must be left untouched by THE STOP - it is not part of \
+         the tree reap::end_child's pid-tree walk can ever find, only a stray holder of \
+         its pipe"
+    );
+
+    // This test's own cleanup, through the sanctioned test-side signal call - never any
+    // process rigger's own STOP is responsible for reaping.
+    common::terminate_pid(descendant_pid);
+}
+
 #[test]
 fn reconcile_on_start_closes_an_open_launch_and_reaps_its_worktree_process_through_the_public_method(
 ) {
