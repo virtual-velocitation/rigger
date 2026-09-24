@@ -13977,14 +13977,18 @@ fn parse_guard_write_roots(args: &[String]) -> Result<Vec<String>, Box<dyn std::
 }
 
 /// THE WRITE GUARD's target axis (spec 104 criterion 4): what an incoming `PreToolUse`
-/// call means for the guard's decision. `NotCovered` (a tool name outside the three this
-/// guard matches) is nothing this guard protects, so it is allowed rather than guessed at.
-/// `TargetUnreadable` is the fail-safe case that a bare `Option::None` used to conflate
-/// with `NotCovered` (the defect this type exists to close): a COVERED tool name whose
-/// `tool_input` is missing the expected key, or carries it as a non-string - a payload
-/// shape this guard does not recognize, denied exactly like a resolved target outside
-/// every root, never silently allowed. `Target` carries the raw string to resolve and
-/// check against the configured roots.
+/// call means for the guard's decision. THE GUARD DENIES BY DEFAULT
+/// (op-104-write-guard-deny-by-default-complete-audit): `NotCovered` (Allow) is returned
+/// ONLY when the top-level payload is a JSON object whose `tool_name` is an actual string
+/// naming a tool outside the three this guard matches - nothing this guard protects, so it
+/// is allowed rather than guessed at. Every OTHER shape - an unparseable or non-object
+/// top-level payload, an absent or non-string `tool_name`, and (for a covered tool) an
+/// absent/non-object `tool_input` or an absent/non-string target field - is
+/// `TargetUnreadable`, denied exactly like a resolved target outside every root, never
+/// folded into the same Allow as `NotCovered`: this guard's entire purpose is containment,
+/// so a payload it cannot positively classify as a covered write inside a root is not
+/// evidence of safety, it is evidence the guard cannot see what the call would do.
+/// `Target` carries the raw string to resolve and check against the configured roots.
 #[derive(Debug, PartialEq, Eq)]
 enum WriteTarget {
     NotCovered,
@@ -13994,12 +13998,17 @@ enum WriteTarget {
 
 /// THE WRITE GUARD's target axis (spec 104 criterion 4): the path an `Edit`/`Write`/
 /// `NotebookEdit` call would touch, straight from that tool's own documented `tool_input`
-/// shape - `file_path` for `Edit`/`Write`, `notebook_path` for `NotebookEdit`.
+/// shape - `file_path` for `Edit`/`Write`, `notebook_path` for `NotebookEdit`. Assumes
+/// `tool_name` was already confirmed to come from a JSON object's own string field -
+/// [`guard_write_read_target`] owns that classification; this function only decides the
+/// covered-vs-not-covered axis and the target-field axis underneath it.
 /// `WriteTarget::NotCovered` for every other tool name (the installed hook's own matcher
 /// already scopes calls to these three). `WriteTarget::TargetUnreadable` for a covered
-/// tool whose `tool_input` lacks the expected key, or carries it as a non-string - this
-/// guard's entire purpose is containment, so a payload it cannot read is denied, never
-/// folded into the same outcome as a tool it does not cover.
+/// tool whose `tool_input` lacks the expected key, or carries it as a non-string (or whose
+/// `tool_input` is itself not a JSON object at all - indexing a non-object by a string key
+/// already yields `None`, so that shape falls into the same arm) - this guard's entire
+/// purpose is containment, so a payload it cannot read is denied, never folded into the
+/// same outcome as a tool it does not cover.
 fn guard_write_target(tool_name: &str, tool_input: &serde_json::Value) -> WriteTarget {
     let key = match tool_name {
         "Edit" | "Write" => "file_path",
@@ -14010,6 +14019,41 @@ fn guard_write_target(tool_name: &str, tool_input: &serde_json::Value) -> WriteT
         Some(raw) => WriteTarget::Target(raw.to_string()),
         None => WriteTarget::TargetUnreadable,
     }
+}
+
+/// THE GUARD DENIES BY DEFAULT (op-104-write-guard-deny-by-default-complete-audit): decide
+/// [`WriteTarget`] and the payload's own `cwd` from ONE whole parsed PreToolUse JSON
+/// `Value`, owning every shape question [`guard_write_target`] itself never sees. A
+/// top-level value that is not a JSON object (an array, `null`, a bare string, number, or
+/// bool - reachable when `serde_json::from_str` itself still succeeds, so the caller's own
+/// parse-`Err` arm never fires) is `TargetUnreadable`. `tool_name` absent or not a string
+/// is ALSO `TargetUnreadable`, never defaulted to `""` (a default that used to read as a
+/// real, deliberate "other tool" and fall into `NotCovered` = Allow - the exact fail-open
+/// this function exists to close). Only once the payload is confirmed to be an object
+/// carrying `tool_name` as a real string does `guard_write_target` ever run, so
+/// `WriteTarget::NotCovered` is reachable through exactly one door: a string `tool_name`
+/// this guard does not cover. `tool_input`'s own absence still defaults to an empty object
+/// (safe: fed through `guard_write_target`, an empty object cannot supply a covered tool's
+/// target field either, so it still resolves to `TargetUnreadable`, never a bypass).
+fn guard_write_read_target(payload: &serde_json::Value) -> (WriteTarget, String) {
+    let obj = match payload.as_object() {
+        Some(obj) => obj,
+        None => return (WriteTarget::TargetUnreadable, String::new()),
+    };
+    let tool_name = match obj.get("tool_name").and_then(serde_json::Value::as_str) {
+        Some(name) => name,
+        None => return (WriteTarget::TargetUnreadable, String::new()),
+    };
+    let tool_input = obj
+        .get("tool_input")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let cwd = obj
+        .get("cwd")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    (guard_write_target(tool_name, &tool_input), cwd)
 }
 
 /// Resolve one path component's symlink chain against `result` (the caller's
@@ -14126,42 +14170,55 @@ fn guard_write_decision(roots: &[String], cwd: &str, target: WriteTarget) -> Gua
     }
 }
 
+/// Claude Code's own documented `PreToolUse` hook contract (the same contract
+/// [`cmd_grep_guard`]'s doc comment states): exit code 2 is the ONE BLOCKING exit - the
+/// tool call is stopped and stderr is fed back as the reason. Every other nonzero exit is
+/// NON-blocking: Claude Code merely surfaces it and lets the tool call through anyway.
+/// `rigger guard-write` IS the security containment boundary (unlike the advisory
+/// `rigger grep-guard`, which always exits 0 by design), so a transport or configuration
+/// failure here - unreadable stdin, no `--root` at all, a dangling `--root` flag - exits
+/// THIS code, never the generic exit-1 path every other `rigger` command error takes: exit
+/// 1 would silently allow every subsequent write for the rest of the spawn's life
+/// (op-104-write-guard-deny-by-default-complete-audit).
+const GUARD_WRITE_BLOCKING_EXIT_CODE: i32 = 2;
+
 /// `rigger guard-write --root <dir> [--root <dir> ...]`: THE WRITE GUARD (spec 104
 /// criterion 4) - the `PreToolUse` command hook for `Edit`/`Write`/`NotebookEdit` the host
 /// injects into a launched agent's settings (the injection half of this same criterion:
 /// [`crate::driver::claude_code::install_write_guard_hook`]). Reads ONE PreToolUse payload
 /// as JSON on stdin (`{"tool_name","tool_input","cwd"}`) and allows a target under one of
-/// `roots`, denying every other - absolute, relative, `..`, symlink-escaping, or a
-/// top-level payload that fails to parse as JSON at all - with the reason naming the first
-/// root. An unparseable top-level payload is `WriteTarget::TargetUnreadable`, never a
-/// silent fold into an empty object: this guard cannot tell whether the call it could not
-/// parse was a covered tool writing outside every root, so it denies rather than guesses.
-/// It reads no store: every fact the decision needs travels on argv or stdin, exactly like
-/// [`cmd_grep_guard`]'s own pure/no-store discipline, and it always exits 0 - the verdict
-/// rides in the JSON body, a transport failure stays a SEPARATE, tellable channel from a
-/// deliberate block.
+/// `roots`, denying every other - absolute, relative, `..`, symlink-escaping - with the
+/// reason naming the first root. THE GUARD DENIES BY DEFAULT
+/// (op-104-write-guard-deny-by-default-complete-audit): every payload shape this guard
+/// cannot positively classify as a covered tool writing to a resolvable target - an
+/// unparseable top-level payload, one that parses but is not a JSON object, an absent or
+/// non-string `tool_name`, or (for a covered tool) an absent/non-object `tool_input` or an
+/// absent/non-string target field, all owned by [`guard_write_read_target`] - denies
+/// naming the first root exactly like a resolved out-of-root target, never a silent fold
+/// into an empty (Allow) object: this guard cannot tell whether a payload shape it could
+/// not read was a covered tool writing outside every root, so it denies rather than
+/// guesses. It reads no store: every fact the decision needs travels on argv or stdin,
+/// exactly like [`cmd_grep_guard`]'s own pure/no-store discipline. A well-formed
+/// invocation always exits 0 - the verdict rides in the JSON body - but a transport or
+/// configuration failure (unreadable stdin, no usable `--root`) exits
+/// [`GUARD_WRITE_BLOCKING_EXIT_CODE`] directly with the reason on stderr, never the
+/// generic exit-1 every other `rigger` command error takes and never a silent 0: unlike
+/// `cmd_grep_guard` (advisory; a missed block is merely a missed reminder), this guard IS
+/// the containment boundary, so a transport failure that read as non-blocking would
+/// silently allow every write for the rest of the spawn's life.
 fn cmd_guard_write(args: &[String]) -> Res {
-    let roots = parse_guard_write_roots(args)?;
+    let roots = parse_guard_write_roots(args).unwrap_or_else(|e| {
+        eprintln!("rigger guard-write: {e}");
+        std::process::exit(GUARD_WRITE_BLOCKING_EXIT_CODE);
+    });
 
     let mut input = String::new();
-    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input) {
+        eprintln!("rigger guard-write: failed to read the PreToolUse payload from stdin: {e}");
+        std::process::exit(GUARD_WRITE_BLOCKING_EXIT_CODE);
+    }
     let (target, cwd) = match serde_json::from_str::<serde_json::Value>(input.trim()) {
-        Ok(payload) => {
-            let tool_name = payload
-                .get("tool_name")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let tool_input = payload
-                .get("tool_input")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-            let cwd = payload
-                .get("cwd")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            (guard_write_target(tool_name, &tool_input), cwd)
-        }
+        Ok(payload) => guard_write_read_target(&payload),
         Err(_) => (WriteTarget::TargetUnreadable, String::new()),
     };
     let decision = guard_write_decision(&roots, &cwd, target);
@@ -27206,6 +27263,117 @@ mod tests {
             ),
             WriteTarget::TargetUnreadable,
             "a non-string notebook_path must be TargetUnreadable"
+        );
+    }
+
+    // ---- guard_write_read_target (THE GUARD DENIES BY DEFAULT,
+    // op-104-write-guard-deny-by-default-complete-audit): the payload-shape axis
+    // guard_write_target itself never sees - everything OTHER than a JSON object whose
+    // tool_name is a real string must deny (TargetUnreadable), never fall through to
+    // guard_write_target's own NotCovered = Allow arm. ----
+
+    #[test]
+    fn guard_write_read_target_denies_a_non_object_top_level_value() {
+        for payload in [
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!(null),
+            serde_json::json!("hello"),
+            serde_json::json!(42),
+            serde_json::json!(true),
+        ] {
+            assert_eq!(
+                guard_write_read_target(&payload),
+                (WriteTarget::TargetUnreadable, String::new()),
+                "a top-level JSON value that parses but is not an object must be \
+                 TargetUnreadable, never silently defaulted into NotCovered/Allow: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn guard_write_read_target_denies_an_absent_or_non_string_tool_name() {
+        // The returned cwd is irrelevant once the target itself is TargetUnreadable -
+        // guard_write_decision never resolves a path for that arm - so this asserts only
+        // the WriteTarget half against a `..` matcher, never the exact cwd string.
+        assert!(
+            matches!(
+                guard_write_read_target(&serde_json::json!({
+                    "cwd": "/root",
+                    "tool_input": {"file_path": "/outside/x.txt"},
+                })),
+                (WriteTarget::TargetUnreadable, _)
+            ),
+            "an absent tool_name must be TargetUnreadable, never defaulted to \"\" and read \
+            as a real (uncovered) tool"
+        );
+        assert!(
+            matches!(
+                guard_write_read_target(&serde_json::json!({
+                    "tool_name": 42,
+                    "cwd": "/root",
+                    "tool_input": {"file_path": "/outside/x.txt"},
+                })),
+                (WriteTarget::TargetUnreadable, _)
+            ),
+            "a non-string tool_name must be TargetUnreadable"
+        );
+    }
+
+    #[test]
+    fn guard_write_read_target_reaches_not_covered_only_through_a_real_string_tool_name() {
+        assert_eq!(
+            guard_write_read_target(&serde_json::json!({
+                "tool_name": "Bash",
+                "cwd": "/root",
+                "tool_input": {"command": "ls"},
+            })),
+            (WriteTarget::NotCovered, "/root".to_string()),
+            "a genuine string tool_name outside Edit/Write/NotebookEdit is the ONE door to \
+             NotCovered"
+        );
+    }
+
+    #[test]
+    fn guard_write_read_target_denies_a_covered_tool_with_missing_or_non_object_tool_input() {
+        assert_eq!(
+            guard_write_read_target(&serde_json::json!({"tool_name": "Write", "cwd": "/root"})),
+            (WriteTarget::TargetUnreadable, "/root".to_string()),
+            "tool_input absent entirely for a covered tool must be TargetUnreadable"
+        );
+        assert_eq!(
+            guard_write_read_target(&serde_json::json!({
+                "tool_name": "Write",
+                "cwd": "/root",
+                "tool_input": "not-an-object",
+            })),
+            (WriteTarget::TargetUnreadable, "/root".to_string()),
+            "tool_input present but not a JSON object must be TargetUnreadable"
+        );
+    }
+
+    #[test]
+    fn guard_write_read_target_reads_a_well_formed_covered_payload() {
+        assert_eq!(
+            guard_write_read_target(&serde_json::json!({
+                "tool_name": "Write",
+                "cwd": "/root",
+                "tool_input": {"file_path": "notes.txt"},
+            })),
+            (
+                WriteTarget::Target("notes.txt".to_string()),
+                "/root".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn guard_write_read_target_defaults_an_absent_cwd_to_empty() {
+        assert_eq!(
+            guard_write_read_target(&serde_json::json!({
+                "tool_name": "Write",
+                "tool_input": {"file_path": "notes.txt"},
+            })),
+            (WriteTarget::Target("notes.txt".to_string()), String::new())
         );
     }
 

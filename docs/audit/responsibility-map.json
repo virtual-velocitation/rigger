@@ -8713,6 +8713,14 @@
   },
   {
     "file": "src/main.rs",
+    "name": "guard_write_read_target",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"read_\" (generic read helper); grouped under `main::support`.",
+    "content_hash": "44c357d5d2a18754"
+  },
+  {
+    "file": "src/main.rs",
     "name": "resolve_lexical_realpath",
     "is_test": false,
     "proposed_module": "main::support",
@@ -8757,7 +8765,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "b5c7895cec6cf405"
+    "content_hash": "db1c5213fed22a4b"
   },
   {
     "file": "src/main.rs",
@@ -11766,6 +11774,54 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "6b58ac4c79034b6e"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_denies_a_non_object_top_level_value",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "9234fdc13b139dd1"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_denies_an_absent_or_non_string_tool_name",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a47e892bd396cfdc"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_reaches_not_covered_only_through_a_real_string_tool_name",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1229840116be4cff"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_denies_a_covered_tool_with_missing_or_non_object_tool_input",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "ee09473897cd5ae9"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_reads_a_well_formed_covered_payload",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1d3c39c93c20b231"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_defaults_an_absent_cwd_to_empty",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "ce288856976cfda4"
   },
   {
     "file": "src/main.rs",
