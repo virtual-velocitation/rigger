@@ -1414,6 +1414,7 @@ const SUBCOMMANDS: &[&str] = &[
     "mcp",
     "grep-guard",
     "guard-write",
+    "hook",
     "version",
     "help",
 ];
@@ -1457,6 +1458,7 @@ fn main() {
         "mcp" => cmd_mcp(&args[2..]),
         "grep-guard" => cmd_grep_guard(&args[2..]),
         "guard-write" => cmd_guard_write(&args[2..]),
+        "hook" => cmd_hook(&args[2..]),
         "version" | "--version" | "-V" => cmd_version(),
         "help" | "-h" | "--help" => {
             usage();
@@ -14248,6 +14250,105 @@ fn cmd_guard_write(args: &[String]) -> Res {
         }
     };
     println!("{out}");
+    Ok(())
+}
+
+/// `rigger hook <subcommand>` - the shared namespace for hook commands the per-spawn
+/// `--settings` JSON installs (today, only [`cmd_hook_stop_failure`]; `guard-write` predates
+/// this namespace and keeps its own top-level command name for compatibility).
+fn cmd_hook(args: &[String]) -> Res {
+    match args.first().map(String::as_str) {
+        Some("stop-failure") => cmd_hook_stop_failure(&args[1..]),
+        Some(other) => Err(format!(
+            "hook: unknown subcommand {other:?}: rigger hook stop-failure --spawn <id> --class <category>"
+        )
+        .into()),
+        None => Err(
+            "hook: expected a subcommand: rigger hook stop-failure --spawn <id> --class <category>"
+                .into(),
+        ),
+    }
+}
+
+/// `rigger hook stop-failure --spawn <id> --class <category>`: THE HOOKS' `StopFailure`
+/// family - command AND record halves both (spec 104 criterion 5, Design: "criterion 5's,
+/// command, record and injection both"; the injection half, one entry per category, is
+/// [`rigger::driver::claude_code::install_stop_failure_hooks`]). The installed hook runs
+/// this the moment a turn ends on `category`, so FAILURE CLASS's first-priority source
+/// ([`rigger::progress::latest_stop_failure_class`]) survives even when the stream's own
+/// last line is lost. `--class` must name one of [`conductor::AgentFailure`]'s known
+/// categories - every command this crate itself installs always does, so an unrecognized
+/// value here means a stale or hand-edited settings file, and this refuses loudly rather
+/// than silently recording a category [`conductor::AgentFailure::from_category`] would
+/// degrade to `unknown` at classification time anyway. Routed through [`require_store_dir`]
+/// like every other courier ([`cmd_progress`]'s own doc), so a worker running it from a
+/// nested worktree records into the project's real store, never a misfiled one.
+fn cmd_hook_stop_failure(args: &[String]) -> Res {
+    let mut spawn_id: Option<String> = None;
+    let mut class: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--spawn" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or("hook stop-failure: --spawn expects a value")?;
+                spawn_id = Some(v.clone());
+                i += 2;
+            }
+            "--class" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or("hook stop-failure: --class expects a value")?;
+                class = Some(v.clone());
+                i += 2;
+            }
+            other => {
+                return Err(format!(
+                    "hook stop-failure: unknown argument {other:?}: rigger hook stop-failure \
+                     --spawn <id> --class <category>"
+                )
+                .into());
+            }
+        }
+    }
+    let spawn_id = spawn_id.ok_or("hook stop-failure: --spawn is required")?;
+    let class = class.ok_or("hook stop-failure: --class is required")?;
+    if spawn_id.trim().is_empty() {
+        return Err("hook stop-failure: --spawn must be non-empty".into());
+    }
+    if !conductor::AgentFailure::CATEGORIES
+        .iter()
+        .any(|c| c.as_str() == class)
+    {
+        let known: Vec<&str> = conductor::AgentFailure::CATEGORIES
+            .iter()
+            .map(|c| c.as_str())
+            .collect();
+        return Err(format!(
+            "hook stop-failure: unrecognized --class {class:?}; known categories: {}",
+            known.join(", ")
+        )
+        .into());
+    }
+
+    let (loc, selection) = require_store_dir()?;
+    refresh_registry_entry(&loc, &selection);
+    let run_backend = resolve_store(&selection, &loc.file("events.db"))?;
+    let run_store = Namespaced::new(run_backend.as_ref(), &loc.identity());
+    let events = run_store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let run_id = runscope::current_run_id(&events).unwrap_or_default();
+    let prog_backend = Store::open(&loc.file("progress.db"))?;
+    let prog_store = Namespaced::new(&prog_backend, &loc.identity());
+    let pos = rigger::progress_store::record_stop_failure(
+        &prog_store,
+        &run_id,
+        &progress::StopFailure {
+            spawn: spawn_id.clone(),
+            class: class.clone(),
+        },
+    )?;
+    println!("stop-failure recorded for {spawn_id} (class {class}, position {pos})");
     Ok(())
 }
 

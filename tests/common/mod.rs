@@ -130,6 +130,31 @@ pub fn rigger_bin() -> PathBuf {
 /// chained on the returned `Command` wins, exactly like a later `.env()` override does.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
+    unfenced(&mut cmd);
+    cmd
+}
+
+/// Applies [`rigger_courier`]'s own env hygiene (the `STORE_FENCE_ENV`/`KURRENTDB_CONN`
+/// strip and the `XDG_CACHE_HOME` pin - see that function's doc comment for the full WHY)
+/// to an ALREADY-CONSTRUCTED `Command`, for the one class of call site `rigger_courier`
+/// itself cannot cover: a suite that drives the product binary through an intermediate
+/// shell (`sh -c "<installed hook command>"`) rather than invoking it directly. That
+/// `Command::new("sh")` still runs the product binary as a descendant process, so it still
+/// inherits an ambient `RIGGER_STORE_FENCE_DIR`/`KURRENTDB_CONN` exactly like a direct
+/// `rigger_courier()` spawn would - `run_stopfailure_command_through_a_real_shell` in
+/// `stop_failure_hook_periphery.rs` hit this precisely: under a fenced gate (`cargo test`
+/// run via `gate::ExecRunner`, which pins the fence on its whole subprocess tree),
+/// `require_store_dir` resolved the fenced scratch dir before ever reaching the real
+/// courier project passed as `current_dir`, so the installed hook command exited 0 while
+/// recording nothing - a false green outside a gate and a false red inside one, neither of
+/// which said anything about `install_stop_failure_hooks`/`stop_failure_command` itself.
+/// One shared helper keeps that env hygiene from drifting between the two call shapes,
+/// rather than a second hand-copied `env_remove` chain living beside `rigger_courier`'s.
+///
+/// A call site that only needs a SUBSET (`write_guard_hook_periphery.rs`'s own `sh -c`
+/// round trip, which never opens a store at all) has no reason to call this - applying it
+/// there would be a harmless no-op, but an unused one, so it does not.
+pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd.env_remove(rigger::gate::STORE_FENCE_ENV);
     cmd.env_remove("KURRENTDB_CONN");
     cmd.env("XDG_CACHE_HOME", test_cache_home());

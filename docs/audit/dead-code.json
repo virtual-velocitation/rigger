@@ -9,6 +9,7 @@
       "src/canary.rs#0d30fb5da09b2118",
       "src/progress.rs#52f451adb9c69d21",
       "src/progress.rs#52f451adb9c69d21",
+      "src/progress.rs#52f451adb9c69d21",
       "src/run.rs#0b4a268e8a1da81d"
     ],
     "test_only_references": [],
@@ -23,6 +24,7 @@
     "ambiguous": true,
     "ambiguous_with": [
       "src/canary.rs#0be5e50870d7f0aa",
+      "src/progress.rs#52f451adb9c69d21",
       "src/progress.rs#52f451adb9c69d21",
       "src/progress.rs#52f451adb9c69d21",
       "src/run.rs#0b4a268e8a1da81d"
@@ -49,6 +51,84 @@
     ],
     "disposition": "delete",
     "reason": "cataloged_classes has no production caller anywhere in src/ (checked whole-tree, recursively). Its only two references are its own inline tests, now in this file after spec 93 criterion 1's read/write split of the old canary.rs moved every disk/store-touching function here (cataloged_classes_counts_only_planted_distinct_classes, canary_store.rs:1150; the_shipped_corpus_loads_and_catalogs_at_least_three_defect_classes, canary_store.rs:1164); the latter is the one behavior it exists to prove - the shipped corpus catalogs >= 3 defect classes (spec 13 unit 5) - and would go dead with it. run_canary (the real production review-panel loop) never consults it: corpus diversity is a load-time authoring check, not a runtime one. This entry carries forward the original disposition and reasoning unchanged, only relocated to this candidate's new file:name key."
+  },
+  {
+    "name": "should_relaunch",
+    "file": "src/conductor.rs",
+    "content_hash": "a008bab218c689da",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "a214c2519aa1a2ae"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "a214c2519aa1a2ae"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "7a4252190155403d"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "07f9ef7d5b6e4504"
+      }
+    ],
+    "disposition": "keep-pending",
+    "reason": "should_relaunch (spec 104 criterion 5, Design's THE BOUND: 'the spawn is relaunched at most twice, then the run halts naming the class') RELOCATED here from src/driver/claude_code.rs by the same adj-u104c5 REQUIRED FIX 3 - the disposition itself carries forward unchanged, only the file:name key moves. Still has no production caller: it is a pure decision primitive ('every AgentFailure variant shares this ONE bound ... the class itself is not an input', this function's own doc) that spec 105's hold controller is the only production caller of, once the composition root swaps `rigger run` onto this driver - unchanged on this branch (`cli::Driver` never relaunches a live session, `driver::claude_code`'s own module doc). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism the criterion's own Done-when text specifies ('relaunches the spawn at most twice, then halts the run naming the class ... This criterion OWNS the class, its sources and the bound') - deleting it would delete the one place that bound is proven correct in isolation. keep-pending, citing spec 104 criterion 5 (this criterion's own OWNS: 'the bound') and spec 105 (the hold controller that enforces it, per this criterion's own Goal sentence)."
+  },
+  {
+    "name": "failure_class",
+    "file": "src/conductor.rs",
+    "content_hash": "99cd86d1ec800098",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "f5515f3d46278f2d"
+      },
+      {
+        "file": "src/conductor.rs",
+        "content_hash": "1a3198e166e2875d"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "0c77f0911bf41fe2"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "1a753c6b5e2cf80b"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "1a753c6b5e2cf80b"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "f5515f3d46278f2d"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "content_hash": "b4b6a5cf043fec43"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "content_hash": "b4b6a5cf043fec43"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "content_hash": "b4b6a5cf043fec43"
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "content_hash": "b4b6a5cf043fec43"
+      }
+    ],
+    "disposition": "keep-pending",
+    "reason": "failure_class (spec 104 criterion 5, FAILURE CLASS's data-recovery half: 'the port returns the class as data') RELOCATED here from src/driver/claude_code.rs (adj- u104c5 REQUIRED FIX 3, arch-u104c5-failure-class-belongs-in-conductor-not-driver: a port-crossing sentinel-plus-typed-class pair belongs beside `Error`/`AgentDriver`/ `PARKED_MARKER`/`is_parked`, the SAME shape, rather than in one particular adapter) - the disposition itself carries forward unchanged, only the file:name key moves. Still has no production caller: it is the reader half of the [`no_result_error`]/[`failure_class`] sentinel pair `read_stream`'s own no-result path writes through `classify_no_result` (a real, non-test call, so the WRITER is exercised end to end - see the criterion's own periphery tests), but the READER exists to let a caller recover the embedded class from an `Err`, and the only caller with an `Err` to recover it from is spec 105's hold controller, which does not exist on this branch (`rigger run` still composes agents through `cli::Driver`, unchanged - `driver::claude_code`'s own module doc). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism the criterion's own Done-when text specifies ('a test proves A FAILURE HAS A CLASS ... This criterion OWNS the class, its sources and the bound') - deleting it would delete the one way anything outside this file can ever learn the class `classify_no_result` computed. keep-pending, citing spec 104 criterion 5 (this criterion's own OWNS) and spec 105 (the hold controller that consumes it, per this criterion's own Goal sentence: 'the hold that consumes its failure classes ... are spec 105's')."
   },
   {
     "name": "sdet_author_enabled",
@@ -798,6 +878,10 @@
         "content_hash": "d99cd5083544c380"
       },
       {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "12aa1f705ac9a0e0"
+      },
+      {
         "file": "tests/write_guard_hook_periphery.rs",
         "content_hash": "6b8b7019db0e6e00"
       },
@@ -808,6 +892,41 @@
     ],
     "disposition": "keep-pending",
     "reason": "install_write_guard_hook (spec 104 criterion 4, THE WRITE GUARD's injection half) has no production caller yet: `rigger run` still composes agents through `cli::Driver` (main.rs:3667), unchanged until criterion 2's stream reader completes `impl AgentDriver for claude_code::Driver` (this file's own module doc: 'until it lands ... rigger run ... keeps using cli::Driver'), and no unit yet builds a live spawn's --settings string from this criterion's own hook fragment plus criterion 5's StopFailure one (spec 104 Design's THE HOOKS paragraph: 'the per-spawn settings JSON carries exactly two hook families ... assembled ... from their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism THE WRITE GUARD's own Done-when text specifies ('the host injects it as the PreToolUse hook for Edit|Write|NotebookEdit') - deleting it would delete the criterion's own injection half before the composition-root wiring that calls it (assembling opts.settings_json from both hook owners) lands, mirroring SpawnOpts.settings_json's own already-disclosed inert-until-wired state (spec 104 criterion 1's own accounting: 'no live driver reads these fields yet'). keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard command and its injection') and THE HOOKS, which names criterion 4 this hook family's sole owner."
+  },
+  {
+    "name": "install_stop_failure_hooks",
+    "file": "src/driver/claude_code.rs",
+    "content_hash": "fc1283490754bcfe",
+    "visibility": "pub",
+    "ambiguous": false,
+    "test_only_references": [
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "48f50ee215577674"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "48f50ee215577674"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "content_hash": "50267e6ad25d6a54"
+      },
+      {
+        "file": "tests/stop_failure_hook_periphery.rs",
+        "content_hash": "6b8b7019db0e6e00"
+      },
+      {
+        "file": "tests/stop_failure_hook_periphery.rs",
+        "content_hash": "9cc4408300ed086b"
+      }
+    ],
+    "disposition": "keep-pending",
+    "reason": "install_stop_failure_hooks (spec 104 criterion 5, THE HOOKS' `StopFailure` family injection half: 'criterion 5's, command, record and injection both') has no production caller yet, for the identical reason install_write_guard_hook (criterion 4's own injection half, immediately below) does not: `rigger run` still composes agents through `cli::Driver` (main.rs:3667), unchanged until spec 105's composition- root swap builds a live spawn's --settings string from this criterion's own `StopFailure` family plus criterion 4's `PreToolUse` one (Design's THE HOOKS: 'the per-spawn settings JSON carries exactly two hook families ... assembled ... from their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism Design specifies ('one entry per error category') - deleting it would delete the criterion's own injection half before the composition-root wiring that calls it lands, mirroring install_write_guard_hook's own already-disclosed inert-until-wired state one entry below. keep-pending, citing spec 104 criterion 5 (this criterion's own OWNS: 'command, record and injection both') and THE HOOKS, which names criterion 5 the `StopFailure` family's sole owner."
   },
   {
     "name": "with_content_identity",
@@ -1496,11 +1615,12 @@
       "src/canary.rs#0be5e50870d7f0aa",
       "src/canary.rs#0d30fb5da09b2118",
       "src/progress.rs#52f451adb9c69d21",
+      "src/progress.rs#52f451adb9c69d21",
       "src/run.rs#0b4a268e8a1da81d"
     ],
     "test_only_references": [],
     "disposition": "keep-public-surface",
-    "reason": "to_event names two methods in this file (AgentProgress::to_event, progress.rs:71; SpawnLaunched::to_event, progress.rs:119), both structurally identical wrappers around `Event::new` + `with_meta`, which is exactly why they share one content hash and this one table entry. AgentProgress::to_event was newly surfaced as a candidate by spec 93 criterion 1's read/write split of the old progress.rs: before the split its only caller lived in this same file, so no cross-file visibility (and no separate candidacy-scan entry) was needed; now it is `pub(crate)` so its real consumer in the write half can reach it - called from the production write path `progress_store::record` (progress_store.rs:16). SpawnLaunched::to_event was added directly `pub(crate)` by spec 104 criterion 1 (THE LAUNCH IS TYPED), mirroring that same split on day one rather than repeating it later: its real consumer is `progress_store::record_launch` (progress_store.rs:39). Neither caller is test-only code. Keep-public-surface: a real, non-test consumer in a sibling module for each, the same reason the split needed `pub(crate)` at all rather than a narrower visibility."
+    "reason": "to_event names three methods in this file (AgentProgress::to_event, progress.rs:71; SpawnLaunched::to_event, progress.rs:119; StopFailure::to_event, added by spec 104 criterion 5), all structurally identical wrappers around `Event::new` + `with_meta`, which is exactly why they share one content hash and this one table entry. AgentProgress::to_event was newly surfaced as a candidate by spec 93 criterion 1's read/write split of the old progress.rs: before the split its only caller lived in this same file, so no cross-file visibility (and no separate candidacy-scan entry) was needed; now it is `pub(crate)` so its real consumer in the write half can reach it - called from the production write path `progress_store::record` (progress_store.rs:16). SpawnLaunched::to_event was added directly `pub(crate)` by spec 104 criterion 1 (THE LAUNCH IS TYPED), mirroring that same split on day one rather than repeating it later: its real consumer is `progress_store::record_launch` (progress_store.rs:39). StopFailure::to_event (spec 104 criterion 5, A FAILURE HAS A CLASS - THE HOOKS' 'record' half) was added the same direct-`pub(crate)` way: its real consumer is `progress_store::record_stop_failure`, called by `rigger hook stop-failure`'s own `cmd_hook_stop_failure` (main.rs) - a real, non-test production write path. None of the three callers is test-only code. Keep-public-surface: a real, non-test consumer in a sibling module for each, the same reason the split needed `pub(crate)` at all rather than a narrower visibility."
   },
   {
     "name": "to_event",
@@ -1512,11 +1632,29 @@
       "src/canary.rs#0be5e50870d7f0aa",
       "src/canary.rs#0d30fb5da09b2118",
       "src/progress.rs#52f451adb9c69d21",
+      "src/progress.rs#52f451adb9c69d21",
       "src/run.rs#0b4a268e8a1da81d"
     ],
     "test_only_references": [],
     "disposition": "keep-public-surface",
-    "reason": "to_event names two methods in this file (AgentProgress::to_event, progress.rs:71; SpawnLaunched::to_event, progress.rs:119), both structurally identical wrappers around `Event::new` + `with_meta`, which is exactly why they share one content hash and this one table entry. AgentProgress::to_event was newly surfaced as a candidate by spec 93 criterion 1's read/write split of the old progress.rs: before the split its only caller lived in this same file, so no cross-file visibility (and no separate candidacy-scan entry) was needed; now it is `pub(crate)` so its real consumer in the write half can reach it - called from the production write path `progress_store::record` (progress_store.rs:16). SpawnLaunched::to_event was added directly `pub(crate)` by spec 104 criterion 1 (THE LAUNCH IS TYPED), mirroring that same split on day one rather than repeating it later: its real consumer is `progress_store::record_launch` (progress_store.rs:39). Neither caller is test-only code. Keep-public-surface: a real, non-test consumer in a sibling module for each, the same reason the split needed `pub(crate)` at all rather than a narrower visibility."
+    "reason": "to_event names three methods in this file (AgentProgress::to_event, progress.rs:71; SpawnLaunched::to_event, progress.rs:119; StopFailure::to_event, added by spec 104 criterion 5), all structurally identical wrappers around `Event::new` + `with_meta`, which is exactly why they share one content hash and this one table entry. AgentProgress::to_event was newly surfaced as a candidate by spec 93 criterion 1's read/write split of the old progress.rs: before the split its only caller lived in this same file, so no cross-file visibility (and no separate candidacy-scan entry) was needed; now it is `pub(crate)` so its real consumer in the write half can reach it - called from the production write path `progress_store::record` (progress_store.rs:16). SpawnLaunched::to_event was added directly `pub(crate)` by spec 104 criterion 1 (THE LAUNCH IS TYPED), mirroring that same split on day one rather than repeating it later: its real consumer is `progress_store::record_launch` (progress_store.rs:39). StopFailure::to_event (spec 104 criterion 5, A FAILURE HAS A CLASS - THE HOOKS' 'record' half) was added the same direct-`pub(crate)` way: its real consumer is `progress_store::record_stop_failure`, called by `rigger hook stop-failure`'s own `cmd_hook_stop_failure` (main.rs) - a real, non-test production write path. None of the three callers is test-only code. Keep-public-surface: a real, non-test consumer in a sibling module for each, the same reason the split needed `pub(crate)` at all rather than a narrower visibility."
+  },
+  {
+    "name": "to_event",
+    "file": "src/progress.rs",
+    "content_hash": "52f451adb9c69d21",
+    "visibility": "pub(crate)",
+    "ambiguous": true,
+    "ambiguous_with": [
+      "src/canary.rs#0be5e50870d7f0aa",
+      "src/canary.rs#0d30fb5da09b2118",
+      "src/progress.rs#52f451adb9c69d21",
+      "src/progress.rs#52f451adb9c69d21",
+      "src/run.rs#0b4a268e8a1da81d"
+    ],
+    "test_only_references": [],
+    "disposition": "keep-public-surface",
+    "reason": "to_event names three methods in this file (AgentProgress::to_event, progress.rs:71; SpawnLaunched::to_event, progress.rs:119; StopFailure::to_event, added by spec 104 criterion 5), all structurally identical wrappers around `Event::new` + `with_meta`, which is exactly why they share one content hash and this one table entry. AgentProgress::to_event was newly surfaced as a candidate by spec 93 criterion 1's read/write split of the old progress.rs: before the split its only caller lived in this same file, so no cross-file visibility (and no separate candidacy-scan entry) was needed; now it is `pub(crate)` so its real consumer in the write half can reach it - called from the production write path `progress_store::record` (progress_store.rs:16). SpawnLaunched::to_event was added directly `pub(crate)` by spec 104 criterion 1 (THE LAUNCH IS TYPED), mirroring that same split on day one rather than repeating it later: its real consumer is `progress_store::record_launch` (progress_store.rs:39). StopFailure::to_event (spec 104 criterion 5, A FAILURE HAS A CLASS - THE HOOKS' 'record' half) was added the same direct-`pub(crate)` way: its real consumer is `progress_store::record_stop_failure`, called by `rigger hook stop-failure`'s own `cmd_hook_stop_failure` (main.rs) - a real, non-test production write path. None of the three callers is test-only code. Keep-public-surface: a real, non-test consumer in a sibling module for each, the same reason the split needed `pub(crate)` at all rather than a narrower visibility."
   },
   {
     "name": "to_event",
@@ -1527,6 +1665,7 @@
     "ambiguous_with": [
       "src/canary.rs#0be5e50870d7f0aa",
       "src/canary.rs#0d30fb5da09b2118",
+      "src/progress.rs#52f451adb9c69d21",
       "src/progress.rs#52f451adb9c69d21",
       "src/progress.rs#52f451adb9c69d21"
     ],

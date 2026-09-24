@@ -847,9 +847,20 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// as a fresh `keep-pending` candidate - a supervisor start-up's closing-and-reaping half, no
 /// production caller yet since the composition-root wiring that calls it before a fresh spawn
 /// launch is spec 105's. Candidates +1 (43 -> 44), keep-pending +1 (6 -> 7), delete and
-/// keep-public-surface unchanged.
+/// keep-public-surface unchanged. Now 48/21/17/10 (was 44/21/16/7) after spec 104 criterion
+/// 5's A FAILURE HAS A CLASS, landed concurrently against the same criterion-4 base: three
+/// fresh `keep-pending` candidates - `failure_class`, `should_relaunch` (relocated to
+/// `src/conductor.rs`), and `install_stop_failure_hooks` (src/driver/claude_code.rs) - each a
+/// real production fn with no caller yet, since the same composition-root wiring criterion 4's
+/// `install_write_guard_hook` is still waiting on (spec 105) is what will call them too; plus
+/// one fresh `keep-public-surface` row, `StopFailure::to_event` (src/progress.rs), a third
+/// same-named, same-content-hash `to_event` definition joining
+/// `AgentProgress::to_event`/`SpawnLaunched::to_event` in the ambiguous bucket that table key
+/// already names - its real consumer is the new `progress_store::record_stop_failure`, not
+/// test-only code. Candidates +4 (44 -> 48), keep-pending +3 (7 -> 10), keep-public-surface +1
+/// (16 -> 17), delete unchanged.
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_21_delete_7_keep_pending_16_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_21_delete_10_keep_pending_17_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -866,7 +877,7 @@ fn the_committed_dead_code_json_disposition_split_is_21_delete_7_keep_pending_16
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (44, 21, 16, 7),
+        (48, 21, 17, 10),
         "the committed disposition split has changed since this criterion's research"
     );
 }

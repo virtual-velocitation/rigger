@@ -23,12 +23,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
+use crate::conductor::{
+    classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
+};
 use crate::config::AgentDef;
-use crate::eventstore::EventStore;
+use crate::eventstore::{Direction, EventStore};
 use crate::hooks;
 use crate::liveness;
-use crate::progress::SpawnLaunched;
+use crate::progress::{self, SpawnLaunched};
 use crate::progress_store;
 use crate::spawn::SpawnResult;
 use crate::spawn_store;
@@ -292,8 +294,11 @@ impl Driver<'_> {
     /// Linux) that nobody else reads, so a real agent that writes more than that before
     /// its first stdout line would otherwise block the CHILD's write() forever while this
     /// host sits blocked reading stdout - a genuine two-sided deadlock, not merely a slow
-    /// path. The drained bytes are diagnostic only (never this criterion's record of
-    /// truth), so they are discarded.
+    /// path. The drain still discards everything but a bounded TAIL
+    /// ([`STDERR_TAIL_CAP`] bytes, [`drain_child_stderr_tail`]) - never this criterion's
+    /// record of truth on its own - which criterion 5's no-result path below folds into
+    /// the class it reports (CONSTRAINTS WALK: "a fault of class `unknown` carrying the
+    /// stderr tail").
     ///
     /// STOP (spec 104 criterion 6): stdout is likewise read on its OWN thread (the SAME
     /// stderr-deadlock reasoning applies to it too - this function must never itself sit
@@ -330,7 +335,7 @@ impl Driver<'_> {
             .child_mut()
             .stderr
             .take()
-            .map(|stderr| std::thread::spawn(move || drain_child_stderr(stderr)));
+            .map(|stderr| std::thread::spawn(move || drain_child_stderr_tail(stderr)));
         // THE STOP watchdog needs a way to notice silence while blocked reading stdout,
         // so stdout is read on its own thread too (see the doc above) and forwarded here
         // over a channel this loop drains with a timeout instead of `BufRead::lines`'s
@@ -353,6 +358,12 @@ impl Driver<'_> {
         let mut resolved_model = String::new();
         let mut permission_denials: u64 = 0;
         let mut result: Option<AgentResult> = None;
+        // FAILURE CLASS's second-priority source (spec 104 criterion 5, Design: "the last
+        // `api_retry.error`"): the category of the MOST RECENT `system/api_retry` line THIS
+        // launch's own reader has seen so far - `None` until the first one arrives, then
+        // overwritten by every later one, so a session that ends without a result classifies
+        // from whichever category was live right before it stopped.
+        let mut last_api_retry_category: Option<String> = None;
         // adj-u104-stream round-5 REQUIRED FIX (op-104-stream-clean-eof-waits-before-the-reap):
         // distinguishes the loop's two exit shapes below. `false` when the loop instead runs
         // to real exhaustion (a clean EOF: the child closed its stdout pipe on its own,
@@ -484,6 +495,12 @@ impl Driver<'_> {
                 }
                 (Some("system"), Some("api_retry")) => {
                     self.record_progress(opts, &api_retry_line(&v));
+                    // FAILURE CLASS's second-priority source (criterion 5): the LATEST
+                    // category wins, a later line overwriting an earlier one exactly like
+                    // `resolved_model`/`permission_denials` accumulate as the stream plays.
+                    if let Some(category) = v.get("error").and_then(Value::as_str) {
+                        last_api_retry_category = Some(category.to_string());
+                    }
                 }
                 (Some("system"), Some("permission_denied")) => {
                     permission_denials += 1;
@@ -559,18 +576,77 @@ impl Driver<'_> {
         // [`ORDINARY_DRAIN_JOIN_BOUND`], NEVER `self.stop_grace` - this is not THE STOP,
         // and `stop_grace` has no meaning on a path where the child has already exited
         // cleanly (adj-u104stop-r4-verdict-reject REQUIRED FIX,
-        // `op-104-stop-ordinary-path-drain-bound`).
-        if let Some(handle) = stderr_drain {
-            self.join_within(opts, "stderr", handle, ORDINARY_DRAIN_JOIN_BOUND);
-        }
+        // `op-104-stop-ordinary-path-drain-bound`). The stderr join's own return value IS
+        // this criterion's bounded TAIL (never merely diagnostic now that FAILURE CLASS's
+        // no-result path folds it into a classification below) - a handle that outruns
+        // the bound, or whose thread panicked, degrades to an empty tail, same as no
+        // stderr pipe at all.
+        let stderr_tail = stderr_drain
+            .and_then(|handle| self.join_within(opts, "stderr", handle, ORDINARY_DRAIN_JOIN_BOUND))
+            .unwrap_or_default();
         self.join_within(opts, "stdout", stdout_reader, ORDINARY_DRAIN_JOIN_BOUND);
 
-        result.ok_or_else(|| {
-            Error(format!(
-                "claude_code driver: {:?}: the agent stream ended with no result",
-                opts.id
-            ))
-        })
+        result.ok_or_else(|| self.classify_no_result(opts, &last_api_retry_category, &stderr_tail))
+    }
+
+    /// A FAILURE HAS A CLASS (spec 104 criterion 5): build the `Error` for a session that
+    /// ended with no `result` - the natural loop-exhaustion/clean-EOF exit
+    /// [`read_stream`](Self::read_stream)'s bottom falls through to, exactly the
+    /// CONSTRAINTS WALK shape ("the child exits before `system/init` ... a fault of class
+    /// `unknown` carrying the stderr tail, never a hang"). Reads the FIRST-priority source
+    /// (the `StopFailure` hook's record, keyed on `opts.id` AND scoped to `opts.run_id` -
+    /// adj-u104c5 REQUIRED FIX 1, adv-u104c5-stopfailure-crosses-run-boundary: a stale
+    /// record from an old or unrelated run must never outrank the live session's own
+    /// `api_retry` category, matching `rigger status`'s own established progress-event
+    /// run-scoping convention at `src/main.rs`) from THIS driver's own progress store,
+    /// folds it against `last_api_retry_category` via [`classify_failure`], and embeds the
+    /// result as recoverable data ([`failure_class`]) via [`no_result_error`] ahead of a
+    /// human-readable message carrying the class and `stderr_tail` (lossily decoded,
+    /// trimmed). A progress-store read failure degrades to "no `StopFailure` record found"
+    /// (`None`) rather than failing the whole classification - the second source
+    /// (`last_api_retry_category`) and the `unknown` floor both still apply, so a store
+    /// hiccup here never turns a classifiable failure into an opaque one
+    /// (`classify_no_result_degrades_to_the_api_retry_floor_when_the_progress_store_read_fails`
+    /// below proves this branch is reachable).
+    fn classify_no_result(
+        &self,
+        opts: &SpawnOpts,
+        last_api_retry_category: &Option<String>,
+        stderr_tail: &[u8],
+    ) -> Error {
+        let stop_failure_class = self
+            .progress_store
+            .read_stream(progress::STREAM, 0, Direction::Forward)
+            .ok()
+            .map(|events| {
+                // Same convention as `rigger status`'s own progress-event filter
+                // (`src/main.rs`): scope to THIS spawn's run before folding, an empty
+                // `run_id` (no run started yet - e.g. a bare unit test) matching every
+                // event unscoped.
+                events
+                    .into_iter()
+                    .filter(|e| {
+                        opts.run_id.is_empty()
+                            || e.meta.get(crate::run::META_RUN_ID).map(String::as_str)
+                                == Some(opts.run_id.as_str())
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .and_then(|events| progress::latest_stop_failure_class(&events, &opts.id));
+        let class = classify_failure(
+            stop_failure_class.as_deref(),
+            last_api_retry_category.as_deref(),
+        );
+        let tail = String::from_utf8_lossy(stderr_tail);
+        no_result_error(
+            class,
+            format!(
+                "claude_code driver: {:?}: the agent stream ended with no result (class \
+                 {class}; stderr tail: {})",
+                opts.id,
+                tail.trim()
+            ),
+        )
     }
 
     /// THE STOP sequence itself (spec 104 criterion 6), factored out of [`Driver::read_stream`]'s
@@ -598,7 +674,7 @@ impl Driver<'_> {
     fn stop_for_wall_clock_silence(
         &self,
         mut reaper: crate::dash::ReapedChild,
-        stderr_drain: Option<std::thread::JoinHandle<()>>,
+        stderr_drain: Option<std::thread::JoinHandle<Vec<u8>>>,
         stdout_reader: std::thread::JoinHandle<()>,
         opts: &SpawnOpts,
         session_id: &str,
@@ -739,20 +815,28 @@ impl Driver<'_> {
     /// outruns the deadline - the caller's only visible trace of a stranger it can neither
     /// identify nor touch. A handle that outruns the deadline is left to run: dropping a
     /// `JoinHandle` detaches its thread rather than cancelling it, so it keeps draining
-    /// (harmlessly - the bytes were always diagnostic-only, never this criterion's record
-    /// of truth) until whatever still holds the pipe finally closes it or exits on its own.
-    fn join_within(
+    /// (harmlessly) until whatever still holds the pipe finally closes it or exits on its
+    /// own.
+    ///
+    /// Generic over the thread's own return type (FAILURE CLASS's stderr-drain thread
+    /// returns its captured [`STDERR_TAIL_CAP`]-bounded `Vec<u8>`; the stdout-reader
+    /// thread returns nothing) so both share this ONE bounded-join mechanism rather than
+    /// a second copy reconciled after the fact. Returns `Some(value)` when `handle`
+    /// finished within `bound`, `None` on either a timeout or a join failure (the thread
+    /// panicked) - a caller with a value to recover (the stderr tail) degrades that `None`
+    /// to its own empty default; a caller with nothing to recover (the stdout reader)
+    /// simply discards it.
+    fn join_within<T>(
         &self,
         opts: &SpawnOpts,
         label: &str,
-        handle: std::thread::JoinHandle<()>,
+        handle: std::thread::JoinHandle<T>,
         bound: std::time::Duration,
-    ) {
+    ) -> Option<T> {
         let deadline = std::time::Instant::now() + bound;
         loop {
             if handle.is_finished() {
-                let _ = handle.join();
-                return;
+                return handle.join().ok();
             }
             if std::time::Instant::now() >= deadline {
                 self.record_progress(
@@ -762,7 +846,7 @@ impl Driver<'_> {
                          pipe open - not waiting for it further"
                     ),
                 );
-                return;
+                return None;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -823,16 +907,44 @@ impl Driver<'_> {
     }
 }
 
-/// Read `stderr` to EOF, discarding every byte - the concurrent drain [`Driver::read_stream`]
-/// starts before its stdout loop so a chatty agent's stderr volume can never deadlock the
-/// host (REQUIRED FIX 2). Raw bytes, not lines: stderr carries no promise of being valid
-/// UTF-8 or line-delimited the way the stdout stream-json protocol is, and a `BufRead::lines`
-/// read that hit invalid UTF-8 would stop draining at exactly the moment the pipe still
-/// needs a reader. Diagnostic-only for this criterion (never a record of truth), so a read
-/// error just ends the drain - there is nothing for this background thread to report to.
-fn drain_child_stderr(mut stderr: ChildStderr) {
+/// The most stderr bytes [`drain_child_stderr_tail`] keeps: enough for a real diagnostic
+/// line or two (CONSTRAINTS WALK's "carrying the stderr tail"), small enough that a
+/// flooding agent (the stderr-flood fixture writes 1MiB) never grows this thread's own
+/// buffer past a bounded size.
+const STDERR_TAIL_CAP: usize = 4096;
+
+/// Read `stderr` to EOF, discarding every byte but the LAST [`STDERR_TAIL_CAP`] of them -
+/// the concurrent drain [`Driver::read_stream`] starts before its stdout loop so a chatty
+/// agent's stderr volume can never deadlock the host (REQUIRED FIX 2), and this criterion
+/// (spec 104 criterion 5) is the tail's only reader: a session that ends with no `result`
+/// folds it into the class it reports (CONSTRAINTS WALK: "a fault of class `unknown`
+/// carrying the stderr tail"). Raw bytes, not lines: stderr carries no promise of being
+/// valid UTF-8 or line-delimited the way the stdout stream-json protocol is, and a
+/// `BufRead::lines` read that hit invalid UTF-8 would stop draining at exactly the moment
+/// the pipe still needs a reader. A read error just ends the drain, returning whatever tail
+/// had accumulated so far - there is nothing for this background thread to report to.
+fn drain_child_stderr_tail(mut stderr: ChildStderr) -> Vec<u8> {
+    let mut tail: Vec<u8> = Vec::with_capacity(STDERR_TAIL_CAP);
     let mut buf = [0u8; 8192];
-    while matches!(stderr.read(&mut buf), Ok(n) if n > 0) {}
+    while let Ok(n) = stderr.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        push_bounded_tail(&mut tail, &buf[..n]);
+    }
+    tail
+}
+
+/// Append `chunk` to `tail`, then trim from the FRONT down to at most [`STDERR_TAIL_CAP`]
+/// bytes - the pure ring-buffer step [`drain_child_stderr_tail`]'s read loop calls on every
+/// chunk, split out so the bounding behavior itself is testable with no process, no pipe,
+/// no IO at all.
+fn push_bounded_tail(tail: &mut Vec<u8>, chunk: &[u8]) {
+    tail.extend_from_slice(chunk);
+    if tail.len() > STDERR_TAIL_CAP {
+        let excess = tail.len() - STDERR_TAIL_CAP;
+        tail.drain(..excess);
+    }
 }
 
 impl AgentDriver for Driver<'_> {
@@ -1063,6 +1175,43 @@ pub fn install_write_guard_hook(
     hooks::install_pretooluse_hook(existing, "Edit|Write|NotebookEdit", &command)
 }
 
+/// The exact `rigger hook stop-failure --spawn <id> --class <category>` shell command line
+/// THE HOOKS' `StopFailure` family runs for one category (Design's THE HOOKS paragraph,
+/// verbatim). Mirrors [`write_guard_command`]'s single-quoting discipline: `spawn_id` rides
+/// through a real POSIX shell exactly as [`shell_single_quote`] documents there.
+fn stop_failure_command(spawn_id: &str, class: AgentFailure, rigger_bin: &str) -> String {
+    format!(
+        "{} hook stop-failure --spawn {} --class {}",
+        shell_single_quote(rigger_bin),
+        shell_single_quote(spawn_id),
+        class,
+    )
+}
+
+/// THE STOPFAILURE HOOK's injection half (spec 104 criterion 5, Design's THE HOOKS:
+/// "criterion 5's, command, record and injection both"): merges ONE `StopFailure` hook
+/// entry per [`AgentFailure::CATEGORIES`] into a spawn's settings JSON, each running
+/// [`stop_failure_command`] for its own category and matched by that category's own name -
+/// mirroring [`install_write_guard_hook`]'s reuse of the shared merge authority
+/// ([`hooks::install_stopfailure_hook`], never a second, parallel hook-merging
+/// implementation) and composing cleanly with whatever `existing` already carries: empty,
+/// or criterion 4's `PreToolUse` write-guard family already merged in under its OWN
+/// top-level event key, left untouched by this call (THE HOOKS: "the per-spawn settings
+/// JSON carries exactly two hook families ... assembled ... from their two owners").
+/// `existing` may be empty.
+pub fn install_stop_failure_hooks(
+    existing: &[u8],
+    spawn_id: &str,
+    rigger_bin: &str,
+) -> Result<Vec<u8>, hooks::Error> {
+    let mut settings = existing.to_vec();
+    for class in AgentFailure::CATEGORIES {
+        let command = stop_failure_command(spawn_id, class, rigger_bin);
+        settings = hooks::install_stopfailure_hook(&settings, class.as_str(), &command)?;
+    }
+    Ok(settings)
+}
+
 /// Build the typed `claude` headless invocation (architecture addendum §4.1 table): the
 /// ONE argv authority for this driver, exactly as `cli::build_args` is for the cli driver
 /// - every field below is a fact, never inferred at read time.
@@ -1123,8 +1272,9 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conductor::failure_class;
     use crate::eventstore::sqlite::Store;
-    use crate::eventstore::{Direction, SilentStore};
+    use crate::eventstore::{Direction, EventStore, SilentStore};
     use std::io::Read;
 
     fn opts(id: &str) -> SpawnOpts {
@@ -1255,6 +1405,233 @@ mod tests {
             first, second,
             "installing the same roots twice must not duplicate the hook entry"
         );
+    }
+
+    // ---- FAILURE CLASS (spec 104 criterion 5): `AgentFailure`/`classify_failure`/
+    // `should_relaunch`/`no_result_error`/`failure_class` now live in `conductor` (adj-
+    // u104c5 REQUIRED FIX 3) with their own tests; only this file's genuinely
+    // adapter-shaped pieces (the `StopFailure` hook's command + injection) stay here. ----
+
+    #[test]
+    fn stop_failure_command_shapes_the_exact_hook_invocation() {
+        assert_eq!(
+            stop_failure_command("u1/implementer#0", AgentFailure::RateLimit, "rigger"),
+            "'rigger' hook stop-failure --spawn 'u1/implementer#0' --class rate_limit"
+        );
+    }
+
+    #[test]
+    fn install_stop_failure_hooks_merges_one_block_per_category() {
+        let out = install_stop_failure_hooks(b"", "u1/implementer#0", "rigger").unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let arr = v["hooks"]["StopFailure"].as_array().unwrap();
+        assert_eq!(
+            arr.len(),
+            AgentFailure::CATEGORIES.len(),
+            "one entry per error category (Design's THE HOOKS)"
+        );
+        for class in AgentFailure::CATEGORIES {
+            assert!(
+                arr.iter().any(|b| b["matcher"] == class.as_str()
+                    && b["hooks"][0]["command"]
+                        .as_str()
+                        .unwrap()
+                        .contains(&format!("--class {class}"))),
+                "missing entry for {class}: {arr:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn install_stop_failure_hooks_is_idempotent() {
+        let first = install_stop_failure_hooks(b"", "u1/implementer#0", "rigger").unwrap();
+        let second = install_stop_failure_hooks(&first, "u1/implementer#0", "rigger").unwrap();
+        assert_eq!(
+            first, second,
+            "installing the same spawn's hooks twice must not duplicate"
+        );
+    }
+
+    #[test]
+    fn install_stop_failure_hooks_composes_with_the_write_guard_family() {
+        // THE HOOKS: exactly two hook families, assembled from their two owners - the
+        // reciprocal of install_write_guard_hook_composes_with_an_existing_stopfailure_family
+        // above.
+        let roots = vec!["/spawn/dir".to_string()];
+        let after_guard = install_write_guard_hook(b"", &roots, "rigger").unwrap();
+        let out = install_stop_failure_hooks(&after_guard, "u1/implementer#0", "rigger").unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            v["hooks"]["PreToolUse"][0]["matcher"], "Edit|Write|NotebookEdit",
+            "the write-guard family must survive untouched"
+        );
+        assert_eq!(
+            v["hooks"]["StopFailure"].as_array().unwrap().len(),
+            AgentFailure::CATEGORIES.len()
+        );
+    }
+
+    // ---- classify_no_result: run-scoping + degrade-on-store-error ----
+    // (adj-u104c5 REQUIRED FIX 1: adv-u104c5-stopfailure-crosses-run-boundary,
+    // sdet-u104c5-progress-store-read-failure-branch-untested)
+
+    /// An [`EventStore`] double whose `read_stream` always fails - the counterpart
+    /// `SilentStore` above (always succeeds) cannot stand in for, and neither can the
+    /// periphery `Fixture` (a real sqlite `:memory:` store, which also always succeeds):
+    /// nothing exercised `classify_no_result`'s own `.ok()` degrade-on-error branch until
+    /// this double existed. Mirrors `conductor::tests::FailingStore`'s shape (a store
+    /// double that fails on demand) narrowed to this module's one call
+    /// (`read_stream` only); `append`/`read_all`/`subscribe_*` are never reached by
+    /// `classify_no_result`'s read-only path, so they degrade the same inert way
+    /// `SilentStore`'s own unused arms do.
+    struct FailingReadStore;
+    impl EventStore for FailingReadStore {
+        fn append(
+            &self,
+            _stream: &str,
+            _expected: crate::eventstore::ExpectedRevision,
+            events: &[crate::eventstore::Event],
+        ) -> Result<crate::eventstore::Appended, crate::eventstore::Error> {
+            Ok(crate::eventstore::Appended::from_placements(vec![
+                None;
+                events
+                    .len()
+            ]))
+        }
+        fn read_stream(
+            &self,
+            _stream: &str,
+            _from: crate::eventstore::Revision,
+            _dir: Direction,
+        ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
+            Err(crate::eventstore::Error::Backend(
+                "simulated progress-store read failure".to_string(),
+            ))
+        }
+        fn read_all(
+            &self,
+            _from: crate::eventstore::Position,
+            _dir: Direction,
+            _filter: &crate::eventstore::Filter,
+        ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
+            Ok(Vec::new())
+        }
+        fn subscribe_all(
+            &self,
+            _from: crate::eventstore::Position,
+            _filter: &crate::eventstore::Filter,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            Err(crate::eventstore::Error::Backend(
+                "the failing double answers reads only".into(),
+            ))
+        }
+        fn subscribe_stream(
+            &self,
+            _stream: &str,
+            _from: crate::eventstore::Revision,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            Err(crate::eventstore::Error::Backend(
+                "the failing double answers reads only".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn classify_no_result_degrades_to_the_api_retry_floor_when_the_progress_store_read_fails() {
+        // sdet-u104c5-progress-store-read-failure-branch-untested: `classify_no_result`'s
+        // own `.ok()` on the progress-store read (never a `?`) must degrade to "no
+        // StopFailure record" rather than failing the whole classification - proven here
+        // with a store whose `read_stream` always errs.
+        let driver = Driver {
+            progress_store: &FailingReadStore,
+            ..Driver::default()
+        };
+        let o = opts("u/implementer#0");
+        let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"stderr tail");
+        assert_eq!(
+            failure_class(&e),
+            AgentFailure::Overloaded,
+            "a failed progress-store read must still fall through to the api_retry \
+             category, never fail the whole classification: {}",
+            e.0
+        );
+    }
+
+    #[test]
+    fn classify_no_result_ignores_a_stopfailure_record_from_a_different_run() {
+        // adv-u104c5-stopfailure-crosses-run-boundary: a StopFailure record left over from
+        // an OLD or UNRELATED run must never outrank the live session's own api_retry
+        // category, matching `rigger status`'s established run-scoping convention.
+        let store = Store::open(":memory:").unwrap();
+        crate::progress_store::record_stop_failure(
+            &store,
+            "some-other-run",
+            &crate::progress::StopFailure {
+                spawn: "u/implementer#0".to_string(),
+                class: "billing_error".to_string(),
+            },
+        )
+        .unwrap();
+        let driver = Driver {
+            progress_store: &store,
+            ..Driver::default()
+        };
+        let mut o = opts("u/implementer#0");
+        o.run_id = "run-1".to_string();
+        let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"tail");
+        assert_eq!(
+            failure_class(&e),
+            AgentFailure::Overloaded,
+            "the other run's StopFailure record must not outrank THIS run's api_retry \
+             category: {}",
+            e.0
+        );
+    }
+
+    #[test]
+    fn classify_no_result_still_honors_a_stopfailure_record_from_the_same_run() {
+        let store = Store::open(":memory:").unwrap();
+        crate::progress_store::record_stop_failure(
+            &store,
+            "run-1",
+            &crate::progress::StopFailure {
+                spawn: "u/implementer#0".to_string(),
+                class: "billing_error".to_string(),
+            },
+        )
+        .unwrap();
+        let driver = Driver {
+            progress_store: &store,
+            ..Driver::default()
+        };
+        let mut o = opts("u/implementer#0");
+        o.run_id = "run-1".to_string();
+        let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"tail");
+        assert_eq!(failure_class(&e), AgentFailure::BillingError);
+    }
+
+    #[test]
+    fn push_bounded_tail_keeps_only_the_last_stderr_tail_cap_bytes() {
+        let mut tail: Vec<u8> = Vec::new();
+        // More than STDERR_TAIL_CAP across several chunks, so the cap must actually trim
+        // across calls - exactly how `drain_child_stderr_tail`'s read loop drives this.
+        let chunk = vec![b'x'; 1024];
+        for _ in 0..8 {
+            push_bounded_tail(&mut tail, &chunk);
+        }
+        push_bounded_tail(&mut tail, b"TAIL-MARKER");
+        assert!(tail.len() <= STDERR_TAIL_CAP);
+        assert!(
+            String::from_utf8_lossy(&tail).ends_with("TAIL-MARKER"),
+            "the LATEST bytes survive, not the earliest"
+        );
+    }
+
+    #[test]
+    fn push_bounded_tail_is_a_no_op_shrink_when_under_the_cap() {
+        let mut tail: Vec<u8> = Vec::new();
+        push_bounded_tail(&mut tail, b"short");
+        assert_eq!(tail, b"short");
     }
 
     #[test]

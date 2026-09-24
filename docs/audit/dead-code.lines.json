@@ -7,6 +7,7 @@
       "src/canary.rs:185",
       "src/progress.rs:71",
       "src/progress.rs:138",
+      "src/progress.rs:236",
       "src/run.rs:132"
     ],
     "test_only_references": []
@@ -19,6 +20,7 @@
       "src/canary.rs:94",
       "src/progress.rs:71",
       "src/progress.rs:138",
+      "src/progress.rs:236",
       "src/run.rs:132"
     ],
     "test_only_references": []
@@ -35,6 +37,76 @@
       {
         "file": "src/canary_store.rs",
         "line": 1266
+      }
+    ]
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "should_relaunch",
+    "line": 1885,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "line": 14150
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 14151
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 14152
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 14153
+      }
+    ]
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "failure_class",
+    "line": 1909,
+    "test_only_references": [
+      {
+        "file": "src/conductor.rs",
+        "line": 14159
+      },
+      {
+        "file": "src/conductor.rs",
+        "line": 14168
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1275
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1552
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1583
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1610
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "line": 294
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "line": 321
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "line": 355
+      },
+      {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "line": 391
       }
     ]
   },
@@ -590,15 +662,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 14611
+        "line": 14712
       },
       {
         "file": "src/main.rs",
-        "line": 14632
+        "line": 14733
       },
       {
         "file": "src/main.rs",
-        "line": 15147
+        "line": 15248
       },
       {
         "file": "tests/cli.rs",
@@ -654,62 +726,66 @@
   {
     "file": "src/driver/claude_code.rs",
     "name": "reconcile_on_start",
-    "line": 790,
+    "line": 874,
     "test_only_references": [
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1697
+        "line": 2074
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1725
+        "line": 2102
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1759
+        "line": 2136
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1790
+        "line": 2167
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1820
+        "line": 2197
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1848
+        "line": 2225
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "line": 1218
+        "line": 1349
       }
     ]
   },
   {
     "file": "src/driver/claude_code.rs",
     "name": "install_write_guard_hook",
-    "line": 1057,
+    "line": 1169,
     "test_only_references": [
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1199
+        "line": 1349
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1214
+        "line": 1364
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1236
+        "line": 1386
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1252
+        "line": 1402
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1253
+        "line": 1403
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1461
       },
       {
         "file": "tests/write_guard_hook_periphery.rs",
@@ -722,13 +798,44 @@
     ]
   },
   {
+    "file": "src/driver/claude_code.rs",
+    "name": "install_stop_failure_hooks",
+    "line": 1202,
+    "test_only_references": [
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1425
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1447
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1448
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 1462
+      },
+      {
+        "file": "tests/stop_failure_hook_periphery.rs",
+        "line": 48
+      },
+      {
+        "file": "tests/stop_failure_hook_periphery.rs",
+        "line": 307
+      }
+    ]
+  },
+  {
     "file": "src/eventstore/sqlite.rs",
     "name": "with_content_identity",
     "line": 192,
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 20712
+        "line": 21011
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -1190,7 +1297,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 10087
+        "line": 10188
       }
     ]
   },
@@ -1315,15 +1422,15 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 41948
+        "line": 42247
       },
       {
         "file": "src/conductor.rs",
-        "line": 42015
+        "line": 42314
       },
       {
         "file": "src/conductor.rs",
-        "line": 42790
+        "line": 43089
       },
       {
         "file": "src/ledger.rs",
@@ -1370,6 +1477,7 @@
       "src/canary.rs:94",
       "src/canary.rs:185",
       "src/progress.rs:138",
+      "src/progress.rs:236",
       "src/run.rs:132"
     ],
     "test_only_references": []
@@ -1382,6 +1490,20 @@
       "src/canary.rs:94",
       "src/canary.rs:185",
       "src/progress.rs:71",
+      "src/progress.rs:236",
+      "src/run.rs:132"
+    ],
+    "test_only_references": []
+  },
+  {
+    "file": "src/progress.rs",
+    "name": "to_event",
+    "line": 236,
+    "ambiguous_with": [
+      "src/canary.rs:94",
+      "src/canary.rs:185",
+      "src/progress.rs:71",
+      "src/progress.rs:138",
       "src/run.rs:132"
     ],
     "test_only_references": []
@@ -1394,7 +1516,8 @@
       "src/canary.rs:94",
       "src/canary.rs:185",
       "src/progress.rs:71",
-      "src/progress.rs:138"
+      "src/progress.rs:138",
+      "src/progress.rs:236"
     ],
     "test_only_references": []
   },
@@ -1420,51 +1543,51 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 14702
+        "line": 15001
       },
       {
         "file": "src/conductor.rs",
-        "line": 14919
+        "line": 15218
       },
       {
         "file": "src/conductor.rs",
-        "line": 14930
+        "line": 15229
       },
       {
         "file": "src/conductor.rs",
-        "line": 15010
+        "line": 15309
       },
       {
         "file": "src/conductor.rs",
-        "line": 23027
+        "line": 23326
       },
       {
         "file": "src/conductor.rs",
-        "line": 23104
+        "line": 23403
       },
       {
         "file": "src/conductor.rs",
-        "line": 23198
+        "line": 23497
       },
       {
         "file": "src/conductor.rs",
-        "line": 23285
+        "line": 23584
       },
       {
         "file": "src/conductor.rs",
-        "line": 23380
+        "line": 23679
       },
       {
         "file": "src/conductor.rs",
-        "line": 30515
+        "line": 30814
       },
       {
         "file": "src/conductor.rs",
-        "line": 30520
+        "line": 30819
       },
       {
         "file": "src/conductor.rs",
-        "line": 30583
+        "line": 30882
       },
       {
         "file": "src/console/mod.rs",
@@ -1556,47 +1679,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 17820
+        "line": 17921
       },
       {
         "file": "src/main.rs",
-        "line": 17853
+        "line": 17954
       },
       {
         "file": "src/main.rs",
-        "line": 17872
+        "line": 17973
       },
       {
         "file": "src/main.rs",
-        "line": 17875
+        "line": 17976
       },
       {
         "file": "src/main.rs",
-        "line": 17878
+        "line": 17979
       },
       {
         "file": "src/main.rs",
-        "line": 19748
+        "line": 19849
       },
       {
         "file": "src/main.rs",
-        "line": 19761
+        "line": 19862
       },
       {
         "file": "src/main.rs",
-        "line": 19776
+        "line": 19877
       },
       {
         "file": "src/main.rs",
-        "line": 25359
+        "line": 25460
       },
       {
         "file": "src/main.rs",
-        "line": 25360
+        "line": 25461
       },
       {
         "file": "src/main.rs",
-        "line": 25361
+        "line": 25462
       },
       {
         "file": "src/mcpserver.rs",
@@ -1608,11 +1731,11 @@
       },
       {
         "file": "src/progress.rs",
-        "line": 324
+        "line": 386
       },
       {
         "file": "src/progress.rs",
-        "line": 373
+        "line": 435
       },
       {
         "file": "src/spawn.rs",
@@ -2128,31 +2251,31 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 14700
+        "line": 14999
       },
       {
         "file": "src/conductor.rs",
-        "line": 14917
+        "line": 15216
       },
       {
         "file": "src/conductor.rs",
-        "line": 14938
+        "line": 15237
       },
       {
         "file": "src/conductor.rs",
-        "line": 15008
+        "line": 15307
       },
       {
         "file": "src/conductor.rs",
-        "line": 30513
+        "line": 30812
       },
       {
         "file": "src/conductor.rs",
-        "line": 30518
+        "line": 30817
       },
       {
         "file": "src/conductor.rs",
-        "line": 30581
+        "line": 30880
       },
       {
         "file": "src/driver/replay.rs",
@@ -2251,19 +2374,19 @@
     "test_only_references": [
       {
         "file": "src/conductor.rs",
-        "line": 14683
+        "line": 14982
       },
       {
         "file": "src/conductor.rs",
-        "line": 14831
+        "line": 15130
       },
       {
         "file": "src/conductor.rs",
-        "line": 14908
+        "line": 15207
       },
       {
         "file": "src/conductor.rs",
-        "line": 15031
+        "line": 15330
       },
       {
         "file": "src/worktree.rs",
