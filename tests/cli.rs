@@ -29607,6 +29607,444 @@ fn grep_guard_bounces_every_bash_grep_target_and_passes_literal() {
 }
 
 // ===========================================================================================
+// `rigger guard-write` (spec 104 criterion 4, THE WRITE GUARD) end to end through the
+// compiled binary: real PreToolUse JSON on stdin, real roots on argv, a real filesystem for
+// the `..`/symlink-escape cases a pure in-process test cannot exercise honestly.
+
+/// Spawn `rigger guard-write --root <r>...`, write one PreToolUse `payload` to its stdin,
+/// and parse its one printed JSON object - the write-guard analog of [`run_grep_guard`].
+/// `process_cwd` is only the SUBPROCESS's own cwd (irrelevant to the decision, which reads
+/// `cwd` from the payload instead, per THE WRITE GUARD's own stated "resolves the target
+/// ... against the hook's `cwd`" - never this process's).
+fn run_guard_write(process_cwd: &Path, roots: &[&str], payload: &str) -> serde_json::Value {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut cmd = common::rigger_courier();
+    cmd.arg("guard-write");
+    for root in roots {
+        cmd.arg("--root").arg(root);
+    }
+    cmd.current_dir(process_cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger guard-write");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.as_bytes())
+        .unwrap();
+    let out = child
+        .wait_with_output()
+        .expect("rigger guard-write must exit");
+    assert!(
+        out.status.success(),
+        "rigger guard-write must always exit 0 for a well-formed invocation (the decision \
+         rides in the JSON body); stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    serde_json::from_slice(&out.stdout).expect("guard-write must print one JSON object")
+}
+
+/// `Edit`/`Write` targets under the root are allowed; the SAME target outside every root is
+/// denied, naming the first root exactly.
+#[test]
+fn guard_write_allows_under_the_root_and_denies_outside_naming_the_first() {
+    let cwd_dir = temp_project();
+    let root = tempfile::tempdir().unwrap();
+    let root_real = std::fs::canonicalize(root.path()).unwrap();
+    let root_str = root_real.to_str().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+
+    for tool in ["Edit", "Write"] {
+        let inside = run_guard_write(
+            cwd_dir.path(),
+            &[root_str],
+            &serde_json::json!({
+                "tool_name": tool,
+                "cwd": root_str,
+                "tool_input": {"file_path": "notes.txt"},
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            inside,
+            serde_json::json!({}),
+            "{tool} under the root must be allowed; got:\n{inside}"
+        );
+
+        let outside_target = outside.path().join("notes.txt");
+        let denied = run_guard_write(
+            cwd_dir.path(),
+            &[root_str],
+            &serde_json::json!({
+                "tool_name": tool,
+                "cwd": root_str,
+                "tool_input": {"file_path": outside_target.to_str().unwrap()},
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            denied,
+            serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": format!("write target is outside the allowed root: {root_str}"),
+                }
+            }),
+            "{tool} outside the root must be denied naming the root; got:\n{denied}"
+        );
+    }
+}
+
+/// A relative `file_path` resolves against the PAYLOAD's own `cwd`, not the guard process's.
+#[test]
+fn guard_write_resolves_a_relative_target_against_the_payloads_cwd() {
+    let cwd_dir = temp_project();
+    let root = tempfile::tempdir().unwrap();
+    let root_real = std::fs::canonicalize(root.path()).unwrap();
+    let subdir = root_real.join("sub");
+    std::fs::create_dir_all(&subdir).unwrap();
+
+    let out = run_guard_write(
+        cwd_dir.path(),
+        &[root_real.to_str().unwrap()],
+        &serde_json::json!({
+            "tool_name": "Write",
+            "cwd": subdir.to_str().unwrap(),
+            "tool_input": {"file_path": "leaf.txt"},
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        out,
+        serde_json::json!({}),
+        "a relative target under the payload's own cwd must resolve inside the root; got:\n{out}"
+    );
+}
+
+/// A target under the SECOND of several `--root`s is still allowed.
+#[test]
+fn guard_write_allows_a_target_under_any_of_several_roots() {
+    let cwd_dir = temp_project();
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let second_real = std::fs::canonicalize(second.path()).unwrap();
+
+    let out = run_guard_write(
+        cwd_dir.path(),
+        &[
+            first.path().to_str().unwrap(),
+            second.path().to_str().unwrap(),
+        ],
+        &serde_json::json!({
+            "tool_name": "Write",
+            "cwd": second_real.to_str().unwrap(),
+            "tool_input": {"file_path": "ok.txt"},
+        })
+        .to_string(),
+    );
+    assert_eq!(out, serde_json::json!({}));
+}
+
+/// A `..` walk that climbs back out of the root through otherwise-ordinary relative
+/// components is denied - not just an absolute path pointed elsewhere.
+#[test]
+fn guard_write_denies_a_dot_dot_escape_from_inside_the_root() {
+    let cwd_dir = temp_project();
+    let root = tempfile::tempdir().unwrap();
+    let root_real = std::fs::canonicalize(root.path()).unwrap();
+    let inside = root_real.join("inside");
+    std::fs::create_dir_all(&inside).unwrap();
+
+    let out = run_guard_write(
+        cwd_dir.path(),
+        &[root_real.to_str().unwrap()],
+        &serde_json::json!({
+            "tool_name": "Write",
+            "cwd": inside.to_str().unwrap(),
+            "tool_input": {"file_path": "../../outside.txt"},
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a `..` escape must be denied; got:\n{out}"
+    );
+}
+
+/// A symlink planted INSIDE the root but pointing OUTSIDE it must not smuggle a write past
+/// the guard - the target's REAL location decides, not the raw text of the path.
+#[test]
+fn guard_write_denies_a_symlink_escape() {
+    let cwd_dir = temp_project();
+    let root = tempfile::tempdir().unwrap();
+    let root_real = std::fs::canonicalize(root.path()).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), root_real.join("escape")).unwrap();
+
+    let out = run_guard_write(
+        cwd_dir.path(),
+        &[root_real.to_str().unwrap()],
+        &serde_json::json!({
+            "tool_name": "Write",
+            "cwd": root_real.to_str().unwrap(),
+            "tool_input": {"file_path": "escape/secret.txt"},
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        out["hookSpecificOutput"]["permissionDecision"], "deny",
+        "a write reached through a symlink escaping the root must be denied; got:\n{out}"
+    );
+}
+
+/// `NotebookEdit` is covered through `notebook_path`; a tool this guard does not cover (e.g.
+/// `Read`) is always allowed, no matter what its own path-shaped field names.
+#[test]
+fn guard_write_covers_notebook_edit_and_ignores_other_tools() {
+    let cwd_dir = temp_project();
+    let root = tempfile::tempdir().unwrap();
+    let root_real = std::fs::canonicalize(root.path()).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+
+    let denied = run_guard_write(
+        cwd_dir.path(),
+        &[root_real.to_str().unwrap()],
+        &serde_json::json!({
+            "tool_name": "NotebookEdit",
+            "cwd": root_real.to_str().unwrap(),
+            "tool_input": {"notebook_path": outside.path().join("nb.ipynb").to_str().unwrap()},
+        })
+        .to_string(),
+    );
+    assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
+
+    let ignored = run_guard_write(
+        cwd_dir.path(),
+        &[root_real.to_str().unwrap()],
+        &serde_json::json!({
+            "tool_name": "Read",
+            "cwd": root_real.to_str().unwrap(),
+            "tool_input": {"file_path": outside.path().join("secret.txt").to_str().unwrap()},
+        })
+        .to_string(),
+    );
+    assert_eq!(
+        ignored,
+        serde_json::json!({}),
+        "a tool this guard does not cover must always be allowed; got:\n{ignored}"
+    );
+}
+
+/// `rigger guard-write` with no `--root` at all is a host misconfiguration - it must fail
+/// loudly with the Claude-Code-documented BLOCKING exit code (2), never a merely-nonzero
+/// exit. Per THE GUARD DENIES BY DEFAULT (op-104-write-guard-deny-by-default-complete-audit):
+/// a non-2 nonzero exit is NON-blocking to Claude Code (the tool call proceeds anyway,
+/// stderr shown only for information), so asserting mere non-success here would be green
+/// while still silently allowing every future write - exactly the property this test's own
+/// name claims to prove, so it must check the actual code, not just its sign.
+#[test]
+fn guard_write_without_a_root_fails_loudly_rather_than_allowing_everything() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let cwd_dir = temp_project();
+    let mut cmd = common::rigger_courier();
+    cmd.arg("guard-write")
+        .current_dir(cwd_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger guard-write");
+    child.stdin.take().unwrap().write_all(b"{}").unwrap();
+    let out = child
+        .wait_with_output()
+        .expect("rigger guard-write must exit");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "guard-write with no --root must exit the BLOCKING code (2), never silently allow \
+         every write via a non-blocking exit; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// THE GUARD DENIES BY DEFAULT (op-104-write-guard-deny-by-default-complete-audit): every
+/// OTHER transport/configuration failure this guard's own argv/stdin surface can produce
+/// must exit the SAME blocking code (2) as the no-root case above - a dangling `--root`
+/// flag with no value, and stdin bytes that are not even valid UTF-8 (a distinct failure
+/// from merely-unparseable-as-JSON-but-valid-UTF-8, which the JSON layer still handles as
+/// an exit-0 deny body, proven by `guard_write_denies_every_malformed_payload_shape_completely`).
+#[test]
+fn guard_write_exits_the_blocking_code_on_every_transport_failure() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let cwd_dir = temp_project();
+
+    // A dangling `--root` flag with no directory following it.
+    let mut cmd = common::rigger_courier();
+    cmd.arg("guard-write")
+        .arg("--root")
+        .current_dir(cwd_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger guard-write");
+    child.stdin.take().unwrap().write_all(b"{}").unwrap();
+    let out = child
+        .wait_with_output()
+        .expect("rigger guard-write must exit");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a dangling --root flag must exit the BLOCKING code (2); stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Invalid-UTF-8 stdin: `read_to_string` itself fails, a transport failure distinct
+    // from an unparseable-but-valid-UTF-8 JSON payload.
+    let root = tempfile::tempdir().unwrap();
+    let root_str = std::fs::canonicalize(root.path())
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let mut cmd = common::rigger_courier();
+    cmd.arg("guard-write")
+        .arg("--root")
+        .arg(&root_str)
+        .current_dir(cwd_dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn rigger guard-write");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&[0xFF, 0xFE, 0xFD])
+        .unwrap();
+    let out = child
+        .wait_with_output()
+        .expect("rigger guard-write must exit");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "invalid-UTF-8 stdin must exit the BLOCKING code (2), never fall through to a \
+         non-blocking exit that lets the write proceed; stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// THE GUARD DENIES BY DEFAULT (op-104-write-guard-deny-by-default-complete-audit): a
+/// complete, table-driven enumeration of every malformed shape this guard's own decision
+/// surface (`cmd_guard_write` / `guard_write_read_target` / `guard_write_target`) can see,
+/// each asserted to DENY naming the first root exactly as a resolved out-of-root target
+/// does - never folding into the same `{}` (Allow) as a tool this guard does not cover.
+/// `WriteTarget::NotCovered` (Allow) is reachable ONLY through a JSON object whose
+/// `tool_name` is an actual string outside `Edit`/`Write`/`NotebookEdit` (proven by
+/// `guard_write_covers_notebook_edit_and_ignores_other_tools`); every row below is a
+/// DIFFERENT way of failing to reach that one narrow condition, and every one denies.
+#[test]
+fn guard_write_denies_every_malformed_payload_shape_completely() {
+    let cwd_dir = temp_project();
+    let root = tempfile::tempdir().unwrap();
+    let root_real = std::fs::canonicalize(root.path()).unwrap();
+    let root_str = root_real.to_str().unwrap();
+    // Absolute, so it resolves the same regardless of the payload's own (possibly absent)
+    // `cwd` - every row below shares this one target and needs only differ in the shape
+    // the guard must fail to positively classify as a covered write to it.
+    let outside_target = "/nonexistent-outside-every-root/x.txt";
+
+    let cases: Vec<(&str, String)> = vec![
+        (
+            "top-level payload is not JSON at all",
+            "not-json".to_string(),
+        ),
+        (
+            "top-level payload is a bare JSON array",
+            "[1,2,3]".to_string(),
+        ),
+        ("top-level payload is JSON null", "null".to_string()),
+        (
+            "top-level payload is a bare JSON string",
+            "\"hello\"".to_string(),
+        ),
+        ("top-level payload is a bare JSON number", "42".to_string()),
+        ("top-level payload is a bare JSON bool", "true".to_string()),
+        (
+            "tool_name key is absent entirely",
+            serde_json::json!({
+                "cwd": root_str,
+                "tool_input": {"file_path": outside_target},
+            })
+            .to_string(),
+        ),
+        (
+            "tool_name is present but not a string",
+            serde_json::json!({
+                "tool_name": 42,
+                "cwd": root_str,
+                "tool_input": {"file_path": outside_target},
+            })
+            .to_string(),
+        ),
+        (
+            "tool_input key is absent entirely for a covered tool",
+            serde_json::json!({"tool_name": "Write", "cwd": root_str}).to_string(),
+        ),
+        (
+            "tool_input is present but not a JSON object",
+            serde_json::json!({
+                "tool_name": "Write",
+                "cwd": root_str,
+                "tool_input": "not-an-object",
+            })
+            .to_string(),
+        ),
+        (
+            "covered tool's target field is missing",
+            serde_json::json!({"tool_name": "Write", "cwd": root_str, "tool_input": {}})
+                .to_string(),
+        ),
+        (
+            "covered tool's target field is present but not a string",
+            serde_json::json!({
+                "tool_name": "Write",
+                "cwd": root_str,
+                "tool_input": {"file_path": 42},
+            })
+            .to_string(),
+        ),
+        (
+            "NotebookEdit's target field is present but not a string",
+            serde_json::json!({
+                "tool_name": "NotebookEdit",
+                "cwd": root_str,
+                "tool_input": {"notebook_path": ["a", "b"]},
+            })
+            .to_string(),
+        ),
+    ];
+
+    for (label, payload) in cases {
+        let out = run_guard_write(cwd_dir.path(), &[root_str], &payload);
+        assert_eq!(
+            out["hookSpecificOutput"]["permissionDecisionReason"],
+            serde_json::json!(format!(
+                "write target is outside the allowed root: {root_str}"
+            )),
+            "{label} must deny naming the root, never Allow; got:\n{out}"
+        );
+    }
+}
+
+// ===========================================================================================
 // SDET periphery layer, spec 92 criterion 4 (IN EVERY SESSION'S HAND). The three tests above
 // (authored at the build seam this criterion's implementer round emitted) drive the happy
 // paths of `rigger setup`, `rigger mcp`, and `rigger grep-guard` end to end. The tests below

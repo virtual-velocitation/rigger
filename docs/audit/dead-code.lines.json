@@ -590,15 +590,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 14311
+        "line": 14611
       },
       {
         "file": "src/main.rs",
-        "line": 14332
+        "line": 14632
       },
       {
         "file": "src/main.rs",
-        "line": 14847
+        "line": 15147
       },
       {
         "file": "tests/cli.rs",
@@ -648,6 +648,41 @@
       {
         "file": "tests/cli.rs",
         "line": 437
+      }
+    ]
+  },
+  {
+    "file": "src/driver/claude_code.rs",
+    "name": "install_write_guard_hook",
+    "line": 653,
+    "test_only_references": [
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 795
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 810
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 832
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 848
+      },
+      {
+        "file": "src/driver/claude_code.rs",
+        "line": 849
+      },
+      {
+        "file": "tests/write_guard_hook_periphery.rs",
+        "line": 45
+      },
+      {
+        "file": "tests/write_guard_hook_periphery.rs",
+        "line": 55
       }
     ]
   },
@@ -1120,7 +1155,7 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "line": 10016
+        "line": 10052
       }
     ]
   },
@@ -1486,47 +1521,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 17520
+        "line": 17820
       },
       {
         "file": "src/main.rs",
-        "line": 17553
+        "line": 17853
       },
       {
         "file": "src/main.rs",
-        "line": 17572
+        "line": 17872
       },
       {
         "file": "src/main.rs",
-        "line": 17575
+        "line": 17875
       },
       {
         "file": "src/main.rs",
-        "line": 17578
+        "line": 17878
       },
       {
         "file": "src/main.rs",
-        "line": 19448
+        "line": 19748
       },
       {
         "file": "src/main.rs",
-        "line": 19461
+        "line": 19761
       },
       {
         "file": "src/main.rs",
-        "line": 19476
+        "line": 19776
       },
       {
         "file": "src/main.rs",
-        "line": 25059
+        "line": 25359
       },
       {
         "file": "src/main.rs",
-        "line": 25060
+        "line": 25360
       },
       {
         "file": "src/main.rs",
-        "line": 25061
+        "line": 25361
       },
       {
         "file": "src/mcpserver.rs",

@@ -6581,7 +6581,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "16b719532fc57c9f"
+    "content_hash": "2a820ac61f4397bb"
   },
   {
     "file": "src/main.rs",
@@ -8694,6 +8694,78 @@
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
     "content_hash": "a758f7502cf90b24"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "parse_guard_write_roots",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"parse_\" (argument/input parsing); grouped under `main::support`.",
+    "content_hash": "7989409d2f18ef28"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_target",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"write_\" (generic write helper); grouped under `main::support`.",
+    "content_hash": "59582c5dc4c0220a"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"read_\" (generic read helper); grouped under `main::support`.",
+    "content_hash": "44c357d5d2a18754"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "resolve_lexical_realpath",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"resolve\" (path/id resolution helper); grouped under `main::support`.",
+    "content_hash": "432067ebc766cbd5"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "resolve_write_target",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"resolve\" (path/id resolution helper); grouped under `main::support`.",
+    "content_hash": "17c661c15f4b3744"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "write_target_under_root",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"write_\" (generic write helper); grouped under `main::support`.",
+    "content_hash": "a558d62593659699"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_deny_outside_first_root",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"write_\" (generic write helper); grouped under `main::support`.",
+    "content_hash": "c7d0450bbfc24d9c"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_decision",
+    "is_test": false,
+    "proposed_module": "main::support",
+    "reason": "name contains \"write_\" (generic write helper); grouped under `main::support`.",
+    "content_hash": "80f0c32fbab3f8c2"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "cmd_guard_write",
+    "is_test": false,
+    "proposed_module": "main::commands",
+    "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
+    "content_hash": "db1c5213fed22a4b"
   },
   {
     "file": "src/main.rs",
@@ -11662,6 +11734,230 @@
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "b8074b2e493c5cf9"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_target_reads_edit_and_write_file_path",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "04482965ac4a04a2"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_target_reads_notebook_edit_notebook_path",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1a5e57ccdf47e8ec"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_target_ignores_every_other_tool",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "8a37b6835b60ec14"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_target_reports_target_unreadable_for_a_covered_tool_missing_the_field",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "cf208122e10594dc"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_target_reports_target_unreadable_for_a_non_string_field",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "6b58ac4c79034b6e"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_denies_a_non_object_top_level_value",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "9234fdc13b139dd1"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_denies_an_absent_or_non_string_tool_name",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a47e892bd396cfdc"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_reaches_not_covered_only_through_a_real_string_tool_name",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1229840116be4cff"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_denies_a_covered_tool_with_missing_or_non_object_tool_input",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "ee09473897cd5ae9"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_reads_a_well_formed_covered_payload",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1d3c39c93c20b231"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_read_target_defaults_an_absent_cwd_to_empty",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "ce288856976cfda4"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "resolve_write_target_passes_an_absolute_path_through",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "2a8f836b8e3da892"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "resolve_write_target_joins_a_relative_path_onto_cwd",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "f8622f2f48aedda1"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "resolve_write_target_normalizes_dot_and_dot_dot",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "98cd9ff4a5d3898f"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "resolve_write_target_walks_dot_dot_past_the_process_root_without_panicking",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "2f3effbfd5f01c90"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "resolve_write_target_follows_a_symlinked_ancestor_directory",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "adac9648c9ac5250"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "write_target_under_root_rejects_a_sibling_whose_name_merely_shares_a_prefix",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "2aeb5822919be154"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "write_target_under_root_treats_equal_as_under",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "b1b7b2ead4edf5a0"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "write_target_under_root_accepts_a_descendant_and_rejects_a_sibling",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "dbab14216511227b"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_decision_allows_a_target_under_any_configured_root",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "961ba0f978ff19c9"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_decision_denies_outside_every_root_naming_the_first",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e1983714a61c45d1"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_decision_denies_a_dot_dot_escape",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "d5cabb86a855728b"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_decision_allows_a_tool_this_guard_does_not_cover",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "597992d2fee9d1b2"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "guard_write_decision_denies_target_unreadable_naming_the_first_root",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "d21ea894c9425266"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "parse_guard_write_roots_collects_every_root_in_order",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "cf26b406121746f3"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "parse_guard_write_roots_requires_at_least_one",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "c43b2a156b116b45"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "parse_guard_write_roots_rejects_a_dangling_flag",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "6d425dbae909f4e2"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "parse_guard_write_roots_rejects_an_unknown_argument",
+    "is_test": true,
+    "proposed_module": "main::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "ef9b2ca75dbd6d9a"
   },
   {
     "file": "src/dash.rs",

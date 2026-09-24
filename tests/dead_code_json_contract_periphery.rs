@@ -836,9 +836,15 @@ fn dash_marker_parse_the_self_colon_colon_false_positive_stays_absent() {
 /// occupies there (both are structurally identical `Event::new` + `with_meta` wrappers, so
 /// they share one content hash too) - its real consumer is the new
 /// `progress_store::record_launch`, not test-only code. Candidates +1 (41 -> 42),
-/// keep-public-surface +1 (15 -> 16), delete and keep-pending unchanged.
+/// keep-public-surface +1 (15 -> 16), delete and keep-pending unchanged. Now 43/21/16/6
+/// (was 42/21/16/5) after spec 104 criterion 4's THE WRITE GUARD: `install_write_guard_hook`
+/// (src/driver/claude_code.rs) lands as a fresh `keep-pending` candidate - THE WRITE GUARD's
+/// injection half, no production caller yet since the composition-root wiring that assembles
+/// a live spawn's `--settings` string from both hook owners (this criterion's fragment plus
+/// criterion 5's `StopFailure` one) is a later unit. Candidates +1 (42 -> 43), keep-pending
+/// +1 (5 -> 6), delete and keep-public-surface unchanged.
 #[test]
-fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_16_keep_public_surface(
+fn the_committed_dead_code_json_disposition_split_is_21_delete_6_keep_pending_16_keep_public_surface(
 ) {
     let candidates = deserialize_committed_dead_code();
     let delete = candidates
@@ -855,7 +861,7 @@ fn the_committed_dead_code_json_disposition_split_is_21_delete_5_keep_pending_16
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (42, 21, 16, 5),
+        (43, 21, 16, 6),
         "the committed disposition split has changed since this criterion's research"
     );
 }
