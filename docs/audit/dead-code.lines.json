@@ -785,11 +785,11 @@
       },
       {
         "file": "tests/stop_failure_hook_periphery.rs",
-        "line": 34
+        "line": 48
       },
       {
         "file": "tests/stop_failure_hook_periphery.rs",
-        "line": 292
+        "line": 307
       }
     ]
   },

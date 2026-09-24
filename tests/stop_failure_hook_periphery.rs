@@ -25,6 +25,20 @@
 //! wrong - `stop_failure_command` builds a shell command line exactly like
 //! `write_guard_command` does, and Claude Code will run it through `sh -c` the same way once
 //! spec 105 wires this hook's installation into a live spawn.
+//!
+//! ALSO OWNED HERE, in the RUN-ID AGREEMENT section below: adj-u104c5 REQUIRED FIX 1's
+//! run-scoping (`classify_no_result` now filters progress events by `opts.run_id` before
+//! folding, so a stale `StopFailure` from another run can no longer outrank a live
+//! `api_retry` category) depends on an assumption NEITHER existing suite proves - that two
+//! INDEPENDENTLY-DERIVED "current run id"s actually agree. `opts.run_id` is threaded, inside
+//! ONE process, straight from `run_store::ensure_started`'s own return value
+//! (`conductor.rs`'s `RunCtx`); the id THIS hook's `cmd_hook_stop_failure` stamps onto the
+//! record comes from a SEPARATE process cold-reading `events.db` back
+//! (`runscope::current_run_id`). `claude_code_stream_periphery.rs`'s own run-scoping test
+//! never exercises either resolution path - it writes its `StopFailure` record directly via
+//! `progress_store::record_stop_failure` with a literal `"run-1"` string on both sides, which
+//! would stay green even if the two real mechanisms diverged. Neither do this file's other
+//! CLI tests, which never seed a real run, so `current_run_id` always resolves empty there.
 
 mod common;
 
@@ -36,6 +50,7 @@ use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::progress::{self, StopFailure};
+use rigger::run::META_RUN_ID;
 
 /// The project identity the binary resolves for `root` - mirrors
 /// `tests/console_status_periphery.rs`'s `run_stream_identity` (itself mirroring
@@ -401,4 +416,125 @@ fn installed_stopfailure_hook_command_neutralizes_an_injection_shaped_spawn_id_t
         "an embedded `'` in a spawn id must never let a real shell run a command that \
          followed it - the marker file must not exist"
     );
+}
+
+// ---- RUN-ID AGREEMENT (the hook's cold-read `current_run_id` vs. the live run's own
+// `run_store::ensure_started`) ----
+//
+// See this file's own module doc: this is the seam adj-u104c5 REQUIRED FIX 1's run-scoping
+// actually depends on, and that neither this file's other tests (no real run ever seeded, so
+// `current_run_id` resolves empty) nor `claude_code_stream_periphery.rs`'s run-scoping test
+// (both sides of that test hand-inject the SAME literal string, never exercising either real
+// resolution path) exercise.
+
+/// Seeds a REAL run in `root`'s own `.rigger/events.db`, through the SAME production
+/// authority `RunCtx` itself calls before threading the result onto every spawn's
+/// `opts.run_id` (`conductor.rs`'s `crate::run_store::ensure_started`) - returns the id it
+/// mints. Namespaced identically to `recorded_stop_failures`'s own `run_stream_identity`, so
+/// this writes into the exact stream `rigger hook stop-failure`'s own cold
+/// `runscope::current_run_id` read (`main.rs::cmd_hook_stop_failure`) will independently see.
+fn seed_a_run(root: &Path) -> String {
+    let backend = Store::open(
+        root.join(".rigger/events.db")
+            .to_str()
+            .expect("a utf-8 store path"),
+    )
+    .expect("the event log opens");
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    rigger::run_store::ensure_started(&store, &["a criterion".to_string()])
+        .expect("a fresh run mints")
+}
+
+/// The `META_RUN_ID` metadata stamped on every recorded `StopFailure` in `root`'s own
+/// progress store, in append order - the id `record_stop_failure` actually persisted, read
+/// back independently of the command under test exactly like `recorded_stop_failures` does.
+fn recorded_stop_failure_run_ids(root: &Path) -> Vec<Option<String>> {
+    let backend = Store::open(
+        root.join(".rigger/progress.db")
+            .to_str()
+            .expect("a utf-8 store path"),
+    )
+    .expect("the progress store opens");
+    let store = Namespaced::new(&backend, &run_stream_identity(root));
+    store
+        .read_stream(progress::STREAM, 0, Direction::Forward)
+        .expect("the progress stream reads")
+        .into_iter()
+        .filter(|e| e.type_ == progress::TYPE_STOP_FAILURE)
+        .map(|e| e.meta.get(META_RUN_ID).cloned())
+        .collect()
+}
+
+#[test]
+fn hook_stop_failure_stamps_the_same_run_id_a_real_run_actually_minted() {
+    // adj-u104c5 REQUIRED FIX 1's run-scoping only protects a live session if the id THIS
+    // hook stamps (a cold, cross-process re-derivation) actually AGREES with the id the
+    // running spawn's own `opts.run_id` carries (threaded, in-process, straight from the
+    // same `run_store::ensure_started` call that started the run) - two independently
+    // computed values a mocked-on-both-sides unit test cannot catch diverging.
+    let project = courier_project();
+    let run_id = seed_a_run(project.path());
+    assert!(
+        !run_id.is_empty(),
+        "a freshly minted run always has a non-empty id"
+    );
+
+    let out = run_rigger(
+        project.path(),
+        &[
+            "hook",
+            "stop-failure",
+            "--spawn",
+            "u104-fail-class/implementer#0",
+            "--class",
+            "rate_limit",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "rigger hook stop-failure failed: {}\n{}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    assert_eq!(
+        recorded_stop_failure_run_ids(project.path()),
+        vec![Some(run_id.clone())],
+        "the hook's own cold-read current_run_id must agree with the id run_store::\
+         ensure_started actually minted for this run - the exact value classify_no_result's \
+         opts.run_id-scoped filter later compares a record's stamped run id against"
+    );
+}
+
+#[test]
+fn hook_stop_failure_with_no_run_started_yet_stamps_no_run_id() {
+    // The other side of the same agreement: before any run has started, `opts.run_id` is
+    // never populated either (`RunCtx` only exists once a run is underway), so the hook's
+    // own `current_run_id` resolving empty here is CORRECT, not a gap - and
+    // `classify_no_result`'s filter already treats an empty `opts.run_id` as "match every
+    // event unscoped" for exactly this reason. `StopFailure::to_event` omits the
+    // `META_RUN_ID` key entirely on an empty run id (rather than stamping an empty string -
+    // `progress.rs`'s own `to_event`), so the recorded meta must carry no run-id key at all.
+    // `hook_stop_failure_records_the_spawn_and_class` above already proves the record itself
+    // is written; this proves WHICH run id (none) lands on it.
+    let project = courier_project();
+
+    let out = run_rigger(
+        project.path(),
+        &[
+            "hook",
+            "stop-failure",
+            "--spawn",
+            "u104-fail-class/implementer#0",
+            "--class",
+            "rate_limit",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert_eq!(recorded_stop_failure_run_ids(project.path()), vec![None]);
 }

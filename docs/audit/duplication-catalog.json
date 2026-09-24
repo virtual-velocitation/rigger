@@ -7791,6 +7791,16 @@
         "content_hash": "0ab805b5101d6502"
       },
       {
+        "file": "tests/stop_failure_hook_periphery.rs",
+        "name": "\".rigger/events.db\"",
+        "content_hash": "0ab805b5101d6502"
+      },
+      {
+        "file": "tests/stop_failure_hook_periphery.rs",
+        "name": "\".rigger/progress.db\"",
+        "content_hash": "0ab805b5101d6502"
+      },
+      {
         "file": "tests/store_config.rs",
         "name": "\".rigger\"",
         "content_hash": "edbddea214457e40"
@@ -8127,7 +8137,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 785 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: .rigger-path string literals - 787 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0071",
