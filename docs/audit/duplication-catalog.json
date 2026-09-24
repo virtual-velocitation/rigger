@@ -19408,7 +19408,7 @@
       {
         "file": "tests/claude_code_stream_periphery.rs",
         "name": "spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree",
-        "content_hash": "f1599daf2039ea75"
+        "content_hash": "4677ae725c5af043"
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",

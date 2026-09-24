@@ -2026,7 +2026,7 @@ mandatory sweep: Command::new call sites - 444 site(s), collected mechanically r
 - `tests/checkin_mutation_diff_base_periphery.rs:227-227` `Command::new`
 - `tests/checkpoint_commit_hook_bypass_periphery.rs:56-56` `Command::new`
 - `tests/claude_code_stream_periphery.rs:855-855` `Command::new`
-- `tests/claude_code_stream_periphery.rs:1168-1168` `Command::new`
+- `tests/claude_code_stream_periphery.rs:1191-1191` `Command::new`
 - `tests/cli.rs:24-24` `Command::new`
 - `tests/cli.rs:50-50` `Command::new`
 - `tests/cli.rs:113-113` `Command::new`
@@ -9240,8 +9240,8 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/claude_code_stream_periphery.rs:776-821` `spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing`
 - `tests/claude_code_stream_periphery.rs:824-914` `a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_clock_stop`
 - `tests/claude_code_stream_periphery.rs:940-994` `spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree`
-- `tests/claude_code_stream_periphery.rs:997-1059` `spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree`
-- `tests/claude_code_stream_periphery.rs:1062-1144` `spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe`
+- `tests/claude_code_stream_periphery.rs:997-1082` `spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree`
+- `tests/claude_code_stream_periphery.rs:1085-1167` `spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe`
 
 #### `dup-0511` (exact, 3 sites)
 

@@ -1003,6 +1003,22 @@ fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_chi
     // Driver::join_within (bounded by self.stop_grace on this path), not reap::end_child,
     // is what closes this gap - and must never touch this pid, since by the time the walk
     // runs it is no longer any part of the child's own tree at all.
+    //
+    // stop_grace is injected here as 4s - deliberately LARGER than the ordinary path's own
+    // dedicated ORDINARY_DRAIN_JOIN_BOUND (2s, round-5 fix,
+    // op-104-stop-ordinary-path-drain-bound) - rather than the smaller value a "just prove
+    // it returns" test would use: the escaped descendant holds BOTH the stdout and stderr
+    // pipe copies open (like the ordinary-path fixture below), so the two sequential
+    // trailing joins deterministically block for the FULL injected `stop_grace` each,
+    // never racing a real EOF. That makes the total elapsed a direct, load-bearing readout
+    // of WHICH constant `Driver::join_within` actually used on this path: at this 4s
+    // value, correctly using `self.stop_grace` measures ~9s (baseline wall-clock trigger
+    // plus 2x4s, confirmed empirically); a regression that silently reused the smaller
+    // `ORDINARY_DRAIN_JOIN_BOUND` here instead - exactly the constant the round-5 fix
+    // introduced one call site away - would measure ~5s instead, indistinguishable from
+    // "prompt" under the round-4 test's own loose `elapsed < 5s` ceiling alone. Both a
+    // floor and a ceiling below turn that gap into a fast, deterministic failure rather
+    // than a silent pass.
     let fx = Fixture::new();
     let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/claude-code-descendant-out-of-tree-agent.sh")
@@ -1010,7 +1026,7 @@ fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_chi
         .into_owned();
     let driver = rigger::driver::claude_code::Driver {
         bin,
-        stop_grace: Duration::from_millis(300),
+        stop_grace: Duration::from_secs(4),
         ..fx.driver()
     };
     let descendant_pid_file = fx.scratch_root.path().join("descendant-out-of-tree.pid");
@@ -1033,10 +1049,17 @@ fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_chi
 
     assert!(err.0.contains("stopped"), "{}", err.0);
     assert!(
-        elapsed < Duration::from_secs(5),
-        "THE STOP must return within a bounded time even when a descendant that already \
-         escaped the child's own process tree still holds the stdout pipe's write end \
-         open: {elapsed:?}"
+        elapsed > Duration::from_secs(7),
+        "THE STOP's trailing pipe joins must be bounded by the INJECTED self.stop_grace \
+         (4s here), never silently downgraded to the smaller, un-injected \
+         ORDINARY_DRAIN_JOIN_BOUND the ordinary (non-STOP) path uses - an elapsed time this \
+         low means the wrong constant governed this path: {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "THE STOP must still return within a bounded time even when a descendant that \
+         already escaped the child's own process tree still holds the stdout pipe's write \
+         end open: {elapsed:?}"
     );
 
     let pid_text = std::fs::read_to_string(&descendant_pid_file)
