@@ -309,13 +309,21 @@ fn stopfailure_hook_command_for(spawn_id: &str, class: &str) -> String {
 /// the courier project - exactly as Claude Code itself will once spec 105 wires this hook's
 /// installation into a live spawn. `rigger hook stop-failure` reads no stdin, unlike
 /// `guard-write`'s payload, so this needs no writer side.
+///
+/// Unlike `write_guard_hook_periphery.rs`'s identical-looking `sh -c` round trip,
+/// `install_stop_failure_hooks`'s command OPENS a store (`rigger hook stop-failure` calls
+/// `require_store_dir`), so this `sh` child inherits and must be defended against the same
+/// fence/production-store env every direct `rigger_courier()` spawn is - see
+/// `common::unfenced`'s doc comment for the false-green-outside-a-gate /
+/// false-red-inside-one shape this closes.
 fn run_stopfailure_command_through_a_real_shell(command: &str, root: &Path) -> Output {
-    Command::new("sh")
-        .arg("-c")
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
         .arg(command)
         .current_dir(root)
         .env("RIGGER_NO_DASH", "1")
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    common::unfenced(&mut cmd)
         .output()
         .expect("spawn sh -c <installed stopfailure hook command>")
 }

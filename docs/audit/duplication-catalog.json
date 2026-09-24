@@ -2146,7 +2146,7 @@
       {
         "file": "tests/stop_failure_hook_periphery.rs",
         "name": "Command::new",
-        "content_hash": "7266da144e21471d"
+        "content_hash": "1f01b7aba566e9fb"
       },
       {
         "file": "tests/store_content_identity_periphery.rs",
