@@ -654,62 +654,62 @@
   {
     "file": "src/driver/claude_code.rs",
     "name": "reconcile_on_start",
-    "line": 683,
+    "line": 680,
     "test_only_references": [
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1590
+        "line": 1587
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1618
+        "line": 1615
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1652
+        "line": 1649
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1683
+        "line": 1680
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1713
+        "line": 1710
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1741
+        "line": 1738
       },
       {
         "file": "tests/claude_code_stream_periphery.rs",
-        "line": 937
+        "line": 965
       }
     ]
   },
   {
     "file": "src/driver/claude_code.rs",
     "name": "install_write_guard_hook",
-    "line": 950,
+    "line": 947,
     "test_only_references": [
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1092
+        "line": 1089
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1107
+        "line": 1104
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1129
+        "line": 1126
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1145
+        "line": 1142
       },
       {
         "file": "src/driver/claude_code.rs",
-        "line": 1146
+        "line": 1143
       },
       {
         "file": "tests/write_guard_hook_periphery.rs",

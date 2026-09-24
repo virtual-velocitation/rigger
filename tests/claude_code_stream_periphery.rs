@@ -821,16 +821,18 @@ fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_
 }
 
 #[test]
-fn spawn_reaps_a_process_left_behind_in_the_spawns_worktree_when_it_stops() {
-    // The gap `adv-u104stop-stop-leaves-worktree-descendants-unreaped` named: `end_child`
-    // ends only the DIRECTLY HELD child handle - a descendant the agent spawned inside the
-    // same worktree cwd (a tool or build it started without close-on-exec) can outlive it,
-    // and if it inherited the stdout pipe's write end, `stdout_reader.join()` would block
-    // forever. Proven the SAME way `reconcile_on_start_closes_an_open_launch_and_reaps_
-    // its_worktree_process_through_the_public_method` proves the identical open-launch
-    // class: a REAL "left behind" process, independent of the driver's own `Child` handle,
-    // rooted in the spawn's own worktree dir via the SAME public `UNIT_WORKTREE_PREFIX`
-    // constant production derives it from.
+fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_clock_stop() {
+    // The gap `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree` named: a worktree-wide
+    // sweep at wall-clock STOP would signal every process rooted in the spawn's worktree
+    // dir, but that dir is shared, concurrently, by every lens of the same unit's review
+    // fan-out (`run_review_agents_concurrently`, up to `MAX_CONCURRENCY`), and
+    // `reap::is_signal_eligible` matches purely on cwd containment - it has no notion of
+    // which spawn owns a process. So THE STOP must never sweep the worktree at all
+    // (`op-104-stop-no-sweep-at-wall-clock-stop`): it ends only the one child handle it
+    // holds. Proven here the SAME way the removed sweep-proving test proved the opposite
+    // case: a REAL process standing in for a live SIBLING spawn, rooted in this spawn's own
+    // worktree dir via the SAME public `UNIT_WORKTREE_PREFIX` constant production derives it
+    // from, that must still be running once this spawn's own wall-clock stop returns.
     let fx = Fixture::new();
     let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/claude-code-silent-ignores-eof-agent.sh")
@@ -847,14 +849,17 @@ fn spawn_reaps_a_process_left_behind_in_the_spawns_worktree_when_it_stops() {
         rigger::worktree::UNIT_WORKTREE_PREFIX
     );
     std::fs::create_dir_all(&unit_dir).unwrap();
-    let mut left_behind = std::process::Command::new("sleep")
+    // Stands in for a concurrently alive SIBLING spawn's own process (another review
+    // lens's live cargo build/test) rooted in the SAME unit worktree - never the process
+    // this test's own spawn below will be stopped through.
+    let mut sibling = std::process::Command::new("sleep")
         .arg("300")
         .current_dir(&unit_dir)
         .spawn()
         .expect("spawn sleep");
-    let pid = left_behind.id();
+    let sibling_pid = sibling.id();
 
-    let pid_file = fx.scratch_root.path().join("ignores-eof-worktree.pid");
+    let pid_file = fx.scratch_root.path().join("ignores-eof-sibling.pid");
     let mut o = opts("u104-stop/implementer#0");
     o.env = vec![(
         "RIGGER_TEST_IGNORES_EOF_PID_FILE".to_string(),
@@ -871,18 +876,41 @@ fn spawn_reaps_a_process_left_behind_in_the_spawns_worktree_when_it_stops() {
         .expect_err("a stream that never produces a result must not read as a success");
     assert!(err.0.contains("stopped"), "{}", err.0);
 
-    // Same reap-confirmation shape as the reconcile test above: `try_wait` both detects
-    // the reap and collects the zombie (this test is the process's real parent), then
-    // `is_alive` closes the loop as a second, independent confirmation.
+    // The stopped spawn's OWN held child is still ended - exactly as
+    // `spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing`
+    // already proves - so this test's new assertion below is what THE STOP must leave
+    // alone, not a claim that STOP now reaps nothing at all.
+    let pid_text = std::fs::read_to_string(&pid_file)
+        .expect("the fixture recorded its pid before going silent");
+    let stopped_pid: u32 = pid_text
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
     assert!(
-        common::wait_until(|| matches!(left_behind.try_wait(), Ok(Some(_)))),
-        "pid {pid}, left behind in the spawn's own worktree (not the driver's held Child \
-         handle), must be reaped by THE STOP itself - never left for a later restart"
+        !common::is_alive(stopped_pid),
+        "the stopped spawn's own held child must still be ended by reap::end_child"
+    );
+
+    // The SIBLING - sharing the same worktree cwd, never held by this spawn's own `Child`
+    // handle - must be untouched: `try_wait` reads `Ok(None)` (still running; a reaped
+    // process reads `Ok(Some(_))`), and `is_alive` confirms it a second, independent way.
+    assert_eq!(
+        sibling.try_wait().unwrap(),
+        None,
+        "pid {sibling_pid}, standing in for a live SIBLING spawn's own process in the same \
+         worktree, must survive another spawn's wall-clock stop - THE STOP ends only the \
+         one child handle it holds, never a worktree-wide sweep"
     );
     assert!(
-        !common::is_alive(pid),
-        "pid {pid} must be fully gone (not merely signalled) once its parent has reaped it"
+        common::is_alive(sibling_pid),
+        "pid {sibling_pid} must still be alive - a worktree sweep at wall-clock STOP would \
+         have signalled a live sibling spawn's own process"
     );
+
+    // This test is the sibling's real parent - end it through the SAME sanctioned
+    // handle-bound path (`Child::kill` + `Child::wait`) rather than leaking it.
+    sibling.kill().expect("end the sibling stand-in process");
+    let _ = sibling.wait();
 }
 
 #[test]

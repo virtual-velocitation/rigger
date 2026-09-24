@@ -553,12 +553,17 @@ impl Driver<'_> {
     /// THE STOP sequence itself (spec 104 criterion 6), factored out of [`Driver::read_stream`]'s
     /// loop so its one call site there reads as a single named step: "closes the session's
     /// input stream, waits a grace period, then ends the child through the sanctioned
-    /// lifecycle helper on the child's own handle" (architecture addendum §4.6), then sweeps
-    /// the spawn's own worktree for any descendant the ended child left behind (the same
-    /// reap [`Driver::reconcile_on_start`] runs for an open launch it finds on restart, so a
-    /// leaked descendant can never block this function's own `stdout_reader` join), then
-    /// records the EXISTING liveness-fault shape and closes the launch record `stopped`.
-    /// Always returns `Err` - a launch that never produced a result stays a failure from
+    /// lifecycle helper on the child's own handle" (architecture addendum §4.6), then records
+    /// the EXISTING liveness-fault shape and closes the launch record `stopped`. THE STOP
+    /// sweeps nothing beyond that one held handle - unlike [`Driver::reconcile_on_start`],
+    /// which safely sweeps its spawn's whole worktree because it runs at supervisor start-up,
+    /// before any spawn is dispatched, with no live siblings - a running spawn's worktree can
+    /// be shared concurrently by sibling spawns in the same unit (the review fan-out's own
+    /// lenses, `run_review_agents_concurrently`), and `reap`'s cwd-scanned matching has no
+    /// notion of which spawn owns a process, so a sweep here would signal a live sibling's own
+    /// legitimate process, not just this spawn's leftovers (`op-104-stop-no-sweep-at-wall-
+    /// clock-stop`, `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree`). Always returns
+    /// `Err` - a launch that never produced a result stays a failure from
     /// this driver's own return value, exactly like the "agent stream ended with no
     /// result" ending just above; a caller wanting the no-attempt-charged semantics reads
     /// [`SpawnResult::is_liveness_fault`] off the run store this durably wrote, the SAME
@@ -596,25 +601,17 @@ impl Driver<'_> {
         // above already collected it.
         crate::reap::end_child(reaper.child_mut());
 
-        // `end_child` above ends only the DIRECTLY HELD child handle - a descendant the
-        // agent spawned inside the same worktree cwd (a tool or build it started without
-        // close-on-exec) can outlive it, and if that descendant inherited the stdout pipe's
-        // write end, the pipe never reaches EOF once the direct child is gone, so
-        // `stdout_reader.join()` below would block forever: THE STOP - built specifically to
-        // bound an unresponsive agent - would itself hang (`adv-u104stop-stop-leaves-
-        // worktree-descendants-unreaped`). Sweep the spawn's own worktree the same way
-        // `reconcile_on_start` already does for the identical open-launch class: derive the
-        // dir the SAME PURE way (`crate::spawn::unit_of` on this spawn's own id, then
-        // `crate::conductor::unit_worktree_dir` - no event field of its own), degrading to a
-        // no-op on an empty scratch root or an unparseable id, never a guess at a path to
-        // reap.
-        if !self.scratch_root.is_empty() {
-            if let Some(unit) = crate::spawn::unit_of(&opts.id).filter(|u| !u.is_empty()) {
-                let dir = crate::conductor::unit_worktree_dir(&self.scratch_root, unit);
-                let authorized_root = Path::new(&self.scratch_root);
-                crate::reap::reap_processes_rooted_under(Path::new(&dir), authorized_root);
-            }
-        }
+        // `end_child` above ends only the DIRECTLY HELD child handle - deliberately NO
+        // worktree-wide sweep here (unlike `reconcile_on_start`'s identical-looking one):
+        // this spawn's worktree can be shared, right now, by a live SIBLING spawn (the
+        // review fan-out's own concurrent lenses, `run_review_agents_concurrently`, all
+        // passed the same dir), and `reap`'s cwd-scanned matching has no notion of which
+        // spawn owns a process - a sweep here would signal that sibling's own legitimate,
+        // in-progress work, not just this spawn's leftovers (round-2 reject
+        // `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree`, upheld against the
+        // round-1 fix this replaces; `reconcile_on_start` keeps its own sweep because it
+        // runs only at supervisor start-up, before any spawn is dispatched, when no
+        // sibling can be alive - `op-104-stop-no-sweep-at-wall-clock-stop`).
 
         // "the existing liveness-fault result is recorded" - the SAME [`SpawnResult`]
         // shape `liveness::sweep` already records for the stepwise driver's own hung
