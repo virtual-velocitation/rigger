@@ -47,6 +47,25 @@ const PERMISSION_MODE: &str = "default";
 /// shut out by this recv.
 const UNBOUNDED_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Bounds [`Driver::read_stream`]'s ORDINARY (non-STOP) exit joins - the stderr-drain and
+/// stdout-reader threads, right after `dash::ReapedChild::drop` reaps the one child this
+/// function held - a dedicated diagnostic-drain bound, DELIBERATELY NEVER
+/// [`Driver::stop_grace`] (adj-u104stop-r4-verdict-reject REQUIRED FIX,
+/// `op-104-stop-ordinary-path-drain-bound`): `stop_grace` is THE STOP's own wait for a
+/// graceful exit and means nothing on this path, where the child has already exited
+/// cleanly - reusing it here stalled an already-captured, fully successful result by up
+/// to 2x its value (60s in production) whenever a descendant inherited a copy of either
+/// pipe, and permanently leaked the blocked reader thread if that descendant never exited
+/// (independently reproduced three ways: `adv-u104stop-r4-ordinary-path-reuses-stop-grace-
+/// for-60s-latency-and-thread-leak`). The common case - the pipe closes the instant the
+/// child itself exits - still joins in microseconds; this bound only matters for the rare
+/// stranger holding a leaked copy, and a few seconds is enough to distinguish "closing
+/// right now" from "never closing", which is all a diagnostic drain needs to prove. Not
+/// injected (unlike `stop_grace`): this is a fixed internal implementation bound for a
+/// best-effort diagnostic wait, never a caller-configurable timeout for a concern anyone
+/// outside this module has a reason to tune.
+const ORDINARY_DRAIN_JOIN_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Spawns agents as headless Claude Code sessions.
 pub struct Driver<'a> {
     /// The `claude` binary to run. Empty resolves to `"claude"` on `$PATH`, same
@@ -534,13 +553,17 @@ impl Driver<'_> {
         // The reap just above ends only the ONE child handle it holds (spec 104 criterion 6
         // round-4 fix): a descendant that inherited a copy of either pipe's write end
         // before going silent keeps it open regardless, so both joins below are bounded
-        // ([`Driver::join_within_grace`]) rather than a bare `join()` that could wait on
-        // such a stranger forever - never a caller-visible wait for its own sake in the
-        // ordinary case, where the thread has already hit EOF or is about to.
+        // ([`Driver::join_within`]) rather than a bare `join()` that could wait on such a
+        // stranger forever - never a caller-visible wait for its own sake in the ordinary
+        // case, where the thread has already hit EOF or is about to. Bounded by
+        // [`ORDINARY_DRAIN_JOIN_BOUND`], NEVER `self.stop_grace` - this is not THE STOP,
+        // and `stop_grace` has no meaning on a path where the child has already exited
+        // cleanly (adj-u104stop-r4-verdict-reject REQUIRED FIX,
+        // `op-104-stop-ordinary-path-drain-bound`).
         if let Some(handle) = stderr_drain {
-            self.join_within_grace(opts, "stderr", handle);
+            self.join_within(opts, "stderr", handle, ORDINARY_DRAIN_JOIN_BOUND);
         }
-        self.join_within_grace(opts, "stdout", stdout_reader);
+        self.join_within(opts, "stdout", stdout_reader, ORDINARY_DRAIN_JOIN_BOUND);
 
         result.ok_or_else(|| {
             Error(format!(
@@ -663,15 +686,18 @@ impl Driver<'_> {
         );
 
         drop(reaper);
-        // Bounded (spec 104 criterion 6 round-4 fix, [`Driver::join_within_grace`]): the
-        // child's own pipe copy closes the moment `end_child` above finishes it and its
-        // known descendants, but a descendant that had ALREADY escaped the tree before that
+        // Bounded (spec 104 criterion 6 round-4 fix, [`Driver::join_within`]): the child's
+        // own pipe copy closes the moment `end_child` above finishes it and its known
+        // descendants, but a descendant that had ALREADY escaped the tree before that
         // snapshot ran still holds its own copy open, and no signal this function sent
         // could ever reach it - this is the backstop that keeps THE STOP returning anyway.
+        // Bounded by `self.stop_grace` here (THIS is THE STOP's own wait-for-a-graceful-
+        // exit concern, unlike `read_stream`'s ORDINARY-exit joins just below, which use
+        // the dedicated `ORDINARY_DRAIN_JOIN_BOUND` instead).
         if let Some(handle) = stderr_drain {
-            self.join_within_grace(opts, "stderr", handle);
+            self.join_within(opts, "stderr", handle, self.stop_grace);
         }
-        self.join_within_grace(opts, "stdout", stdout_reader);
+        self.join_within(opts, "stdout", stdout_reader, self.stop_grace);
 
         Err(Error(format!(
             "claude_code driver: {:?}: {message}",
@@ -686,8 +712,8 @@ impl Driver<'_> {
         let _ = progress_store::record(self.progress_store, &opts.run_id, &opts.id, activity);
     }
 
-    /// Join `handle` (a stdout-reader or stderr-drain thread), but never past
-    /// `self.stop_grace` (spec 104 criterion 6 round-4 fix, decision
+    /// Join `handle` (a stdout-reader or stderr-drain thread), but never past `bound`
+    /// (spec 104 criterion 6 round-4 fix, decision
     /// `op-104-stop-end-the-tree-and-bound-the-joins`): a process the driven child forked
     /// but never `exec`'d can inherit a copy of the stdout/stderr pipe's write end, and once
     /// that copy has ALREADY escaped the child's own process tree - reparented before
@@ -701,19 +727,28 @@ impl Driver<'_> {
     /// through, so a stop (and an ordinary stream end) both return on a bounded clock no
     /// matter who else holds the pipe.
     ///
+    /// `bound` is the caller's own concern, never this function's: THE STOP's two joins
+    /// pass `self.stop_grace` (its own wait-for-a-graceful-exit duration, injected and
+    /// test-overridable), while [`Driver::read_stream`]'s ORDINARY-exit joins pass the
+    /// dedicated, un-injected [`ORDINARY_DRAIN_JOIN_BOUND`] - the two concerns share this
+    /// mechanism but must never share a magnitude (adj-u104stop-r4-verdict-reject REQUIRED
+    /// FIX, `op-104-stop-ordinary-path-drain-bound`: reusing `stop_grace` on the ordinary
+    /// path stalled an already-captured successful result by up to 2x its value).
+    ///
     /// `label` names which pipe this was, for the progress line recorded when `handle`
     /// outruns the deadline - the caller's only visible trace of a stranger it can neither
     /// identify nor touch. A handle that outruns the deadline is left to run: dropping a
     /// `JoinHandle` detaches its thread rather than cancelling it, so it keeps draining
     /// (harmlessly - the bytes were always diagnostic-only, never this criterion's record
     /// of truth) until whatever still holds the pipe finally closes it or exits on its own.
-    fn join_within_grace(
+    fn join_within(
         &self,
         opts: &SpawnOpts,
         label: &str,
         handle: std::thread::JoinHandle<()>,
+        bound: std::time::Duration,
     ) {
-        let deadline = std::time::Instant::now() + self.stop_grace;
+        let deadline = std::time::Instant::now() + bound;
         loop {
             if handle.is_finished() {
                 let _ = handle.join();

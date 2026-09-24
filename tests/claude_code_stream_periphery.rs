@@ -1000,9 +1000,9 @@ fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_chi
     // STOP's pid-tree snapshot ever ran (reparented to init/a subreaper, so
     // reap::end_child's walk can never find it) still holds a duplicate of the stdout
     // pipe's write end open. THE STOP must still return within a bounded time regardless -
-    // Driver::join_within_grace, not reap::end_child, is what closes this gap - and must
-    // never touch this pid, since by the time the walk runs it is no longer any part of
-    // the child's own tree at all.
+    // Driver::join_within (bounded by self.stop_grace on this path), not reap::end_child,
+    // is what closes this gap - and must never touch this pid, since by the time the walk
+    // runs it is no longer any part of the child's own tree at all.
     let fx = Fixture::new();
     let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/claude-code-descendant-out-of-tree-agent.sh")
@@ -1061,7 +1061,7 @@ fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_chi
 #[test]
 fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe() {
     // The round-4 bounded-join fix (op-104-stop-end-the-tree-and-bound-the-joins) applies
-    // Driver::join_within_grace at FOUR call sites, not just the two inside
+    // Driver::join_within at FOUR call sites, not just the two inside
     // stop_for_wall_clock_silence the two tests above already prove: read_stream's own
     // ORDINARY exit - a genuine result lands, no wall-clock silence, THE STOP never runs
     // at all - hits the identical two joins right after dash::ReapedChild::drop, which
@@ -1073,16 +1073,22 @@ fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_s
     // result is still captured and returned, within a bounded time, and the descendant
     // itself is left running untouched (this path never attempts to end it - only THE
     // STOP's own reap::end_child does that, by design).
+    //
+    // adj-u104stop-r4-verdict-reject REQUIRED FIX (op-104-stop-ordinary-path-drain-bound):
+    // this path's two joins are bounded by a dedicated constant
+    // (`claude_code::ORDINARY_DRAIN_JOIN_BOUND`, a few seconds), never by `stop_grace` -
+    // `stop_grace` is THE STOP's own wait-for-a-graceful-exit concern and has no meaning
+    // here, where the child has already exited cleanly. Proving "promptly" at a shrunk
+    // `stop_grace` (the prior version of this test overrode it to 300ms) would prove
+    // nothing about the real bound this path now uses, so this `Driver` takes the
+    // PRODUCTION `stop_grace` default (`fx.driver()`'s own 30s) unmodified - only the
+    // STOP-path tests above still shrink `stop_grace`, for THEIR own concern.
     let fx = Fixture::new();
     let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/claude-code-descendant-survives-a-clean-result-agent.sh")
         .to_string_lossy()
         .into_owned();
-    let driver = rigger::driver::claude_code::Driver {
-        bin,
-        stop_grace: Duration::from_millis(300),
-        ..fx.driver()
-    };
+    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
     let descendant_pid_file = fx.scratch_root.path().join("descendant-clean-result.pid");
     let mut o = opts("u104-stop/implementer#0");
     o.env = vec![(
@@ -1106,10 +1112,17 @@ fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_s
         result.output,
         "done: a result survives a still-open descendant pipe"
     );
+    // The fixture's forked descendant inherits copies of BOTH the stdout and stderr
+    // write ends, so both joins (stderr drain, then stdout reader, run sequentially)
+    // independently hit `claude_code::ORDINARY_DRAIN_JOIN_BOUND` before detaching -
+    // worst case is ~2x that bound, plus slack for process/scheduling overhead. This is
+    // what proves "promptly" at the real production `stop_grace` (unmodified above):
+    // the ordinary path no longer owes that field anything.
     assert!(
-        elapsed < Duration::from_secs(5),
-        "an ordinary completion must return within a bounded time even when a descendant \
-         still holds the stdout pipe open: {elapsed:?}"
+        elapsed < Duration::from_secs(6),
+        "an ordinary completion must return within the dedicated ordinary-path drain \
+         bound (never stop_grace) even when a descendant still holds the stdout pipe \
+         open: {elapsed:?}"
     );
 
     let pid_text = std::fs::read_to_string(&descendant_pid_file)

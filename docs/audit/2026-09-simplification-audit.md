@@ -1945,8 +1945,8 @@ mandatory sweep: Command::new call sites - 444 site(s), collected mechanically r
 - `src/conductor.rs:43218-43218` `Command::new`
 - `src/conductor.rs:43531-43531` `Command::new`
 - `src/dash.rs:3882-3882` `Command::new`
-- `src/driver/claude_code.rs:167-167` `Command::new`
-- `src/driver/claude_code.rs:1615-1615` `Command::new`
+- `src/driver/claude_code.rs:186-186` `Command::new`
+- `src/driver/claude_code.rs:1650-1650` `Command::new`
 - `src/driver/cli.rs:45-45` `Command::new`
 - `src/gate.rs:745-745` `Command::new`
 - `src/gate.rs:754-754` `Command::new`
@@ -2026,7 +2026,7 @@ mandatory sweep: Command::new call sites - 444 site(s), collected mechanically r
 - `tests/checkin_mutation_diff_base_periphery.rs:227-227` `Command::new`
 - `tests/checkpoint_commit_hook_bypass_periphery.rs:56-56` `Command::new`
 - `tests/claude_code_stream_periphery.rs:855-855` `Command::new`
-- `tests/claude_code_stream_periphery.rs:1155-1155` `Command::new`
+- `tests/claude_code_stream_periphery.rs:1168-1168` `Command::new`
 - `tests/cli.rs:24-24` `Command::new`
 - `tests/cli.rs:50-50` `Command::new`
 - `tests/cli.rs:113-113` `Command::new`
@@ -2547,7 +2547,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:305-307` `review_round_start_key`
 - `src/conductor.rs:348-350` `compensation_queued_key`
 - `src/conductor.rs:1091-1093` `conflict_regenerate_key`
-- `src/driver/claude_code.rs:896-904` `stop_message`
+- `src/driver/claude_code.rs:931-939` `stop_message`
 - `src/spawn.rs:146-148` `spawn_id`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:70-72` `expected_postmerge_dir`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:73-75` `expected_postmerge_branch`
@@ -6233,8 +6233,8 @@ Proposed home: `claude_code::driver`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:214-220` `bin`
-- `src/driver/claude_code.rs:222-228` `rigger_bin`
+- `src/driver/claude_code.rs:233-239` `bin`
+- `src/driver/claude_code.rs:241-247` `rigger_bin`
 
 #### `dup-0222` (near, 4 sites)
 
@@ -6242,7 +6242,7 @@ Proposed home: `a new shared module (sites span 4 files: src/driver/claude_code.
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:1095-1102` `opts`
+- `src/driver/claude_code.rs:1130-1137` `opts`
 - `src/driver/replay.rs:395-402` `opts_for`
 - `tests/claude_code_launch_wire_periphery.rs:95-102` `opts`
 - `tests/claude_code_stream_periphery.rs:72-78` `opts`
@@ -6253,8 +6253,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:1515-1521` `stream_path_mirrors_spawn_scratch_paths_layout`
-- `src/driver/claude_code.rs:1524-1530` `stream_path_omits_the_run_subdir_for_an_empty_run_id`
+- `src/driver/claude_code.rs:1550-1556` `stream_path_mirrors_spawn_scratch_paths_layout`
+- `src/driver/claude_code.rs:1559-1565` `stream_path_omits_the_run_subdir_for_an_empty_run_id`
 
 #### `dup-0224` (exact, 2 sites)
 
@@ -6262,8 +6262,8 @@ Proposed home: `claude_code::support (consolidate these 2 sites into one functio
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:1533-1535` `stream_path_is_none_for_an_empty_spawn_id`
-- `src/driver/claude_code.rs:1538-1544` `stream_path_is_none_rather_than_relative_for_an_empty_scratch_root`
+- `src/driver/claude_code.rs:1568-1570` `stream_path_is_none_for_an_empty_spawn_id`
+- `src/driver/claude_code.rs:1573-1579` `stream_path_is_none_rather_than_relative_for_an_empty_scratch_root`
 
 #### `dup-0225` (near, 7 sites)
 
@@ -6271,7 +6271,7 @@ Proposed home: `a new shared module (sites span 6 files: src/driver/claude_code.
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:1614-1620` `sleeper_in`
+- `src/driver/claude_code.rs:1649-1655` `sleeper_in`
 - `src/reap.rs:736-742` `sleeper_in`
 - `src/reap.rs:746-753` `sigterm_ignorer_in`
 - `tests/mutation_scratch_reap_base_guard_periphery.rs:54-61` `sigterm_ignorer_in`
@@ -6285,7 +6285,7 @@ Proposed home: `a new shared module (sites span 8 files: src/driver/claude_code.
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:1623-1631` `wait_until`
+- `src/driver/claude_code.rs:1658-1666` `wait_until`
 - `src/gate.rs:1300-1308` `wait_until`
 - `src/reap.rs:762-770` `wait_until`
 - `tests/common/mod.rs:375-383` `wait_until`
@@ -6300,7 +6300,7 @@ Proposed home: `a new shared module (sites span 2 files: src/driver/claude_code.
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/claude_code.rs:1633-1643` `open_launch`
+- `src/driver/claude_code.rs:1668-1678` `open_launch`
 - `src/progress.rs:485-497` `open_event`
 
 #### `dup-0228` (near, 2 sites)
@@ -9241,7 +9241,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `tests/claude_code_stream_periphery.rs:824-914` `a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_clock_stop`
 - `tests/claude_code_stream_periphery.rs:940-994` `spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree`
 - `tests/claude_code_stream_periphery.rs:997-1059` `spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree`
-- `tests/claude_code_stream_periphery.rs:1062-1131` `spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe`
+- `tests/claude_code_stream_periphery.rs:1062-1144` `spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe`
 
 #### `dup-0511` (exact, 3 sites)
 
@@ -13405,8 +13405,8 @@ METHODOLOGY: every one of the 26 was independently re-verified by hand (NOT take
 
 **`src/driver/claude_code.rs`**
 
-- **reconcile_on_start** (`src/driver/claude_code.rs:755`, `pub`, KG degree 12): `keep-pending`. reconcile_on_start (spec 104 criterion 6, STOP's supervisor start-up reconciliation half: 'on start the supervisor closes any SpawnLaunched left open as interrupted and reaps processes still rooted in that spawn's worktree before it relaunches') has no production caller yet, the SAME already-disclosed shape install_write_guard_hook's own entry above documents for criterion 4: `rigger run` still composes agents through cli::Driver (main.rs:3667), and no supervisor loop yet calls a claude_code::Driver method at start-up - that call site is spec 105's own composition-root swap, not this criterion's (spec 104's own Design, THE COMPOSITION ROOT paragraph: 'the swap that makes rigger run build claude_code::Driver is spec 105's first unit'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism criterion 6's own Done-when text specifies ('a supervisor start closes an open launch record and reaps the spawn's worktree before relaunching') - deleting it would delete the criterion's own start-up half before the supervisor loop that calls it once per boot lands. keep-pending, citing spec 104 criterion 6 (this criterion's own OWNS: 'stop and start-up reconciliation only') and spec 105 (the composition-root swap that will call it).
-- **install_write_guard_hook** (`src/driver/claude_code.rs:1022`, `pub`, KG degree 9): `keep-pending`. install_write_guard_hook (spec 104 criterion 4, THE WRITE GUARD's injection half) has no production caller yet: `rigger run` still composes agents through `cli::Driver` (main.rs:3667), unchanged until criterion 2's stream reader completes `impl AgentDriver for claude_code::Driver` (this file's own module doc: 'until it lands ... rigger run ... keeps using cli::Driver'), and no unit yet builds a live spawn's --settings string from this criterion's own hook fragment plus criterion 5's StopFailure one (spec 104 Design's THE HOOKS paragraph: 'the per-spawn settings JSON carries exactly two hook families ... assembled ... from their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism THE WRITE GUARD's own Done-when text specifies ('the host injects it as the PreToolUse hook for Edit|Write|NotebookEdit') - deleting it would delete the criterion's own injection half before the composition-root wiring that calls it (assembling opts.settings_json from both hook owners) lands, mirroring SpawnOpts.settings_json's own already-disclosed inert-until-wired state (spec 104 criterion 1's own accounting: 'no live driver reads these fields yet'). keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard command and its injection') and THE HOOKS, which names criterion 4 this hook family's sole owner.
+- **reconcile_on_start** (`src/driver/claude_code.rs:790`, `pub`, KG degree 12): `keep-pending`. reconcile_on_start (spec 104 criterion 6, STOP's supervisor start-up reconciliation half: 'on start the supervisor closes any SpawnLaunched left open as interrupted and reaps processes still rooted in that spawn's worktree before it relaunches') has no production caller yet, the SAME already-disclosed shape install_write_guard_hook's own entry above documents for criterion 4: `rigger run` still composes agents through cli::Driver (main.rs:3667), and no supervisor loop yet calls a claude_code::Driver method at start-up - that call site is spec 105's own composition-root swap, not this criterion's (spec 104's own Design, THE COMPOSITION ROOT paragraph: 'the swap that makes rigger run build claude_code::Driver is spec 105's first unit'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism criterion 6's own Done-when text specifies ('a supervisor start closes an open launch record and reaps the spawn's worktree before relaunching') - deleting it would delete the criterion's own start-up half before the supervisor loop that calls it once per boot lands. keep-pending, citing spec 104 criterion 6 (this criterion's own OWNS: 'stop and start-up reconciliation only') and spec 105 (the composition-root swap that will call it).
+- **install_write_guard_hook** (`src/driver/claude_code.rs:1057`, `pub`, KG degree 9): `keep-pending`. install_write_guard_hook (spec 104 criterion 4, THE WRITE GUARD's injection half) has no production caller yet: `rigger run` still composes agents through `cli::Driver` (main.rs:3667), unchanged until criterion 2's stream reader completes `impl AgentDriver for claude_code::Driver` (this file's own module doc: 'until it lands ... rigger run ... keeps using cli::Driver'), and no unit yet builds a live spawn's --settings string from this criterion's own hook fragment plus criterion 5's StopFailure one (spec 104 Design's THE HOOKS paragraph: 'the per-spawn settings JSON carries exactly two hook families ... assembled ... from their two owners'). Unlike a stray convenience wrapper, its tested behavior IS the shipped mechanism THE WRITE GUARD's own Done-when text specifies ('the host injects it as the PreToolUse hook for Edit|Write|NotebookEdit') - deleting it would delete the criterion's own injection half before the composition-root wiring that calls it (assembling opts.settings_json from both hook owners) lands, mirroring SpawnOpts.settings_json's own already-disclosed inert-until-wired state (spec 104 criterion 1's own accounting: 'no live driver reads these fields yet'). keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard command and its injection') and THE HOOKS, which names criterion 4 this hook family's sole owner.
 
 **`src/eventstore/sqlite.rs`**
 

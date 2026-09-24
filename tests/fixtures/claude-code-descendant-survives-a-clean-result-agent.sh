@@ -1,7 +1,7 @@
 #!/bin/sh
 # A fixture "agent" for THE STREAM's own bounded joins (spec 104 criterion 6 round-4 fix,
 # decision op-104-stop-end-the-tree-and-bound-the-joins): that fix's bounded-join helper
-# (Driver::join_within_grace) sits at FOUR reader/drain join call sites, not just the two
+# (Driver::join_within) sits at FOUR reader/drain join call sites, not just the two
 # THE STOP itself takes - read_stream's own ORDINARY exit (a real result lands, no
 # wall-clock silence, THE STOP never runs at all) hits the identical two joins right after
 # its own single-child reap (dash::ReapedChild::drop, which ends only the one held child,
@@ -10,7 +10,9 @@
 # inherits this shell's stdout AND stderr write ends) BEFORE emitting its result line,
 # then exits normally right after - the shell's own copies of both pipes close on exit,
 # but the descendant's inherited copies do not, so a genuine result lands and the host
-# must still return promptly rather than block forever in either reader/drain thread's
+# must still return promptly (bounded by the dedicated ORDINARY_DRAIN_JOIN_BOUND, never
+# stop_grace - adj-u104stop-r4-verdict-reject REQUIRED FIX,
+# op-104-stop-ordinary-path-drain-bound) rather than stall on either reader/drain thread's
 # join waiting for an EOF only the descendant can still withhold.
 IFS= read -r line
 echo '{"type":"system","subtype":"init","session_id":"88888888-8888-4888-8888-888888888888","model":"claude-haiku-4-5","mcp_servers":[]}'

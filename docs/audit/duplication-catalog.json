@@ -19413,7 +19413,7 @@
       {
         "file": "tests/claude_code_stream_periphery.rs",
         "name": "spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe",
-        "content_hash": "730ab576205f6771"
+        "content_hash": "d2b3eb016806d7a1"
       }
     ],
     "proposed_home": "claude_code_stream_periphery::support (consolidate these 5 sites into one function in this file)",
