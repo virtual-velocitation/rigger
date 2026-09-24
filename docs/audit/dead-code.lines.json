@@ -590,15 +590,15 @@
       },
       {
         "file": "src/main.rs",
-        "line": 14543
+        "line": 14600
       },
       {
         "file": "src/main.rs",
-        "line": 14564
+        "line": 14621
       },
       {
         "file": "src/main.rs",
-        "line": 15079
+        "line": 15136
       },
       {
         "file": "tests/cli.rs",
@@ -678,11 +678,11 @@
       },
       {
         "file": "tests/write_guard_hook_periphery.rs",
-        "line": 38
+        "line": 45
       },
       {
         "file": "tests/write_guard_hook_periphery.rs",
-        "line": 48
+        "line": 55
       }
     ]
   },
@@ -1521,47 +1521,47 @@
       },
       {
         "file": "src/main.rs",
-        "line": 17752
+        "line": 17809
       },
       {
         "file": "src/main.rs",
-        "line": 17785
+        "line": 17842
       },
       {
         "file": "src/main.rs",
-        "line": 17804
+        "line": 17861
       },
       {
         "file": "src/main.rs",
-        "line": 17807
+        "line": 17864
       },
       {
         "file": "src/main.rs",
-        "line": 17810
+        "line": 17867
       },
       {
         "file": "src/main.rs",
-        "line": 19680
+        "line": 19737
       },
       {
         "file": "src/main.rs",
-        "line": 19693
+        "line": 19750
       },
       {
         "file": "src/main.rs",
-        "line": 19708
+        "line": 19765
       },
       {
         "file": "src/main.rs",
-        "line": 25291
+        "line": 25348
       },
       {
         "file": "src/main.rs",
-        "line": 25292
+        "line": 25349
       },
       {
         "file": "src/main.rs",
-        "line": 25293
+        "line": 25350
       },
       {
         "file": "src/mcpserver.rs",

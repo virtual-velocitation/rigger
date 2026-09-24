@@ -2357,10 +2357,15 @@
         "file": "tests/write_guard_hook_periphery.rs",
         "name": "Command::new",
         "content_hash": "6aa60b3c37ad89ff"
+      },
+      {
+        "file": "tests/write_guard_hook_periphery.rs",
+        "name": "Command::new",
+        "content_hash": "6aa60b3c37ad89ff"
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 440 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 441 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",

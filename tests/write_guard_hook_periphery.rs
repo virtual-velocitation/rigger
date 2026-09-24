@@ -21,6 +21,13 @@
 //!    followed by a shell command) never actually RUNS that command - the quoting
 //!    neutralizes it rather than merely relying on `guard-write` happening to ignore
 //!    malformed argv, the strong form of "never be reinterpreted", not the weak one.
+//! 4. THE GUARD DENIES BY DEFAULT's own blocking exit code
+//!    (`GUARD_WRITE_BLOCKING_EXIT_CODE`, spec 104 criterion 4 round 3 / 344a63d) survives
+//!    the shell hop unchanged - a transport failure still exits exactly 2 once a real `sh
+//!    -c` sits between the caller and the compiled binary, never absorbed or remapped by
+//!    the shell. `tests/cli.rs`'s own `guard_write_exits_the_blocking_code_on_every_transport_failure`
+//!    proves the code directly against the binary; only a real shell hop can prove Claude
+//!    Code - which never invokes the binary directly - would see the same code.
 //!
 //! NOT OWNED HERE: `cmd_guard_write`'s own allow/deny decision surface for absolute,
 //! relative, `..` and symlink-escaping targets, multiple plainly-spelled roots,
@@ -235,5 +242,58 @@ fn installed_hook_command_neutralizes_an_injection_shaped_root_through_a_real_sh
         !marker.exists(),
         "an embedded `'` in a root must never let a real shell run a command that \
          followed it - the marker file must not exist"
+    );
+}
+
+/// THE GUARD DENIES BY DEFAULT (op-104-write-guard-deny-by-default-complete-audit, round 3
+/// / 344a63d): a transport failure - here, stdin bytes that are not valid UTF-8, so
+/// `cmd_guard_write`'s own `read_to_string` fails before any JSON parsing even starts -
+/// must exit `GUARD_WRITE_BLOCKING_EXIT_CODE` (2), the ONE exit code Claude Code's
+/// documented `PreToolUse` hook contract treats as BLOCKING. `tests/cli.rs`'s own
+/// `guard_write_exits_the_blocking_code_on_every_transport_failure` proves this by spawning
+/// the compiled `guard-write` binary DIRECTLY - it cannot prove the code survives the shell
+/// hop Claude Code actually inserts between itself and that binary (the installed hook's
+/// `command` field is a shell command line, run via `sh -c`, not a bare argv array - this
+/// file's own module doc). A shell that ever absorbed or remapped a nonzero exit (trailing
+/// `; true`, an intervening subshell, a word-splitting bug that turned one command into
+/// several) would leave Claude Code observing a non-blocking exit - silently letting the
+/// write through - while every direct-process test stayed green, exactly the class of gap
+/// only a real `sh -c` hop can expose.
+#[test]
+fn installed_hook_command_propagates_the_blocking_exit_code_through_a_real_shell() {
+    let root = tempfile::tempdir().unwrap();
+    let root_str = std::fs::canonicalize(root.path())
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let command = write_guard_hook_command(std::slice::from_ref(&root_str));
+
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&command)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sh -c <installed hook command>");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&[0xFF, 0xFE, 0xFD])
+        .unwrap();
+    let out = child
+        .wait_with_output()
+        .expect("sh -c <installed hook command> must exit");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a transport failure (invalid-UTF-8 stdin) through the installed hook command's \
+         real shell hop must exit the BLOCKING code (2) exactly as Claude Code would \
+         observe running this command directly - never absorbed, remapped, or lost by the \
+         shell; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
     );
 }
