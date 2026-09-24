@@ -10,12 +10,15 @@
 //! criterion 1 (THE LAUNCH IS TYPED) owns argv, cwd, environment and the open half of the
 //! launch record. THE STREAM (criterion 2, this module's addition below `Launch`) reads
 //! what criterion 1 starts: one reader per child, line by line, closing
-//! `impl AgentDriver for Driver` - `rigger run` (`src/main.rs`) now launches its agents
-//! through this host instead of `cli::Driver`.
+//! `impl AgentDriver for Driver`. The composition-root swap - `rigger run` (`src/main.rs`)
+//! launching its agents through this host instead of `cli::Driver` - is DEFERRED to spec
+//! 105 (`d-u104-stream-defer-composition-swap`): `tests/cli.rs`'s existing fixtures assume
+//! `cli::Driver`'s argv/stdio contract, and this host has no failure-class relaunch or hold
+//! yet (criterion 5) to run unattended against a real `api_retry`.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -68,16 +71,18 @@ pub struct Driver<'a> {
 // `self.progress_store`/`self.run_store` without one is a test bug, never a real launch -
 // the same contract `crate::eventstore::SilentStore` (also `#[cfg(test)]`) documents.
 #[cfg(test)]
-static SILENT: crate::eventstore::SilentStore = crate::eventstore::SilentStore;
-
-#[cfg(test)]
 impl Default for Driver<'static> {
     fn default() -> Self {
+        // An inline literal reference (rvalue static promotion), not a named `static`:
+        // `SilentStore` is a unit struct with no `Drop`, so `&SilentStore` promotes to
+        // `'static` on its own - matching every other call site in the crate (e.g. this
+        // same file's `launch_records_a_lost_write_loudly_rather_than_spawning_blind`
+        // test) rather than a second, unnecessary spelling of the same thing.
         Driver {
             bin: "claude".to_string(),
             rigger_bin: "rigger".to_string(),
-            progress_store: &SILENT,
-            run_store: &SILENT,
+            progress_store: &crate::eventstore::SilentStore,
+            run_store: &crate::eventstore::SilentStore,
             scratch_root: String::new(),
         }
     }
@@ -206,13 +211,39 @@ impl Driver<'_> {
     /// (architecture addendum §4.2) before this function looks at its content, so a line
     /// this reader cannot parse is never silently lost - it still lands liveness, the
     /// transcript file, AND a progress line (below), just no structured record.
+    ///
+    /// Every exit reaps the child through ONE path, [`ChildReaper`], rather than a
+    /// per-branch patch (adj-u104-stream REQUIRED FIX 1): the missing-stdout-pipe guard
+    /// below, a mid-stream read error, and a `record_result_if_absent` write failure all
+    /// leave the guard armed, so its `Drop` ends the child through its own handle before
+    /// the `Err` propagates - mirroring `launch()`'s own "never returns `Err` with an
+    /// unaccounted-for child still running behind it" contract. Only the clean EOF path
+    /// disarms it (the child has already exited on its own by then; `wait()` alone reaps
+    /// it, no `kill()` needed).
+    ///
+    /// stderr is drained on its own thread, started before the stdout loop below and
+    /// running the whole time this function blocks reading stdout (REQUIRED FIX 2): the
+    /// `Stdio::piped()` pipe `launch()` gave stderr has a bounded kernel buffer (64KiB on
+    /// Linux) that nobody else reads, so a real agent that writes more than that before
+    /// its first stdout line would otherwise block the CHILD's write() forever while this
+    /// host sits blocked reading stdout - a genuine two-sided deadlock, not merely a slow
+    /// path. The drained bytes are diagnostic only (never this criterion's record of
+    /// truth), so they are discarded.
     fn read_stream(&self, launch: &mut Launch, opts: &SpawnOpts) -> Result<AgentResult, Error> {
-        let stdout = launch.child.stdout.take().ok_or_else(|| {
+        let reaper = ChildReaper::new(&mut launch.child);
+
+        let stdout = reaper.child.stdout.take().ok_or_else(|| {
             Error(format!(
                 "claude_code driver: {:?}: launch carried no stdout pipe",
                 opts.id
             ))
         })?;
+        let stderr_drain = reaper
+            .child
+            .stderr
+            .take()
+            .map(|stderr| std::thread::spawn(move || drain_child_stderr(stderr)));
+
         let marker = liveness::marker_path(&self.scratch_root, &opts.run_id, &opts.id);
         let mut stream_file = open_stream_file(
             stream_path(&self.scratch_root, &opts.run_id, &opts.id, opts.launch).as_deref(),
@@ -282,7 +313,7 @@ impl Driver<'_> {
                     // handle closes the pipe; a session that would otherwise wait on more
                     // input can now exit. Only the FIRST result acts - "the log holds one
                     // result" (CONSTRAINTS WALK).
-                    drop(launch.child.stdin.take());
+                    drop(reaper.child.stdin.take());
                 }
                 _ => {
                     // assistant/user turns, hook events, and every other subtype: raw
@@ -292,12 +323,22 @@ impl Driver<'_> {
             }
         }
 
-        launch.child.wait().map_err(|e| {
+        // The stream read to EOF without an early return - the child has already exited
+        // on its own (that is what produced EOF), so `disarm_and_wait` reaps it without
+        // `kill()`. Every OTHER exit above returned before reaching this line, leaving the
+        // guard armed so its `Drop` ends the child instead.
+        reaper.disarm_and_wait().map_err(|e| {
             Error(format!(
                 "claude_code driver: {:?}: reap the child: {e}",
                 opts.id
             ))
         })?;
+        // Best-effort join: diagnostic-only drain (see the doc above), and the reap just
+        // above guarantees the child's stderr pipe has closed by now, so the thread has
+        // already hit EOF or is about to - never a caller-visible wait for its own sake.
+        if let Some(handle) = stderr_drain {
+            let _ = handle.join();
+        }
 
         result.ok_or_else(|| {
             Error(format!(
@@ -313,6 +354,62 @@ impl Driver<'_> {
     fn record_progress(&self, opts: &SpawnOpts, activity: &str) {
         let _ = progress_store::record(self.progress_store, &opts.run_id, &opts.id, activity);
     }
+}
+
+/// [`Driver::read_stream`]'s single reap path (adj-u104-stream REQUIRED FIX 1): ends the
+/// child through its own handle unless [`ChildReaper::disarm_and_wait`] runs first, so
+/// every one of that function's several exits - the missing-stdout-pipe guard, a
+/// mid-stream read error, a failed result-store write, or a clean EOF - reaps through one
+/// piece of code instead of a patch per branch. Never a computed-pid signal: the `child`
+/// field is the exact [`Child`] handle [`Driver::launch`] spawned, borrowed for exactly
+/// this call's duration.
+struct ChildReaper<'a> {
+    child: &'a mut Child,
+    armed: bool,
+}
+
+impl<'a> ChildReaper<'a> {
+    fn new(child: &'a mut Child) -> Self {
+        ChildReaper { child, armed: true }
+    }
+
+    /// The stream ended normally (stdout hit EOF): the child has already exited on its
+    /// own by then, so this disarms the `Drop` cleanup below and reaps with a plain
+    /// `wait()` - no `kill()` needed, and none sent.
+    fn disarm_and_wait(mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.armed = false;
+        self.child.wait()
+    }
+}
+
+impl Drop for ChildReaper<'_> {
+    /// Still armed means `read_stream` is returning `Err` with the child possibly still
+    /// running behind it - end it through this exact handle before that `Err` propagates,
+    /// process-lifecycle discipline's "handle-bound, `kill()` + `wait()`" rule. Stdin is
+    /// dropped FIRST: a child still blocked reading more input sees EOF and can exit on
+    /// its own before the `kill()` even lands, so the common case never needs SIGKILL at
+    /// all. Both calls are best-effort (there is no caller left to hand a second error to
+    /// from inside a `Drop`).
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        drop(self.child.stdin.take());
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Read `stderr` to EOF, discarding every byte - the concurrent drain [`Driver::read_stream`]
+/// starts before its stdout loop so a chatty agent's stderr volume can never deadlock the
+/// host (REQUIRED FIX 2). Raw bytes, not lines: stderr carries no promise of being valid
+/// UTF-8 or line-delimited the way the stdout stream-json protocol is, and a `BufRead::lines`
+/// read that hit invalid UTF-8 would stop draining at exactly the moment the pipe still
+/// needs a reader. Diagnostic-only for this criterion (never a record of truth), so a read
+/// error just ends the drain - there is nothing for this background thread to report to.
+fn drain_child_stderr(mut stderr: ChildStderr) {
+    let mut buf = [0u8; 8192];
+    while matches!(stderr.read(&mut buf), Ok(n) if n > 0) {}
 }
 
 impl AgentDriver for Driver<'_> {

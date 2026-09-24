@@ -19,8 +19,10 @@
 //! landed on this branch); the spawn-bound MCP server, the write guard and the
 //! StopFailure hooks (criteria 3 and 4, separate units, already landed independently).
 
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use rigger::conductor::{AgentDriver, SpawnOpts};
 use rigger::config::AgentDef;
@@ -403,4 +405,110 @@ fn spawn_records_the_mcp_connection_status_from_system_init_as_a_progress_line()
             .any(|a| a.contains("mcp servers") && a.contains("rigger") && a.contains("connected")),
         "activities: {activities:?}"
     );
+}
+
+// ---- adj-u104-stream REQUIRED FIX 1: read_stream reaps the child on EVERY early return,
+// through one path (`ChildReaper`), not a per-branch patch ----
+
+#[cfg(unix)]
+#[test]
+fn spawn_reaps_the_child_on_a_mid_stream_read_error() {
+    // A GENUINE mid-stream read error (invalid UTF-8 on stdout, not merely EOF or a
+    // missing `result`) must still end the child through its own handle before spawn()'s
+    // `Err` propagates - the exact defect the rejected round's adjudication named: three
+    // early returns inside `read_stream` skipped the reap `launch()` itself already
+    // proves (`claude_code_launch_wire_periphery.rs::launch_reaps_the_child_when_the_stdin_write_fails`).
+    // Proven the same way that test proves launch()'s half: a REAL pid, written by the
+    // fixture itself before it ever emits invalid UTF-8, read back independently of the
+    // `Child` handle `read_stream` already reaped, via `common::is_alive` - never the
+    // handle that did the reaping.
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-invalid-utf8-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
+    let pid_file = fx.scratch_root.path().join("agent.pid");
+    let mut o = opts("u104-stream/implementer#0");
+    o.env = vec![(
+        "RIGGER_TEST_INVALID_UTF8_PID_FILE".to_string(),
+        pid_file.to_string_lossy().into_owned(),
+    )];
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let err = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .expect_err("invalid utf-8 on the stream must surface as a read error, not a result");
+    assert!(err.0.contains("read agent stream"), "{}", err.0);
+
+    let pid_text = std::fs::read_to_string(&pid_file)
+        .expect("the fixture recorded its pid before writing invalid utf-8");
+    let pid: u32 = pid_text
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("pid file {pid_text:?} did not parse: {e}"));
+    assert!(
+        !common::is_alive(pid),
+        "child pid {pid} must not survive a mid-stream read error - it must be reaped \
+         (kill()+wait() through ChildReaper), never leaked"
+    );
+
+    // No SpawnResult landed either - a stream that errored mid-read never reached a
+    // `result` message.
+    let events = fx
+        .run_store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    assert!(!events.iter().any(|e| e.type_ == TYPE_SPAWN_RESULT));
+}
+
+// ---- adj-u104-stream REQUIRED FIX 2: stderr is drained concurrently with stdout, so a
+// chatty agent can never deadlock the host ----
+
+#[test]
+fn spawn_drains_stderr_concurrently_so_a_stderr_flood_cannot_deadlock_the_host() {
+    // sdet reproduced this exactly against the compiled driver in the rejected round: a
+    // real agent that writes more than one pipe buffer of stderr (Linux default 64KiB)
+    // before its first stdout line must never deadlock this host, which - before this
+    // fix - read stdout and stderr on the SAME thread in sequence, so the child's stderr
+    // write() and this host's stdout read() would block on each other forever.
+    //
+    // Bounded via a channel + `recv_timeout` (mirroring
+    // `watchdog_cli_periphery.rs`'s own pattern for a possibly-blocking external process)
+    // so a regression fails THIS test in a few seconds instead of hanging the whole
+    // suite. Every store/driver the spawned thread touches is built INSIDE the thread
+    // (never borrowed from the test's own stack), so the call is a plain 'static
+    // `thread::spawn`, not a scoped one - simplest correct shape for a call this test
+    // must be able to abandon (never `join`) if it times out.
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-stderr-flood-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let scratch_root = tempfile::tempdir().unwrap();
+    let scratch_root = scratch_root.path().to_string_lossy().into_owned();
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+    std::thread::spawn(move || {
+        let progress_store = Store::open(":memory:").unwrap();
+        let run_store = Store::open(":memory:").unwrap();
+        let driver = rigger::driver::claude_code::Driver {
+            bin,
+            rigger_bin: "rigger".to_string(),
+            progress_store: &progress_store,
+            run_store: &run_store,
+            scratch_root,
+        };
+        let o = opts("u104-stream/implementer#0");
+        let emit = |_: &str, _: serde_json::Value| Ok(());
+        let outcome = driver
+            .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+            .map(|r| r.output)
+            .map_err(|e| e.0);
+        let _ = tx.send(outcome);
+    });
+
+    let outcome = rx
+        .recv_timeout(Duration::from_secs(15))
+        .expect("spawn() must return rather than deadlock on a stderr-flooding agent");
+    assert_eq!(outcome, Ok("done: the answer is 42".to_string()));
 }

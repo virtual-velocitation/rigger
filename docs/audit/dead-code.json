@@ -1466,6 +1466,7 @@
       "src/budget.rs#789015f44c6a905b",
       "src/contextgraph/query.rs#89165aa8d138af40",
       "src/dash.rs#1d6d73587ac2f278",
+      "src/driver/claude_code.rs#336fe209d862fb62",
       "src/driver/replay.rs#bb5d69d8debb3ee7",
       "src/driver/workflow.rs#f24517a3c13a6746",
       "src/eventstore/mod.rs#6265c51e99f0e039",

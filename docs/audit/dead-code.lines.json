@@ -1336,6 +1336,7 @@
       "src/budget.rs:57",
       "src/contextgraph/query.rs:306",
       "src/dash.rs:3827",
+      "src/driver/claude_code.rs:372",
       "src/driver/replay.rs:237",
       "src/driver/workflow.rs:83",
       "src/eventstore/mod.rs:109",
@@ -1474,15 +1475,15 @@
       },
       {
         "file": "src/liveness.rs",
-        "line": 879
+        "line": 886
       },
       {
         "file": "src/liveness.rs",
-        "line": 988
+        "line": 995
       },
       {
         "file": "src/liveness.rs",
-        "line": 1326
+        "line": 1333
       },
       {
         "file": "src/main.rs",
@@ -2126,19 +2127,19 @@
       },
       {
         "file": "src/liveness.rs",
-        "line": 868
+        "line": 875
       },
       {
         "file": "src/liveness.rs",
-        "line": 881
+        "line": 888
       },
       {
         "file": "src/liveness.rs",
-        "line": 989
+        "line": 996
       },
       {
         "file": "src/liveness.rs",
-        "line": 1328
+        "line": 1335
       },
       {
         "file": "src/spawn_store.rs",
