@@ -290,8 +290,8 @@ fn a_child_that_exits_before_init_classifies_unknown_and_carries_the_stderr_tail
         .expect_err("a child that never reaches system/init must not read as success");
 
     assert_eq!(
-        rigger::driver::claude_code::failure_class(&err),
-        rigger::driver::claude_code::AgentFailure::Unknown
+        rigger::conductor::failure_class(&err),
+        rigger::conductor::AgentFailure::Unknown
     );
     assert!(
         err.0
@@ -317,8 +317,8 @@ fn a_session_with_no_stopfailure_record_classifies_from_the_last_api_retry_categ
         .expect_err("a session ending on an api_retry with no result must not succeed");
 
     assert_eq!(
-        rigger::driver::claude_code::failure_class(&err),
-        rigger::driver::claude_code::AgentFailure::AuthenticationFailed
+        rigger::conductor::failure_class(&err),
+        rigger::conductor::AgentFailure::AuthenticationFailed
     );
 }
 
@@ -351,9 +351,47 @@ fn a_stopfailure_record_outranks_the_last_api_retry_category() {
         .expect_err("a session ending with no result must not succeed");
 
     assert_eq!(
-        rigger::driver::claude_code::failure_class(&err),
-        rigger::driver::claude_code::AgentFailure::BillingError,
+        rigger::conductor::failure_class(&err),
+        rigger::conductor::AgentFailure::BillingError,
         "the StopFailure record must outrank the api_retry category"
+    );
+}
+
+#[test]
+fn a_stopfailure_record_from_a_different_run_does_not_outrank_the_live_sessions_api_retry() {
+    // adv-u104c5-stopfailure-crosses-run-boundary: a StopFailure record left over from an
+    // OLD or UNRELATED run must never outrank the LIVE session's own api_retry category -
+    // the same `run_id` scoping `rigger status` already applies to this exact progress
+    // stream (`src/main.rs`). The reciprocal of the sibling test just above: same spawn id,
+    // same seeded class, but stamped on a DIFFERENT run than this session's own "run-1".
+    let fx = Fixture::new();
+    rigger::progress_store::record_stop_failure(
+        &fx.progress_store,
+        "some-other-run",
+        &rigger::progress::StopFailure {
+            spawn: "u104-fail-class/implementer#0".to_string(),
+            class: "billing_error".to_string(),
+        },
+    )
+    .unwrap();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-api-retry-then-no-result-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
+    let o = opts("u104-fail-class/implementer#0"); // run_id: "run-1"
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let err = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .expect_err("a session ending with no result must not succeed");
+
+    assert_eq!(
+        rigger::conductor::failure_class(&err),
+        rigger::conductor::AgentFailure::AuthenticationFailed,
+        "the OTHER run's StopFailure record must not outrank this run's own api_retry \
+         category: {}",
+        err.0
     );
 }
 

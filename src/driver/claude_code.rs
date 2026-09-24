@@ -23,7 +23,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
+use crate::conductor::{
+    classify_failure, no_result_error, AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts,
+};
 use crate::config::AgentDef;
 use crate::eventstore::{Direction, EventStore};
 use crate::hooks;
@@ -444,15 +446,20 @@ impl Driver<'_> {
     /// [`read_stream`](Self::read_stream)'s bottom falls through to, exactly the
     /// CONSTRAINTS WALK shape ("the child exits before `system/init` ... a fault of class
     /// `unknown` carrying the stderr tail, never a hang"). Reads the FIRST-priority source
-    /// (the `StopFailure` hook's record, keyed on `opts.id` alone -
-    /// [`progress::latest_stop_failure_class`]) from THIS driver's own progress store, folds
-    /// it against `last_api_retry_category` via [`classify_failure`], and embeds the result
-    /// as recoverable data ([`failure_class`]) via [`no_result_error`] ahead of a
+    /// (the `StopFailure` hook's record, keyed on `opts.id` AND scoped to `opts.run_id` -
+    /// adj-u104c5 REQUIRED FIX 1, adv-u104c5-stopfailure-crosses-run-boundary: a stale
+    /// record from an old or unrelated run must never outrank the live session's own
+    /// `api_retry` category, matching `rigger status`'s own established progress-event
+    /// run-scoping convention at `src/main.rs`) from THIS driver's own progress store,
+    /// folds it against `last_api_retry_category` via [`classify_failure`], and embeds the
+    /// result as recoverable data ([`failure_class`]) via [`no_result_error`] ahead of a
     /// human-readable message carrying the class and `stderr_tail` (lossily decoded,
     /// trimmed). A progress-store read failure degrades to "no `StopFailure` record found"
     /// (`None`) rather than failing the whole classification - the second source
     /// (`last_api_retry_category`) and the `unknown` floor both still apply, so a store
-    /// hiccup here never turns a classifiable failure into an opaque one.
+    /// hiccup here never turns a classifiable failure into an opaque one
+    /// (`classify_no_result_degrades_to_the_api_retry_floor_when_the_progress_store_read_fails`
+    /// below proves this branch is reachable).
     fn classify_no_result(
         &self,
         opts: &SpawnOpts,
@@ -463,6 +470,20 @@ impl Driver<'_> {
             .progress_store
             .read_stream(progress::STREAM, 0, Direction::Forward)
             .ok()
+            .map(|events| {
+                // Same convention as `rigger status`'s own progress-event filter
+                // (`src/main.rs`): scope to THIS spawn's run before folding, an empty
+                // `run_id` (no run started yet - e.g. a bare unit test) matching every
+                // event unscoped.
+                events
+                    .into_iter()
+                    .filter(|e| {
+                        opts.run_id.is_empty()
+                            || e.meta.get(crate::run::META_RUN_ID).map(String::as_str)
+                                == Some(opts.run_id.as_str())
+                    })
+                    .collect::<Vec<_>>()
+            })
             .and_then(|events| progress::latest_stop_failure_class(&events, &opts.id));
         let class = classify_failure(
             stop_failure_class.as_deref(),
@@ -736,151 +757,6 @@ pub fn install_write_guard_hook(
     hooks::install_pretooluse_hook(existing, "Edit|Write|NotebookEdit", &command)
 }
 
-// ---- FAILURE CLASS (spec 104 criterion 5: A FAILURE HAS A CLASS) ----
-
-/// Claude Code's own error category (Design's FAILURE CLASS; architecture addendum §5.1),
-/// plus `Unknown` for a session that ends with none of the below ever observed. Every
-/// variant is API-side (Design: "Every class is API-side") - the SAME bound
-/// ([`should_relaunch`]) applies no matter which one a session ends on; spec 105's hold
-/// controller is what gives each variant its own disposition (§5.1's table), NOT this
-/// criterion.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum AgentFailure {
-    RateLimit,
-    Overloaded,
-    ServerError,
-    AuthenticationFailed,
-    OauthOrgNotAllowed,
-    CloudCredentialError,
-    BillingError,
-    AccountOnHold,
-    ModelNotFound,
-    InvalidRequest,
-    MaxOutputTokens,
-    #[default]
-    Unknown,
-}
-
-impl AgentFailure {
-    /// Every category the `StopFailure` hook family installs one entry per (Design's THE
-    /// HOOKS: "one entry per error category") - the fixed iteration order
-    /// [`install_stop_failure_hooks`] walks, and the exhaustive set [`from_category`] and
-    /// the CLI's own `--class` validation both check membership against.
-    pub const CATEGORIES: [AgentFailure; 12] = [
-        AgentFailure::RateLimit,
-        AgentFailure::Overloaded,
-        AgentFailure::ServerError,
-        AgentFailure::AuthenticationFailed,
-        AgentFailure::OauthOrgNotAllowed,
-        AgentFailure::CloudCredentialError,
-        AgentFailure::BillingError,
-        AgentFailure::AccountOnHold,
-        AgentFailure::ModelNotFound,
-        AgentFailure::InvalidRequest,
-        AgentFailure::MaxOutputTokens,
-        AgentFailure::Unknown,
-    ];
-
-    /// Claude Code's own category string for this class, exactly as it appears in a
-    /// `system/api_retry` line's `error` field (Design's Problem section probe) and as
-    /// baked into the installed `--class <category>` hook command.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            AgentFailure::RateLimit => "rate_limit",
-            AgentFailure::Overloaded => "overloaded",
-            AgentFailure::ServerError => "server_error",
-            AgentFailure::AuthenticationFailed => "authentication_failed",
-            AgentFailure::OauthOrgNotAllowed => "oauth_org_not_allowed",
-            AgentFailure::CloudCredentialError => "cloud_credential_error",
-            AgentFailure::BillingError => "billing_error",
-            AgentFailure::AccountOnHold => "account_on_hold",
-            AgentFailure::ModelNotFound => "model_not_found",
-            AgentFailure::InvalidRequest => "invalid_request",
-            AgentFailure::MaxOutputTokens => "max_output_tokens",
-            AgentFailure::Unknown => "unknown",
-        }
-    }
-
-    /// Parse Claude Code's category string back into a class - LENIENT: a category this
-    /// crate does not (yet) recognize degrades to [`AgentFailure::Unknown`] rather than
-    /// failing, exactly matching Design's own fallback ("else `unknown`") since the string
-    /// classified here can come from either of FAILURE CLASS's two sources (a `StopFailure`
-    /// record, or a live `system/api_retry` line) - either of which may carry a category
-    /// Claude Code adds after this crate is built, and a session must never fail to classify
-    /// merely because the string is unfamiliar.
-    pub fn from_category(category: &str) -> AgentFailure {
-        AgentFailure::CATEGORIES
-            .into_iter()
-            .find(|c| c.as_str() == category)
-            .unwrap_or(AgentFailure::Unknown)
-    }
-}
-
-impl std::fmt::Display for AgentFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// A FAILURE HAS A CLASS (spec 104 criterion 5, Design): "a session that ends without a
-/// `result` takes its class from, in order: the record written by the `StopFailure` hook,
-/// ... the last `api_retry.error`, else `unknown`." PURE: both sources are already-resolved
-/// strings - the `StopFailure` record's class (`None` when no hook fired for this spawn,
-/// [`crate::progress::latest_stop_failure_class`]) and the last `system/api_retry` line's
-/// `error` THIS launch's own reader saw (`None` when none arrived) - so the priority order
-/// itself is testable with no store, no stream, no process.
-pub fn classify_failure(
-    stop_failure_class: Option<&str>,
-    last_api_retry_category: Option<&str>,
-) -> AgentFailure {
-    stop_failure_class
-        .or(last_api_retry_category)
-        .map(AgentFailure::from_category)
-        .unwrap_or(AgentFailure::Unknown)
-}
-
-/// THE BOUND (spec 104 criterion 5, Design's FAILURE CLASS): "the failure charges no
-/// remediation attempt, the spawn is relaunched at most twice, then the run halts naming
-/// the class." `prior_relaunches` is how many times THIS spawn has already been relaunched
-/// after an earlier fault (0 on the very first fault) - every [`AgentFailure`] variant
-/// shares this ONE bound (Design: "Every class is API-side"), so the class itself is not an
-/// input. PURE: spec 105's hold controller is the only production caller, once the
-/// composition root swaps onto this driver - this criterion only owns that the bound
-/// itself is correct and testable in isolation.
-pub fn should_relaunch(prior_relaunches: u32) -> bool {
-    prior_relaunches < 2
-}
-
-/// Sentinel embedding an [`AgentFailure`] class into a [`Error`] message so "the port
-/// returns the class as data" (Design, FAILURE CLASS) without widening the `AgentDriver`
-/// trait's `Result<AgentResult, Error>` signature - the SAME control-character-sentinel
-/// idiom `conductor::PARKED_MARKER`/`is_parked` already establishes for smuggling typed
-/// signal through this crate's plain-string driver `Error`, reused rather than a second,
-/// parallel convention. `\u{2}` (STX) never appears in ordinary error prose.
-const FAILURE_MARKER: char = '\u{2}';
-
-/// Build the `Error` [`read_stream`](Driver::read_stream) returns for a session that ended
-/// without a result, carrying `class` as recoverable data ([`failure_class`]) ahead of the
-/// human-readable `message`.
-fn no_result_error(class: AgentFailure, message: String) -> Error {
-    Error(format!("{FAILURE_MARKER}{class}{FAILURE_MARKER}{message}"))
-}
-
-/// Recover the [`AgentFailure`] class [`no_result_error`] embedded in `e`, or
-/// [`AgentFailure::Unknown`] for an `Error` no `read_stream` call produced (mirrors
-/// `conductor::is_parked`'s same graceful-default-on-absence contract). Spec 105's hold
-/// controller calls this on every `Err` from `Driver::spawn` to learn the class without
-/// parsing prose.
-pub fn failure_class(e: &Error) -> AgentFailure {
-    let Some(rest) = e.0.strip_prefix(FAILURE_MARKER) else {
-        return AgentFailure::Unknown;
-    };
-    let Some(end) = rest.find(FAILURE_MARKER) else {
-        return AgentFailure::Unknown;
-    };
-    AgentFailure::from_category(&rest[..end])
-}
-
 /// The exact `rigger hook stop-failure --spawn <id> --class <category>` shell command line
 /// THE HOOKS' `StopFailure` family runs for one category (Design's THE HOOKS paragraph,
 /// verbatim). Mirrors [`write_guard_command`]'s single-quoting discipline: `spawn_id` rides
@@ -978,8 +854,9 @@ pub fn build_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conductor::failure_class;
     use crate::eventstore::sqlite::Store;
-    use crate::eventstore::{Direction, SilentStore};
+    use crate::eventstore::{Direction, EventStore, SilentStore};
     use std::io::Read;
 
     fn opts(id: &str) -> SpawnOpts {
@@ -1112,73 +989,10 @@ mod tests {
         );
     }
 
-    // ---- FAILURE CLASS (spec 104 criterion 5): pure functions ----
-
-    #[test]
-    fn agent_failure_as_str_round_trips_through_from_category_for_every_category() {
-        for class in AgentFailure::CATEGORIES {
-            assert_eq!(AgentFailure::from_category(class.as_str()), class);
-        }
-    }
-
-    #[test]
-    fn agent_failure_from_category_degrades_an_unrecognized_string_to_unknown() {
-        assert_eq!(
-            AgentFailure::from_category("some_future_category_this_crate_does_not_know"),
-            AgentFailure::Unknown
-        );
-    }
-
-    #[test]
-    fn agent_failure_default_is_unknown() {
-        assert_eq!(AgentFailure::default(), AgentFailure::Unknown);
-    }
-
-    #[test]
-    fn classify_failure_prefers_the_stopfailure_record_over_api_retry() {
-        assert_eq!(
-            classify_failure(Some("billing_error"), Some("rate_limit")),
-            AgentFailure::BillingError
-        );
-    }
-
-    #[test]
-    fn classify_failure_falls_back_to_the_last_api_retry_category() {
-        assert_eq!(
-            classify_failure(None, Some("overloaded")),
-            AgentFailure::Overloaded
-        );
-    }
-
-    #[test]
-    fn classify_failure_falls_back_to_unknown_when_neither_source_has_anything() {
-        assert_eq!(classify_failure(None, None), AgentFailure::Unknown);
-    }
-
-    #[test]
-    fn should_relaunch_allows_up_to_two_relaunches_then_stops() {
-        assert!(should_relaunch(0));
-        assert!(should_relaunch(1));
-        assert!(!should_relaunch(2), "the bound is at most twice");
-        assert!(!should_relaunch(3));
-    }
-
-    #[test]
-    fn no_result_error_round_trips_through_failure_class() {
-        let e = no_result_error(AgentFailure::RateLimit, "boom".to_string());
-        assert_eq!(failure_class(&e), AgentFailure::RateLimit);
-        assert!(e.0.contains("boom"), "the human message survives: {}", e.0);
-    }
-
-    #[test]
-    fn failure_class_defaults_to_unknown_for_an_error_no_read_stream_call_produced() {
-        // Mirrors `conductor::is_parked`'s graceful-default-on-absence contract: an
-        // ordinary Error from anywhere else in the crate carries no marker at all.
-        assert_eq!(
-            failure_class(&Error("some unrelated error".to_string())),
-            AgentFailure::Unknown
-        );
-    }
+    // ---- FAILURE CLASS (spec 104 criterion 5): `AgentFailure`/`classify_failure`/
+    // `should_relaunch`/`no_result_error`/`failure_class` now live in `conductor` (adj-
+    // u104c5 REQUIRED FIX 3) with their own tests; only this file's genuinely
+    // adapter-shaped pieces (the `StopFailure` hook's command + injection) stay here. ----
 
     #[test]
     fn stop_failure_command_shapes_the_exact_hook_invocation() {
@@ -1237,6 +1051,145 @@ mod tests {
             v["hooks"]["StopFailure"].as_array().unwrap().len(),
             AgentFailure::CATEGORIES.len()
         );
+    }
+
+    // ---- classify_no_result: run-scoping + degrade-on-store-error ----
+    // (adj-u104c5 REQUIRED FIX 1: adv-u104c5-stopfailure-crosses-run-boundary,
+    // sdet-u104c5-progress-store-read-failure-branch-untested)
+
+    /// An [`EventStore`] double whose `read_stream` always fails - the counterpart
+    /// `SilentStore` above (always succeeds) cannot stand in for, and neither can the
+    /// periphery `Fixture` (a real sqlite `:memory:` store, which also always succeeds):
+    /// nothing exercised `classify_no_result`'s own `.ok()` degrade-on-error branch until
+    /// this double existed. Mirrors `conductor::tests::FailingStore`'s shape (a store
+    /// double that fails on demand) narrowed to this module's one call
+    /// (`read_stream` only); `append`/`read_all`/`subscribe_*` are never reached by
+    /// `classify_no_result`'s read-only path, so they degrade the same inert way
+    /// `SilentStore`'s own unused arms do.
+    struct FailingReadStore;
+    impl EventStore for FailingReadStore {
+        fn append(
+            &self,
+            _stream: &str,
+            _expected: crate::eventstore::ExpectedRevision,
+            events: &[crate::eventstore::Event],
+        ) -> Result<crate::eventstore::Appended, crate::eventstore::Error> {
+            Ok(crate::eventstore::Appended::from_placements(vec![
+                None;
+                events
+                    .len()
+            ]))
+        }
+        fn read_stream(
+            &self,
+            _stream: &str,
+            _from: crate::eventstore::Revision,
+            _dir: Direction,
+        ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
+            Err(crate::eventstore::Error::Backend(
+                "simulated progress-store read failure".to_string(),
+            ))
+        }
+        fn read_all(
+            &self,
+            _from: crate::eventstore::Position,
+            _dir: Direction,
+            _filter: &crate::eventstore::Filter,
+        ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
+            Ok(Vec::new())
+        }
+        fn subscribe_all(
+            &self,
+            _from: crate::eventstore::Position,
+            _filter: &crate::eventstore::Filter,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            Err(crate::eventstore::Error::Backend(
+                "the failing double answers reads only".into(),
+            ))
+        }
+        fn subscribe_stream(
+            &self,
+            _stream: &str,
+            _from: crate::eventstore::Revision,
+        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+            Err(crate::eventstore::Error::Backend(
+                "the failing double answers reads only".into(),
+            ))
+        }
+    }
+
+    #[test]
+    fn classify_no_result_degrades_to_the_api_retry_floor_when_the_progress_store_read_fails() {
+        // sdet-u104c5-progress-store-read-failure-branch-untested: `classify_no_result`'s
+        // own `.ok()` on the progress-store read (never a `?`) must degrade to "no
+        // StopFailure record" rather than failing the whole classification - proven here
+        // with a store whose `read_stream` always errs.
+        let driver = Driver {
+            progress_store: &FailingReadStore,
+            ..Driver::default()
+        };
+        let o = opts("u/implementer#0");
+        let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"stderr tail");
+        assert_eq!(
+            failure_class(&e),
+            AgentFailure::Overloaded,
+            "a failed progress-store read must still fall through to the api_retry \
+             category, never fail the whole classification: {}",
+            e.0
+        );
+    }
+
+    #[test]
+    fn classify_no_result_ignores_a_stopfailure_record_from_a_different_run() {
+        // adv-u104c5-stopfailure-crosses-run-boundary: a StopFailure record left over from
+        // an OLD or UNRELATED run must never outrank the live session's own api_retry
+        // category, matching `rigger status`'s established run-scoping convention.
+        let store = Store::open(":memory:").unwrap();
+        crate::progress_store::record_stop_failure(
+            &store,
+            "some-other-run",
+            &crate::progress::StopFailure {
+                spawn: "u/implementer#0".to_string(),
+                class: "billing_error".to_string(),
+            },
+        )
+        .unwrap();
+        let driver = Driver {
+            progress_store: &store,
+            ..Driver::default()
+        };
+        let mut o = opts("u/implementer#0");
+        o.run_id = "run-1".to_string();
+        let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"tail");
+        assert_eq!(
+            failure_class(&e),
+            AgentFailure::Overloaded,
+            "the other run's StopFailure record must not outrank THIS run's api_retry \
+             category: {}",
+            e.0
+        );
+    }
+
+    #[test]
+    fn classify_no_result_still_honors_a_stopfailure_record_from_the_same_run() {
+        let store = Store::open(":memory:").unwrap();
+        crate::progress_store::record_stop_failure(
+            &store,
+            "run-1",
+            &crate::progress::StopFailure {
+                spawn: "u/implementer#0".to_string(),
+                class: "billing_error".to_string(),
+            },
+        )
+        .unwrap();
+        let driver = Driver {
+            progress_store: &store,
+            ..Driver::default()
+        };
+        let mut o = opts("u/implementer#0");
+        o.run_id = "run-1".to_string();
+        let e = driver.classify_no_result(&o, &Some("overloaded".to_string()), b"tail");
+        assert_eq!(failure_class(&e), AgentFailure::BillingError);
     }
 
     #[test]

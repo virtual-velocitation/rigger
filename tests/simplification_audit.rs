@@ -3803,6 +3803,33 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // not a live `rigger graph --show` run (the tool reflects the checked-out base branch,
         // which cannot see this unmerged unit branch's new file split).
         ("src/canary_store.rs", "cataloged_classes") => 2,
+        // failure_class (src/conductor.rs, spec 104 criterion 5, RELOCATED here from
+        // src/driver/claude_code.rs by adj-u104c5 REQUIRED FIX 3 - arch-u104c5-failure-class-
+        // belongs-in-conductor-not-driver - unmerged): 2 test-only call sites in this file's own
+        // #[cfg(test)] mod tests (no_result_error_round_trips_through_failure_class,
+        // failure_class_defaults_to_unknown_for_an_error_no_read_stream_call_produced - same two
+        // tests, now colocated with the moved code), plus 3 NEW test-only call sites in
+        // src/driver/claude_code.rs's own #[cfg(test)] mod tests
+        // (classify_no_result_degrades_to_the_api_retry_floor_when_the_progress_store_read_fails,
+        // classify_no_result_ignores_a_stopfailure_record_from_a_different_run,
+        // classify_no_result_still_honors_a_stopfailure_record_from_the_same_run - the run-
+        // scoping/degrade-branch tests adj-u104c5 REQUIRED FIX 1 added, now calling this
+        // function cross-module via `use crate::conductor::failure_class`), plus 4 test-only
+        // call sites in tests/claude_code_stream_periphery.rs (one more than the prior round's
+        // 3 - REQUIRED FIX 1's new run-boundary periphery test), for 9 test-only references,
+        // plus 1 local outgoing call (AgentFailure::from_category) = 10. Hand-derived the same
+        // way install_write_guard_hook's own precedent documents (`rigger graph --show` cannot
+        // see this unmerged unit branch's new lines), not a live tool run.
+        ("src/conductor.rs", "failure_class") => 10,
+        // should_relaunch (src/conductor.rs, spec 104 criterion 5, RELOCATED here from
+        // src/driver/claude_code.rs by the same adj-u104c5 REQUIRED FIX 3 - unmerged): 4
+        // test-only call sites in this file's own #[cfg(test)] mod tests
+        // (should_relaunch_allows_up_to_two_relaunches_then_stops - 4 calls, same test now
+        // colocated with the moved code), for 4 test-only references, plus 0 local outgoing
+        // calls (a bare `prior_relaunches < 2` comparison) = 4 - the total is unchanged by the
+        // move, only the file it is hand-derived against. Hand-derived the same way
+        // install_write_guard_hook's own precedent documents, not a live tool run.
+        ("src/conductor.rs", "should_relaunch") => 4,
         ("src/config.rs", "sdet_author_enabled") => 3,
         ("src/contextgraph/query.rs", "graph_load") => 3,
         ("src/contextgraph/query.rs", "graph_query") => 8,
@@ -3823,16 +3850,6 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // hooks::install_pretooluse_hook) = 9. Hand-derived the same two-part way frame/hit's
         // own precedent above documents (`rigger graph --show` cannot see this unmerged unit
         // branch's new files), not a live tool run.
-        // failure_class (src/driver/claude_code.rs, spec 104 criterion 5, new, unmerged): 2
-        // test-only call sites in this file's own #[cfg(test)] mod tests
-        // (no_result_error_round_trips_through_failure_class,
-        // failure_class_defaults_to_unknown_for_an_error_no_read_stream_call_produced), plus 3
-        // test-only call sites in tests/claude_code_stream_periphery.rs's own new FAILURE CLASS
-        // tests, for 5 test-only references, plus 1 local outgoing call (AgentFailure::
-        // from_category) = 6. Hand-derived the same way install_write_guard_hook's own
-        // precedent above documents (`rigger graph --show` cannot see this unmerged unit
-        // branch's new lines), not a live tool run.
-        ("src/driver/claude_code.rs", "failure_class") => 6,
         // install_stop_failure_hooks (src/driver/claude_code.rs, spec 104 criterion 5, new,
         // unmerged): 4 test-only call sites in this file's own #[cfg(test)] mod tests
         // (install_stop_failure_hooks_merges_one_block_per_category,
@@ -3843,13 +3860,6 @@ fn kg_degree_for(file: &str, name: &str) -> u32 {
         // hook's own precedent above documents, not a live tool run.
         ("src/driver/claude_code.rs", "install_stop_failure_hooks") => 6,
         ("src/driver/claude_code.rs", "install_write_guard_hook") => 9,
-        // should_relaunch (src/driver/claude_code.rs, spec 104 criterion 5, new, unmerged): 4
-        // test-only call sites in this file's own #[cfg(test)] mod tests
-        // (should_relaunch_allows_up_to_two_relaunches_then_stops - 4 calls), for 4 test-only
-        // references, plus 0 local outgoing calls (a bare `prior_relaunches < 2` comparison) =
-        // 4. Hand-derived the same way install_write_guard_hook's own precedent above
-        // documents, not a live tool run.
-        ("src/driver/claude_code.rs", "should_relaunch") => 4,
         ("src/eventstore/sqlite.rs", "with_content_identity") => 32,
         ("src/gate.rs", "resolve_wrapper_name") => 3,
         ("src/grounder/symbols/events.rs", "index_events") => 17,
@@ -4833,7 +4843,7 @@ fn render_section_6() -> String {
         together, rather than as two separately-tracked fixes.\n\n",
     );
     out.push_str(
-        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0190` + `dup-0192`)\n\n",
+        "#### 3. Retire the duplicate `/proc`-reading authority (`dup-0193` + `dup-0194`)\n\n",
     );
     out.push_str(
         "- Scope: `src/dash.rs::process_state` (`src/dash.rs:627-635`) and \
@@ -4841,26 +4851,25 @@ fn render_section_6() -> String {
         `/proc/<pid>/stat` and `/proc/<pid>/status` fields that `src/reap.rs` \
         (`pid_starttime`/`read_ppid`, `src/reap.rs:214-231`) already parses - the exact \
         \"second mutation authority\" example spec 85's own Goal names and spec 62's \
-        capstone previously caught (`dup-0192`, 60 sites: `src/dash.rs`, `src/main.rs`, \
-        `src/reap.rs`, `tests/cli.rs`, `tests/duplication_catalog_contract_periphery.rs`, \
+        capstone previously caught (`dup-0194`, 15 sites: `src/dash.rs`, `src/main.rs`, \
+        `src/reap.rs`, `tests/cli.rs`, \
         `tests/mutation_runner_pdeathsig_periphery.rs`, `tests/simplification_audit.rs` - \
         spec 91's own launcher-exits proving test was an early addition to this \
-        already-known cluster; a later semantic-classification pass widened it further, \
-        including this file's own worked-example prose and fixtures (self-referential: the \
-        scanner reads its own `/proc`-string-literal test fixtures as `/proc`-topic sites \
-        too), which is why the count moved well past a one-site increment; `dup-0192`'s own \
+        already-known cluster; both the id and this narrowed site set moved again since \
+        (adj-u104c5 REQUIRED FIX 3, spec 104 criterion 5: relocating two unrelated functions \
+        into `src/conductor.rs` reshuffled the deterministic cluster-id sort); `dup-0194`'s own \
         count in \
         `docs/audit/duplication-catalog.json` is the one live authority, so this paragraph's \
-        number is a point-in-time snapshot, not a frozen fact), plus 60 raw `/proc`-path \
+        id and number are a point-in-time snapshot, not a frozen fact), plus 60 raw `/proc`-path \
         string literals scattered across `src/dash.rs`, `src/main.rs`, `src/reap.rs` and four \
-        test files with no shared composer (`dup-0190`). Both clusters' own `proposed_home` \
+        test files with no shared composer (`dup-0193`). Both clusters' own `proposed_home` \
         agree: `src/reap.rs` \
         becomes the one `/proc`-reading module; `dash.rs` and `main.rs` call it instead of \
         re-parsing. NOT SYMMETRIC: `process_state` is reachable from `dash`'s own always-on \
         production server, so it is the actual active-correctness risk this tier-1 placement \
         is about; `pgid_of` sits inside `main.rs`'s `mod tests` (opened at `src/main.rs:14089`) \
         and is called only by `#[test]` fns, so on its own it earns no tier-1 placement - it \
-        rides in this same item only because it shares `dup-0190`/`dup-0192`'s one root cause \
+        rides in this same item only because it shares `dup-0193`/`dup-0194`'s one root cause \
         and one proposed fix with `process_state`, not because retiring it retires any live \
         risk of its own.\n\
         - Files: `src/dash.rs`, `src/main.rs`, `src/reap.rs`, `tests/cli.rs` (`proc_pgid_of`, \
@@ -5199,7 +5208,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
         above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0069`, `dup-0167`, \
-        `dup-0190`, `dup-0192`, `dup-0259`, `dup-0039`); the remaining 327 clusters touching \
+        `dup-0193`, `dup-0194`, `dup-0259`, `dup-0039`); the remaining 327 clusters touching \
         `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
         section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
         exact-duplicate clusters first, consumed directly from \
@@ -6274,6 +6283,49 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              carries forward the original disposition and reasoning unchanged, only relocated \
              to this candidate's new file:name key.",
         ),
+        ("src/conductor.rs", "failure_class") => (
+            KeepPending,
+            "failure_class (spec 104 criterion 5, FAILURE CLASS's data-recovery half: 'the port \
+             returns the class as data') RELOCATED here from src/driver/claude_code.rs (adj- \
+             u104c5 REQUIRED FIX 3, arch-u104c5-failure-class-belongs-in-conductor-not-driver: a \
+             port-crossing sentinel-plus-typed-class pair belongs beside `Error`/`AgentDriver`/ \
+             `PARKED_MARKER`/`is_parked`, the SAME shape, rather than in one particular adapter) \
+             - the disposition itself carries forward unchanged, only the file:name key moves. \
+             Still has no production caller: it is the reader half of the \
+             [`no_result_error`]/[`failure_class`] sentinel pair `read_stream`'s own no-result \
+             path writes through `classify_no_result` (a real, non-test call, so the WRITER is \
+             exercised end to end - see the criterion's own periphery tests), but the READER \
+             exists to let a caller recover the embedded class from an `Err`, and the only \
+             caller with an `Err` to recover it from is spec 105's hold controller, which does \
+             not exist on this branch (`rigger run` still composes agents through `cli::Driver`, \
+             unchanged - `driver::claude_code`'s own module doc). Unlike a stray convenience \
+             wrapper, its tested behavior IS the shipped mechanism the criterion's own Done-when \
+             text specifies ('a test proves A FAILURE HAS A CLASS ... This criterion OWNS the \
+             class, its sources and the bound') - deleting it would delete the one way anything \
+             outside this file can ever learn the class `classify_no_result` computed. \
+             keep-pending, citing spec 104 criterion 5 (this criterion's own OWNS) and spec 105 \
+             (the hold controller that consumes it, per this criterion's own Goal sentence: 'the \
+             hold that consumes its failure classes ... are spec 105's').",
+        ),
+        ("src/conductor.rs", "should_relaunch") => (
+            KeepPending,
+            "should_relaunch (spec 104 criterion 5, Design's THE BOUND: 'the spawn is relaunched \
+             at most twice, then the run halts naming the class') RELOCATED here from \
+             src/driver/claude_code.rs by the same adj-u104c5 REQUIRED FIX 3 - the disposition \
+             itself carries forward unchanged, only the file:name key moves. Still has no \
+             production caller: it is a pure decision primitive ('every AgentFailure variant \
+             shares this ONE bound ... the class itself is not an input', this function's own \
+             doc) that spec 105's hold controller is the only production caller of, once the \
+             composition root swaps `rigger run` onto this driver - unchanged on this branch \
+             (`cli::Driver` never relaunches a live session, `driver::claude_code`'s own module \
+             doc). Unlike a stray convenience wrapper, its tested behavior IS the shipped \
+             mechanism the criterion's own Done-when text specifies ('relaunches the spawn at \
+             most twice, then halts the run naming the class ... This criterion OWNS the class, \
+             its sources and the bound') - deleting it would delete the one place that bound is \
+             proven correct in isolation. keep-pending, citing spec 104 criterion 5 (this \
+             criterion's own OWNS: 'the bound') and spec 105 (the hold controller that enforces \
+             it, per this criterion's own Goal sentence).",
+        ),
         ("src/config.rs", "sdet_author_enabled") => (
             KeepPending,
             "sdet_author_enabled has zero production callers - a real, disclosed wiring gap, not \
@@ -6357,25 +6409,6 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              site (a rigger distill command, or a hook into rigger reset), never spec'd as a \
              Done-when criterion of spec 27 itself, which is why it shipped unwired.",
         ),
-        ("src/driver/claude_code.rs", "failure_class") => (
-            KeepPending,
-            "failure_class (spec 104 criterion 5, FAILURE CLASS's data-recovery half: 'the port \
-             returns the class as data') has no production caller yet: it is the reader half of \
-             the [`no_result_error`]/[`failure_class`] sentinel pair `read_stream`'s own \
-             no-result path writes through `classify_no_result` (a real, non-test call, so the \
-             WRITER is exercised end to end - see the criterion's own periphery tests), but the \
-             READER exists to let a caller recover the embedded class from an `Err`, and the only \
-             caller with an `Err` to recover it from is spec 105's hold controller, which does \
-             not exist on this branch (`rigger run` still composes agents through `cli::Driver`, \
-             unchanged - this criterion's own module doc). Unlike a stray convenience wrapper, \
-             its tested behavior IS the shipped mechanism the criterion's own Done-when text \
-             specifies ('a test proves A FAILURE HAS A CLASS ... This criterion OWNS the class, \
-             its sources and the bound') - deleting it would delete the one way anything outside \
-             this file can ever learn the class `classify_no_result` computed. keep-pending, \
-             citing spec 104 criterion 5 (this criterion's own OWNS) and spec 105 (the hold \
-             controller that consumes it, per this criterion's own Goal sentence: 'the hold that \
-             consumes its failure classes ... are spec 105's').",
-        ),
         ("src/driver/claude_code.rs", "install_stop_failure_hooks") => (
             KeepPending,
             "install_stop_failure_hooks (spec 104 criterion 5, THE HOOKS' `StopFailure` family \
@@ -6414,22 +6447,6 @@ fn disposition_for(file: &str, name: &str) -> (Disposition, &'static str) {
              keep-pending, citing spec 104 criterion 4 (this criterion's own OWNS: 'the guard \
              command and its injection') and THE HOOKS, which names criterion 4 this hook \
              family's sole owner.",
-        ),
-        ("src/driver/claude_code.rs", "should_relaunch") => (
-            KeepPending,
-            "should_relaunch (spec 104 criterion 5, Design's THE BOUND: 'the spawn is relaunched \
-             at most twice, then the run halts naming the class') has no production caller yet: \
-             it is a pure decision primitive ('every AgentFailure variant shares this ONE \
-             bound ... the class itself is not an input', this function's own doc) that spec \
-             105's hold controller is the only production caller of, once the composition root \
-             swaps `rigger run` onto this driver - unchanged on this branch (`cli::Driver` never \
-             relaunches a live session, this file's own module doc). Unlike a stray convenience \
-             wrapper, its tested behavior IS the shipped mechanism the criterion's own Done-when \
-             text specifies ('relaunches the spawn at most twice, then halts the run naming the \
-             class ... This criterion OWNS the class, its sources and the bound') - deleting it \
-             would delete the one place that bound is proven correct in isolation. keep-pending, \
-             citing spec 104 criterion 5 (this criterion's own OWNS: 'the bound') and spec 105 \
-             (the hold controller that enforces it, per this criterion's own Goal sentence).",
         ),
         ("src/eventstore/sqlite.rs", "with_content_identity") => (
             KeepPending,
@@ -9815,8 +9832,8 @@ mod tests {
         assert!(rendered.contains("dup-0006"));
         assert!(rendered.contains("dup-0069"));
         assert!(rendered.contains("dup-0167"));
-        assert!(rendered.contains("dup-0190"));
-        assert!(rendered.contains("dup-0192"));
+        assert!(rendered.contains("dup-0193"));
+        assert!(rendered.contains("dup-0194"));
         assert!(rendered.contains("dup-0039"));
         // Cites the god-file test/production split for all three files.
         assert!(rendered.contains("src/conductor.rs"));

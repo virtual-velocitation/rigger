@@ -1760,6 +1760,183 @@ fn is_land_refused(e: &Error) -> bool {
     e.0.contains(LAND_REFUSED_MARKER)
 }
 
+// ---- FAILURE CLASS (spec 104 criterion 5: A FAILURE HAS A CLASS) ----
+//
+// adj-u104c5 REQUIRED FIX 3 (arch-u104c5-failure-class-belongs-in-conductor-not-driver):
+// lives here, beside `Error`/`AgentDriver`/`PARKED_MARKER`/`is_parked`, rather than in the
+// `driver::claude_code` ADAPTER - a port-crossing sentinel-plus-typed-class pair is exactly
+// `PARKED_MARKER`'s own shape, and spec 105's hold controller (every `AgentDriver`
+// implementation, not just this one host) will read this class the same way `is_parked`
+// already reads `PARKED_MARKER`. `driver::claude_code` keeps only what is genuinely
+// adapter-shaped: `stop_failure_command`/`install_stop_failure_hooks` (the hook injection,
+// this Claude-Code-specific host's own concern) import `AgentFailure` from here the same
+// direction they already import `AgentDriver`/`AgentResult`/`Error`/`SpawnOpts`.
+
+/// Claude Code's own error category (Design's FAILURE CLASS; architecture addendum §5.1),
+/// plus `Unknown` for a session that ends with none of the below ever observed. Every
+/// variant is API-side (Design: "Every class is API-side") - the SAME bound
+/// ([`should_relaunch`]) applies no matter which one a session ends on; spec 105's hold
+/// controller is what gives each variant its own disposition (§5.1's table), NOT this
+/// criterion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AgentFailure {
+    RateLimit,
+    Overloaded,
+    ServerError,
+    AuthenticationFailed,
+    OauthOrgNotAllowed,
+    CloudCredentialError,
+    BillingError,
+    AccountOnHold,
+    ModelNotFound,
+    InvalidRequest,
+    MaxOutputTokens,
+    #[default]
+    Unknown,
+}
+
+impl AgentFailure {
+    /// Every category the `StopFailure` hook family installs one entry per (Design's THE
+    /// HOOKS: "one entry per error category") - the fixed iteration order
+    /// [`crate::driver::claude_code::install_stop_failure_hooks`] walks, and the exhaustive
+    /// set [`from_category`] and the CLI's own `--class` validation both check membership
+    /// against.
+    pub const CATEGORIES: [AgentFailure; 12] = [
+        AgentFailure::RateLimit,
+        AgentFailure::Overloaded,
+        AgentFailure::ServerError,
+        AgentFailure::AuthenticationFailed,
+        AgentFailure::OauthOrgNotAllowed,
+        AgentFailure::CloudCredentialError,
+        AgentFailure::BillingError,
+        AgentFailure::AccountOnHold,
+        AgentFailure::ModelNotFound,
+        AgentFailure::InvalidRequest,
+        AgentFailure::MaxOutputTokens,
+        AgentFailure::Unknown,
+    ];
+
+    /// Claude Code's own category string for this class, exactly as it appears in a
+    /// `system/api_retry` line's `error` field (Design's Problem section probe) and as
+    /// baked into the installed `--class <category>` hook command.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentFailure::RateLimit => "rate_limit",
+            AgentFailure::Overloaded => "overloaded",
+            AgentFailure::ServerError => "server_error",
+            AgentFailure::AuthenticationFailed => "authentication_failed",
+            AgentFailure::OauthOrgNotAllowed => "oauth_org_not_allowed",
+            AgentFailure::CloudCredentialError => "cloud_credential_error",
+            AgentFailure::BillingError => "billing_error",
+            AgentFailure::AccountOnHold => "account_on_hold",
+            AgentFailure::ModelNotFound => "model_not_found",
+            AgentFailure::InvalidRequest => "invalid_request",
+            AgentFailure::MaxOutputTokens => "max_output_tokens",
+            AgentFailure::Unknown => "unknown",
+        }
+    }
+
+    /// Parse Claude Code's category string back into a class - LENIENT: a category this
+    /// crate does not (yet) recognize degrades to [`AgentFailure::Unknown`] rather than
+    /// failing, exactly matching Design's own fallback ("else `unknown`") since the string
+    /// classified here can come from either of FAILURE CLASS's two sources (a `StopFailure`
+    /// record, or a live `system/api_retry` line) - either of which may carry a category
+    /// Claude Code adds after this crate is built, and a session must never fail to classify
+    /// merely because the string is unfamiliar.
+    pub fn from_category(category: &str) -> AgentFailure {
+        AgentFailure::CATEGORIES
+            .into_iter()
+            .find(|c| c.as_str() == category)
+            .unwrap_or(AgentFailure::Unknown)
+    }
+}
+
+impl std::fmt::Display for AgentFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A FAILURE HAS A CLASS (spec 104 criterion 5, Design): "a session that ends without a
+/// `result` takes its class from, in order: the record written by the `StopFailure` hook,
+/// ... the last `api_retry.error`, else `unknown`." PURE: both sources are already-resolved
+/// strings - the `StopFailure` record's class (`None` when no hook fired for this spawn,
+/// [`crate::progress::latest_stop_failure_class`]) and the last `system/api_retry` line's
+/// `error` THIS launch's own reader saw (`None` when none arrived) - so the priority order
+/// itself is testable with no store, no stream, no process.
+pub fn classify_failure(
+    stop_failure_class: Option<&str>,
+    last_api_retry_category: Option<&str>,
+) -> AgentFailure {
+    stop_failure_class
+        .or(last_api_retry_category)
+        .map(AgentFailure::from_category)
+        .unwrap_or(AgentFailure::Unknown)
+}
+
+/// THE BOUND (spec 104 criterion 5, Design's FAILURE CLASS): "the failure charges no
+/// remediation attempt, the spawn is relaunched at most twice, then the run halts naming
+/// the class." `prior_relaunches` is how many times THIS spawn has already been relaunched
+/// after an earlier fault (0 on the very first fault) - every [`AgentFailure`] variant
+/// shares this ONE bound (Design: "Every class is API-side"), so the class itself is not an
+/// input. PURE: spec 105's hold controller is the only production caller, once the
+/// composition root swaps onto this driver - this criterion only owns that the bound
+/// itself is correct and testable in isolation.
+pub fn should_relaunch(prior_relaunches: u32) -> bool {
+    prior_relaunches < 2
+}
+
+/// Sentinel embedding an [`AgentFailure`] class into a driver [`Error`] message so "the
+/// port returns the class as data" (Design, FAILURE CLASS) without widening
+/// `AgentDriver::spawn`'s `Result<AgentResult, Error>` signature - the SAME control-
+/// character-sentinel idiom [`PARKED_MARKER`] already establishes, reused rather than a
+/// second, parallel convention. `\u{2}` (STX) never appears in ordinary error prose.
+const FAILURE_MARKER: char = '\u{2}';
+
+/// Build the `Error` a `read_stream` call returns for a session that ended without a
+/// result, carrying `class` as recoverable data ([`failure_class`]) ahead of the
+/// human-readable `message`. `pub`: `driver::claude_code::Driver`'s own
+/// `classify_no_result` is this crate's one production caller today, on the adapter side
+/// of the port this marker lives on.
+pub fn no_result_error(class: AgentFailure, message: String) -> Error {
+    Error(format!("{FAILURE_MARKER}{class}{FAILURE_MARKER}{message}"))
+}
+
+/// Recover the [`AgentFailure`] class [`no_result_error`] embedded in `e`, or
+/// [`AgentFailure::Unknown`] for an `Error` no `no_result_error` call produced (mirrors
+/// [`is_parked`]'s same graceful-default-on-absence contract). Spec 105's hold controller
+/// calls this on every `Err` from `Driver::spawn` to learn the class without parsing prose.
+pub fn failure_class(e: &Error) -> AgentFailure {
+    let Some(rest) = e.0.strip_prefix(FAILURE_MARKER) else {
+        return AgentFailure::Unknown;
+    };
+    let Some(end) = rest.find(FAILURE_MARKER) else {
+        return AgentFailure::Unknown;
+    };
+    AgentFailure::from_category(&rest[..end])
+}
+
+/// Drop the [`FAILURE_MARKER`]-bracketed class [`no_result_error`] embeds ahead of its
+/// message, if present, leaving only the human-readable text (adj-u104c5 REQUIRED FIX 2,
+/// sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-text). Unlike
+/// `PARKED_MARKER`/`PLAN_LANDING_MARKER`/`LAND_REFUSED_MARKER` - bare prefixes a plain
+/// `.replace(MARKER, "")` cleans - [`FAILURE_MARKER`] brackets DATA (the class name) that
+/// the message ALSO repeats in prose (`no_result_error`'s own "class {class}"), so a bare
+/// `.replace` would leave that class name's raw text glued onto the message with nothing
+/// separating them. Every site that turns a driver spawn `Err` into operator-facing text (a
+/// lesson, an escalation reason, a wrapped stage error) calls this FIRST, exactly once,
+/// rather than re-deriving the strip; `e` carrying no marker (every other driver's error, or
+/// text already stripped) passes through byte-for-byte unchanged.
+pub fn strip_failure_marker(e: &Error) -> String {
+    let Some(rest) = e.0.strip_prefix(FAILURE_MARKER) else {
+        return e.0.clone();
+    };
+    match rest.find(FAILURE_MARKER) {
+        Some(end) => rest[end + FAILURE_MARKER.len_utf8()..].to_string(),
+        None => e.0.clone(),
+    }
+}
+
 /// The conductor's injected ports.
 pub struct Deps<'a> {
     pub store: &'a dyn EventStore,
@@ -4085,13 +4262,25 @@ impl RunCtx<'_> {
                         // and its error before the collapse, so the log accounts for
                         // each terminal stage. The error never propagated up
                         // mid-stage, so `emit_lesson` is best-effort and infallible.
+                        //
+                        // adj-u104c5 REQUIRED FIX 2
+                        // (sdet-u104c5-failure-marker-leaks-unstripped-into-operator-visible-
+                        // text): this is the LAST arm any driver spawn `Err` reaches before
+                        // becoming operator-facing text - strip a FAILURE_MARKER-bracketed
+                        // class here too, as defense in depth alongside the leaf sites that
+                        // already strip it (`spawn_err`, the review-tier and plan-critique
+                        // wraps), so no current or future call site that lets an `Err`
+                        // reach this generic fallback unformatted can leak the raw marker.
+                        // A no-op for every marker-free error (every other driver, or text
+                        // a leaf site already cleaned).
+                        let msg = strip_failure_marker(&e);
                         self.emit_lesson(
                             None,
                             &name,
-                            &format!("stage {name:?} failed in its wave: {}", e.0),
+                            &format!("stage {name:?} failed in its wave: {msg}"),
                         );
                         if first_err.is_none() {
-                            first_err = Some(e);
+                            first_err = Some(Error(msg));
                         }
                     }
                 }
@@ -5487,7 +5676,15 @@ impl RunCtx<'_> {
                     // A mid-spawn crash (usage limit, non-zero exit) is remediated,
                     // not propagated: it must not abort the whole run (§8).
                     Err(e) => {
-                        spawn_err = Some(format!("agent {:?}: {}", st.agent, e.0));
+                        // adj-u104c5 REQUIRED FIX 2: this text reaches the operator
+                        // verbatim via the escalation lesson below (`why`) - strip a
+                        // FAILURE_MARKER-bracketed class before it does, a no-op for
+                        // every driver whose error carries none.
+                        spawn_err = Some(format!(
+                            "agent {:?}: {}",
+                            st.agent,
+                            strip_failure_marker(&e)
+                        ));
                         cause = CAUSE_INFRA_SPAWN.to_string();
                     }
                 }
@@ -6990,9 +7187,14 @@ impl RunCtx<'_> {
                     if !is_parked_or_budget_refused(&e) && self.review_spawn_errored(&id)? {
                         continue;
                     }
+                    // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` only recognizes
+                    // its own `\u{2}` prefix, so a PARKED_MARKER/BUDGET_MARKER error
+                    // (`\u{1}`-prefixed) still passes through byte-for-byte unchanged
+                    // here - `is_parked`/`is_budget_refused` upstream are unaffected.
                     return Err(Error(format!(
                         "stage {:?} {tier} {agent_id:?}: {}",
-                        st.name, e.0
+                        st.name,
+                        strip_failure_marker(&e)
                     )));
                 }
             };
@@ -7513,9 +7715,14 @@ impl RunCtx<'_> {
                 &emit,
             )
             .map_err(|e| {
+                // adj-u104c5 REQUIRED FIX 2: strip a FAILURE_MARKER-bracketed class
+                // before it reaches this wrapped, operator-visible text - a no-op for
+                // every other marker (park/budget survive, see the review-tier site's
+                // own comment) and every marker-free driver error.
                 Error(format!(
                     "plan-critique re-plan {:?}: {}",
-                    plan_st.agent, e.0
+                    plan_st.agent,
+                    strip_failure_marker(&e)
                 ))
             })?;
         Ok(())
@@ -13885,6 +14092,98 @@ mod tests {
     use crate::eventstore::{ExpectedRevision, Filter};
     use crate::gate::ExecRunner;
     use std::path::Path;
+
+    // ---- FAILURE CLASS (spec 104 criterion 5): pure functions, moved here with the code
+    // they test (adj-u104c5 REQUIRED FIX 3) ----
+
+    #[test]
+    fn agent_failure_as_str_round_trips_through_from_category_for_every_category() {
+        for class in AgentFailure::CATEGORIES {
+            assert_eq!(AgentFailure::from_category(class.as_str()), class);
+        }
+    }
+
+    #[test]
+    fn agent_failure_from_category_degrades_an_unrecognized_string_to_unknown() {
+        assert_eq!(
+            AgentFailure::from_category("some_future_category_this_crate_does_not_know"),
+            AgentFailure::Unknown
+        );
+    }
+
+    #[test]
+    fn agent_failure_default_is_unknown() {
+        assert_eq!(AgentFailure::default(), AgentFailure::Unknown);
+    }
+
+    #[test]
+    fn classify_failure_prefers_the_stopfailure_record_over_api_retry() {
+        assert_eq!(
+            classify_failure(Some("billing_error"), Some("rate_limit")),
+            AgentFailure::BillingError
+        );
+    }
+
+    #[test]
+    fn classify_failure_falls_back_to_the_last_api_retry_category() {
+        assert_eq!(
+            classify_failure(None, Some("overloaded")),
+            AgentFailure::Overloaded
+        );
+    }
+
+    #[test]
+    fn classify_failure_falls_back_to_unknown_when_neither_source_has_anything() {
+        assert_eq!(classify_failure(None, None), AgentFailure::Unknown);
+    }
+
+    #[test]
+    fn should_relaunch_allows_up_to_two_relaunches_then_stops() {
+        assert!(should_relaunch(0));
+        assert!(should_relaunch(1));
+        assert!(!should_relaunch(2), "the bound is at most twice");
+        assert!(!should_relaunch(3));
+    }
+
+    #[test]
+    fn no_result_error_round_trips_through_failure_class() {
+        let e = no_result_error(AgentFailure::RateLimit, "boom".to_string());
+        assert_eq!(failure_class(&e), AgentFailure::RateLimit);
+        assert!(e.0.contains("boom"), "the human message survives: {}", e.0);
+    }
+
+    #[test]
+    fn failure_class_defaults_to_unknown_for_an_error_no_read_stream_call_produced() {
+        // Mirrors `is_parked`'s graceful-default-on-absence contract: an ordinary Error
+        // from anywhere else in the crate carries no marker at all.
+        assert_eq!(
+            failure_class(&Error("some unrelated error".to_string())),
+            AgentFailure::Unknown
+        );
+    }
+
+    #[test]
+    fn strip_failure_marker_drops_the_class_prefix_leaving_only_the_message() {
+        // adj-u104c5 REQUIRED FIX 2: a plain `.replace(FAILURE_MARKER, "")` would leave
+        // "rate_limit" (the class) glued onto the message's own later "class rate_limit"
+        // prose with nothing separating them - this must drop the WHOLE bracketed class
+        // span, not just the two control characters.
+        let e = no_result_error(
+            AgentFailure::RateLimit,
+            "the agent stream ended with no result (class rate_limit; stderr tail: boom)"
+                .to_string(),
+        );
+        assert_eq!(
+            strip_failure_marker(&e),
+            "the agent stream ended with no result (class rate_limit; stderr tail: boom)"
+        );
+    }
+
+    #[test]
+    fn strip_failure_marker_passes_through_an_unmarked_error_unchanged() {
+        let e = Error("agent \"sonnet\": exited with status 1".to_string());
+        assert_eq!(strip_failure_marker(&e), e.0);
+    }
 
     #[test]
     fn unit_worktree_dir_derives_deterministically_from_scratch_root_and_unit_id() {

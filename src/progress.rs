@@ -131,7 +131,7 @@ impl SpawnLaunched {
 /// as [`TYPE_SPAWN_LAUNCHED`] - by `rigger hook stop-failure --spawn <id> --class <category>`,
 /// the per-spawn settings' `StopFailure` hook family (Design's THE HOOKS: "criterion 5's,
 /// command, record and injection both"). Claude Code invokes that command the moment a turn
-/// ends on one of [`crate::driver::claude_code::AgentFailure`]'s categories, so the class
+/// ends on one of [`crate::conductor::AgentFailure`]'s categories, so the class
 /// survives even when the stream's own last line never arrives.
 pub const TYPE_STOP_FAILURE: &str = "StopFailure";
 
@@ -147,7 +147,7 @@ pub struct StopFailure {
     pub spawn: String,
     /// Claude Code's own error-category string (e.g. `authentication_failed`), exactly as
     /// carried on the hook's installed `--class` argument - never re-derived or normalized
-    /// here, so a category this crate's [`crate::driver::claude_code::AgentFailure`] does
+    /// here, so a category this crate's [`crate::conductor::AgentFailure`] does
     /// not yet recognize still records faithfully rather than being coerced at write time.
     pub class: String,
 }

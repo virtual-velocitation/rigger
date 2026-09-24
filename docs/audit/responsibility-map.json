@@ -377,6 +377,70 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "as_str",
+    "is_test": false,
+    "proposed_module": "conductor::agent_failure",
+    "reason": "method inside `impl AgentFailure`; grouped with its other `AgentFailure` methods.",
+    "content_hash": "131c6738584d66f5"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "from_category",
+    "is_test": false,
+    "proposed_module": "conductor::agent_failure",
+    "reason": "method inside `impl AgentFailure`; grouped with its other `AgentFailure` methods.",
+    "content_hash": "ddaebb211396fe88"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "fmt",
+    "is_test": false,
+    "proposed_module": "conductor::agent_failure",
+    "reason": "method inside `impl std::fmt::Display for AgentFailure`; grouped with its other `AgentFailure` methods.",
+    "content_hash": "49ddd7abba7ff822"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "classify_failure",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "c8aff3d6072945b4"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "should_relaunch",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "dc09f2f0263054e4"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "no_result_error",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "68539024e1120100"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "failure_class",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "46af0a5d279e9147"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "strip_failure_marker",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "2d876a6409078f25"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "replay_trajectory",
     "is_test": false,
     "proposed_module": null,
@@ -669,7 +733,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "f3f015ca9f839c85"
+    "content_hash": "841b24f308ebd852"
   },
   {
     "file": "src/conductor.rs",
@@ -813,7 +877,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "aa039456b69fbf4b"
+    "content_hash": "a173ef5fbd9ba1dc"
   },
   {
     "file": "src/conductor.rs",
@@ -909,7 +973,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "85f355be4e311974"
+    "content_hash": "2cd39a797990595b"
   },
   {
     "file": "src/conductor.rs",
@@ -973,7 +1037,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "14515a93eacdaf87"
+    "content_hash": "37250b8de8cf8600"
   },
   {
     "file": "src/conductor.rs",
@@ -2062,6 +2126,94 @@
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
     "content_hash": "21f4888affc97f0e"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "agent_failure_as_str_round_trips_through_from_category_for_every_category",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "6673f278d62a50b9"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "agent_failure_from_category_degrades_an_unrecognized_string_to_unknown",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "a32fe69106678c83"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "agent_failure_default_is_unknown",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "67ceebea8a8836f6"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "classify_failure_prefers_the_stopfailure_record_over_api_retry",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "5d79be3e62dc9897"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "classify_failure_falls_back_to_the_last_api_retry_category",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "cc89bac219ff0b1c"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "classify_failure_falls_back_to_unknown_when_neither_source_has_anything",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "01c88112e3470213"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "should_relaunch_allows_up_to_two_relaunches_then_stops",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "360e77cc06478696"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "no_result_error_round_trips_through_failure_class",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "1118bfe97f7bd06b"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "failure_class_defaults_to_unknown_for_an_error_no_read_stream_call_produced",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "6c55483dd3d148cd"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "strip_failure_marker_drops_the_class_prefix_leaving_only_the_message",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "e9cb05a8b8850a4b"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "strip_failure_marker_passes_through_an_unmarked_error_unchanged",
+    "is_test": true,
+    "proposed_module": "conductor::tests",
+    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
+    "content_hash": "ab485a39bbd885c5"
   },
   {
     "file": "src/conductor.rs",
@@ -8781,7 +8933,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "f7a3b0b21d77c9bb"
+    "content_hash": "dc293f13b7b590cd"
   },
   {
     "file": "src/main.rs",

@@ -12,7 +12,7 @@
 //! existing `PreToolUse` family, idempotence) - proven in-process by `driver::claude_code`'s
 //! own `mod tests` against the real `hooks::install_stopfailure_hook` merge authority, so
 //! that half of the seam needs no separate periphery duplicate; classification priority
-//! (`driver::claude_code::classify_failure`'s own tests, and
+//! (`conductor::classify_failure`'s own tests, and
 //! `claude_code_stream_periphery.rs`'s real-subprocess classification tests).
 //!
 //! OWNED HERE, in the SHELL ROUND TRIP section below: the installed hook command's own

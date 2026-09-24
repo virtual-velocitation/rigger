@@ -24,7 +24,6 @@ use rigger::contextgraph::{
     Located, Projection,
 };
 use rigger::dash;
-use rigger::driver::claude_code;
 use rigger::driver::cli;
 use rigger::driver::replay::{
     cache_home_from, mutation_scratch_path, mutation_scratch_root, spawn_scratch_path, ReplayDriver,
@@ -14274,13 +14273,13 @@ fn cmd_hook(args: &[String]) -> Res {
 /// `rigger hook stop-failure --spawn <id> --class <category>`: THE HOOKS' `StopFailure`
 /// family - command AND record halves both (spec 104 criterion 5, Design: "criterion 5's,
 /// command, record and injection both"; the injection half, one entry per category, is
-/// [`claude_code::install_stop_failure_hooks`]). The installed hook runs this the moment a
-/// turn ends on `category`, so FAILURE CLASS's first-priority source
+/// [`rigger::driver::claude_code::install_stop_failure_hooks`]). The installed hook runs
+/// this the moment a turn ends on `category`, so FAILURE CLASS's first-priority source
 /// ([`rigger::progress::latest_stop_failure_class`]) survives even when the stream's own
-/// last line is lost. `--class` must name one of [`claude_code::AgentFailure`]'s known
+/// last line is lost. `--class` must name one of [`conductor::AgentFailure`]'s known
 /// categories - every command this crate itself installs always does, so an unrecognized
 /// value here means a stale or hand-edited settings file, and this refuses loudly rather
-/// than silently recording a category [`claude_code::AgentFailure::from_category`] would
+/// than silently recording a category [`conductor::AgentFailure::from_category`] would
 /// degrade to `unknown` at classification time anyway. Routed through [`require_store_dir`]
 /// like every other courier ([`cmd_progress`]'s own doc), so a worker running it from a
 /// nested worktree records into the project's real store, never a misfiled one.
@@ -14318,11 +14317,11 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
     if spawn_id.trim().is_empty() {
         return Err("hook stop-failure: --spawn must be non-empty".into());
     }
-    if !claude_code::AgentFailure::CATEGORIES
+    if !conductor::AgentFailure::CATEGORIES
         .iter()
         .any(|c| c.as_str() == class)
     {
-        let known: Vec<&str> = claude_code::AgentFailure::CATEGORIES
+        let known: Vec<&str> = conductor::AgentFailure::CATEGORIES
             .iter()
             .map(|c| c.as_str())
             .collect();
