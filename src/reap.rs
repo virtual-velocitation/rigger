@@ -312,15 +312,17 @@ fn send_signal(signal: Signal, pid: u32) {
 /// host-initiated stop ... closes the session's input stream, waits a grace period, then
 /// ends the child through the sanctioned lifecycle helper on the child's own handle. Never
 /// a pid, a group or a shell-out."): SIGTERM it, wait [`GRACE`] for it to exit on its own,
-/// then finish it through the handle itself (`kill()` + `wait()` - SIGKILL, never a second
-/// signal call) if it has not. This promotes the tests-only `cleanup()` fixture helper's
-/// pattern (same file, above) into production code, running the identical TERM-then-
-/// grace-then-KILL escalation [`reap_authorized`] already runs for a cwd-SCANNED base, but
-/// keyed on a HELD HANDLE instead: the `pid` [`send_signal`] receives is read directly off
-/// the live `child` the caller still owns (`child.id()`) - never a marker, a pidfile, or a
-/// `/proc` scan (never a COMPUTED pid) - so this is the handle-bound counterpart to
-/// [`send_signal`]'s cwd-scanned production callers, and [`send_signal`] stays the crate's
-/// ONE signalling call either way (no new signalling site). A `child` that has ALREADY
+/// then finish it via [`send_signal`] (SIGKILL) if it has not. This promotes the tests-only
+/// `cleanup()` fixture helper's pattern (same file, above) into production code, running the
+/// identical TERM-then-grace-then-KILL escalation [`reap_authorized`] already runs for a
+/// cwd-SCANNED base (via [`signal_if_unchanged`]), but keyed on a HELD HANDLE instead: the
+/// `pid` [`send_signal`] receives is read directly off the live `child` the caller still
+/// owns (`child.id()`), never a marker, a pidfile, or a `/proc` scan (never a COMPUTED pid),
+/// so this is the handle-bound counterpart to [`send_signal`]'s cwd-scanned production
+/// callers, and [`send_signal`] stays the crate's ONE signalling call either way: no new
+/// signalling site, since the escalation deliberately does NOT call the standard library's
+/// own `Child::kill`, which would be a second, `no-os-kill`-gate-invisible signalling path
+/// (see decision `sdet-u104stop-endchild-bypasses-send-signal`). A `child` that has ALREADY
 /// exited (`try_wait` reports it) is a no-op: nothing left to end, and no signal reaches a
 /// pid the kernel may since have recycled onto an unrelated process.
 pub fn end_child(child: &mut std::process::Child) {
@@ -338,9 +340,11 @@ pub fn end_child(child: &mut std::process::Child) {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    // Still alive past the grace: finish it through the SAME handle (SIGKILL, never a
-    // second signalling call) and collect it so no zombie survives this function.
-    let _ = child.kill();
+    // Still alive past the grace: finish it through send_signal (SIGKILL) - the crate's
+    // ONE signalling call, the same one reap_authorized's own KILL escalation already uses
+    // two functions above via signal_if_unchanged - then collect it so no zombie survives
+    // this function.
+    send_signal(Signal::KILL, child.id());
     let _ = child.wait();
 }
 

@@ -834,6 +834,11 @@
         "content_hash": "6aa60b3c37ad89ff"
       },
       {
+        "file": "tests/claude_code_stream_periphery.rs",
+        "name": "Command::new",
+        "content_hash": "6aa60b3c37ad89ff"
+      },
+      {
         "file": "tests/cli.rs",
         "name": "Command::new",
         "content_hash": "583982587bb6b9ca"
@@ -2375,7 +2380,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 443 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
+    "note": "mandatory sweep: Command::new call sites - 444 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
     "id": "dup-0007",

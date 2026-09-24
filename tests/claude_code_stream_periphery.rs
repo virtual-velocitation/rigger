@@ -821,6 +821,71 @@ fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_
 }
 
 #[test]
+fn spawn_reaps_a_process_left_behind_in_the_spawns_worktree_when_it_stops() {
+    // The gap `adv-u104stop-stop-leaves-worktree-descendants-unreaped` named: `end_child`
+    // ends only the DIRECTLY HELD child handle - a descendant the agent spawned inside the
+    // same worktree cwd (a tool or build it started without close-on-exec) can outlive it,
+    // and if it inherited the stdout pipe's write end, `stdout_reader.join()` would block
+    // forever. Proven the SAME way `reconcile_on_start_closes_an_open_launch_and_reaps_
+    // its_worktree_process_through_the_public_method` proves the identical open-launch
+    // class: a REAL "left behind" process, independent of the driver's own `Child` handle,
+    // rooted in the spawn's own worktree dir via the SAME public `UNIT_WORKTREE_PREFIX`
+    // constant production derives it from.
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-silent-ignores-eof-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver {
+        bin,
+        stop_grace: Duration::from_millis(200),
+        ..fx.driver()
+    };
+    let scratch_root = fx.scratch_root.path().to_string_lossy().into_owned();
+    let unit_dir = format!(
+        "{scratch_root}/{}u104-stop",
+        rigger::worktree::UNIT_WORKTREE_PREFIX
+    );
+    std::fs::create_dir_all(&unit_dir).unwrap();
+    let mut left_behind = std::process::Command::new("sleep")
+        .arg("300")
+        .current_dir(&unit_dir)
+        .spawn()
+        .expect("spawn sleep");
+    let pid = left_behind.id();
+
+    let pid_file = fx.scratch_root.path().join("ignores-eof-worktree.pid");
+    let mut o = opts("u104-stop/implementer#0");
+    o.env = vec![(
+        "RIGGER_TEST_IGNORES_EOF_PID_FILE".to_string(),
+        pid_file.to_string_lossy().into_owned(),
+    )];
+    let agent = AgentDef {
+        max_wall_clock: Some(1),
+        ..Default::default()
+    };
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let err = driver
+        .spawn(&agent, "do the thing", &o, &emit)
+        .expect_err("a stream that never produces a result must not read as a success");
+    assert!(err.0.contains("stopped"), "{}", err.0);
+
+    // Same reap-confirmation shape as the reconcile test above: `try_wait` both detects
+    // the reap and collects the zombie (this test is the process's real parent), then
+    // `is_alive` closes the loop as a second, independent confirmation.
+    assert!(
+        common::wait_until(|| matches!(left_behind.try_wait(), Ok(Some(_)))),
+        "pid {pid}, left behind in the spawn's own worktree (not the driver's held Child \
+         handle), must be reaped by THE STOP itself - never left for a later restart"
+    );
+    assert!(
+        !common::is_alive(pid),
+        "pid {pid} must be fully gone (not merely signalled) once its parent has reaped it"
+    );
+}
+
+#[test]
 fn reconcile_on_start_closes_an_open_launch_and_reaps_its_worktree_process_through_the_public_method(
 ) {
     // THE STOP's OTHER half (spec 104 criterion 6): a supervisor start-up reconciliation.
