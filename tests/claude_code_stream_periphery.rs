@@ -408,7 +408,8 @@ fn spawn_records_the_mcp_connection_status_from_system_init_as_a_progress_line()
 }
 
 // ---- adj-u104-stream REQUIRED FIX 1: read_stream reaps the child on EVERY early return,
-// through one path (`ChildReaper`), not a per-branch patch ----
+// through one path (`dash::ReapedChild`, spec 104 round-4 REQUIRED FIX 2), not a
+// per-branch patch ----
 
 #[cfg(unix)]
 #[test]
@@ -450,7 +451,7 @@ fn spawn_reaps_the_child_on_a_mid_stream_read_error() {
     assert!(
         !common::is_alive(pid),
         "child pid {pid} must not survive a mid-stream read error - it must be reaped \
-         (kill()+wait() through ChildReaper), never leaked"
+         (through dash::ReapedChild), never leaked"
     );
 
     // No SpawnResult landed either - a stream that errored mid-read never reached a
@@ -571,6 +572,64 @@ fn spawn_survives_a_read_error_that_arrives_after_the_result_line() {
     assert!(
         !common::is_alive(pid),
         "child pid {pid} must not survive a post-result read error - it must still be \
-         reaped (kill()+wait() through ChildReaper), never leaked"
+         reaped (through dash::ReapedChild), never leaked"
     );
+}
+
+// ---- adj-u104-stream round-3 REQUIRED FIX 1: a genuine SECOND result-type line must
+// never overwrite the already-captured, already-durably-recorded FIRST result ----
+
+#[test]
+fn spawn_pins_the_returned_result_to_the_first_result_line_not_the_last() {
+    // The rejected round's exact finding: `read_stream` kept consuming stdout lines
+    // after capturing `result` (by design - a duplicate result is anticipated, not an
+    // error), but unconditionally overwrote the in-memory `result` on every result-type
+    // line, so the value `spawn()` RETURNED reflected the LAST result while
+    // `record_result_if_absent` durably recorded only the FIRST - a returned-value vs
+    // durable-store mismatch. This fixture emits the real recorded success stream (the
+    // FIRST, genuine result), then a SECOND well-formed result carrying deliberately
+    // different values in every field the reader maps, then a clean EOF - the opposite
+    // shape from `spawn_survives_a_read_error_that_arrives_after_the_result_line`, which
+    // errors after the result rather than emitting a second genuine one.
+    let fx = Fixture::new();
+    let bin = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-second-result-agent.sh")
+        .to_string_lossy()
+        .into_owned();
+    let driver = rigger::driver::claude_code::Driver { bin, ..fx.driver() };
+    let o = opts("u104-stream/implementer#0");
+    let emit = |_: &str, _: serde_json::Value| Ok(());
+
+    let result = driver
+        .spawn(&AgentDef::default(), "do the thing", &o, &emit)
+        .expect("a second genuine result line must not fail the spawn");
+
+    // The RETURNED AgentResult matches the FIRST result, never the second.
+    assert_eq!(result.output, "done: the answer is 42");
+    assert_eq!(result.resolved_model, "claude-sonnet-4-5-20250929");
+    assert_ne!(
+        result.output, "SECOND result - must never win",
+        "the second result's own text must never win"
+    );
+
+    // Exactly one SpawnResult landed in the run store, and it is the FIRST result's own
+    // full meta - never the second's.
+    let events = fx
+        .run_store
+        .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
+        .unwrap();
+    let results: Vec<_> = events
+        .iter()
+        .filter(|e| e.type_ == TYPE_SPAWN_RESULT)
+        .collect();
+    assert_eq!(results.len(), 1, "exactly one SpawnResult landed");
+    let res = spawn::SpawnResult::from_event(results[0]).unwrap();
+    assert_eq!(res.output, "done: the answer is 42");
+    assert_eq!(
+        res.meta["session_id"],
+        "11111111-1111-4111-8111-111111111111"
+    );
+    assert_eq!(res.meta["usage"]["input"], 100);
+    assert_eq!(res.meta["turns"], 3);
+    assert_eq!(res.meta["cost_usd"], 0.0456);
 }

@@ -12409,6 +12409,14 @@
   },
   {
     "file": "src/dash.rs",
+    "name": "child_mut",
+    "is_test": false,
+    "proposed_module": "dash::reaped_child",
+    "reason": "method inside `impl ReapedChild`; grouped with its other `ReapedChild` methods.",
+    "content_hash": "9b1a0cd608730797"
+  },
+  {
+    "file": "src/dash.rs",
     "name": "drop",
     "is_test": false,
     "proposed_module": "dash::reaped_child",

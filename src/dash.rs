@@ -3833,6 +3833,17 @@ impl ReapedChild {
     pub fn id(&self) -> u32 {
         self.child.id()
     }
+
+    /// Borrow the supervised child mutably - a caller that must still interact with the
+    /// live process (take its stdio pipes, drop its stdin to signal EOF) while this guard
+    /// keeps owning the eventual reap. `pub(crate)`: an in-crate escape hatch for a
+    /// caller that needs more than `id()`, never a public API a caller outside this
+    /// crate should reach for (spec 104 round-4 REQUIRED FIX 2 - `driver::claude_code`'s
+    /// `read_stream` is the first such caller, taking ownership of `Launch::child` and
+    /// wrapping it here instead of re-deriving this same Drop-based reap guard itself).
+    pub(crate) fn child_mut(&mut self) -> &mut std::process::Child {
+        &mut self.child
+    }
 }
 
 impl Drop for ReapedChild {

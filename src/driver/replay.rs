@@ -54,20 +54,24 @@ const SPAWN_SCRATCH_SUBDIR: &str = "agent-scratch";
 /// decision `d77-injective-scratch-naming`) so distinct ids can never alias onto the same
 /// directory name (a spawn id is `{unit}/{role}#{n}`; `/` becomes `_2f`, `#` becomes `_23`).
 ///
-/// Returns `None` when `spawn_id` is EMPTY - [`crate::liveness::marker_filename`]'s own doc
-/// comment, the one degenerate shape the injective encoding does not close structurally
-/// (an empty input encodes to the empty string). This path is a REMOVAL target
-/// (`reap_then_remove_dir`), so the caller skips a `None` rather than joining a no-op onto
-/// the registered root. An empty `run_id` folds into the no-subdir path instead (mirroring
-/// the established no-run convention); only the SPAWN id (the leaf actually joined last) can
-/// make the whole call `None`.
+/// Returns `None` when `scratch_root` is EMPTY (no scratch root configured; without this,
+/// `Path::new("").join(SPAWN_SCRATCH_SUBDIR)` would yield a RELATIVE path scattering the
+/// scratch dir into the caller's current directory instead of no-op-ing - spec 104
+/// round-4 REQUIRED FIX 3, the one guard [`crate::liveness::marker_path`] and
+/// `driver::claude_code::stream_path` already carried that this function had silently
+/// gone without), or when `spawn_id` is EMPTY - [`crate::liveness::marker_filename`]'s
+/// own doc comment, the one degenerate shape the injective encoding does not close
+/// structurally (an empty input encodes to the empty string). This path is a REMOVAL
+/// target (`reap_then_remove_dir`), so the caller skips a `None` rather than joining a
+/// no-op onto the registered root. An empty `run_id` folds into the no-subdir path
+/// instead (mirroring the established no-run convention).
+///
+/// A thin [`crate::liveness::scratch_subpath`] call under [`SPAWN_SCRATCH_SUBDIR`] - the
+/// SAME shared layout [`crate::liveness::marker_path`] and
+/// `driver::claude_code::stream_path` build on, so the empty-root guard and the
+/// run/spawn nesting rule live in exactly one place across all three.
 pub fn spawn_scratch_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<PathBuf> {
-    let dir = Path::new(scratch_root).join(SPAWN_SCRATCH_SUBDIR);
-    let dir = match crate::liveness::marker_filename(run_id) {
-        Some(safe) => dir.join(safe),
-        None => dir,
-    };
-    crate::liveness::marker_filename(spawn_id).map(|safe| dir.join(safe))
+    crate::liveness::scratch_subpath(scratch_root, SPAWN_SCRATCH_SUBDIR, run_id, spawn_id)
 }
 
 /// The subdirectory a unit's mutation-testing (`cargo mutants`) scratch nests under a cache
@@ -528,6 +532,17 @@ mod tests {
         // entirely rather than join a no-op onto the root itself.
         assert_eq!(mutation_scratch_path(Path::new("/home/u/.cache"), ""), None);
         assert_eq!(spawn_scratch_path("/scratch", "r1", ""), None);
+    }
+
+    #[test]
+    fn spawn_scratch_path_is_none_rather_than_relative_for_an_empty_scratch_root() {
+        // Spec 104 round-4 REQUIRED FIX 3 regression: this call site went un-fixed while
+        // its two siblings (`liveness::marker_path`, `driver::claude_code::stream_path`)
+        // each hand-gained an identical empty-scratch_root guard in the same round - now
+        // all three delegate to the one shared `liveness::scratch_subpath`, so an empty
+        // root can never again collapse `Path::new("").join(SPAWN_SCRATCH_SUBDIR)` into a
+        // RELATIVE path under the caller's own current directory.
+        assert_eq!(spawn_scratch_path("", "r1", "u/implementer#0"), None);
     }
 
     #[test]

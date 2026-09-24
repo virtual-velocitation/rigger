@@ -212,21 +212,29 @@ impl Driver<'_> {
     /// this reader cannot parse is never silently lost - it still lands liveness, the
     /// transcript file, AND a progress line (below), just no structured record.
     ///
-    /// Every exit reaps the child through ONE path, [`ChildReaper`], rather than a
-    /// per-branch patch (adj-u104-stream REQUIRED FIX 1): the missing-stdout-pipe guard
-    /// below, a read error before any result, and a `record_result_if_absent` write
-    /// failure all leave the guard armed, so its `Drop` ends the child through its own
-    /// handle before the `Err` propagates - mirroring `launch()`'s own "never returns
-    /// `Err` with an unaccounted-for child still running behind it" contract. Only the
-    /// clean EOF path disarms it (the child has already exited on its own by then;
-    /// `wait()` alone reaps it, no `kill()` needed).
+    /// Every exit reaps the child through ONE mechanism, [`crate::dash::ReapedChild`] -
+    /// the SAME guard the dashboard's own supervised child uses (adj-u104-stream round-3
+    /// REQUIRED FIX 2: a second, hand-rolled Drop-based reap guard duplicated that exact
+    /// concern; deleted in favor of reusing the canonical one, per this codebase's
+    /// standing one-reaping-mechanism precedent). `launch.child` is moved into it before
+    /// the stdout loop below, so the missing-stdout-pipe guard, a read error before any
+    /// result, and a `record_result_if_absent` write failure all leave `reaper` in scope
+    /// with the process still possibly running behind it; dropping it - explicitly, right
+    /// after the loop, on every exit alike - ends it: `try_wait` first (a clean EOF means
+    /// the child has typically already exited, so this alone reaps it with no signal
+    /// sent), falling back to a best-effort end-then-collect through the same handle
+    /// otherwise. That mirrors `launch()`'s own "never returns `Err` with an
+    /// unaccounted-for child still running behind it" contract without this function
+    /// needing to track which shape of exit it hit.
     ///
-    /// A read error AFTER a result is already captured is neither of those two shapes
-    /// (adj-u104-stream round-2 REQUIRED FIX): the guard stays armed - the process is
-    /// not known to have exited the way a clean EOF proves - but this function still
-    /// returns the already-recorded `Ok(AgentResult)` rather than discarding it into an
-    /// `Err`, since `record_result_if_absent` already wrote the real result to the run
-    /// store one line earlier and only the FIRST result ever acts.
+    /// A read error AFTER a result is already captured (adj-u104-stream round-2 REQUIRED
+    /// FIX) is handled the same uniform way: the loop below just stops reading (`break`)
+    /// rather than propagating `Err`, so this function still returns the
+    /// already-recorded `Ok(AgentResult)` rather than discarding it, since
+    /// `record_result_if_absent` already wrote the real result to the run store one line
+    /// earlier and only the FIRST result ever acts (round-3 REQUIRED FIX 1 pins the
+    /// in-memory result to that same first line too - see the `result.is_none()` guard
+    /// below).
     ///
     /// stderr is drained on its own thread, started before the stdout loop below and
     /// running the whole time this function blocks reading stdout (REQUIRED FIX 2): the
@@ -236,17 +244,17 @@ impl Driver<'_> {
     /// host sits blocked reading stdout - a genuine two-sided deadlock, not merely a slow
     /// path. The drained bytes are diagnostic only (never this criterion's record of
     /// truth), so they are discarded.
-    fn read_stream(&self, launch: &mut Launch, opts: &SpawnOpts) -> Result<AgentResult, Error> {
-        let reaper = ChildReaper::new(&mut launch.child);
+    fn read_stream(&self, launch: Launch, opts: &SpawnOpts) -> Result<AgentResult, Error> {
+        let mut reaper = crate::dash::ReapedChild::new(launch.child);
 
-        let stdout = reaper.child.stdout.take().ok_or_else(|| {
+        let stdout = reaper.child_mut().stdout.take().ok_or_else(|| {
             Error(format!(
                 "claude_code driver: {:?}: launch carried no stdout pipe",
                 opts.id
             ))
         })?;
         let stderr_drain = reaper
-            .child
+            .child_mut()
             .stderr
             .take()
             .map(|stderr| std::thread::spawn(move || drain_child_stderr(stderr)));
@@ -259,7 +267,6 @@ impl Driver<'_> {
         let mut resolved_model = String::new();
         let mut permission_denials: u64 = 0;
         let mut result: Option<AgentResult> = None;
-        let mut post_result_read_error = false;
 
         for line in BufReader::new(stdout).lines() {
             let line = match line {
@@ -271,8 +278,9 @@ impl Driver<'_> {
                 // error on one of those LATER lines must never overturn that already-
                 // recorded success by turning it into an `Err` here - record it as a
                 // best-effort progress line instead and stop reading; the child is
-                // reaped below exactly like any other non-clean-EOF exit (the process
-                // has not necessarily exited merely because reading its stdout failed).
+                // reaped below exactly like any other exit (the process has not
+                // necessarily exited merely because reading its stdout failed - the
+                // `ReapedChild` drop just below decides that on its own).
                 // Before any result exists, an unreadable line is still the genuine
                 // failure it always was.
                 Err(e) if result.is_some() => {
@@ -280,7 +288,6 @@ impl Driver<'_> {
                         opts,
                         &format!("stream (read error after result, ignored): {e}"),
                     );
-                    post_result_read_error = true;
                     break;
                 }
                 Err(e) => {
@@ -332,7 +339,19 @@ impl Driver<'_> {
                     permission_denials += 1;
                     self.record_progress(opts, "permission denied");
                 }
-                (Some("result"), _) => {
+                // adj-u104-stream round-3 REQUIRED FIX 1: only the FIRST result-type line
+                // acts - a genuine SECOND one (the comment above this match's `Err(e) if
+                // result.is_some()` arm calls it anticipated, not an error) must never
+                // overwrite the already-captured `result`, nor re-derive it from a
+                // `resolved_model`/`permission_denials` state that may have drifted since
+                // (more `system/init` or `permission_denied` lines between the two
+                // results). The `result.is_none()` GUARD on this arm - rather than an
+                // `if` inside a catch-all `(Some("result"), _)` arm - means a later
+                // duplicate falls straight through to the `_` arm below: no
+                // `spawn_result_from`/`record_result_if_absent` round trip for it either,
+                // matching "the log holds one result" (CONSTRAINTS WALK) instead of
+                // merely relying on that call's own idempotence to paper over it.
+                (Some("result"), _) if result.is_none() => {
                     let res = spawn_result_from(&v, opts, &resolved_model, permission_denials);
                     spawn_store::record_result_if_absent(self.run_store, &res)?;
                     result = Some(AgentResult {
@@ -341,39 +360,28 @@ impl Driver<'_> {
                     });
                     // "the host closes the input after the first `result`" - dropping the
                     // handle closes the pipe; a session that would otherwise wait on more
-                    // input can now exit. Only the FIRST result acts - "the log holds one
-                    // result" (CONSTRAINTS WALK).
-                    drop(reaper.child.stdin.take());
+                    // input can now exit.
+                    drop(reaper.child_mut().stdin.take());
                 }
                 _ => {
-                    // assistant/user turns, hook events, and every other subtype: raw
-                    // persistence + liveness already happened above; no structured
-                    // record for this criterion (out of THE STREAM's Done-when scope).
+                    // assistant/user turns, hook events, every other subtype, AND a
+                    // duplicate result-type line once `result` is already `Some` (falls
+                    // through here past the guarded arm above): raw persistence +
+                    // liveness already happened above; no structured record for this
+                    // criterion (out of THE STREAM's Done-when scope).
                 }
             }
         }
 
-        if post_result_read_error {
-            // The loop above broke on a read error AFTER a result was already durably
-            // recorded - NOT a clean EOF, so the child is not known to have exited on
-            // its own. Leave the guard armed and drop it here: its `Drop` ends the
-            // child through the exact same handle-bound `kill()` + `wait()` path any
-            // other non-clean-EOF exit uses (process-lifecycle discipline), rather than
-            // this function claiming the "already exited" precondition
-            // `disarm_and_wait`'s own doc requires.
-            drop(reaper);
-        } else {
-            // The stream read to EOF without an early return - the child has already
-            // exited on its own (that is what produced EOF), so `disarm_and_wait` reaps
-            // it without `kill()`. Every OTHER exit above returned before reaching this
-            // line, leaving the guard armed so its `Drop` ends the child instead.
-            reaper.disarm_and_wait().map_err(|e| {
-                Error(format!(
-                    "claude_code driver: {:?}: reap the child: {e}",
-                    opts.id
-                ))
-            })?;
-        }
+        // Reap through the ONE canonical mechanism, on every exit path alike (a clean
+        // EOF, or the `break` above on a post-result read error): `ReapedChild::drop`
+        // tries a non-blocking `try_wait` first - on a clean EOF the child has typically
+        // already exited, so this alone reaps it with no signal sent - and falls back to
+        // a best-effort end-then-collect through the same handle only when the process
+        // is not yet known to have exited. Explicit, right here, rather than left to run
+        // at the function's end: the join just below depends on the child's stderr pipe
+        // having already closed.
+        drop(reaper);
         // Best-effort join: diagnostic-only drain (see the doc above), and the reap just
         // above guarantees the child's stderr pipe has closed by now, so the thread has
         // already hit EOF or is about to - never a caller-visible wait for its own sake.
@@ -394,50 +402,6 @@ impl Driver<'_> {
     /// this never fails the spawn the way [`Driver::launch`]'s `SpawnLaunched` write does.
     fn record_progress(&self, opts: &SpawnOpts, activity: &str) {
         let _ = progress_store::record(self.progress_store, &opts.run_id, &opts.id, activity);
-    }
-}
-
-/// [`Driver::read_stream`]'s single reap path (adj-u104-stream REQUIRED FIX 1): ends the
-/// child through its own handle unless [`ChildReaper::disarm_and_wait`] runs first, so
-/// every one of that function's several exits - the missing-stdout-pipe guard, a
-/// mid-stream read error, a failed result-store write, or a clean EOF - reaps through one
-/// piece of code instead of a patch per branch. Never a computed-pid signal: the `child`
-/// field is the exact [`Child`] handle [`Driver::launch`] spawned, borrowed for exactly
-/// this call's duration.
-struct ChildReaper<'a> {
-    child: &'a mut Child,
-    armed: bool,
-}
-
-impl<'a> ChildReaper<'a> {
-    fn new(child: &'a mut Child) -> Self {
-        ChildReaper { child, armed: true }
-    }
-
-    /// The stream ended normally (stdout hit EOF): the child has already exited on its
-    /// own by then, so this disarms the `Drop` cleanup below and reaps with a plain
-    /// `wait()` - no `kill()` needed, and none sent.
-    fn disarm_and_wait(mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.armed = false;
-        self.child.wait()
-    }
-}
-
-impl Drop for ChildReaper<'_> {
-    /// Still armed means `read_stream` is returning `Err` with the child possibly still
-    /// running behind it - end it through this exact handle before that `Err` propagates,
-    /// process-lifecycle discipline's "handle-bound, `kill()` + `wait()`" rule. Stdin is
-    /// dropped FIRST: a child still blocked reading more input sees EOF and can exit on
-    /// its own before the `kill()` even lands, so the common case never needs SIGKILL at
-    /// all. Both calls are best-effort (there is no caller left to hand a second error to
-    /// from inside a `Drop`).
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        drop(self.child.stdin.take());
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -467,8 +431,8 @@ impl AgentDriver for Driver<'_> {
         opts: &SpawnOpts,
         _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
     ) -> Result<AgentResult, Error> {
-        let mut launch = self.launch(agent, prompt, opts, self.progress_store)?;
-        self.read_stream(&mut launch, opts)
+        let launch = self.launch(agent, prompt, opts, self.progress_store)?;
+        self.read_stream(launch, opts)
     }
 }
 
@@ -495,25 +459,17 @@ const AGENT_STREAM_SUBDIR: &str = "agent-stream";
 
 /// The raw stream-json transcript path for one launch:
 /// `<scratch_root>/agent-stream/<sanitized run_id>/<sanitized spawn_id>.<launch>.jsonl`
-/// (an EMPTY `run_id` omits the run subdir). Mirrors
-/// [`crate::driver::replay::spawn_scratch_path`]'s layout and sanitizing rule
-/// ([`crate::liveness::marker_filename`], the ONE injective id-to-filename encoding) so a
-/// spawn's stream, scratch and liveness marker can never alias a sibling's path. Returns
-/// `None` for an empty `scratch_root` (no scratch root configured - a caller that does
-/// not care, mirroring [`liveness::marker_path`]'s own empty-root degrade; without this,
-/// `Path::new("").join(AGENT_STREAM_SUBDIR)` would yield a RELATIVE path that scatters
-/// the transcript into the caller's current directory instead of no-op-ing) or for the
-/// same degenerate case `marker_filename` itself declines: an empty `spawn_id`.
+/// (an EMPTY `run_id` omits the run subdir). Built on [`liveness::scratch_subpath`] - the
+/// ONE shared layout [`liveness::marker_path`] and
+/// [`crate::driver::replay::spawn_scratch_path`] build on too (spec 104 round-4 REQUIRED
+/// FIX 3), just with this function's own `.<launch>.jsonl` suffix appended onto the
+/// leaf it returns - so a spawn's stream, scratch and liveness marker can never alias a
+/// sibling's path, and the empty-`scratch_root`/degenerate-id degrade (see that
+/// function's own doc) lives in exactly one place rather than a copy per call site.
 fn stream_path(scratch_root: &str, run_id: &str, spawn_id: &str, launch: u32) -> Option<PathBuf> {
-    if scratch_root.is_empty() {
-        return None;
-    }
-    let dir = Path::new(scratch_root).join(AGENT_STREAM_SUBDIR);
-    let dir = match liveness::marker_filename(run_id) {
-        Some(safe) => dir.join(safe),
-        None => dir,
-    };
-    liveness::marker_filename(spawn_id).map(|safe| dir.join(format!("{safe}.{launch}.jsonl")))
+    let leaf = liveness::scratch_subpath(scratch_root, AGENT_STREAM_SUBDIR, run_id, spawn_id)?;
+    let name = leaf.file_name()?.to_str()?;
+    Some(leaf.with_file_name(format!("{name}.{launch}.jsonl")))
 }
 
 /// Open (creating parent directories) the raw stream file at `path` for a fresh write -
@@ -1033,6 +989,15 @@ mod tests {
     #[test]
     fn stream_path_is_none_for_an_empty_spawn_id() {
         assert_eq!(stream_path("/scratch", "run-1", "", 0), None);
+    }
+
+    #[test]
+    fn stream_path_is_none_rather_than_relative_for_an_empty_scratch_root() {
+        // Spec 104 round-4 REQUIRED FIX 3 regression, pinned directly at this call site
+        // (the periphery suite's `spawn_with_an_empty_scratch_root_never_writes_relative_
+        // to_cwd` already proves it end to end through `spawn()`; this is the cheap, pure
+        // unit-level proof of the same guard, now delegated to `liveness::scratch_subpath`).
+        assert_eq!(stream_path("", "run-1", "u1/implementer#0", 0), None);
     }
 
     #[test]

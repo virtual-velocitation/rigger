@@ -136,6 +136,44 @@ pub fn decode_marker_filename(encoded: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// The shared layout behind every root-scoped, per-spawn scratch path this crate
+/// computes: `<root>/<subdir>/[<sanitized run_id>/]<sanitized spawn_id>` (spec 104
+/// round-4 REQUIRED FIX 3). Backs [`marker_path`] below,
+/// [`crate::driver::replay::spawn_scratch_path`] and
+/// [`crate::driver::claude_code::stream_path`] (which appends its own `.<launch>.jsonl`
+/// suffix onto the leaf this returns) - the ONE place the empty-`root` guard and the
+/// run/spawn nesting rule live, so they can never again drift the way they did: an
+/// earlier round hand-added the identical empty-`scratch_root` guard to two of these
+/// three call sites in the SAME commit (this function's own predecessor and
+/// `stream_path`) while leaving the third (`spawn_scratch_path`) silently un-fixed and
+/// still building a relative path on an empty root.
+///
+/// Returns `None` for an empty `root` (no scratch root configured - a caller that does
+/// not care, mirroring [`any_marker_fresh`]'s own empty-root degrade; without this,
+/// `Path::new("").join(subdir)` would yield a RELATIVE path, scattering the caller's
+/// file into its own current directory instead of no-op-ing), or when `run_id` or
+/// `spawn_id` maps to the ONE remaining degenerate [`marker_filename`] shape (an empty
+/// INPUT - never a non-empty one, since the injective encoding gives every non-empty
+/// input its own unique, never-empty output). An empty `run_id` simply omits the run
+/// subdir (every caller's established no-run convention), keeping the path stable for a
+/// caller outside any one run.
+pub fn scratch_subpath(
+    root: &str,
+    subdir: &str,
+    run_id: &str,
+    spawn_id: &str,
+) -> Option<std::path::PathBuf> {
+    if root.is_empty() {
+        return None;
+    }
+    let dir = std::path::Path::new(root).join(subdir);
+    let dir = match marker_filename(run_id) {
+        Some(safe) => dir.join(safe),
+        None => dir,
+    };
+    marker_filename(spawn_id).map(|safe| dir.join(safe))
+}
+
 /// The absolute marker path for a spawn:
 /// `<scratch_root>/agent-live/<run_id>/<sanitized id>`.
 ///
@@ -148,26 +186,10 @@ pub fn decode_marker_filename(encoded: &str) -> Option<String> {
 /// bogus multi-hour `silent_for`. An empty `run_id` (a caller outside a run - the pure-fold
 /// tests) omits the run subdir, keeping the path stable for the no-run case.
 ///
-/// Returns `None` when `scratch_root` is empty (no scratch root configured - a caller
-/// that does not care, mirroring [`any_marker_fresh`]'s own empty-root degrade), or when
-/// `run_id` or `spawn_id` maps to the ONE remaining degenerate [`marker_filename`] shape
-/// (an empty INPUT - never a non-empty one, since the injective encoding gives every
-/// non-empty input its own unique, never-empty output), so every caller treats a
-/// degenerate id exactly like the existing "marker absent" no-op ([`sweep`]'s own doc
-/// comment: "a spawn with NO marker is left alone") instead of stat-ing or touching a
-/// fabricated placeholder path. Without this, `Path::new("").join(MARKER_SUBDIR)` would
-/// yield a RELATIVE path (`"agent-live/..."`), scattering the marker into the caller's
-/// current directory instead of no-op-ing.
+/// A thin [`scratch_subpath`] call under [`MARKER_SUBDIR`] - see that function's own doc
+/// for the empty-`root`/degenerate-id degrade this inherits unchanged.
 pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<std::path::PathBuf> {
-    if scratch_root.is_empty() {
-        return None;
-    }
-    let dir = std::path::Path::new(scratch_root).join(MARKER_SUBDIR);
-    let dir = match marker_filename(run_id) {
-        Some(safe) => dir.join(safe),
-        None => dir,
-    };
-    marker_filename(spawn_id).map(|safe| dir.join(safe))
+    scratch_subpath(scratch_root, MARKER_SUBDIR, run_id, spawn_id)
 }
 
 /// Whether ANY per-spawn liveness marker under `scratch_root` - any run, any spawn - has been
@@ -794,6 +816,46 @@ mod tests {
         // input encodes to the empty string), so it is still handled explicitly here.
         let p = marker_path("/scratch", "run-7", "");
         assert_eq!(p, None);
+    }
+
+    #[test]
+    fn marker_path_is_none_rather_than_relative_for_an_empty_scratch_root() {
+        // Spec 104 round-4 REQUIRED FIX 3 regression: an empty `scratch_root` must no-op
+        // rather than let `Path::new("").join(MARKER_SUBDIR)` collapse to a RELATIVE
+        // path (`"agent-live/..."`) that would scatter the marker into the caller's own
+        // current directory. Pinned directly at this call site, not only through
+        // `scratch_subpath`'s own test below, since this is the function every other
+        // caller in the crate actually calls.
+        assert_eq!(marker_path("", "run-7", "u/implementer#0"), None);
+    }
+
+    #[test]
+    fn scratch_subpath_is_none_for_an_empty_root_regardless_of_subdir() {
+        // The ONE empty-root guard backing marker_path, spawn_scratch_path and
+        // stream_path alike (spec 104 round-4 REQUIRED FIX 3) - proven once here at the
+        // shared layer, rather than trusting each caller's own delegation.
+        assert_eq!(
+            scratch_subpath("", "agent-live", "r1", "u/implementer#0"),
+            None
+        );
+        assert_eq!(
+            scratch_subpath("", "agent-scratch", "r1", "u/implementer#0"),
+            None
+        );
+        assert_eq!(
+            scratch_subpath("", "agent-stream", "r1", "u/implementer#0"),
+            None
+        );
+    }
+
+    #[test]
+    fn scratch_subpath_nests_under_the_given_subdir_and_run_id() {
+        assert_eq!(
+            scratch_subpath("/scratch", "agent-scratch", "r1", "u/implementer#0"),
+            Some(std::path::PathBuf::from(
+                "/scratch/agent-scratch/r1/u_2fimplementer_230"
+            ))
+        );
     }
 
     #[test]
