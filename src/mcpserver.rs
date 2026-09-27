@@ -1649,61 +1649,61 @@ mod tests {
         assert_eq!(z, off, "the offset is applied back to UTC");
     }
 
-    #[test]
-    fn peers_tool_scopes_to_the_files_arg() {
+    /// Seed the two `type_` events `seeded` (one about a.rs, one about b.rs) on the run
+    /// stream, wait for the side-car to hold both as `P` peers, and call `rigger_peers` scoped
+    /// to a.rs: its `section` must hold exactly one entry, which is returned.
+    fn sole_peer_of_a_rs<P: crate::sidecar::Peer>(
+        type_: &str,
+        seeded: [Value; 2],
+        section: &str,
+    ) -> Value {
         let store = Store::open(":memory:").unwrap();
-        // Two decisions, one touching a.rs, one touching b.rs, on the run stream.
-        for (id, governs) in [("da", "a.rs"), ("db", "b.rs")] {
-            append_run(
-                &store,
-                crate::contextgraph::TYPE_DECISION_MADE,
-                json!({"id": id, "summary": "x", "governs": [governs]}),
-            );
+        for data in seeded {
+            append_run(&store, type_, data);
         }
-
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        // Wait for the side-car to catch up on both decisions.
-        await_sidecar(|| peers.peers::<crate::sidecar::PeerDecision>().len() >= 2);
+        await_sidecar(|| peers.peers::<P>().len() >= 2);
         let server = Server::new(&driver, &store, "run", &peers);
 
         let resp = call(&server, PEERS_OF_A_RS);
-        let decisions = &resp["result"]["structuredContent"]["decisions"];
-        let arr = decisions.as_array().expect("decisions array");
-        assert_eq!(arr.len(), 1, "files=[a.rs] returns only the a.rs decision");
-        assert_eq!(arr[0]["id"], "da");
-    }
-
-    #[test]
-    fn peers_tool_surfaces_findings_scoped_to_the_files_arg() {
-        // Item 4: rigger_peers surfaces peer review FINDINGS as well as decisions, so a
-        // concurrent reviewer scoped to its files sees a finding about one of them.
-        let store = Store::open(":memory:").unwrap();
-        // Two review findings, one about a.rs, one about b.rs, on the run stream.
-        for (id, about) in [("fa", "a.rs"), ("fb", "b.rs")] {
-            append_run(
-                &store,
-                crate::contextgraph::TYPE_REVIEW_FINDING,
-                json!({"id": id, "by": "lensA", "summary": "x", "about": [about]}),
-            );
-        }
-
-        let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        // Wait for the side-car to catch up on both findings.
-        await_sidecar(|| peers.peers::<crate::sidecar::PeerFinding>().len() >= 2);
-        let server = Server::new(&driver, &store, "run", &peers);
-
-        let resp = call(&server, PEERS_OF_A_RS);
-        let findings = &resp["result"]["structuredContent"]["findings"];
-        let arr = findings.as_array().expect("findings array");
+        let arr = resp["result"]["structuredContent"][section]
+            .as_array()
+            .unwrap_or_else(|| panic!("a {section} array: {resp}"));
         assert_eq!(
             arr.len(),
             1,
-            "files=[a.rs] returns only the a.rs finding: {resp}"
+            "files=[a.rs] returns only the a.rs {section} entry: {resp}"
         );
-        assert_eq!(arr[0]["id"], "fa");
-        assert_eq!(arr[0]["by"], "lensA");
+        arr[0].clone()
+    }
+
+    crate::test_cases! {
+        peers_tool_scopes_to_the_files_arg: assert_eq!(
+            sole_peer_of_a_rs::<crate::sidecar::PeerDecision>(
+                crate::contextgraph::TYPE_DECISION_MADE,
+                [
+                    json!({"id": "da", "summary": "x", "governs": ["a.rs"]}),
+                    json!({"id": "db", "summary": "x", "governs": ["b.rs"]}),
+                ],
+                "decisions",
+            )["id"],
+            "da"
+        );
+        // Item 4: rigger_peers surfaces peer review FINDINGS as well as decisions, so a
+        // concurrent reviewer scoped to its files sees a finding about one of them.
+        peers_tool_surfaces_findings_scoped_to_the_files_arg: {
+            let finding = sole_peer_of_a_rs::<crate::sidecar::PeerFinding>(
+                crate::contextgraph::TYPE_REVIEW_FINDING,
+                [
+                    json!({"id": "fa", "by": "lensA", "summary": "x", "about": ["a.rs"]}),
+                    json!({"id": "fb", "by": "lensA", "summary": "x", "about": ["b.rs"]}),
+                ],
+                "findings",
+            );
+            assert_eq!(finding["id"], "fa");
+            assert_eq!(finding["by"], "lensA");
+        };
     }
 
     #[test]
