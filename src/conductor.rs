@@ -1559,21 +1559,56 @@ pub fn is_parked(e: &Error) -> bool {
 /// adv-confirm-review-tier-no-budgetexhausted, adv-budget-guard-cannot-assemble-reviewed-unit).
 const BUDGET_MARKER: &str = "\u{1}rigger:spawn-budget-exhausted\u{1}";
 
-/// Construct the budget-refusal signal a review-tier spawn returns when
-/// [`reserve_spawn`](RunCtx::reserve_spawn) denies it: `tier` names the refused review
-/// tier and `agent` the refused agent (for the audit trail), and the embedded
-/// [`BUDGET_MARKER`] lets [`is_budget_refused`] recognize it through the conductor's own
-/// `format!("... {}", e.0)` error wrapping. Only [`reserve_spawn`] returning `false`
-/// produces this - and it sets `budget_broke` before it does - so the sentinel and the
-/// breaker flag always travel together.
-fn budget_refused(stage: &str, tier: &str, agent: &str) -> Error {
-    Error(format!(
-        "{BUDGET_MARKER} stage {stage:?} {tier} {agent:?}: spawn budget exhausted"
-    ))
+/// Which LOUD spawn-level signal [`spawn_halt`] constructs for a refused or faulted
+/// spawn of `tier` (the refused review tier, or `"planner"`/`"implementer"`) and `agent`
+/// in `stage`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpawnHalt {
+    /// The budget-refusal signal a spawn returns when
+    /// [`reserve_spawn`](RunCtx::reserve_spawn) denies it: `tier` and `agent` name the
+    /// refused spawn (for the audit trail), and the embedded [`BUDGET_MARKER`] lets
+    /// [`is_budget_refused`] recognize it through the conductor's own `format!("... {}", e.0)`
+    /// error wrapping. Only [`reserve_spawn`] returning `false` produces this - and it sets
+    /// `budget_broke` before it does - so the sentinel and the breaker flag always travel
+    /// together.
+    BudgetRefused,
+    /// The LOUD-HALT error a GATING spawn returns when its result carries NO verdict line
+    /// yet it emitted an approve-shaped verdict via `rigger_emit` during the spawn (spec 18,
+    /// unit 3). This BACKSTOPS a persona that passed the static lint (spec 18, unit 1) but
+    /// still returned no result-channel verdict: the integration gate reads ONLY the result
+    /// channel ([`verdict_approves`]), so folding this empty verdict as a reject would
+    /// remediate a unit the reviewer actually APPROVED, until it escalated - the silent
+    /// stall this unit exists to make loud. Instead the run HARD-ERRORS with the
+    /// SPEC-pinned result-channel fix, naming the dead gate (`tier`/`agent`/`stage`).
+    ///
+    /// The diagnostic use of events (the emitted approve EXPLAINS the empty verdict) while
+    /// the result channel still DECIDES: the message is raised only when both hold. It
+    /// carries [`MISMATCH_MARKER`] so the wave/gate route it through the no-lesson arm, and
+    /// like the degenerate halt it charges the unit NO remediation attempt (no `UnitFailed`,
+    /// no `UnitEscalated`) - the fault is the persona, not the unit under review.
+    VerdictChannelMismatch,
+}
+
+/// Construct the [`SpawnHalt`] signal `kind` for `agent`'s `tier` spawn in `stage`.
+fn spawn_halt(kind: SpawnHalt, stage: &str, tier: &str, agent: &str) -> Error {
+    match kind {
+        SpawnHalt::BudgetRefused => Error(format!(
+            "{BUDGET_MARKER} stage {stage:?} {tier} {agent:?}: spawn budget exhausted"
+        )),
+        SpawnHalt::VerdictChannelMismatch => Error(format!(
+            "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?} returned NO verdict line on its result \
+             output, yet emitted an approve-shaped verdict via rigger_emit during the spawn: the gate \
+             reads the result channel, not emitted events; end your output with the verdict line (e.g. \
+             {{\"verdict\":\"approve\"}}). The run halts and the unit is NOT charged a remediation \
+             attempt - a gating persona that records its verdict only as an emitted event is a \
+             configuration fault, not a reject. Fix the {agent:?} persona to end its output with the \
+             verdict line, then re-run."
+        )),
+    }
 }
 
 /// Whether `e` is a budget-refusal signal from a review-tier spawn (see
-/// [`budget_refused`]) rather than a real spawn failure. Robust to the review sites' own
+/// [`SpawnHalt::BudgetRefused`]) rather than a real spawn failure. Robust to the review sites' own
 /// error wrapping, since the marker survives as a substring.
 fn is_budget_refused(e: &Error) -> bool {
     e.0.contains(BUDGET_MARKER)
@@ -1667,34 +1702,8 @@ fn is_degenerate_reviewer(e: &Error) -> bool {
 /// message surfaces, so the operator's fix stays clean.
 const MISMATCH_MARKER: &str = "\u{1}rigger:verdict-channel-mismatch\u{1}";
 
-/// Construct the LOUD-HALT error a GATING spawn returns when its result carries NO
-/// verdict line yet it emitted an approve-shaped verdict via `rigger_emit` during the
-/// spawn (spec 18, unit 3). This BACKSTOPS a persona that passed the static lint (spec
-/// 18, unit 1) but still returned no result-channel verdict: the integration gate reads
-/// ONLY the result channel ([`verdict_approves`]), so folding this empty verdict as a
-/// reject would remediate a unit the reviewer actually APPROVED, until it escalated -
-/// the silent stall this unit exists to make loud. Instead the run HARD-ERRORS with the
-/// SPEC-pinned result-channel fix, naming the dead gate (`tier`/`agent`/`stage`).
-///
-/// The diagnostic use of events (the emitted approve EXPLAINS the empty verdict) while
-/// the result channel still DECIDES: the message is raised only when both hold. It
-/// carries [`MISMATCH_MARKER`] so the wave/gate route it through the no-lesson arm, and
-/// like the degenerate halt it charges the unit NO remediation attempt (no `UnitFailed`,
-/// no `UnitEscalated`) - the fault is the persona, not the unit under review.
-fn verdict_channel_mismatch(stage: &str, tier: &str, agent: &str) -> Error {
-    Error(format!(
-        "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?} returned NO verdict line on its result \
-         output, yet emitted an approve-shaped verdict via rigger_emit during the spawn: the gate \
-         reads the result channel, not emitted events; end your output with the verdict line (e.g. \
-         {{\"verdict\":\"approve\"}}). The run halts and the unit is NOT charged a remediation \
-         attempt - a gating persona that records its verdict only as an emitted event is a \
-         configuration fault, not a reject. Fix the {agent:?} persona to end its output with the \
-         verdict line, then re-run."
-    ))
-}
-
 /// Whether `e` is a runtime verdict-channel-mismatch HALT signal (see
-/// [`verdict_channel_mismatch`]) rather than a real stage failure. Robust to the review
+/// [`SpawnHalt::VerdictChannelMismatch`]) rather than a real stage failure. Robust to the review
 /// sites' own error wrapping, since the [`MISMATCH_MARKER`] survives as a substring.
 fn is_verdict_channel_mismatch(e: &Error) -> bool {
     e.0.contains(MISMATCH_MARKER)
@@ -3915,7 +3924,7 @@ impl RunCtx<'_> {
     /// implementer replays free and the unit reaches `verified`, the first review-tier
     /// spawn is a new spawn that `reserve_spawn` refuses at a spent budget. That refusal
     /// now unwinds cleanly and trips the breaker (a `BudgetExhausted` event via
-    /// [`budget_refused`]/[`is_budget_refused`] + the mid-wave `budget_broke()` check),
+    /// [`SpawnHalt::BudgetRefused`]/[`is_budget_refused`] + the mid-wave `budget_broke()` check),
     /// exactly as the implementer's `Ok(false)` refusal does - so a run that exceeds
     /// `defaults.budget` at ANY spawn site aborts with `BudgetExhausted` (criterion 5).
     /// Completing such a unit requires the operator to raise `defaults.budget`; the count
@@ -7098,7 +7107,12 @@ impl RunCtx<'_> {
             let opts =
                 self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
             if !self.reserve_spawn(&id) {
-                return Err(budget_refused(&st.name, tier, agent_id));
+                return Err(spawn_halt(
+                    SpawnHalt::BudgetRefused,
+                    &st.name,
+                    tier,
+                    agent_id,
+                ));
             }
             // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
             // adv-u3c3r3-ensure-present-covers-only-the-first-tier, UPHELD): `run_reviewer`
@@ -7203,7 +7217,12 @@ impl RunCtx<'_> {
                     && !has_verdict_line(&result.output)
                     && self.gating_spawn_emitted_approve(&id)?
                 {
-                    return Err(verdict_channel_mismatch(&st.name, tier, agent_id));
+                    return Err(spawn_halt(
+                        SpawnHalt::VerdictChannelMismatch,
+                        &st.name,
+                        tier,
+                        agent_id,
+                    ));
                 }
                 return Ok(result);
             }
@@ -7614,7 +7633,12 @@ impl RunCtx<'_> {
         })?;
         let id = spawn_id(plan_name, ROLE_REPLAN, critique_attempt);
         if !self.reserve_spawn(&id) {
-            return Err(budget_refused(plan_name, "planner", &plan_st.agent));
+            return Err(spawn_halt(
+                SpawnHalt::BudgetRefused,
+                plan_name,
+                "planner",
+                &plan_st.agent,
+            ));
         }
         let prompt = format!(
             "The plan-critique gate REJECTED your previous decomposition:\n{}\n\nRevise \
@@ -10335,7 +10359,12 @@ impl RunCtx<'_> {
     ) -> Result<(), Error> {
         let id = spawn_retry_id(&st.name, ROLE_IMPLEMENTER, attempt, retry);
         if !self.reserve_spawn(&id) {
-            return Err(budget_refused(&st.name, "implementer", &st.agent));
+            return Err(spawn_halt(
+                SpawnHalt::BudgetRefused,
+                &st.name,
+                "implementer",
+                &st.agent,
+            ));
         }
         let agent_def = self.cfg.agents.get(&st.agent).ok_or_else(|| {
             Error(format!(
