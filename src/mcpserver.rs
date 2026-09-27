@@ -1019,6 +1019,126 @@ mod tests {
     use crate::spawn::SpawnEvent;
     use std::io::Cursor;
 
+    /// Send one JSON-RPC request line to `server` and parse its one reply.
+    fn call(server: &Server, input: &str) -> Value {
+        let mut output = Vec::new();
+        server.run(Cursor::new(input), &mut output).unwrap();
+        serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap()
+    }
+
+    /// A `tools/call` request (id 1) for tool `name` with empty arguments.
+    fn tools_call(name: &str) -> String {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#
+        )
+    }
+
+    /// The `rigger_peers` call scoped to `a.rs`.
+    const PEERS_OF_A_RS: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_peers","arguments":{"files":["a.rs"]}}}"#;
+
+    /// Append one `type_` event carrying `data` to the "run" stream.
+    fn append_run(store: &Store, type_: &str, data: Value) {
+        store
+            .append(
+                "run",
+                ExpectedRevision::Any,
+                &[Event::new(type_, serde_json::to_vec(&data).unwrap())],
+            )
+            .unwrap();
+    }
+
+    /// Poll until the side-car has `caught_up`, failing after two seconds.
+    fn await_sidecar(caught_up: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !caught_up() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "side-car never caught up"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The names `server` advertises from `tools/list`, in order.
+    fn tool_names(server: &Server) -> Vec<String> {
+        server
+            .tool_list()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// A fresh workflow-bridge server (bound to `spawn` when given) answers `input` with a
+    /// JSON-RPC error of `code`, echoing `id` when one is given; the reply is returned.
+    fn assert_error_reply(
+        spawn: Option<&str>,
+        input: &str,
+        id: Option<Value>,
+        code: i64,
+        why: &str,
+    ) -> Value {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+        let server = match spawn {
+            Some(spawn) => server.with_spawn(spawn),
+            None => server,
+        };
+        let resp = call(&server, input);
+        if let Some(id) = id {
+            assert_eq!(resp["id"], id, "the error echoes the request id: {resp}");
+        }
+        assert_eq!(resp["error"]["code"], code, "{why}: {resp}");
+        resp
+    }
+
+    /// The `DecisionMade` event a fresh workflow-bridge server stores for the `rigger_emit`
+    /// request `input`.
+    fn emitted_decision(input: &str) -> Event {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server = Server::new(&driver, &store, "run", &peers);
+        call(&server, input);
+        store
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap()
+            .into_iter()
+            .find(|e| e.type_ == "DecisionMade")
+            .expect("stored the emitted event")
+    }
+
+    /// A fresh server bound to spawn `u104-spawn-mcp/implementer#0` answers the `rigger_emit`
+    /// request `input` with success and stores the `DecisionMade` stamped with that bound
+    /// spawn - `why` names the case.
+    fn assert_bound_emit_is_stamped(input: &str, why: &str) {
+        use crate::conductor::META_SPAWN;
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver::new();
+        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
+        let server =
+            Server::new(&driver, &store, "run", &peers).with_spawn("u104-spawn-mcp/implementer#0");
+        let resp = call(&server, input);
+        assert!(
+            resp.get("result").is_some(),
+            "{why}: the emit must succeed; got:\n{resp}"
+        );
+        let events = store.read_stream("run", 0, Direction::Forward).unwrap();
+        let recorded = events
+            .iter()
+            .find(|e| e.type_ == "DecisionMade")
+            .expect("the emit must still land in the store");
+        assert_eq!(
+            recorded.meta.get(META_SPAWN).map(String::as_str),
+            Some("u104-spawn-mcp/implementer#0"),
+            "{why}: the write must be stamped with the BOUND spawn"
+        );
+    }
+
     #[test]
     fn emit_tool_appends_to_the_store() {
         let store = Store::open(":memory:").unwrap();
@@ -1400,57 +1520,37 @@ mod tests {
     /// scope decisions, lessons, and findings to the files arg through the one core.
     #[test]
     fn peers_json_core_matches_the_mcp_tool() {
-        use std::time::Instant;
-
         let store = Store::open(":memory:").unwrap();
         for (id, governs) in [("da", "a.rs"), ("db", "b.rs")] {
-            let data = serde_json::to_vec(&json!({
-                "id": id, "summary": "x", "governs": [governs],
-            }))
-            .unwrap();
-            store
-                .append(
-                    "run",
-                    ExpectedRevision::Any,
-                    &[Event::new(crate::contextgraph::TYPE_DECISION_MADE, data)],
-                )
-                .unwrap();
+            append_run(
+                &store,
+                crate::contextgraph::TYPE_DECISION_MADE,
+                json!({"id": id, "summary": "x", "governs": [governs]}),
+            );
         }
         // One lesson about a.rs, another about b.rs - the lessons half must ride the
         // same one core and the same blast-radius scoping as decisions and findings, so
         // `rigger peers <file>` actually returns the lessons a capped prompt elided.
         for (id, about) in [("la", "a.rs"), ("lb", "b.rs")] {
-            let data = serde_json::to_vec(&json!({
-                "id": id, "summary": "y", "about": [about],
-            }))
-            .unwrap();
-            store
-                .append(
-                    "run",
-                    ExpectedRevision::Any,
-                    &[Event::new(crate::contextgraph::TYPE_LESSON_LEARNED, data)],
-                )
-                .unwrap();
+            append_run(
+                &store,
+                crate::contextgraph::TYPE_LESSON_LEARNED,
+                json!({"id": id, "summary": "y", "about": [about]}),
+            );
         }
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while peers.peers::<crate::sidecar::PeerDecision>().len() < 2
-            || peers.peers::<crate::sidecar::PeerLesson>().len() < 2
-        {
-            assert!(Instant::now() < deadline, "side-car never caught up");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        await_sidecar(|| {
+            peers.peers::<crate::sidecar::PeerDecision>().len() >= 2
+                && peers.peers::<crate::sidecar::PeerLesson>().len() >= 2
+        });
 
         // The CLI path: render through the shared core, scoped to a.rs.
         let core = peers_json(&peers, &["a.rs".to_string()]);
 
         // The MCP path: the same scope through the rigger_peers tool.
         let server = Server::new(&driver, &store, "run", &peers);
-        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_peers","arguments":{"files":["a.rs"]}}}"#;
-        let mut output = Vec::new();
-        server.run(Cursor::new(input), &mut output).unwrap();
-        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        let resp = call(&server, PEERS_OF_A_RS);
         let tool = &resp["result"]["structuredContent"];
 
         assert_eq!(
@@ -1518,48 +1618,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn emit_tool_carries_meta_actor() {
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
-
-        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1"},"meta":{"actor":"a7"}}}}"#;
-        let mut output = Vec::new();
-        server.run(Cursor::new(input), &mut output).unwrap();
-
-        let events = store
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
-        let e = events
-            .iter()
-            .find(|e| e.type_ == "DecisionMade")
-            .expect("stored the emitted event");
-        assert_eq!(e.meta.get("actor").map(String::as_str), Some("a7"));
-    }
-
-    #[test]
-    fn emit_tool_sets_valid_from_from_nanos() {
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
-
-        // 2_000_000_000 ns = 2 seconds after the unix epoch.
-        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{},"valid_from":2000000000}}}"#;
-        let mut output = Vec::new();
-        server.run(Cursor::new(input), &mut output).unwrap();
-
-        let events = store
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
-        let e = events
-            .iter()
-            .find(|e| e.type_ == "DecisionMade")
-            .expect("stored the emitted event");
-        assert_eq!(
-            e.valid_from,
+    crate::test_cases! {
+        emit_tool_carries_meta_actor: assert_eq!(
+            emitted_decision(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1"},"meta":{"actor":"a7"}}}}"#
+            )
+            .meta
+            .get("actor")
+            .map(String::as_str),
+            Some("a7")
+        );
+        /// 2_000_000_000 ns = 2 seconds after the unix epoch.
+        emit_tool_sets_valid_from_from_nanos: assert_eq!(
+            emitted_decision(
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{},"valid_from":2000000000}}}"#
+            )
+            .valid_from,
             UNIX_EPOCH + Duration::from_nanos(2_000_000_000)
         );
     }
@@ -1577,39 +1651,23 @@ mod tests {
 
     #[test]
     fn peers_tool_scopes_to_the_files_arg() {
-        use std::time::Instant;
-
         let store = Store::open(":memory:").unwrap();
         // Two decisions, one touching a.rs, one touching b.rs, on the run stream.
         for (id, governs) in [("da", "a.rs"), ("db", "b.rs")] {
-            let data = serde_json::to_vec(&serde_json::json!({
-                "id": id, "summary": "x", "governs": [governs],
-            }))
-            .unwrap();
-            store
-                .append(
-                    "run",
-                    ExpectedRevision::Any,
-                    &[Event::new(crate::contextgraph::TYPE_DECISION_MADE, data)],
-                )
-                .unwrap();
+            append_run(
+                &store,
+                crate::contextgraph::TYPE_DECISION_MADE,
+                json!({"id": id, "summary": "x", "governs": [governs]}),
+            );
         }
 
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         // Wait for the side-car to catch up on both decisions.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while peers.peers::<crate::sidecar::PeerDecision>().len() < 2 {
-            assert!(Instant::now() < deadline, "side-car never caught up");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        await_sidecar(|| peers.peers::<crate::sidecar::PeerDecision>().len() >= 2);
         let server = Server::new(&driver, &store, "run", &peers);
 
-        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_peers","arguments":{"files":["a.rs"]}}}"#;
-        let mut output = Vec::new();
-        server.run(Cursor::new(input), &mut output).unwrap();
-
-        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        let resp = call(&server, PEERS_OF_A_RS);
         let decisions = &resp["result"]["structuredContent"]["decisions"];
         let arr = decisions.as_array().expect("decisions array");
         assert_eq!(arr.len(), 1, "files=[a.rs] returns only the a.rs decision");
@@ -1620,39 +1678,23 @@ mod tests {
     fn peers_tool_surfaces_findings_scoped_to_the_files_arg() {
         // Item 4: rigger_peers surfaces peer review FINDINGS as well as decisions, so a
         // concurrent reviewer scoped to its files sees a finding about one of them.
-        use std::time::Instant;
-
         let store = Store::open(":memory:").unwrap();
         // Two review findings, one about a.rs, one about b.rs, on the run stream.
         for (id, about) in [("fa", "a.rs"), ("fb", "b.rs")] {
-            let data = serde_json::to_vec(&serde_json::json!({
-                "id": id, "by": "lensA", "summary": "x", "about": [about],
-            }))
-            .unwrap();
-            store
-                .append(
-                    "run",
-                    ExpectedRevision::Any,
-                    &[Event::new(crate::contextgraph::TYPE_REVIEW_FINDING, data)],
-                )
-                .unwrap();
+            append_run(
+                &store,
+                crate::contextgraph::TYPE_REVIEW_FINDING,
+                json!({"id": id, "by": "lensA", "summary": "x", "about": [about]}),
+            );
         }
 
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         // Wait for the side-car to catch up on both findings.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while peers.peers::<crate::sidecar::PeerFinding>().len() < 2 {
-            assert!(Instant::now() < deadline, "side-car never caught up");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        await_sidecar(|| peers.peers::<crate::sidecar::PeerFinding>().len() >= 2);
         let server = Server::new(&driver, &store, "run", &peers);
 
-        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_peers","arguments":{"files":["a.rs"]}}}"#;
-        let mut output = Vec::new();
-        server.run(Cursor::new(input), &mut output).unwrap();
-
-        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
+        let resp = call(&server, PEERS_OF_A_RS);
         let findings = &resp["result"]["structuredContent"]["findings"];
         let arr = findings.as_array().expect("findings array");
         assert_eq!(
@@ -1713,94 +1755,48 @@ mod tests {
         assert!(text.contains("rigger_next") && text.contains("rigger_emit"));
     }
 
-    #[test]
-    fn rigger_result_for_an_unknown_id_is_an_error() {
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
-
+    crate::test_cases! {
         // No spawn is pending, so id "999" is unknown. The shim must get an
         // error, not a silent success that would block the conductor forever.
-        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_result","arguments":{"id":"999","output":"done"}}}"#;
-        let mut output = Vec::new();
-        server.run(Cursor::new(input), &mut output).unwrap();
-
-        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
-        assert_eq!(resp["id"], 1);
-        assert_eq!(
-            resp["error"]["code"], -32602,
-            "an unknown spawn id must be an invalid-params error: {resp}"
-        );
-        assert!(resp.get("result").is_none(), "no success result: {resp}");
-    }
-
-    #[test]
-    fn malformed_json_gets_a_parse_error() {
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
-
+        rigger_result_for_an_unknown_id_is_an_error: {
+            let resp = assert_error_reply(
+                None,
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_result","arguments":{"id":"999","output":"done"}}}"#,
+                Some(json!(1)),
+                -32602,
+                "an unknown spawn id must be an invalid-params error",
+            );
+            assert!(resp.get("result").is_none(), "no success result: {resp}");
+        };
         // Unparseable input must not be silently dropped (which hangs the client):
         // it gets a -32700 parse error with a null id.
-        let input = "{not valid json";
-        let mut output = Vec::new();
-        server.run(Cursor::new(input), &mut output).unwrap();
-
-        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
-        assert_eq!(
-            resp["error"]["code"], -32700,
-            "unparseable input must be a parse error: {resp}"
+        malformed_json_gets_a_parse_error: assert_error_reply(
+            None,
+            "{not valid json",
+            Some(Value::Null),
+            -32700,
+            "unparseable input must be a parse error",
         );
-        assert_eq!(
-            resp["id"],
-            Value::Null,
-            "parse error echoes a null id: {resp}"
-        );
-    }
-
-    #[test]
-    fn request_missing_method_gets_an_invalid_request_error() {
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
-
         // A well-formed JSON object that is not a valid JSON-RPC request (no
         // method) must get an Invalid Request error echoing its id, not silence.
-        let input = r#"{"jsonrpc":"2.0","id":7,"params":{}}"#;
-        let mut output = Vec::new();
-        server.run(Cursor::new(input), &mut output).unwrap();
-
-        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
-        assert_eq!(resp["id"], 7, "the error echoes the request id: {resp}");
-        assert_eq!(
-            resp["error"]["code"], -32600,
-            "a request with no method is an invalid request: {resp}"
+        request_missing_method_gets_an_invalid_request_error: assert_error_reply(
+            None,
+            r#"{"jsonrpc":"2.0","id":7,"params":{}}"#,
+            Some(json!(7)),
+            -32600,
+            "a request with no method is an invalid request",
         );
-    }
-
-    #[test]
-    fn tools_call_missing_name_gets_an_invalid_params_error() {
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
-
         // A tools/call missing params.name must get an invalid-params error, not
         // be dropped (which would hang the client awaiting a response).
-        let input = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{}}"#;
-        let mut output = Vec::new();
-        server.run(Cursor::new(input), &mut output).unwrap();
-
-        let resp: Value = serde_json::from_str(String::from_utf8(output).unwrap().trim()).unwrap();
-        assert_eq!(resp["id"], 3);
-        assert_eq!(
-            resp["error"]["code"], -32602,
-            "tools/call without params.name is invalid params: {resp}"
+        tools_call_missing_name_gets_an_invalid_params_error: assert_error_reply(
+            None,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{}}"#,
+            Some(json!(3)),
+            -32602,
+            "tools/call without params.name is invalid params",
         );
     }
+
     /// AN EMIT THE STORE DID NOT WRITE IS NOT AN EMIT. This is the channel every agent
     /// records its decisions and findings on, and the whole point of recording them is that
     /// a CONCURRENT agent reads them; a decision that never landed reads to its author as
@@ -1846,13 +1842,7 @@ mod tests {
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let server = Server::new(&driver, &store, "run", &peers);
 
-        let names: Vec<String> = server
-            .tool_list()
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap().to_string())
-            .collect();
+        let names = tool_names(&server);
         assert_eq!(
             names,
             vec![
@@ -1878,13 +1868,7 @@ mod tests {
         let grounder = Nop;
         let server = Server::new(&driver, &store, "run", &peers).with_grounder(Ok(&grounder));
 
-        let names: Vec<String> = server
-            .tool_list()
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap().to_string())
-            .collect();
+        let names = tool_names(&server);
         assert_eq!(names, vec!["rigger_peers", "rigger_ground", "rigger_graph"]);
     }
 
@@ -1922,35 +1906,28 @@ mod tests {
         );
     }
 
-    /// The SYMMETRIC direction of `lookup_surface_serves_ground_and_rejects_workflow_tools`
-    /// (closes sdet-u92c4r2-workflow-surface-reject-of-ground-graph-untested): a `Server` built
-    /// the workflow-driver way - no grounder, no graph wired, exactly what `rigger serve`/the
-    /// loop's shim gets - must reject `rigger_ground`/`rigger_graph` as UNKNOWN TOOLS through
-    /// `call_tool`'s own `(lookup, name)` gate, never reach `tool_ground`/`tool_graph`
-    /// themselves. This matters beyond an unadvertised name: `tool_ground` `.expect()`s a
-    /// grounder that is genuinely absent on this surface, so a future match-arm refactor that
-    /// let either tool through would panic the whole server mid-run instead of answering
-    /// `-32602` - this test is the one that would go red for that regression.
-    #[test]
-    fn workflow_surface_rejects_ground_and_graph_as_unknown_tools() {
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers);
-
-        for name in ["rigger_ground", "rigger_graph"] {
-            let input = format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#
+    crate::test_cases! {
+        /// The SYMMETRIC direction of `lookup_surface_serves_ground_and_rejects_workflow_tools`
+        /// (closes sdet-u92c4r2-workflow-surface-reject-of-ground-graph-untested): a `Server` built
+        /// the workflow-driver way - no grounder, no graph wired, exactly what `rigger serve`/the
+        /// loop's shim gets - must reject `rigger_ground`/`rigger_graph` as UNKNOWN TOOLS through
+        /// `call_tool`'s own `(lookup, name)` gate, never reach `tool_ground`/`tool_graph`
+        /// themselves. This matters beyond an unadvertised name: `tool_ground` `.expect()`s a
+        /// grounder that is genuinely absent on this surface, so a future match-arm refactor that
+        /// let either tool through would panic the whole server mid-run instead of answering
+        /// `-32602` - this test is the one that would go red for that regression.
+        workflow_surface_rejects_ground_and_graph_as_unknown_tools: for name in ["rigger_ground", "rigger_graph"] {
+            assert_error_reply(
+                None,
+                &tools_call(name),
+                None,
+                -32602,
+                &format!(
+                    "{name} must be UNDISPATCHABLE (not merely unadvertised) on the workflow \
+                     surface"
+                ),
             );
-            let mut out = Vec::new();
-            server.run(Cursor::new(input), &mut out).unwrap();
-            let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
-            assert_eq!(
-                resp["error"]["code"], -32602,
-                "{name} must be UNDISPATCHABLE (not merely unadvertised) on the workflow \
-                 surface; got:\n{resp}"
-            );
-        }
+        };
     }
 
     /// Reject-fix regression: `with_grounder(Err(..))` (the graceful-degrade path a caller
@@ -2167,13 +2144,7 @@ mod tests {
             .with_progress(&progress, "/scratch/root")
             .with_spawn("u104-spawn-mcp/implementer#0");
 
-        let names: Vec<String> = server
-            .tool_list()
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["name"].as_str().unwrap().to_string())
-            .collect();
+        let names = tool_names(&server);
         assert_eq!(
             names,
             vec![
@@ -2187,59 +2158,49 @@ mod tests {
         );
     }
 
-    /// No result tool: `rigger_next` and `rigger_result` are UNDISPATCHABLE on the
-    /// spawn-bound surface (not merely unadvertised) - a launched agent's session ends with
-    /// its own final message, never a self-reported result over this MCP surface.
-    #[test]
-    fn spawn_bound_surface_has_no_result_tool() {
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server = Server::new(&driver, &store, "run", &peers).with_spawn("u/implementer#0");
-
-        for name in ["rigger_next", "rigger_result", "rigger_activity"] {
-            let input = format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#
+    crate::test_cases! {
+        /// No result tool: `rigger_next` and `rigger_result` are UNDISPATCHABLE on the
+        /// spawn-bound surface (not merely unadvertised) - a launched agent's session ends with
+        /// its own final message, never a self-reported result over this MCP surface.
+        spawn_bound_surface_has_no_result_tool: for name in ["rigger_next", "rigger_result", "rigger_activity"] {
+            assert_error_reply(
+                Some("u/implementer#0"),
+                &tools_call(name),
+                None,
+                -32602,
+                &format!("{name} must be UNDISPATCHABLE on the spawn-bound surface"),
             );
-            let mut out = Vec::new();
-            server.run(Cursor::new(input), &mut out).unwrap();
-            let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
-            assert_eq!(
-                resp["error"]["code"], -32602,
-                "{name} must be UNDISPATCHABLE on the spawn-bound surface; got:\n{resp}"
-            );
-        }
+        };
     }
 
-    /// Every write is stamped with the bound spawn BY CONSTRUCTION: an emit with no
-    /// `meta.spawn` at all still lands stamped with the id the server was bound to at
-    /// startup, exactly like a launched agent that never thinks about attribution.
-    #[test]
-    fn spawn_bound_emit_stamps_the_bound_spawn_with_no_meta_supplied() {
-        use crate::conductor::META_SPAWN;
-
-        let store = Store::open(":memory:").unwrap();
-        let driver = Driver::new();
-        let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-        let server =
-            Server::new(&driver, &store, "run", &peers).with_spawn("u104-spawn-mcp/implementer#0");
-
-        let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1","summary":"x"}}}}"#;
-        let mut out = Vec::new();
-        server.run(Cursor::new(input), &mut out).unwrap();
-        let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
-        assert!(
-            resp.get("result").is_some(),
-            "emit must succeed; got:\n{resp}"
+    crate::test_cases! {
+        /// Every write is stamped with the bound spawn BY CONSTRUCTION: an emit with no
+        /// `meta.spawn` at all still lands stamped with the id the server was bound to at
+        /// startup, exactly like a launched agent that never thinks about attribution.
+        spawn_bound_emit_stamps_the_bound_spawn_with_no_meta_supplied: assert_bound_emit_is_stamped(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_emit","arguments":{"type":"DecisionMade","data":{"id":"d1","summary":"x"}}}}"#,
+            "an emit with no meta.spawn supplied",
         );
-
-        let events = store.read_stream("run", 0, Direction::Forward).unwrap();
-        let recorded = events.iter().find(|e| e.type_ == "DecisionMade").unwrap();
-        assert_eq!(
-            recorded.meta.get(META_SPAWN).map(String::as_str),
-            Some("u104-spawn-mcp/implementer#0"),
-            "an emit with no meta.spawn supplied must still be stamped with the BOUND spawn"
-        );
+        /// Reject-fix (spec 104 review round 1): a present-but-non-object `meta` (e.g. a stray
+        /// `meta: null` a launched agent sends) must never silently bypass the "ATTRIBUTION BY
+        /// CONSTRUCTION" stamp this tool's own doc comment promises.
+        /// `obj.entry("meta").or_insert_with(...)` only runs its closure on a VACANT entry, so an
+        /// OCCUPIED non-object `meta` used to leave the stamping `if let` skipped entirely while
+        /// `emit_event` still reported success - the event landed with no `META_SPAWN` key at
+        /// all, unattributed. Drives each non-object shape through the REAL `tools/call` path and
+        /// proves the write still lands, correctly stamped with the bound spawn.
+        spawn_bound_emit_forces_a_non_object_meta_to_a_stamped_object: for meta in [Value::Null, json!([]), json!("x")] {
+            let meta_json = meta.to_string();
+            assert_bound_emit_is_stamped(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"rigger_emit","arguments":{{"type":"DecisionMade","data":{{"id":"d1"}},"meta":{meta_json}}}}}}}"#
+                ),
+                &format!(
+                    "a non-object meta ({meta:?}) must be force-replaced and stamped, never \
+                     silently dropped and left unattributed"
+                ),
+            );
+        };
     }
 
     /// A write NAMING another spawn is refused outright - never silently corrected - and
@@ -2278,51 +2239,6 @@ mod tests {
             resp2.get("result").is_some(),
             "naming the server's OWN bound spawn must be allowed; got:\n{resp2}"
         );
-    }
-
-    /// Reject-fix (spec 104 review round 1): a present-but-non-object `meta` (e.g. a stray
-    /// `meta: null` a launched agent sends) must never silently bypass the "ATTRIBUTION BY
-    /// CONSTRUCTION" stamp this tool's own doc comment promises.
-    /// `obj.entry("meta").or_insert_with(...)` only runs its closure on a VACANT entry, so an
-    /// OCCUPIED non-object `meta` used to leave the stamping `if let` skipped entirely while
-    /// `emit_event` still reported success - the event landed with no `META_SPAWN` key at
-    /// all, unattributed. Drives each non-object shape through the REAL `tools/call` path and
-    /// proves the write still lands, correctly stamped with the bound spawn.
-    #[test]
-    fn spawn_bound_emit_forces_a_non_object_meta_to_a_stamped_object() {
-        use crate::conductor::META_SPAWN;
-
-        for meta in [Value::Null, json!([]), json!("x")] {
-            let store = Store::open(":memory:").unwrap();
-            let driver = Driver::new();
-            let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
-            let server = Server::new(&driver, &store, "run", &peers)
-                .with_spawn("u104-spawn-mcp/implementer#0");
-
-            let meta_json = meta.to_string();
-            let input = format!(
-                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"rigger_emit","arguments":{{"type":"DecisionMade","data":{{"id":"d1"}},"meta":{meta_json}}}}}}}"#
-            );
-            let mut out = Vec::new();
-            server.run(Cursor::new(input), &mut out).unwrap();
-            let resp: Value = serde_json::from_str(String::from_utf8(out).unwrap().trim()).unwrap();
-            assert!(
-                resp.get("result").is_some(),
-                "a non-object meta ({meta:?}) must not fail the emit; got:\n{resp}"
-            );
-
-            let events = store.read_stream("run", 0, Direction::Forward).unwrap();
-            let recorded = events
-                .iter()
-                .find(|e| e.type_ == "DecisionMade")
-                .expect("the emit must still land in the store");
-            assert_eq!(
-                recorded.meta.get(META_SPAWN).map(String::as_str),
-                Some("u104-spawn-mcp/implementer#0"),
-                "a non-object meta ({meta:?}) must be force-replaced and stamped, never \
-                 silently dropped and left unattributed"
-            );
-        }
     }
 
     /// `rigger_progress` records a live activity line for the bound spawn, with no
