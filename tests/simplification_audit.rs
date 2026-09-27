@@ -3682,7 +3682,7 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
          regression test: `find_proc_stat_or_status_readers` (decision \
          `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or \
          `/proc/<pid>/status` literal, closing the spec's own named worked example - \
-         `src/dash.rs:499-507` `process_state` next to `src/reap.rs:190-197` `pid_starttime`, the \
+         `{}` `process_state` next to `{}` `pid_starttime`, the \
          same job on the same file with a different field/shape, upheld at spec 62's capstone; \
          `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) \
          groups 2+ non-test functions per `(file, Self type)` that build a `Self {{ .. }}` / \
@@ -3710,29 +3710,9 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
          `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. \
          Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) \
          excluded this criterion's own citation-guard periphery file from the draw's population \
-         (see this subsection's opening paragraph); that exclusion still applies unchanged. A \
-         later round's own second commit grew the scanned population from 7513 to 7517 \
-         functions, reshuffling the draw; every one of the functions above marked \"no duplicate \
-         found by reading\" was re-read by hand against its host file's surrounding context, \
-         exactly as this THOROUGHNESS check requires whenever the draw changes, and all are \
-         genuinely not duplicates - this redraw surfaced no new recall gap. Two standing shapes \
-         an earlier round's reading pass named, neither drawn this time but both still present \
-         and still correctly excluded, are restated here so neither is mistaken for a miss on a \
-         future draw: `apply` at `src/conductor.rs:38374-38376` \
-         (`grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grep_superset`) is a \
-         `Projection` test double's own required trait-impl body, the same \
-         port-default/adapter-override/test-double shape `find_same_named_helper_functions`'s \
-         trait-impl-precision fix (decision `u85c2-same-named-helper-trait-impl-precision-fix`) \
-         already excludes from clustering by design; and `gate_verdict_event` \
-         (`src/conductor.rs:37733-37742`) together with the `verdict` closure inside \
-         `integrating_a_unit_stales_the_intersecting_downstream_units_cached_verdict_not_the_rest` \
-         (`src/conductor.rs:39138-39147`) do the identical job - find the recorded `GateVerdict` \
-         for a `\"<unit>/gate:g#<attempt>\"` replay key, panicking with the same message when none \
-         exists - differing only in whether the unit segment is the literal `\"s\"` or a \
-         parameter. A `let`-bound closure is not a `fn` item, so no change to this catalog's \
-         `fn`-only scanner (module doc, THE SCANNER) short of teaching it to see closures could \
-         catalog this pair as a cluster; named here, prominently, rather than silently, so a \
-         later refactor - or a scanner that learns to see closures - does not miss it."
+         (see this subsection's opening paragraph); that exclusion still applies unchanged.",
+        cite_fn(real_files(), "src/dash.rs", "process_state"),
+        cite_fn(real_files(), "src/reap.rs", "pid_starttime"),
     );
     let _ = writeln!(out);
     out
@@ -3789,171 +3769,349 @@ fn replace_section_2(existing: &str, section_2: &str) -> String {
 // `u85c3-scope-and-instruments`, `u85c3-boundary-violation-mutation-scratch-reach`,
 // `u85c3-dead-code-clean-both-instruments`, `u85c3-test-suite-shape-from-committed-catalog`),
 // citing `file:line` and naming its instrument per claim, exactly as sections 1 and 2 already
-// do for their own mechanically-derived content. Deliberately built with `String::push_str`
-// rather than `writeln!`/`format!` throughout: the content is 100% static (no interpolated
-// runtime values), and `push_str` needs no `{{`/`}}` escaping for the literal braces this
-// section's own quoted `AgentDriver` trait definition and `courier_registry_refresh_{boundary,
-// fence,periphery}` file-glob prose require.
+// do for their own mechanically-derived content. Section 3's citations and figures are
+// computed at render time (see LIVE CITATIONS FOR THE HAND-WRITTEN PROSE); the static prose of
+// sections 4 and 5 is built with `String::push_str`, which needs no `{{`/`}}` escaping for the
+// literal braces of its `courier_registry_refresh_{boundary,fence,periphery}` file-glob prose.
 
-/// Section 3, BOUNDARY VIOLATIONS: one real finding (`src/conductor.rs`'s mutation-scratch
-/// reclaim reaching directly into the concrete `driver::replay` adapter for a concern no port
-/// covers) plus four explicitly-checked-and-clean port-concretion sweeps and the
-/// use-cases-importing-infrastructure / second-mutation-authority categories (decision
-/// `u85c3-boundary-violation-mutation-scratch-reach`).
-fn render_section_3() -> String {
+// -----------------------------------------------------------------------------------------
+// LIVE CITATIONS FOR THE HAND-WRITTEN PROSE
+// -----------------------------------------------------------------------------------------
+//
+// The prose of sections 2 and 3 names real code. Every `file:line` it cites and every figure it
+// states is computed here at render time from the checked-out tree, so a line shift or a
+// changed count moves the report with the code instead of leaving a stale citation. A helper
+// panics, naming what it looked for, when the thing the prose cites is gone - the prompt to
+// re-cite or delete that sentence.
+
+/// The lines of the repo file `rel`.
+fn repo_lines(rel: &str) -> Vec<String> {
+    fs::read_to_string(repo_root().join(rel))
+        .unwrap_or_else(|e| panic!("the report cites {rel}, which is unreadable ({e})"))
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The 1-based lines of `rel` containing `needle`.
+fn lines_containing(rel: &str, needle: &str) -> Vec<usize> {
+    repo_lines(rel)
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.contains(needle))
+        .map(|(i, _)| i + 1)
+        .collect()
+}
+
+/// The first line of `rel` containing `needle`.
+fn line_of(rel: &str, needle: &str) -> usize {
+    *lines_containing(rel, needle)
+        .first()
+        .unwrap_or_else(|| panic!("the report cites {needle:?} in {rel}, which no longer has it"))
+}
+
+/// The line of `rel`'s file-level `#[cfg(test)] mod tests`: where its production code ends.
+fn test_boundary(rel: &str) -> usize {
+    let lines = repo_lines(rel);
+    lines
+        .windows(2)
+        .position(|w| w[0] == "#[cfg(test)]" && w[1].starts_with("mod tests"))
+        .map(|i| i + 1)
+        .unwrap_or_else(|| panic!("the report cites {rel}'s test module, which it no longer has"))
+}
+
+/// How many lines of `rel` contain `needle`, each checked to sit inside its test module - the
+/// prose's claim that this reach is test-only.
+fn test_only_hits(rel: &str, needle: &str) -> usize {
+    let boundary = test_boundary(rel);
+    let hits = lines_containing(rel, needle);
+    let production: Vec<usize> = hits.iter().copied().filter(|&l| l < boundary).collect();
+    assert!(
+        production.is_empty(),
+        "the report says every {needle:?} in {rel} is test-only, but lines {production:?} sit \
+         above its test boundary ({boundary}) - re-cite that sentence"
+    );
+    hits.len()
+}
+
+/// The production lines of `rel` mentioning `needle`, each checked to be a comment - the
+/// prose's claim that production only documents it.
+fn production_comment_lines(rel: &str, needle: &str) -> Vec<usize> {
+    let lines = repo_lines(rel);
+    let boundary = test_boundary(rel);
+    let hits: Vec<usize> = lines_containing(rel, needle)
+        .into_iter()
+        .filter(|&l| l < boundary)
+        .collect();
+    for &l in &hits {
+        assert!(
+            lines[l - 1].trim_start().starts_with("//"),
+            "the report says {rel} only documents {needle:?} in production, but line {l} uses \
+             it - re-cite that sentence"
+        );
+    }
+    hits
+}
+
+/// `text` with every run of digits replaced by `#`: the prose a live citation leaves when its
+/// line numbers and counts are set aside, so a drift guard compares the words, not the figures.
+fn without_figures(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_digits = false;
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            if !in_digits {
+                out.push('#');
+            }
+            in_digits = true;
+        } else {
+            out.push(ch);
+            in_digits = false;
+        }
+    }
+    out
+}
+
+/// `rel:start-end` of the scanned function `name` in `rel`.
+fn cite_fn(files: &[FileScan], rel: &str, name: &str) -> String {
+    let f = files
+        .iter()
+        .find(|f| f.rel == rel)
+        .and_then(|f| f.fns.iter().find(|s| s.name == name))
+        .unwrap_or_else(|| panic!("the report cites `{name}` in {rel}, which no longer has it"));
+    format!("{rel}:{}-{}", f.start_line, f.end_line)
+}
+
+/// `lines` joined as a comma-separated citation list.
+fn joined(lines: &[usize]) -> String {
+    lines
+        .iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Section 3, BOUNDARY VIOLATIONS: two real findings (`src/conductor.rs`'s mutation-scratch
+/// reclaim reaching into the concrete `driver::replay` adapter, and `src/ingest.rs` reaching two
+/// concrete grounder modules, each for a concern no port covers) plus the checked-and-clean
+/// port-concretion sweeps and the use-cases-importing-infrastructure / second-mutation-authority
+/// categories (decision `u85c3-boundary-violation-mutation-scratch-reach`). Every citation and
+/// figure is computed from `files` and the tree at render time.
+fn render_section_3(files: &[FileScan]) -> String {
+    const CONDUCTOR: &str = "src/conductor.rs";
+    const INGEST: &str = "src/ingest.rs";
+    const MAIN: &str = "src/main.rs";
+    let boundary = test_boundary(CONDUCTOR);
+    let reclaim = cite_fn(files, CONDUCTOR, "reclaim_terminal_unit_mutation_scratch");
+    let agent_driver = line_of(CONDUCTOR, "pub trait AgentDriver");
+    let walk = cite_fn(files, INGEST, "walk_batches");
+    let ingest_batches = line_of(CONDUCTOR, "fn ingest_project_batches");
+    let ingest_caller = line_of(CONDUCTOR, "self.ingest_project_batches()");
+    let paced = line_of(INGEST, "symbols::events::project_batches_paced");
+    let design = line_of(INGEST, "design::events::project_batches(");
+    let grounder = line_of("src/grounder/mod.rs", "pub trait Grounder");
     let mut out = String::new();
     out.push_str("## 3. Boundary Violations\n\n");
     out.push_str(
         "Instrument: for each of the five named ports (`eventstore::EventStore`, \
         `contextgraph::Projection`, `conductor::AgentDriver`, `gate::Runner`, \
-        `grounder::Grounder`), grepped every production (pre-`#[cfg(test)]`) call \
+        `grounder::Grounder`), searched every production (pre-`#[cfg(test)]`) call \
         site of that port's known concrete adapter modules from a NON-adapter, \
-        NON-composition-root file, and separately grepped every domain-ish file's \
+        NON-composition-root file, and separately searched every domain-ish file's \
         top-level `use` statements for a direct infrastructure-crate import. \
         `src/main.rs` is exempt from the \"reaches a concrete adapter\" check: it is \
-        the composition root, and wiring concretions together is its designed job.\n\n",
+        the composition root, and wiring concretions together is its designed job. \
+        Every citation below is resolved against the tree when the report is \
+        rendered.\n\n",
     );
     out.push_str("FOUND, two violations:\n\n");
-    out.push_str(
-        "Violation 1 (`AgentDriver`): `src/conductor.rs:7091-7096` \
-        (`reclaim_terminal_unit_mutation_scratch`, real production code - well above \
-        the `#[cfg(test)] mod tests` boundary this audit's own section 1 identified \
-        at `src/conductor.rs:10260`) calls `crate::driver::replay::cache_home_from` \
-        and `crate::driver::replay::reclaim_unit_mutation_scratch` directly by \
-        concrete module path. Read via `rigger graph --show AgentDriver`: the port \
-        `conductor.rs` actually depends on for driving agents is `trait AgentDriver \
-        { fn spawn(&self, agent: &AgentDef, prompt: &str, opts: &SpawnOpts, emit: \
-        &dyn Fn(&str, Value) -> Result<(), Error>) -> Result<AgentResult, Error>; }` \
-        (`src/conductor.rs:1083-1091`) - one method, `spawn`. Neither called \
-        function is about driving an agent or replaying a recorded run (the concern \
-        `driver::replay` otherwise owns); both are pure, driver-instance-free \
-        scratch-lifecycle utilities that happen to live inside that one concrete \
-        adapter's module. The port that should have been used: none exists for this \
-        concern yet, which is itself the defect - `conductor.rs` (a \
-        use-case/orchestration file) should not need to know which concrete \
-        `AgentDriver` implementation happens to define its own mutation-scratch \
-        cache-home resolution. Fix direction for a follow-up spec: relocate \
-        `cache_home_from` and `reclaim_unit_mutation_scratch` out of \
+    let _ = write!(
+        out,
+        "Violation 1 (`AgentDriver`): `{reclaim}` \
+        (`reclaim_terminal_unit_mutation_scratch`, real production code - above \
+        the `#[cfg(test)] mod tests` boundary at `{CONDUCTOR}:{boundary}`) calls \
+        `crate::driver::replay::cache_home_from` and \
+        `crate::driver::replay::reclaim_unit_mutation_scratch` directly by \
+        concrete module path. The port `conductor.rs` actually depends on for \
+        driving agents is `trait AgentDriver` (`{CONDUCTOR}:{agent_driver}`) - one \
+        method, `spawn`. Neither called function is about driving an agent or \
+        replaying a recorded run (the concern `driver::replay` otherwise owns); both \
+        are pure, driver-instance-free scratch-lifecycle utilities that happen to \
+        live inside that one concrete adapter's module. The port that should have \
+        been used: none exists for this concern yet, which is itself the defect - \
+        `conductor.rs` (a use-case/orchestration file) should not need to know which \
+        concrete `AgentDriver` implementation happens to define its own \
+        mutation-scratch cache-home resolution. Fix direction for a follow-up spec: \
+        relocate `cache_home_from` and `reclaim_unit_mutation_scratch` out of \
         `driver::replay` into a neutral, adapter-independent module (a `scratch` or \
         `mutation` support module conductor.rs and every driver adapter can depend \
         on alike), so no use-case file reaches into one specific adapter's internals \
         for a concern that adapter does not conceptually own.\n\n",
     );
-    out.push_str(&format!(
-        "Violation 2 (`Grounder`): `src/ingest.rs:187-211` (`walk_batches`, called \
-        from production `conductor::RunCtx::ingest_project_batches` at \
-        `src/conductor.rs:7903`, itself called from `src/conductor.rs:7894` well \
-        above the `10260` `#[cfg(test)]` boundary) calls \
+    let _ = write!(
+        out,
+        "Violation 2 (`Grounder`): `{walk}` (`walk_batches`, called from production \
+        `conductor::RunCtx::ingest_project_batches` at `{CONDUCTOR}:{ingest_batches}`, \
+        itself called from `{CONDUCTOR}:{ingest_caller}` above the `{boundary}` \
+        `#[cfg(test)]` boundary) calls \
         `crate::grounder::symbols::events::project_batches_paced` directly by \
-        concrete module path at line 197 to reuse the `symbols` grounder's \
+        concrete module path at line {paced} to reuse the `symbols` grounder's \
         already-persisted index for a one-time whole-project ingest walk, then at \
-        line 203 - same function, same missing-port defect, not a separate third \
+        line {design} - same function, same missing-port defect, not a separate third \
         violation - calls `crate::grounder::design::events::project_batches` \
         directly by concrete module path for the design-doc half of the same walk. \
         These two calls are two of the three named sites of section 2's own \
-        catalogued duplicate cluster (`{PROJECT_BATCHES}`: \
-        `src/grounder/design/events.rs:90-114`, \
-        `src/grounder/symbols/events.rs:89-91`, and \
-        `src/grounder/workflowdef.rs:245-252` - all three named `project_batches`), \
-        so this boundary violation and that duplication finding are two symptoms of \
-        one root cause - `ingest.rs` naming each concrete grounder submodule \
-        because no port exposes either. The `Grounder` port's own methods \
-        (`ground`, `reindex`, `blast_radius`, `index_stamp` - its provenance stamp \
-        - all at `src/grounder/mod.rs:133-175`) serve real-time per-query \
-        grounding of an agent's prompt; none exposes \"hand me every indexed \
-        file's projected events for a whole-project batch ingest,\" so \
-        `ingest.rs` - itself a domain ingest authority (its own module doc names \
-        it \"the ONE walk-and-content-key authority\"), not an adapter and not \
-        the composition root - has no port to depend on for either call and \
-        reaches the concrete `symbols` module (197) and the concrete `design` \
-        module (203) directly. Same missing-port defect class as violation 1. Fix \
-        direction for a follow-up spec: add an ingest-shaped port method (e.g. a \
-        `Grounder::project_batches` or a standalone `SymbolProjector` trait) \
-        covering both concrete modules, so `ingest.rs` depends on one abstraction \
-        instead of either concrete grounder module for its whole-project walk.\n\n",
-    ));
-    out.push_str(
-        "Also reaching `grounder::symbols::store::content_hash` from the same two \
-        call sites' neighborhood (`src/ingest.rs:230`, `src/canary.rs:213`): \
-        DISPOSITIONED as legitimate shared-primitive reuse, not a third violation. \
-        `content_hash` (`src/grounder/symbols/store.rs:49`) is documented at its own \
-        definition as \"the content-identity primitive\" the `symbols` grounder's \
-        own reindex-freshening gate keys on, and `canary.rs`'s own doc comment \
-        (`canary.rs:191`) separately calls it \"the crate's ONE stable content-hash \
-        primitive\", reused there by deliberate author intent rather than adding \
-        yet another open-coded FNV-1a copy - a generic hashing utility that happens \
-        to live in the `symbols` module, not a grounding operation reached through \
-        the port. The broader duplication this primitive is meant to fix (several \
-        open-coded FNV-1a copies elsewhere in the crate, per `src/community.rs`'s \
-        own comment at line 67) is a separately tracked cross-cutting refactor \
-        (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's concern.\n\n",
+        catalogued duplicate cluster (`{PROJECT_BATCHES}`: `{}`, `{}`, and `{}` - all \
+        three named `project_batches`), so this boundary violation and that \
+        duplication finding are two symptoms of one root cause - `ingest.rs` naming \
+        each concrete grounder submodule because no port exposes either. The \
+        `Grounder` port (`src/grounder/mod.rs:{grounder}`: `ground`, `reindex`, \
+        `blast_radius`, `index_stamp`) serves real-time per-query grounding of an \
+        agent's prompt; none of its methods exposes \"hand me every indexed file's \
+        projected events for a whole-project batch ingest,\" so `ingest.rs` - itself \
+        a domain ingest authority, not an adapter and not the composition root - has \
+        no port to depend on for either call and reaches the concrete `symbols` \
+        module ({paced}) and the concrete `design` module ({design}) directly. Same \
+        missing-port defect class as violation 1. Fix direction for a follow-up \
+        spec: add an ingest-shaped port method (e.g. a `Grounder::project_batches` \
+        or a standalone `SymbolProjector` trait) covering both concrete modules, so \
+        `ingest.rs` depends on one abstraction instead of either concrete grounder \
+        module for its whole-project walk.\n\n",
+        cite_fn(files, "src/grounder/design/events.rs", "project_batches"),
+        cite_fn(files, "src/grounder/symbols/events.rs", "project_batches"),
+        cite_fn(files, "src/grounder/workflowdef.rs", "project_batches"),
+    );
+    let _ = write!(
+        out,
+        "Also reaching `grounder::symbols::store::content_hash` from \
+        `{INGEST}:{}` and `src/canary_store.rs:{}`: DISPOSITIONED as legitimate \
+        shared-primitive reuse, not a third violation. `content_hash` (`{}`) is \
+        documented at its own definition as the content-identity primitive the \
+        `symbols` grounder's reindex freshening gate keys on, and `canary_store.rs`'s \
+        own doc comment (`src/canary_store.rs:{}`) reuses it by deliberate author \
+        intent rather than growing another open-coded FNV-1a copy - a generic hashing \
+        utility that happens to live in the `symbols` module, not a grounding \
+        operation reached through the port. The broader duplication this primitive \
+        is meant to fix (the open-coded FNV-1a copies elsewhere in the crate, per \
+        `src/community.rs:{}`'s own comment) is a separately tracked cross-cutting \
+        refactor (`arch-u2i-fnv1a-fourth-parallel-copy`), not this section's \
+        concern.\n\n",
+        line_of(INGEST, "store::content_hash("),
+        line_of("src/canary_store.rs", "store::content_hash("),
+        cite_fn(files, "src/grounder/symbols/store.rs", "content_hash"),
+        line_of("src/canary_store.rs", "parallel"),
+        line_of("src/community.rs", "arch-u2i-fnv1a-fourth-parallel-copy"),
     );
     out.push_str(
         "CHECKED AND CLEAN (three of five ports fully clean; the other two, \
         `AgentDriver` and `Grounder`, are this section's two violations above - each \
         search recorded so a clean result is not merely assumed):\n",
     );
-    out.push_str(
+    let main_boundary = test_boundary(MAIN);
+    let raw_open = line_of(MAIN, "rusqlite::Connection::open(");
+    assert!(
+        raw_open > main_boundary,
+        "the report says {MAIN}'s raw connection is test-only, but line {raw_open} is above \
+         its test boundary ({main_boundary})"
+    );
+    let _ = writeln!(
+        out,
         "- `eventstore::EventStore` concretion reach (`rusqlite::Connection::open` \
-        outside `src/eventstore/sqlite.rs` / `src/eventstore/kurrentdb.rs` / \
-        `src/contextgraph/sqlite.rs`): two hits in all of `src/`, one a doc-comment \
-        mention (`src/main.rs:4332`) and one a deliberate, explicitly-commented \
-        test-only raw-connection bypass (`src/main.rs:23860`, inside `#[cfg(test)] \
-        mod tests` opened at `src/main.rs:12650`) that reproduces a pre-append-guard \
+        outside the SQLite adapters and `src/sqlite.rs`, the one opener every store \
+        connection goes through): in production, only doc-comment mentions \
+        (`{MAIN}:{}`); the one call is a deliberate, explicitly-commented test-only \
+        raw-connection bypass (`{MAIN}:{raw_open}`, inside `#[cfg(test)] mod tests` \
+        opened at `{MAIN}:{main_boundary}`) that reproduces a pre-append-guard \
         corruption shape `Store::append` itself refuses to construct - a documented \
-        test technique, not a boundary violation.\n",
+        test technique, not a boundary violation.",
+        joined(&production_comment_lines(MAIN, "Connection::open")),
     );
-    out.push_str(
+    let projection_importers = [
+        "src/concepts.rs",
+        "src/dash.rs",
+        "src/grounder/symbols/events.rs",
+        "src/grounder/design/events.rs",
+    ];
+    for rel in projection_importers {
+        test_only_hits(rel, "contextgraph::sqlite::Projector");
+    }
+    let _ = writeln!(
+        out,
         "- `contextgraph::Projection` concretion reach (`contextgraph::sqlite::*`): \
-        checked whole-tree, not only `src/conductor.rs` - every one of \
-        `conductor.rs`'s 28 hits sits inside `#[cfg(test)] mod tests` (production \
-        `conductor.rs` only ever depends on `dyn Projection`), and the same is true \
-        wherever else `contextgraph::sqlite::Projector` is imported \
-        (`src/concepts.rs`, `src/dash.rs`, `src/grounder/symbols/events.rs`, \
-        `src/grounder/design/events.rs` - every import sits after that file's own \
-        `#[cfg(test)]` boundary); `src/community.rs`'s one mention is a doc \
-        comment.\n",
+        checked whole-tree, not only `{CONDUCTOR}` - every one of `conductor.rs`'s {} \
+        hits sits inside `#[cfg(test)] mod tests` (production `conductor.rs` only \
+        ever depends on `dyn Projection`), and the same is true wherever else \
+        `contextgraph::sqlite::Projector` is imported (`{}` - every import sits \
+        after that file's own `#[cfg(test)]` boundary).",
+        test_only_hits(CONDUCTOR, "contextgraph::sqlite"),
+        projection_importers.join("`, `"),
     );
-    out.push_str(
+    let mut runner_docs = production_comment_lines(CONDUCTOR, "ExecRunner");
+    runner_docs.extend(production_comment_lines(CONDUCTOR, "RecordingRunner"));
+    runner_docs.sort_unstable();
+    runner_docs.dedup();
+    let _ = writeln!(
+        out,
         "- `gate::Runner` concretion reach (`gate::ExecRunner` / `RecordingRunner`): \
-        checked whole-tree, not only `src/conductor.rs`. In `conductor.rs`, \
-        production depends only on `dyn gate::Runner` (`conductor.rs:1288`); every \
-        mention of a concrete runner before that is a doc comment \
-        (`conductor.rs:6498,6545,6615,6621,6625`), and the only actual import and \
-        use of `ExecRunner` (`conductor.rs:10266` onward) plus the test-only \
-        `RecordingRunner` impl (`conductor.rs:28923,29014`) sit inside \
-        `#[cfg(test)] mod tests`, well past the `10260` boundary. Every other \
-        source-level `ExecRunner` mention in `src/` is either a doc comment \
-        (`src/worktree.rs`, `src/config.rs`, `src/budget.rs`, `src/driver/cli.rs`, \
-        `src/lib.rs`) or, in `src/driver/replay.rs`, an import and 13 parameter \
-        types that all sit inside that file's own `#[cfg(test)] mod tests` too.\n",
+        checked whole-tree, not only `{CONDUCTOR}`. In `conductor.rs`, production \
+        depends only on `dyn gate::Runner` (`{CONDUCTOR}:{}`); every production \
+        mention of a concrete runner is a doc comment (`{CONDUCTOR}:{}`), and the \
+        import of `ExecRunner` (`{CONDUCTOR}:{}`) and every one of its {} uses sit \
+        inside `#[cfg(test)] mod tests`. In `src/driver/replay.rs`, all {} \
+        `ExecRunner` mentions sit inside that file's own `#[cfg(test)] mod tests` \
+        too.",
+        line_of(CONDUCTOR, "dyn gate::Runner"),
+        joined(&runner_docs),
+        line_of(CONDUCTOR, "use crate::gate::ExecRunner"),
+        lines_containing(CONDUCTOR, "ExecRunner")
+            .iter()
+            .filter(|&&l| l > boundary)
+            .count(),
+        test_only_hits("src/driver/replay.rs", "ExecRunner"),
     );
-    out.push_str(
-        "- Use cases importing infrastructure: grepped the top-level `use` statements \
-        of every domain-ish file this audit's own code neighborhood names \
-        (`src/conductor.rs`, `src/blocker.rs`, `src/spec.rs`, `src/watch.rs`, \
-        `src/community.rs`) for `rusqlite`, `reqwest`, `tonic`, `tokio`, `kurrentdb` \
-        - zero hits anywhere. Empty category.\n\n",
+    let use_case_files = [
+        CONDUCTOR,
+        "src/blocker.rs",
+        "src/spec.rs",
+        "src/watch.rs",
+        "src/community.rs",
+    ];
+    let infra = ["rusqlite", "reqwest", "tonic", "tokio", "kurrentdb"];
+    for rel in use_case_files {
+        for krate in infra {
+            assert!(
+                lines_containing(rel, &format!("use {krate}")).is_empty(),
+                "the report says {rel} imports no {krate}, but it does - re-cite section 3"
+            );
+        }
+    }
+    let _ = writeln!(
+        out,
+        "- Use cases importing infrastructure: searched the `use` statements of every \
+        domain-ish file this audit's own code neighborhood names (`{}`) for `{}` - \
+        zero hits anywhere. Empty category.\n",
+        use_case_files.join("`, `"),
+        infra.join("`, `"),
     );
-    out.push_str(
+    let _ = writeln!(
+        out,
         "A second mutation authority for one domain: the one previously-known \
         instance in this codebase (`src/dash.rs` reimplementing `src/reap.rs`'s \
         `/proc` pid scan, spec 85's own Goal example, upheld at spec 62's capstone) \
         is a duplicate READ-only reimplementation, not a bypassed MUTATION path - it \
         is section 2's finding (`u85c2-proc-stat-worked-example`, \
         `find_proc_stat_or_status_readers`), not re-counted here to avoid \
-        double-charging one defect to two sections. Checked git as the one other \
-        plausible second-authority candidate: every `Command::new(\"git\")` call \
-        site in `src/conductor.rs` (23 sites) is at line >= 17297, inside \
-        `#[cfg(test)] mod tests` - production `conductor.rs` never shells to git \
-        directly. `src/worktree.rs` is the sole git-worktree-mutation authority \
-        OUTSIDE the composition root. Inside it, `src/main.rs` (exempt from the \
-        port-concretion-reach check above, not from this one) holds two more \
-        git-worktree-mutation sites: `reap_then_remove_worktree` \
-        (`main.rs:2791-2805`), the sanctioned worktree half of the spec-34/spec-79 \
-        orphan-sweep and extensively reviewed across those specs - a deliberate \
-        design choice, not a gap; and `materialize_config_at_rev` \
-        (`main.rs:5510-5556`), a real, already-known, non-blocking gap \
+        double-charging one defect to two sections. Checked process spawning as the \
+        one other plausible second-authority candidate: production code constructs \
+        every process through the one process-spawn port (`{PROCESS_SPAWN_PORT}`), so \
+        production `conductor.rs` never builds a git command of its own. \
+        `src/worktree.rs` is the sole git-worktree-mutation authority OUTSIDE the \
+        composition root. Inside it, `{MAIN}` (exempt from the port-concretion-reach \
+        check above, not from this one) holds two more git-worktree-mutation sites: \
+        `reap_then_remove_worktree` (`{}`), the sanctioned worktree half of the \
+        spec-34/spec-79 orphan-sweep and extensively reviewed across those specs - a \
+        deliberate design choice, not a gap; and `materialize_config_at_rev` (`{}`), \
+        a real, already-known, non-blocking gap \
         (`arch-u13-config-checkout-bypasses-worktree-authority` / \
         `arch-u2r-config-checkout-shells-git` / \
         `arch-u2r2-replayrunner-and-config-checkout-persist-not-introduced`: the \
@@ -3961,7 +4119,9 @@ fn render_section_3() -> String {
         this is a gap in that authority rather than a competing abstraction). No \
         second mutation authority found beyond the already-cited, \
         already-catalogued `/proc` case and this already-dispositioned \
-        `materialize_config_at_rev` gap.\n",
+        `materialize_config_at_rev` gap.",
+        cite_fn(files, MAIN, "reap_then_remove_worktree"),
+        cite_fn(files, MAIN, "materialize_config_at_rev"),
     );
     out
 }
@@ -8887,6 +9047,22 @@ mod tests {
         assert!(err.contains("dup-cccccccccccc"), "{err}");
     }
 
+    /// A live citation's drift guard compares words, not figures: every digit run - a line
+    /// number, a span, a count - reads as `#`, so a moved citation still matches its prose.
+    #[test]
+    fn without_figures_masks_every_digit_run() {
+        assert_eq!(
+            without_figures("`src/a.rs:12-340` and 28 hits at line 7"),
+            "`src/a.rs:#-#` and # hits at line #"
+        );
+        let prose = "no figures here";
+        assert_eq!(
+            without_figures(prose),
+            prose,
+            "prose without digits is untouched"
+        );
+    }
+
     /// A disposition may name a mandatory sweep instead of an id: the sweep's cluster re-hashes
     /// whenever any of its sites changes, so the sweep name is the stable handle. It resolves
     /// the same way citations look a sweep up; an unknown or ambiguous sweep name is refused.
@@ -9703,7 +9879,7 @@ mod tests {
     #[test]
     fn report_sections_3_through_5_match_the_tree_or_are_rewritten() {
         let root = repo_root();
-        let section_3 = render_section_3();
+        let section_3 = render_section_3(real_files());
         let section_4 = render_section_4();
         let section_5 = render_section_5();
         let path = root.join(REPORT_PATH);
@@ -9719,8 +9895,11 @@ mod tests {
             return;
         }
         let committed = committed_report(&path);
-        assert!(
-            committed.contains(&section_3),
+        // Section 3's citations are live line numbers and counts, free to move between
+        // explicit regens (spec 90 Design: structure, not bytes); its prose must still match.
+        assert_eq!(
+            without_figures(committed[section_span(&committed, "## 3. ")].trim_end()),
+            without_figures(section_3.trim_end()),
             "{REPORT_PATH} section 3 has drifted from the tree - regenerate with \
              RIGGER_AUDIT_WRITE=1"
         );

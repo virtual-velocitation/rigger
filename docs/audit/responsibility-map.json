@@ -5469,7 +5469,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c233c7318393e81e"
+    "content_hash": "b50a655783d0524e"
   },
   {
     "file": "src/conductor.rs",
@@ -5485,7 +5485,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6a3cd9dfdb4bffbc"
+    "content_hash": "bde4c556c5cec6c8"
   },
   {
     "file": "src/conductor.rs",
@@ -5501,7 +5501,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cec08bf3863665a1"
+    "content_hash": "76f7e21deb345b69"
   },
   {
     "file": "src/conductor.rs",
@@ -5701,7 +5701,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3c4b56f53fed40ab"
+    "content_hash": "dd3c87eb499afa9a"
   },
   {
     "file": "src/conductor.rs",
