@@ -1739,7 +1739,11 @@ fn write_agent(root: &Path, id: &str, tools: &str, body: &str) {
 
 /// A throwaway git project `rigger init` has scaffolded (asserting the init succeeds).
 fn initialized_project() -> tempfile::TempDir {
-    let dir = temp_project();
+    rigger_initialized(temp_project())
+}
+
+/// `dir` once `rigger init` has scaffolded it (asserting the init succeeds).
+fn rigger_initialized(dir: tempfile::TempDir) -> tempfile::TempDir {
     let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
     dir
@@ -1756,10 +1760,7 @@ fn committed_scaffold_project() -> tempfile::TempDir {
 
 /// A throwaway git project with a real commit that `rigger init` has scaffolded.
 fn initialized_git_project() -> tempfile::TempDir {
-    let dir = temp_git_project_with_commit();
-    let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    dir
+    rigger_initialized(temp_git_project_with_commit())
 }
 
 /// `rigger validate` in `root` with its scratch root (`RIGGER_TMPDIR`) at `scratch` and
@@ -18615,9 +18616,18 @@ fn copy_the_built_binary_into(dir: &Path) {
 /// unqualified (spec 24), and pinning it to the built binary keeps the test off whatever old
 /// `rigger` happens to be installed in the ambient `PATH`.
 fn stage_rigger_shim(root: &Path) -> String {
+    rigger_exec_shim_on_path(root, "")
+}
+
+/// [`rigger_shim_on_path`] with a sh script that runs `prelude` and then execs the freshly
+/// built binary with every argument.
+fn rigger_exec_shim_on_path(root: &Path, prelude: &str) -> String {
     rigger_shim_on_path(
         root,
-        format!("#!/bin/sh\nexec \"{}\" \"$@\"\n", rigger_bin().display()),
+        format!(
+            "#!/bin/sh\n{prelude}exec \"{}\" \"$@\"\n",
+            rigger_bin().display()
+        ),
     )
 }
 
@@ -19036,13 +19046,9 @@ fn path_without_rigger() -> String {
 /// the graceful-degrade "rigger docs errors" path: the hook must WARN and let the commit proceed.
 /// Returns a `PATH` with the shim dir prepended.
 fn stage_failing_docs_rigger_shim(root: &Path) -> String {
-    rigger_shim_on_path(
+    rigger_exec_shim_on_path(
         root,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = docs ]; then\n  echo 'boom: rigger docs failed' 1>&2\n  \
-         exit 1\nfi\nexec \"{}\" \"$@\"\n",
-            rigger_bin().display()
-        ),
+        "if [ \"$1\" = docs ]; then\n  echo 'boom: rigger docs failed' 1>&2\n  exit 1\nfi\n",
     )
 }
 
