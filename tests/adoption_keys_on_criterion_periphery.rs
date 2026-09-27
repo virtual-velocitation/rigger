@@ -150,6 +150,7 @@
 //! `STATUS_ADOPTION_RECORDED` mark (which the fix's own ordering only ever writes AFTER a
 //! successful `branch_tip`).
 
+use common::git::init_repo;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -170,26 +171,6 @@ use rigger::ledger;
 use rigger::run_store::start_fresh;
 use rigger::worktree::{self, Worktree};
 use serde_json::{json, Value};
-
-/// A bare git repo with one empty commit, so `HEAD` resolves for `Worktree::create`'s
-/// branch-from-HEAD path. Mirrors `tests/worktree_liveness_fence_periphery.rs`'s identical
-/// helper.
-fn init_repo(path: &Path) {
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
-    }
-}
 
 /// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success.
 fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {

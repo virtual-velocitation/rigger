@@ -5,6 +5,7 @@
 //! same composition path (`Store::open(.rigger/events.db)` namespaced, the
 //! `graph.db` projector, `conductor::STREAM`) the `serve` path uses.
 
+use common::git::git_ok;
 use rigger::conductor::normalize_ws;
 use std::path::Path;
 use std::process::Command;
@@ -84,18 +85,6 @@ fn json_string_field(line: &str, key: &str) -> Option<String> {
     let rest = &line[start..];
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
-}
-
-/// Run `git <args...>` in `cwd` and assert it succeeds (for seeding a repo state in a
-/// test - staging and committing scaffolded files so `.rigger/` is tracked+clean).
-fn git_ok(cwd: &Path, args: &[&str]) {
-    let ok = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .status()
-        .expect("git must be runnable")
-        .success();
-    assert!(ok, "git {args:?} must succeed");
 }
 
 /// Append `line` (plus a newline) to the file at `path`, standing in for a hand edit that a

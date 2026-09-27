@@ -85,36 +85,10 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::git::git_ok;
+use common::git::git_out;
 use std::path::Path;
 use std::process::Command;
-
-fn run_git(dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"))
-}
-
-fn git_ok(dir: &Path, args: &[&str]) {
-    let out = run_git(dir, args);
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn git_out(dir: &Path, args: &[&str]) -> String {
-    let out = run_git(dir, args);
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
 
 /// A throwaway git project with a real commit, so `HEAD` resolves for `git worktree add`
 /// and the run's base ref is real. Mirrors `tests/cli.rs`'s `temp_git_project_with_commit`.

@@ -87,6 +87,8 @@
 mod common;
 
 use common::cli::run_rigger;
+use common::git::git_ok;
+use common::git::init_repo;
 use std::path::Path;
 use std::process::Command;
 
@@ -113,37 +115,6 @@ fn temp_git_project_with_commit() -> tempfile::TempDir {
         assert!(ok, "git {args:?} must succeed while seeding the repo");
     }
     dir
-}
-
-/// A bare (no commit-required) git repo for the pure library-boundary test: `git init` plus
-/// identity config and one empty commit, so `HEAD` resolves for `Worktree::create`'s
-/// branch-from-HEAD path.
-fn init_repo(path: &Path) {
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
-    }
-}
-
-/// Run `git <args...>` in `cwd` and assert it succeeds.
-fn git_ok(cwd: &Path, args: &[&str]) {
-    let ok = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .status()
-        .expect("git must be runnable")
-        .success();
-    assert!(ok, "git {args:?} must succeed");
 }
 
 /// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success.

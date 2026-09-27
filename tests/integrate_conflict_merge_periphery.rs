@@ -269,6 +269,7 @@ mod common;
 use common::cli::write_workflow;
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::git::git_stdout;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
 use rigger::config_store;
@@ -300,16 +301,6 @@ fn init_repo() -> tempfile::TempDir {
             .unwrap();
     }
     dir
-}
-
-fn git_out(dir: &str, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?} in {dir}: {e}"));
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn git_commit_all(dir: &str, msg: &str) {
@@ -685,7 +676,7 @@ fn a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regene
     // commit. Read off the REPO's own current branch (not the unit's `rigger/u/*` ref, which
     // an integrated unit's branch/worktree may already have been reclaimed by the time this
     // assertion runs) - it carries the full landed history regardless.
-    let log = git_out(&repo_path, &["log", "--format=%s"]);
+    let log = git_stdout(&repo_path, &["log", "--format=%s"]);
     assert!(
         log.contains("regenerate conflicting artifacts for"),
         "the conductor's own regeneration commit must land as a distinct commit after the \
@@ -768,8 +759,8 @@ impl AgentDriver for BranchResetDriver {
                 } else {
                     // The retry: snapshot BEFORE writing anything - this is the state the
                     // conductor's post-merge-red rollback left the worktree in.
-                    let head = git_out(&opts.dir, &["rev-parse", "HEAD"]);
-                    let parents = git_out(&opts.dir, &["log", "-1", "--format=%P", &head]);
+                    let head = git_stdout(&opts.dir, &["rev-parse", "HEAD"]);
+                    let parents = git_stdout(&opts.dir, &["log", "-1", "--format=%P", &head]);
                     let parent_count = if parents.trim().is_empty() {
                         0
                     } else {
@@ -1651,7 +1642,7 @@ fn a_crash_between_the_source_commit_and_regeneration_still_regenerates_on_resum
          accept_incoming placeholder call 1's crash left frozen in place"
     );
 
-    let log = git_out(&repo_path, &["log", "--format=%s"]);
+    let log = git_stdout(&repo_path, &["log", "--format=%s"]);
     assert!(
         log.contains("regenerate conflicting artifacts for"),
         "the resumed call's own regeneration commit must land as a distinct commit; log:\n{log}"
@@ -1805,14 +1796,14 @@ fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact()
     // (an ordinary terminal teardown, matching every other non-parked terminal exit), but the
     // branch itself is untouched - a single-parent commit carrying exactly unit-a's own real
     // work, never a partially-applied or corrupted merge.
-    let branch_log = git_out(&repo_path, &["log", "--oneline", "rigger/u/unit-a"]);
+    let branch_log = git_stdout(&repo_path, &["log", "--oneline", "rigger/u/unit-a"]);
     assert_eq!(
         branch_log.lines().count(),
         2,
         "unit-a's branch must carry exactly its base commit plus its own one real commit, no \
          partial merge state; got:\n{branch_log}"
     );
-    let a_content = git_out(&repo_path, &["show", "rigger/u/unit-a:a.rs"]);
+    let a_content = git_stdout(&repo_path, &["show", "rigger/u/unit-a:a.rs"]);
     assert_eq!(
         a_content, "A_WORK",
         "unit-a's own real work must survive on its branch untouched by the failed merge"
@@ -2803,7 +2794,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
         // keep the transient worktree DIRECTORY around (`Worktree::remove`'s own doc: "the
         // BRANCH is the checkpoint" - the dir is not), so the decisive proof that the mutation
         // ran for real independent of the failed log append is the branch itself, not the dir.
-        let branch_gen = git_out(&repo_path, &["show", "rigger/u/unit-a:gen.txt"]);
+        let branch_gen = git_stdout(&repo_path, &["show", "rigger/u/unit-a:gen.txt"]);
         assert_eq!(
             branch_gen, "REGENERATED",
             "the regeneration command's own real commit must already be on the unit's branch, \
@@ -2924,7 +2915,7 @@ fn a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_reco
     }
     // The merge's own real commit already landed on the UNIT'S OWN branch (durable, git-level)
     // before this crash, independent of the log append that failed right after it.
-    let branch_a = git_out(&repo_path, &["show", "rigger/u/unit-a:a.rs"]);
+    let branch_a = git_stdout(&repo_path, &["show", "rigger/u/unit-a:a.rs"]);
     assert_eq!(
         branch_a, "A_WORK",
         "the merge commit must already be on the unit's own branch, independent of the log \

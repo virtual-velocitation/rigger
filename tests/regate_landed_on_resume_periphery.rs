@@ -48,6 +48,7 @@ mod common;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
+use common::git::git_stdout;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{self, AgentDef, Config, Stage};
 use rigger::contextgraph;
@@ -81,16 +82,6 @@ fn init_repo() -> tempfile::TempDir {
             .unwrap();
     }
     dir
-}
-
-fn git_out(dir: &str, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?} in {dir}: {e}"));
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn git_commit_all(dir: &str, msg: &str) {
@@ -334,7 +325,7 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_
     // row 4's after-record (`integrate-landed`, now carrying `pre_merge`) made it into the log
     // before the simulated crash - exactly the state a genuine process death in that window
     // leaves behind.
-    let unit_sha = git_out(&repo_path, &["rev-parse", "HEAD"]);
+    let unit_sha = git_stdout(&repo_path, &["rev-parse", "HEAD"]);
     let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
     assert!(
         has_status_marker(&events_after_call_1, "integrate-landed"),
@@ -427,7 +418,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
     );
     std::fs::write(Path::new(&seed_dir).join("feature.rs"), "fn feature() {}\n").unwrap();
     git_commit_all(&seed_dir, "rigger: prior window work");
-    let unit_sha = git_out(&seed_dir, &["rev-parse", "HEAD"]);
+    let unit_sha = git_stdout(&seed_dir, &["rev-parse", "HEAD"]);
     let out = Command::new("git")
         .arg("-C")
         .arg(&repo_path)
@@ -452,7 +443,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
         "test setup: the fast-forward must succeed: {out:?}"
     );
     assert_eq!(
-        git_out(&repo_path, &["rev-parse", "HEAD"]),
+        git_stdout(&repo_path, &["rev-parse", "HEAD"]),
         unit_sha,
         "test setup premise: the run branch must already carry the unit's landed tip"
     );
