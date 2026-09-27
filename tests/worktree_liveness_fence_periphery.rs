@@ -88,6 +88,7 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
+use common::cli::{write_scaffold, ISOLATED_WORKER};
 use common::git::git_answer;
 use common::git::git_ok;
 use common::git::init_repo;
@@ -124,15 +125,9 @@ fn seed_events(root: &Path, events: Vec<rigger::eventstore::Event>) {
 /// exactly as `tests/cli.rs`'s `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_
 /// reclaims_a_dead_ancestor_leftover` already does for its own "leftover-orphan" branch.
 fn write_reviewless_git_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", ISOLATED_WORKER)],
         r#"name: fencetest
 defaults:
   grounder: nop
@@ -145,8 +140,7 @@ stages:
     gates: [ok]
     on_pass: merge
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// Spec 83, criterion 1 (THE FENCE), driven at the real binary boundary across THREE separate

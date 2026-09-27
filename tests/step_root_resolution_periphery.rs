@@ -134,6 +134,7 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::{write_scaffold, ISOLATED_WORKER};
 use common::git::temp_git_project_with_commit;
 use std::path::Path;
 use std::process::Command;
@@ -143,15 +144,9 @@ use std::process::Command;
 /// merge`, the shape that reaches a real `ensure_run_branch` anchor without needing a
 /// review panel.
 fn write_reviewless_git_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", ISOLATED_WORKER)],
         r#"name: terminalintegratetest
 defaults:
   grounder: nop
@@ -164,8 +159,7 @@ stages:
     gates: [ok]
     on_pass: merge
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// The branch `HEAD` currently names in `root` (e.g. "main", "master", or whatever `git

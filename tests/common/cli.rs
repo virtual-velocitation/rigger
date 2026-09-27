@@ -285,21 +285,35 @@ pub fn seed_derived_duplicates(root: &Path) {
         .unwrap();
 }
 
+/// The `worker` agent definition (sonnet, Read/Edit) that runs without a worktree
+/// (`isolation: none`).
+pub const UNISOLATED_WORKER: &str =
+    "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n";
+
+/// The `worker` agent definition on the default, git-backed isolation.
+pub const ISOLATED_WORKER: &str =
+    "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n";
+
+/// Scaffold `root/.rigger`: each `(id, definition)` of `agents` as `agents/<id>.md`, and
+/// `workflow` as its `workflow.yml`.
+pub fn write_scaffold(root: &Path, agents: &[(&str, &str)], workflow: &str) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
+    for (id, definition) in agents {
+        std::fs::write(rigger.join("agents").join(format!("{id}.md")), definition)
+            .expect("write an agent definition");
+    }
+    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
+}
+
 /// Write a one-stage `workflow.yml` named `name` (plus its `worker` agent) under `root`, with
 /// `block` appended verbatim after the stage.
 pub fn write_workflow(root: &Path, name: &str, block: &str) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).expect("create .rigger/agents");
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .expect("write worker.md");
     let workflow = format!(
         "name: {name}\n\
          defaults:\n  grounder: nop\n  budget: 60\n\
          stages:\n  a:\n    agent: worker\n    on_pass: none\n\
          {block}"
     );
-    std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
+    write_scaffold(root, &[("worker", UNISOLATED_WORKER)], &workflow);
 }

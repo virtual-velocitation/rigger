@@ -25,6 +25,7 @@ use common::cli::seed_run_events;
 use common::cli::seed_store;
 use common::cli::temp_project;
 use common::cli::temp_repoless_project;
+use common::cli::{write_scaffold, ISOLATED_WORKER, UNISOLATED_WORKER};
 use common::fixtures::pgid_of;
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
@@ -4540,15 +4541,9 @@ fn native_driver_drains_in_flight_workers_before_a_loud_stop() {
 /// into parking a disjoint two-unit wave, offline and deterministic (no model, no git
 /// worktrees - the worker's `isolation: none`).
 fn write_two_stage_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", UNISOLATED_WORKER)],
         r#"name: steptest
 defaults:
   grounder: nop
@@ -4561,23 +4556,16 @@ stages:
     agent: worker
     on_pass: none
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// Like [`write_two_stage_workflow`] but with a spawn budget of ONE: two independent units
 /// are ready in the first wave, so exactly one implementer spawn is admitted and parked and
 /// the other is refused - tripping the breaker so `rigger step` reports a halt (Gap 13).
 fn write_budget_one_two_stage_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", UNISOLATED_WORKER)],
         r#"name: steptest
 defaults:
   grounder: nop
@@ -4590,8 +4578,7 @@ stages:
     agent: worker
     on_pass: none
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// `rigger step` advances the run one frontier and prints the newly parked spawn WAVE
@@ -4679,15 +4666,12 @@ fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
 /// agent's own isolation setting), so the default (real, git-backed) isolation this
 /// test needs is just the field's absence.
 fn write_standalone_review_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("lens.md"),
-        "---\nid: lens\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[(
+            "lens",
+            "---\nid: lens\nmodel: sonnet\ntools: [Read]\n---\nReview it.\n",
+        )],
         r#"name: reviewparktest
 defaults:
   grounder: nop
@@ -4696,8 +4680,7 @@ stages:
   review:
     agents: [lens]
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// Spec 64, criterion 1 (the review-worktree half of the split this unit OWNS): a
@@ -5090,15 +5073,9 @@ fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_wo
 /// worktree on `rigger/u/<unit>` is the SAME checkpoint kind `run_stage`'s
 /// terminal-teardown gate covers.
 fn write_reviewless_git_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", ISOLATED_WORKER)],
         r#"name: terminalintegratetest
 defaults:
   grounder: nop
@@ -5111,8 +5088,7 @@ stages:
     gates: [ok]
     on_pass: merge
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// The escalating twin of [`write_reviewless_git_unit_workflow`]: identical shape, but
@@ -5121,15 +5097,9 @@ stages:
 /// crashed implementer spawn - never a park - is enough to drive the unit terminal without
 /// ever integrating.
 fn write_reviewless_git_escalating_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", ISOLATED_WORKER)],
         r#"name: terminalescalatetest
 defaults:
   grounder: nop
@@ -5143,8 +5113,7 @@ stages:
     gates: [ok]
     on_pass: merge
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// Spec 64, criterion 2 (TERMINAL TEARDOWN IS UNCHANGED), the "in both drivers" half no
@@ -8041,15 +8010,9 @@ fn run_driver_workflow_registers_a_credential_free_shared_instance() {
 /// `isolation: none` keeps it off git. Drives spec 19c unit 1: a run that reaches a fixpoint
 /// with an escalated unit.
 fn write_failing_gate_escalating_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", UNISOLATED_WORKER)],
         r#"name: esctest
 defaults:
   grounder: nop
@@ -8063,8 +8026,7 @@ stages:
     gates: [bad]
     on_pass: none
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// A single-unit workflow whose gate is under `autonomy: manual`, so the stage PAUSES for human
@@ -8075,15 +8037,9 @@ stages:
 /// manual-review-pending, i.e. NOT converged and still advancing (a human will approve+integrate
 /// on a later step). Drives spec 34 criterion 3's never-delete-live rail on a non-terminal pause.
 fn write_manual_review_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", UNISOLATED_WORKER)],
         r#"name: manualtest
 defaults:
   grounder: nop
@@ -8097,8 +8053,7 @@ stages:
     gates: [human]
     on_pass: none
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// Spec 19c, unit 1: a run that reaches a fixpoint with an ESCALATED unit must not
@@ -8303,15 +8258,9 @@ fn a_budget_halt_does_not_restamp_on_a_later_real_step_with_nothing_new() {
 /// emits, so `s2` would stay blocked forever and the run would falsely converge
 /// (`done: true`, nothing pending) rather than reach the genuine halt this test drives at.
 fn write_budget_one_dependency_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", UNISOLATED_WORKER)],
         r#"name: steptest
 defaults:
   grounder: nop
@@ -8323,8 +8272,7 @@ stages:
     agent: worker
     needs: [s1]
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - a SECOND
@@ -8393,18 +8341,11 @@ fn a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps_on_a_real_proce
 /// default so the parked implementer carries a `max_wall_clock` the sweep can time out
 /// against, `isolation: none` (no worktree), and `on_pass: none` (no integrate).
 fn write_liveness_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", UNISOLATED_WORKER)],
         "name: livetest\ndefaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
-    )
-    .unwrap();
+    );
 }
 
 /// Agent liveness end-to-end (spec 10, unit 3): a spawn carries a `max_wall_clock` bound;
@@ -8726,18 +8667,11 @@ fn step_reclaims_a_hung_spawns_agent_scratch_the_moment_the_sweep_records_its_fa
 /// marker on the wire - the exact spawn the sweep can never time out and the native driver's
 /// OUTER wall-clock is the only backstop for (spec 19c, unit 2).
 fn write_unbounded_liveness_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", UNISOLATED_WORKER)],
         "name: livetest\ndefaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
-    )
-    .unwrap();
+    );
 }
 
 /// Spec 19c, Unit 2 (a) - the SURFACING half, end-to-end in real Rust: a hung UNBOUNDED-config
@@ -11898,20 +11832,9 @@ fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
 /// tries to merge (no git). The implementer and adjudicator spawns are parked by the
 /// replay driver and drained by recorded results, exactly like `write_two_stage_workflow`.
 fn write_gated_reviewed_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nImplement the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("agents").join("judge.md"),
-        "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nAdjudicate the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nImplement the unit.\n"), ("judge", "---\nid: judge\nmodel: sonnet\ntools: [Read]\nisolation: none\n---\nAdjudicate the unit.\n")],
         r#"name: statstest
 defaults:
   grounder: nop
@@ -11926,8 +11849,7 @@ stages:
     gates: [check]
     on_pass: none
 "#,
-    )
-    .unwrap();
+    );
 }
 
 /// spec 04, criterion 49: a step-driven run recorded in the event log yields NON-EMPTY

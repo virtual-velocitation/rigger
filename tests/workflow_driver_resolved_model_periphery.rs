@@ -41,6 +41,7 @@
 //! proves the WORKFLOW driver's wire-to-store path, the one round 1 found dead.
 
 mod common;
+use common::cli::{write_scaffold, UNISOLATED_WORKER};
 use common::git::temp_git_project_with_commit;
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -59,18 +60,11 @@ use rigger::eventstore::{Direction, Event, EventStore, Filter};
 /// `isolation: none` keep the fixture gate/worktree-free, matching every other
 /// `rigger step`/`serve` fixture in this suite family.
 fn write_one_stage_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
+    write_scaffold(
+        root,
+        &[("worker", UNISOLATED_WORKER)],
         "name: workflowdrivertest\ndefaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
-    )
-    .unwrap();
+    );
 }
 
 /// Send one JSON-RPC 2.0 request line to `stdin` and return the parsed response line read
