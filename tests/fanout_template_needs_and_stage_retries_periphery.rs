@@ -96,10 +96,11 @@
 mod common;
 
 use std::path::Path;
-use std::process::Command;
 
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
+use common::cli::temp_git_project_with_commit;
+use common::cli::temp_repoless_project;
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
 };
@@ -108,34 +109,6 @@ use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger;
 use serde_json::{json, Value};
-
-/// A throwaway project that is its own git repo with one commit, so a base ref like
-/// `HEAD` resolves and a real per-unit worktree/branch/merge can land. Mirrors
-/// `tests/cli.rs`'s identically-named helper.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
-
-/// A throwaway, repo-less project - enough for the offline (`isolation: none`) escalation
-/// scenarios below, which never touch git. Mirrors `tests/cli.rs`'s `temp_repoless_project`.
-fn temp_repoless_project() -> tempfile::TempDir {
-    tempfile::tempdir().expect("create temp project")
-}
 
 /// Write the `worker` agent file with `isolation` frontmatter lines (each ending in `\n`):
 ///

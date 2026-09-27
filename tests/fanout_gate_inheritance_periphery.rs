@@ -59,6 +59,8 @@
 
 mod common;
 
+use common::cli::temp_git_project_with_commit;
+
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
 };
@@ -67,29 +69,6 @@ use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger;
 use serde_json::{json, Value};
-
-/// A throwaway project that is its own git repo with one commit, so a base ref like `HEAD`
-/// resolves and a real per-unit worktree/branch/merge can land. Mirrors
-/// `tests/fanout_template_needs_and_stage_retries_periphery.rs`'s identically-named helper
-/// (itself mirroring `tests/cli.rs`'s).
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
 
 /// A real, single-criterion fan-out workflow: one `plan` stage feeding one `implement`
 /// fan-out template that declares gate `ok` (`run: "true"`, always passes) - and a SECOND

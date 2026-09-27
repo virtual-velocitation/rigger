@@ -28,24 +28,13 @@
 //!    the event's own body prose falsely claims a different model.
 
 use std::path::Path;
-use std::process::Command;
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves.
 mod common;
 
 use common::cli::run_rigger;
-
-/// A throwaway project dir that is its own git repo, mirroring `tests/cli.rs::temp_project`
-/// (private to that file, unreachable from this separate integration-test binary).
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+use common::cli::temp_project;
 
 /// Seed `<root>/.rigger/events.db` under `project` with TWO runs (`r1`, `r2`) on the
 /// conductor's run stream. `run1`/`run2` each list this run's `(alias, resolved)` pairs; a

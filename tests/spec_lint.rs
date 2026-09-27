@@ -17,18 +17,8 @@
 mod common;
 
 use common::cli::run_rigger;
+use common::cli::temp_project;
 use std::path::Path;
-use std::process::Command;
-
-/// A throwaway project dir that is its own git repo (so `project_identity()` is stable).
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
 
 /// The line of `err` containing `needle`, or a panic naming what was searched for - so a
 /// missing line fails with the same diagnostic detail as a `contains` assertion.

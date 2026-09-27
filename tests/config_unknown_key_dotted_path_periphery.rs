@@ -105,17 +105,9 @@
 
 mod common;
 
-use std::path::Path;
-use std::process::Command;
+use common::cli::temp_project;
 
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    dir
-}
+use std::path::Path;
 
 fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     let out = common::rigger_courier()

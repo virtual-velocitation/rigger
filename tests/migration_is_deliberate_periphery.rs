@@ -59,6 +59,7 @@ mod common;
 mod graph_fold;
 
 use common::cli::run_rigger;
+use common::cli::temp_rigger_project;
 use graph_fold::apply_json;
 use std::path::Path;
 use std::process::Command;
@@ -424,18 +425,6 @@ fn an_out_of_line_cfg_test_mod_declarations_target_retires_through_the_real_proj
 // Part 2: `rigger validate`'s RETIRED CODE-ENTITY advisory, through the COMPILED binary
 // =========================================================================================
 
-/// A throwaway project: its own git repo, so `project_identity()` resolves as it does for a
-/// real project (mirrors `tests/validate_advisories.rs`'s own `temp_project` convention).
-fn temp_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(dir.path())
-        .status();
-    std::fs::create_dir_all(dir.path().join(".rigger")).expect("create .rigger");
-    dir
-}
-
 /// The project identity `rigger validate`'s own `project_identity()` resolves for `root`: the
 /// tracked `.rigger/project.id` when present (as `rigger init` mints), else the git top-level's
 /// basename, else `root`'s own basename. Mirrors `tests/validate_advisories.rs`'s own
@@ -524,7 +513,7 @@ fn project_graph(root: &Path) -> rigger::contextgraph::sqlite::Projector {
 
 #[test]
 fn validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fails() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -552,7 +541,7 @@ fn validate_warns_of_retired_code_entities_with_the_measured_count_and_never_fai
 
 #[test]
 fn validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
@@ -569,7 +558,7 @@ fn validate_is_silent_on_retired_code_entities_when_nothing_has_been_retired() {
 
 #[test]
 fn validate_never_fabricates_a_graph_db_and_draws_no_retired_advisory_on_a_fresh_project() {
-    let dir = temp_project();
+    let dir = temp_rigger_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
