@@ -2634,6 +2634,7 @@ fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::liveness::marker_filename;
+    use crate::test_support::run_log;
 
     /// Test-only recomposition of [`Worktree::merge_into_worktree`] + [`Worktree::land`] into
     /// the single combined call this file's OWN pre-round-4 tests were written against (spec
@@ -5187,12 +5188,8 @@ mod tests {
 
     use crate::conductor::STREAM;
     use crate::eventstore::sqlite::Store;
-    use crate::eventstore::{Direction, EventStore, ExpectedRevision};
+    use crate::eventstore::{EventStore, ExpectedRevision};
     use crate::spawn::SpawnResult;
-
-    fn read_stream(store: &Store) -> Vec<Event> {
-        store.read_stream(STREAM, 0, Direction::Forward).unwrap()
-    }
 
     #[test]
     fn spawn_fence_is_no_spawn_when_the_unit_has_never_requested_one() {
@@ -5207,7 +5204,7 @@ mod tests {
         store
             .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
             .unwrap();
-        let events = read_stream(&store);
+        let events = run_log(&store);
 
         let fence = spawn_fence(&events, "u1");
         assert_eq!(
@@ -5236,7 +5233,7 @@ mod tests {
             .unwrap()
             .one("result")
             .unwrap();
-        let events = read_stream(&store);
+        let events = run_log(&store);
 
         let fence = spawn_fence(&events, "u2");
         assert_eq!(
@@ -5277,7 +5274,7 @@ mod tests {
         store
             .append(STREAM, ExpectedRevision::Any, &[req.to_event().unwrap()])
             .unwrap();
-        let events = read_stream(&store);
+        let events = run_log(&store);
 
         let fence = spawn_fence(&events, "u5");
         assert_eq!(
@@ -5305,7 +5302,7 @@ mod tests {
             .unwrap()
             .one("result")
             .unwrap();
-        let events = read_stream(&store);
+        let events = run_log(&store);
 
         let fence = spawn_fence(&events, "u3");
         assert_eq!(
@@ -5353,7 +5350,7 @@ mod tests {
                 &[review_req.to_event().unwrap()],
             )
             .unwrap();
-        let events = read_stream(&store);
+        let events = run_log(&store);
 
         let fence = spawn_fence(&events, "u4");
         assert_eq!(
@@ -5394,7 +5391,7 @@ mod tests {
                 )],
             )
             .unwrap();
-        let events = read_stream(&store);
+        let events = run_log(&store);
         let scoped = crate::run::current_run(&events);
 
         assert_eq!(spawn_fence(scoped, "reused-slug"), SpawnFence::NoSpawn);

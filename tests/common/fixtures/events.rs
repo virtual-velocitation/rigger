@@ -13,3 +13,42 @@ pub fn ev_at(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
     e.position = pos;
     e
 }
+
+/// The four read and subscribe methods of an `EventStore` decorator that intercepts only
+/// `append`, each forwarded unchanged to the decorator's `inner` store - expanded inside that
+/// decorator's `impl EventStore` block.
+#[macro_export]
+macro_rules! delegate_event_store_reads {
+    () => {
+        fn read_stream(
+            &self,
+            stream: &str,
+            from: rigger::eventstore::Revision,
+            dir: rigger::eventstore::Direction,
+        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
+            self.inner.read_stream(stream, from, dir)
+        }
+        fn read_all(
+            &self,
+            from: rigger::eventstore::Position,
+            dir: rigger::eventstore::Direction,
+            filter: &rigger::eventstore::Filter,
+        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
+            self.inner.read_all(from, dir, filter)
+        }
+        fn subscribe_all(
+            &self,
+            from: rigger::eventstore::Position,
+            filter: &rigger::eventstore::Filter,
+        ) -> Result<rigger::eventstore::Subscription, rigger::eventstore::Error> {
+            self.inner.subscribe_all(from, filter)
+        }
+        fn subscribe_stream(
+            &self,
+            stream: &str,
+            from: rigger::eventstore::Revision,
+        ) -> Result<rigger::eventstore::Subscription, rigger::eventstore::Error> {
+            self.inner.subscribe_stream(stream, from)
+        }
+    };
+}

@@ -164,10 +164,7 @@ use rigger::conductor::{META_COMPENSATED, META_CONTRADICTION};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{
-    Direction, Error as StoreError, Event, EventStore, ExpectedRevision, Filter, Position,
-    Revision, Subscription,
-};
+use rigger::eventstore::{Direction, Error as StoreError, Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
 use rigger::ledger;
 use rigger::run_store::start_fresh;
@@ -2633,31 +2630,7 @@ impl EventStore for FailsOnceOn<'_> {
         self.inner.append(stream, expected, events)
     }
 
-    fn read_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-        dir: Direction,
-    ) -> Result<Vec<Event>, StoreError> {
-        self.inner.read_stream(stream, from, dir)
-    }
-
-    fn read_all(
-        &self,
-        from: Position,
-        dir: Direction,
-        filter: &Filter,
-    ) -> Result<Vec<Event>, StoreError> {
-        self.inner.read_all(from, dir, filter)
-    }
-
-    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, StoreError> {
-        self.inner.subscribe_all(from, filter)
-    }
-
-    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, StoreError> {
-        self.inner.subscribe_stream(stream, from)
-    }
+    crate::delegate_event_store_reads!();
 }
 
 /// Whether `e` is the durable `STATUS_BRANCH_QUARANTINED` mark

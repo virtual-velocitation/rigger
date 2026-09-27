@@ -53,8 +53,7 @@ use rigger::config::{self, AgentDef, Config, Stage};
 use rigger::contextgraph;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{
-    Appended, Direction, Error as EsError, Event, EventStore, ExpectedRevision, Filter, Position,
-    Revision, Subscription,
+    Appended, Direction, Error as EsError, Event, EventStore, ExpectedRevision,
 };
 use rigger::ledger;
 use serde_json::{json, Value};
@@ -236,28 +235,7 @@ impl EventStore for FailAfterContaining<'_> {
         }
         Ok(out)
     }
-    fn read_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-        dir: Direction,
-    ) -> Result<Vec<Event>, EsError> {
-        self.inner.read_stream(stream, from, dir)
-    }
-    fn read_all(
-        &self,
-        from: Position,
-        dir: Direction,
-        filter: &Filter,
-    ) -> Result<Vec<Event>, EsError> {
-        self.inner.read_all(from, dir, filter)
-    }
-    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, EsError> {
-        self.inner.subscribe_all(from, filter)
-    }
-    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, EsError> {
-        self.inner.subscribe_stream(stream, from)
-    }
+    crate::delegate_event_store_reads!();
 }
 
 /// Whether `events` carries a `TYPE_UNIT_STATUS` marker whose `status` field equals `status`.

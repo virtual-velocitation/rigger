@@ -21541,36 +21541,7 @@ mod tests {
                 self.appends.lock().unwrap().push(events.len());
                 self.inner.append(stream, expected, events)
             }
-            fn read_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-                dir: Direction,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_stream(stream, from, dir)
-            }
-            fn read_all(
-                &self,
-                from: crate::eventstore::Position,
-                dir: Direction,
-                filter: &Filter,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_all(from, dir, filter)
-            }
-            fn subscribe_all(
-                &self,
-                from: crate::eventstore::Position,
-                filter: &Filter,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_all(from, filter)
-            }
-            fn subscribe_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_stream(stream, from)
-            }
+            crate::delegate_event_store_reads!();
         }
 
         // A graph spy: counts per-EVENT folds (`apply`) and records the size of every per-BATCH fold
@@ -28705,36 +28676,7 @@ mod tests {
             }
             self.inner.append(stream, expected, events)
         }
-        fn read_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-            dir: Direction,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_stream(stream, from, dir)
-        }
-        fn read_all(
-            &self,
-            from: crate::eventstore::Position,
-            dir: Direction,
-            filter: &Filter,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_all(from, dir, filter)
-        }
-        fn subscribe_all(
-            &self,
-            from: crate::eventstore::Position,
-            filter: &Filter,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_all(from, filter)
-        }
-        fn subscribe_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_stream(stream, from)
-        }
+        crate::delegate_event_store_reads!();
     }
 
     #[test]
@@ -41286,36 +41228,7 @@ mod tests {
             }
             self.inner.append(stream, expected, events)
         }
-        fn read_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-            dir: Direction,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_stream(stream, from, dir)
-        }
-        fn read_all(
-            &self,
-            from: crate::eventstore::Position,
-            dir: Direction,
-            filter: &Filter,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_all(from, dir, filter)
-        }
-        fn subscribe_all(
-            &self,
-            from: crate::eventstore::Position,
-            filter: &Filter,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_all(from, filter)
-        }
-        fn subscribe_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_stream(stream, from)
-        }
+        crate::delegate_event_store_reads!();
     }
 
     #[test]

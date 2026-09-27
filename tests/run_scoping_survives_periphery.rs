@@ -32,13 +32,14 @@
 //! (criterion 3) and the store-layer append guard (criterion 4) are owned by sibling units and are
 //! deliberately not exercised here.
 
-use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_REPLAY_KEY, STREAM,
-};
+mod common;
+
+use common::fixtures::run_log;
+use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_REPLAY_KEY};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::{TYPE_EDGE_INFERRED, TYPE_GATE_VERDICT};
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore};
+use rigger::eventstore::Event;
 use rigger::gate::ExecRunner;
 use rigger::ingest::project_scoped_replay_keys;
 use rigger::ledger::{Status, TYPE_UNIT_STARTED};
@@ -130,10 +131,6 @@ fn keys_of(events: &[Event], type_: &str) -> Vec<String> {
         .collect()
 }
 
-fn read(store: &Store) -> Vec<Event> {
-    store.read_stream(STREAM, 0, Direction::Forward).unwrap()
-}
-
 fn count_of_type(events: &[Event], type_: &str) -> usize {
     events.iter().filter(|e| e.type_ == type_).count()
 }
@@ -164,7 +161,7 @@ fn a_prior_runs_recorded_lifecycle_keys_do_not_suppress_the_next_runs_own_emits(
         "sanity: the first campaign must actually run the unit, else it records no key to collide \
          with"
     );
-    let after_one = read(&store);
+    let after_one = run_log(&store);
     let first_started = keys_of(current_run(&after_one), TYPE_UNIT_STARTED);
     let first_verdict = keys_of(current_run(&after_one), TYPE_GATE_VERDICT);
     assert_eq!(
@@ -185,7 +182,7 @@ fn a_prior_runs_recorded_lifecycle_keys_do_not_suppress_the_next_runs_own_emits(
         Status::Integrated,
         "the second campaign must run the unit again - a prior run's residue is not this run's work"
     );
-    let after_two = read(&store);
+    let after_two = run_log(&store);
     assert_eq!(
         count_of_type(&after_two, TYPE_RUN_STARTED),
         2,
@@ -243,7 +240,7 @@ fn a_prior_runs_recorded_lifecycle_keys_do_not_suppress_the_next_runs_own_emits(
 fn the_keys_a_real_run_mints_are_eligible_in_shape_yet_type_keeps_them_out_of_the_seed_arm() {
     let store = Store::open(":memory:").unwrap();
     assert_eq!(campaign(&store, "only criterion"), Status::Integrated);
-    let log = read(&store);
+    let log = run_log(&store);
 
     let verdict_keys: BTreeSet<String> = keys_of(&log, TYPE_GATE_VERDICT).into_iter().collect();
     assert!(

@@ -11,3 +11,15 @@ pub fn apply_ref(p: &Projector, pos: u64, file: &str, name: &str) {
     e.position = pos;
     p.apply(&e).unwrap();
 }
+
+/// Every event on `store`'s run stream, oldest first.
+pub fn run_log(store: &rigger::eventstore::sqlite::Store) -> Vec<Event> {
+    use rigger::eventstore::EventStore;
+    store
+        .read_stream(
+            rigger::conductor::STREAM,
+            0,
+            rigger::eventstore::Direction::Forward,
+        )
+        .unwrap()
+}

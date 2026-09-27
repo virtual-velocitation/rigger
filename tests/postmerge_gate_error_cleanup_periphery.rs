@@ -41,10 +41,7 @@ use std::process::Command;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{
-    Appended, Direction, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
-    Subscription,
-};
+use rigger::eventstore::{Appended, Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
 use serde_json::Value;
 
@@ -229,36 +226,7 @@ impl EventStore for FailPostmergeVerdictWrite<'_> {
         }
         self.inner.append(stream, expected, events)
     }
-    fn read_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-        dir: Direction,
-    ) -> Result<Vec<Event>, rigger::eventstore::Error> {
-        self.inner.read_stream(stream, from, dir)
-    }
-    fn read_all(
-        &self,
-        from: Position,
-        dir: Direction,
-        filter: &Filter,
-    ) -> Result<Vec<Event>, rigger::eventstore::Error> {
-        self.inner.read_all(from, dir, filter)
-    }
-    fn subscribe_all(
-        &self,
-        from: Position,
-        filter: &Filter,
-    ) -> Result<Subscription, rigger::eventstore::Error> {
-        self.inner.subscribe_all(from, filter)
-    }
-    fn subscribe_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-    ) -> Result<Subscription, rigger::eventstore::Error> {
-        self.inner.subscribe_stream(stream, from)
-    }
+    crate::delegate_event_store_reads!();
 }
 
 /// Forces the SECOND git-orchestration step (`self.run_gates(..., GateSelection::PostMerge)`,

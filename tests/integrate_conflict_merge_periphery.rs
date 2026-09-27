@@ -272,10 +272,7 @@ use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, S
 use rigger::config::{self, AgentDef, Config, RegenerateRule, Stage};
 use rigger::config_store;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{
-    Appended, Direction, Error as EsError, EventStore, ExpectedRevision, Filter, Position,
-    Revision, Subscription,
-};
+use rigger::eventstore::{Appended, Direction, Error as EsError, EventStore, ExpectedRevision};
 use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
@@ -2094,28 +2091,7 @@ impl EventStore for FailAppendContaining<'_> {
         }
         self.inner.append(stream, expected, events)
     }
-    fn read_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-        dir: Direction,
-    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
-        self.inner.read_stream(stream, from, dir)
-    }
-    fn read_all(
-        &self,
-        from: Position,
-        dir: Direction,
-        filter: &Filter,
-    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
-        self.inner.read_all(from, dir, filter)
-    }
-    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, EsError> {
-        self.inner.subscribe_all(from, filter)
-    }
-    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, EsError> {
-        self.inner.subscribe_stream(stream, from)
-    }
+    crate::delegate_event_store_reads!();
 }
 
 /// Whether `events` carries a `TYPE_UNIT_STATUS` marker whose `status` field equals `status` -
@@ -3508,28 +3484,7 @@ impl EventStore for MoveRunTipOnFirstLandingIntent<'_> {
         }
         self.inner.append(stream, expected, events)
     }
-    fn read_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-        dir: Direction,
-    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
-        self.inner.read_stream(stream, from, dir)
-    }
-    fn read_all(
-        &self,
-        from: Position,
-        dir: Direction,
-        filter: &Filter,
-    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
-        self.inner.read_all(from, dir, filter)
-    }
-    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, EsError> {
-        self.inner.subscribe_all(from, filter)
-    }
-    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, EsError> {
-        self.inner.subscribe_stream(stream, from)
-    }
+    crate::delegate_event_store_reads!();
 }
 
 /// Drives `land`'s newly-typed race-detection contract, and the whole conductor retry loop
