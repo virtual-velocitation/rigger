@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3ec3c3ef6145",
+    "id": "dup-e5c85f65647d",
     "classification": "semantic",
     "sites": [
       {
@@ -120,16 +120,6 @@
       {
         "file": "src/main.rs",
         "name": "Command::new",
-        "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
-        "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "src/main.rs",
-        "name": "Command::new",
         "content_hash": "11e11da32a5a193e"
       },
       {
@@ -151,26 +141,6 @@
         "file": "src/worktree.rs",
         "name": "Command::new",
         "content_hash": "96b36cb0df82f4e5"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "Command::new",
-        "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "Command::new",
-        "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "Command::new",
-        "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "src/worktree.rs",
-        "name": "Command::new",
-        "content_hash": "da3ee123d4540dd7"
       },
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -306,6 +276,11 @@
         "file": "tests/common/fixtures/host.rs",
         "name": "Command::new",
         "content_hash": "b1ad5143fd332b66"
+      },
+      {
+        "file": "tests/common/fixtures/host.rs",
+        "name": "Command::new",
+        "content_hash": "7266da144e21471d"
       },
       {
         "file": "tests/common/fixtures/host.rs",
@@ -494,7 +469,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 94 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 89 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -1124,7 +1099,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-b855a30b879f",
+    "id": "dup-c9324c409aa1",
     "classification": "semantic",
     "sites": [
       {
@@ -3811,15 +3786,10 @@
         "file": "tests/worktree_liveness_fence_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
-      },
-      {
-        "file": "tests/worktree_remove_relocated_scratch_base_guard_periphery.rs",
-        "name": "\"Worktree::remove's own doc comment promises every process rooted in the worktree is \\\n         reaped BEFORE the dir is removed, unconditionally - a SIGTERM-ignoring process here \\\n         must still be SIGKILLed, exactly as the DEFAULT (unrelocated) shape already is (see \\\n         worktree::tests::remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside, \\\n         independently re-run and confirmed green). Round 1 broke this for a scratch root \\\n         relocated via defaults.workdir/RIGGER_TMPDIR to a location outside the project repo \\\n         (a real, tested configuration surface - see tests/scratch_workdir_config.rs): \\\n         is_reapable_base's <repo>/.rigger/tmp containment requirement could never accept such \\\n         a dir, so reap_processes_rooted_under silently no-opped (adj-u78c2-verdict-reject- \\\n         reap-authority-conflict). Round 2 (decision u78c2r2-worktree-remove-identity-not-tree) \\\n         fixed it by authorizing the reap via GIT IDENTITY (is self.dir a real, currently \\\n         checked-out worktree of self.branch?) instead of path containment, calling \\\n         reap_authorized directly - a regression back to the round-1 shape would fail this \\\n         assertion again.\"",
-        "content_hash": "25597419b8dbb616"
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 538 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 537 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
@@ -6338,25 +6308,6 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-3439bf494b88",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/reap.rs",
-        "name": "sleeper_in",
-        "content_hash": "7bdf84cde30f408b"
-      },
-      {
-        "file": "tests/common/fixtures/host.rs",
-        "name": "sigterm_ignorer_in",
-        "content_hash": "019df3d5aa0c3f66"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 2 files: src/reap.rs, tests/common/fixtures/host.rs)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
-    "disposition": "not-a-duplicate"
-  },
-  {
     "id": "dup-77bd4d35ea26",
     "classification": "near",
     "sites": [
@@ -7255,6 +7206,25 @@
       }
     ],
     "proposed_home": "a new shared module (sites span 3 files: tests/common/fixtures/fold.rs, tests/community_resolution_knob.rs, tests/graph_superseded_prune.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
+    "id": "dup-088ec120e4ac",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "tests/common/fixtures/host.rs",
+        "name": "sigterm_ignorer_in",
+        "content_hash": "019df3d5aa0c3f66"
+      },
+      {
+        "file": "tests/common/fixtures/host.rs",
+        "name": "sleeper_in",
+        "content_hash": "68ea3f729d590b59"
+      }
+    ],
+    "proposed_home": "host::support (consolidate these 2 sites into one function in this file)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },

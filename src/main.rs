@@ -14672,6 +14672,7 @@ blocks integration no matter what the static gates say.\n",
 mod tests {
     use super::*;
     use crate::test_support::assert_driver_guards_a_null_step;
+    use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::ev;
     use crate::test_support::git_init_quiet;
     use crate::test_support::git_ok;
@@ -19319,58 +19320,11 @@ mod tests {
         let swept = scratch_root.join("agent-scratch");
         std::fs::create_dir_all(&swept).unwrap();
 
-        let mut inside = Command::new("sh")
-            .arg("-c")
-            .arg("trap '' TERM; while :; do sleep 1; done")
-            .current_dir(&swept)
-            .spawn()
-            .expect("spawn inside child");
-        let mut outside = Command::new("sleep")
-            .arg("300")
-            .current_dir(&root_path)
-            .spawn()
-            .expect("spawn outside child");
-
-        let detected = (0..200).any(|_| {
-            if rigger::reap::processes_rooted_under(&swept)
-                .iter()
-                .any(|(pid, _)| *pid == inside.id())
-            {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            false
-        });
-        assert!(
-            detected,
-            "precondition: the inside child is rooted in the swept dir"
-        );
-
-        reap_then_remove_dir(&swept, &scratch_root);
-
-        let inside_died = (0..200).any(|_| {
-            if matches!(inside.try_wait(), Ok(Some(_))) {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            false
-        });
-        let outside_alive = matches!(outside.try_wait(), Ok(None));
-
-        let _ = outside.kill();
-        let _ = outside.wait();
-        if !inside_died {
-            let _ = inside.kill();
-            let _ = inside.wait();
-        }
-
-        assert!(
-            inside_died,
-            "a process rooted in the swept scratch dir must be reaped before its removal"
-        );
-        assert!(
-            outside_alive,
-            "a process rooted OUTSIDE the swept dir must survive the sweep (safety boundary)"
+        assert_teardown_reaps_what_is_rooted_inside(
+            &swept,
+            Some(&root_path),
+            || reap_then_remove_dir(&swept, &scratch_root),
+            "the scratch-area sweep",
         );
         assert!(
             !swept.exists(),

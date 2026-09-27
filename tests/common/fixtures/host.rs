@@ -59,6 +59,63 @@ pub fn sigterm_ignorer_in(dir: &Path) -> Child {
         .expect("spawn a SIGTERM-ignoring fixture process")
 }
 
+/// Spawn a plain long-lived `sleep` rooted at `dir`, so it appears in `/proc` rooted there and a
+/// bare SIGTERM ends it.
+pub fn sleeper_in(dir: &Path) -> Child {
+    Command::new("sleep")
+        .arg("300")
+        .current_dir(dir)
+        .spawn()
+        .expect("spawn a sleeping fixture process")
+}
+
+/// The teardown reap's proof (spec 23): a SIGTERM-ignoring child rooted at `inside` - and, with
+/// `outside`, a plain sleeper rooted there; once the inside child is seen rooted under `inside`,
+/// `teardown` runs, and the inside child must have been reaped (only the SIGKILL escalation can
+/// end it) while any outside one survives - the safety boundary. Every child is cleaned up before
+/// the assertions, so a failure never leaks a process. `what` names the teardown in the messages.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub fn assert_teardown_reaps_what_is_rooted_inside(
+    inside: &Path,
+    outside: Option<&Path>,
+    teardown: impl FnOnce(),
+    what: &str,
+) {
+    let mut inside_child = sigterm_ignorer_in(inside);
+    let mut outside_child = outside.map(sleeper_in);
+    assert!(
+        wait_until(|| rigger::reap::processes_rooted_under(inside)
+            .iter()
+            .any(|(pid, _)| *pid == inside_child.id())),
+        "precondition: the inside child is rooted under {} before {what} runs",
+        inside.display()
+    );
+
+    teardown();
+
+    let inside_died = wait_until(|| matches!(inside_child.try_wait(), Ok(Some(_))));
+    let outside_alive = outside_child
+        .as_mut()
+        .map(|c| matches!(c.try_wait(), Ok(None)));
+    if let Some(c) = outside_child.as_mut() {
+        cleanup(c);
+    }
+    if !inside_died {
+        cleanup(&mut inside_child);
+    }
+    assert!(
+        inside_died,
+        "a process rooted inside {} must be reaped by {what} (SIGTERM then SIGKILL) before \
+         its dir is removed",
+        inside.display()
+    );
+    assert_ne!(
+        outside_alive,
+        Some(false),
+        "a process rooted OUTSIDE must survive {what} - the safety boundary"
+    );
+}
+
 /// Poll `pred` up to `tries` times, sleeping 25ms between checks, and return whether it held -
 /// the latency tolerance a test needs to observe an asynchronous OS-level effect (a signal
 /// delivered, a process reaped, a kernel lock taken) without a flaky zero-wait check or a fixed

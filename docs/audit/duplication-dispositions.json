@@ -1,5 +1,10 @@
 [
   {
+    "id": "dup-088ec120e4ac",
+    "disposition": "not-a-duplicate",
+    "reason": "`sleeper_in` spawns a plain `sleep` that honours SIGTERM while `sigterm_ignorer_in` spawns a shell loop that traps and ignores it; the reaper tests need both behaviours."
+  },
+  {
     "id": "dup-6faa030a03b7",
     "disposition": "not-a-duplicate",
     "reason": "`ids` lists a neighborhood view's node ids for a dash test while `light_reviewers_of` reads a review panel's light-tier roster; they share only the collect-into-a-Vec shape."
@@ -663,11 +668,6 @@
     "id": "dup-17538867af44",
     "disposition": "not-a-duplicate",
     "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
-  },
-  {
-    "id": "dup-3439bf494b88",
-    "disposition": "not-a-duplicate",
-    "reason": "`sleeper_in` spawns a plain `sleep` that honours SIGTERM while `sigterm_ignorer_in` spawns a shell loop that traps and ignores it; the reaper tests need both behaviours."
   },
   {
     "id": "dup-3dd926889508",

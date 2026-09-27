@@ -44,10 +44,8 @@
 
 mod common;
 
-use common::fixtures::sigterm_ignorer_in;
+use common::fixtures::assert_teardown_reaps_what_is_rooted_inside;
 use common::git::init_repo;
-use common::wait_until;
-use rigger::reap::processes_rooted_under;
 use rigger::worktree::Worktree;
 
 #[test]
@@ -78,37 +76,23 @@ fn worktree_remove_still_reaps_a_process_when_its_dir_lives_under_a_relocated_sc
     )
     .expect("create a worktree at the relocated dir");
 
-    let mut child = sigterm_ignorer_in(&wt_dir);
-    assert!(
-        wait_until(|| processes_rooted_under(&wt_dir)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process must actually be rooted in the worktree dir before \
-         remove() runs"
-    );
-
-    wt.remove().expect("remove() itself must still succeed");
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-    assert!(
-        died,
-        "Worktree::remove's own doc comment promises every process rooted in the worktree is \
-         reaped BEFORE the dir is removed, unconditionally - a SIGTERM-ignoring process here \
-         must still be SIGKILLed, exactly as the DEFAULT (unrelocated) shape already is (see \
-         worktree::tests::remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside, \
-         independently re-run and confirmed green). Round 1 broke this for a scratch root \
-         relocated via defaults.workdir/RIGGER_TMPDIR to a location outside the project repo \
-         (a real, tested configuration surface - see tests/scratch_workdir_config.rs): \
-         is_reapable_base's <repo>/.rigger/tmp containment requirement could never accept such \
-         a dir, so reap_processes_rooted_under silently no-opped (adj-u78c2-verdict-reject- \
-         reap-authority-conflict). Round 2 (decision u78c2r2-worktree-remove-identity-not-tree) \
-         fixed it by authorizing the reap via GIT IDENTITY (is self.dir a real, currently \
-         checked-out worktree of self.branch?) instead of path containment, calling \
-         reap_authorized directly - a regression back to the round-1 shape would fail this \
-         assertion again."
+    // Worktree::remove's own doc comment promises every process rooted in the worktree is reaped
+    // BEFORE the dir is removed, unconditionally - a SIGTERM-ignoring process here must still be
+    // SIGKILLed, exactly as the DEFAULT (unrelocated) shape already is (see
+    // worktree::tests::remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside,
+    // independently re-run and confirmed green). Round 1 broke this for a scratch root relocated via
+    // defaults.workdir/RIGGER_TMPDIR to a location outside the project repo (a real, tested
+    // configuration surface - see tests/scratch_workdir_config.rs): is_reapable_base's
+    // <repo>/.rigger/tmp containment requirement could never accept such a dir, so
+    // reap_processes_rooted_under silently no-opped (adj-u78c2-verdict-reject- reap-authority-
+    // conflict). Round 2 (decision u78c2r2-worktree-remove-identity-not-tree) fixed it by
+    // authorizing the reap via GIT IDENTITY (is self.dir a real, currently checked-out worktree of
+    // self.branch?) instead of path containment, calling reap_authorized directly - a regression
+    // back to the round-1 shape would fail this assertion again.
+    assert_teardown_reaps_what_is_rooted_inside(
+        &wt_dir,
+        None,
+        || wt.remove().expect("remove() itself must still succeed"),
+        "Worktree::remove under a scratch root relocated outside the project repo",
     );
 }
