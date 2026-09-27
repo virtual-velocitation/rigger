@@ -246,49 +246,54 @@ fn meta_and_valid_from_round_trip(store: &dyn EventStore) {
 }
 
 fn subscription_replays_then_goes_live(store: &dyn EventStore) {
-    store
-        .append(
-            "c-sub",
-            ExpectedRevision::Any,
-            &[Event::new("PRE", b"p".to_vec())],
-        )
-        .unwrap();
-    let sub = store.subscribe_all(0, &Filter::default()).unwrap();
-    assert!(
-        sub.recv_timeout(Duration::from_secs(5)).is_some(),
-        "the subscription must replay existing events"
+    replays_then_goes_live(
+        store,
+        "c-sub",
+        |s| s.subscribe_all(0, &Filter::default()),
+        "the subscription must replay existing events",
+        "subscribe_all must deliver live events",
     );
-    store
-        .append(
-            "c-sub",
-            ExpectedRevision::Any,
-            &[Event::new("LIVE", b"l".to_vec())],
-        )
-        .unwrap();
-    drain_until(&sub, "LIVE", "subscribe_all must deliver live events");
 }
 
 fn stream_subscription_replays_then_goes_live(store: &dyn EventStore) {
+    replays_then_goes_live(
+        store,
+        "c-sub-s",
+        |s| s.subscribe_stream("c-sub-s", 0),
+        "the stream subscription must replay existing events",
+        "subscribe_stream must deliver live events",
+    );
+}
+
+/// A subscription opened by `subscribe` after one event is on `stream` replays that event
+/// (`replays`), then delivers an event appended afterwards (`goes_live`).
+fn replays_then_goes_live(
+    store: &dyn EventStore,
+    stream: &str,
+    subscribe: impl Fn(&dyn EventStore) -> Result<super::Subscription, Error>,
+    replays: &str,
+    goes_live: &str,
+) {
     store
         .append(
-            "c-sub-s",
+            stream,
             ExpectedRevision::Any,
             &[Event::new("PRE", b"p".to_vec())],
         )
         .unwrap();
-    let sub = store.subscribe_stream("c-sub-s", 0).unwrap();
+    let sub = subscribe(store).unwrap();
     assert!(
         sub.recv_timeout(Duration::from_secs(5)).is_some(),
-        "the stream subscription must replay existing events"
+        "{replays}"
     );
     store
         .append(
-            "c-sub-s",
+            stream,
             ExpectedRevision::Any,
             &[Event::new("LIVE", b"l".to_vec())],
         )
         .unwrap();
-    drain_until(&sub, "LIVE", "subscribe_stream must deliver live events");
+    drain_until(&sub, "LIVE", goes_live);
 }
 
 /// A backward stream read returns the same set as a forward read, reversed -
