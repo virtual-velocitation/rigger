@@ -4524,7 +4524,7 @@ impl RunCtx<'_> {
             id: String::new(),
             run: String::new(),
             kind: gate::Kind::Core,
-            autonomy: gate::Autonomy::parse(raw),
+            autonomy: gate::parse::<gate::Autonomy>(raw),
             history: Vec::new(),
         };
         gate::decide(&probe) == gate::Action::Pause
@@ -8191,7 +8191,7 @@ impl RunCtx<'_> {
                 .get(gid)
                 .cloned()
                 .unwrap_or_default();
-            let kind = gate::Kind::parse(&gc.kind);
+            let kind = gate::parse::<gate::Kind>(&gc.kind);
             // Deferred gates are NOT run inline in the per-unit lifecycle (§4.3): they
             // are held until the run's phase boundary and run ONCE there (see
             // `run_deferred_gates`), so a unit integrates on its inline Core/Elevated
@@ -8694,7 +8694,7 @@ impl RunCtx<'_> {
                     .get(gid)
                     .cloned()
                     .unwrap_or_default();
-                if gate::Kind::parse(&gc.kind).runs_inline() {
+                if gate::parse::<gate::Kind>(&gc.kind).runs_inline() {
                     continue;
                 }
                 seen.insert(gid.clone());
@@ -8726,7 +8726,7 @@ impl RunCtx<'_> {
                         .get(gid)
                         .cloned()
                         .unwrap_or_default();
-                    let kind = gate::Kind::parse(&gc.kind);
+                    let kind = gate::parse::<gate::Kind>(&gc.kind);
                     let g = Gate {
                         id: gid.clone(),
                         run: gc.run,
@@ -8882,7 +8882,7 @@ impl RunCtx<'_> {
         } else {
             stage_autonomy
         };
-        let autonomy = gate::Autonomy::parse(raw);
+        let autonomy = gate::parse::<gate::Autonomy>(raw);
         // Carry the gate's real Kind onto the tracked gate so the ratchet honors
         // its ceiling: an Elevated gate can be promoted to AutoNotify but never
         // proposed for Silent (it always surfaces a notification a human can veto).

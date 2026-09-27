@@ -27,15 +27,32 @@ pub enum Kind {
     Deferred,
 }
 
-impl Kind {
-    pub fn parse(s: &str) -> Kind {
-        match s {
-            "elevated" => Kind::Elevated,
-            "deferred" => Kind::Deferred,
-            _ => Kind::Core,
-        }
-    }
+/// A config keyword enum: each spelled value maps to one variant, and anything else (an
+/// empty / unset value included) falls back to [`Keyword::DEFAULT`]. [`parse`] reads one.
+pub trait Keyword: Copy + 'static {
+    /// The spelled keywords and the variant each names.
+    const KEYWORDS: &'static [(&'static str, Self)];
+    /// The variant every other spelling parses to.
+    const DEFAULT: Self;
+}
 
+/// Parse a config keyword: the variant `s` names in [`Keyword::KEYWORDS`], else
+/// [`Keyword::DEFAULT`].
+pub fn parse<T: Keyword>(s: &str) -> T {
+    T::KEYWORDS
+        .iter()
+        .find(|(word, _)| *word == s)
+        .map_or(T::DEFAULT, |(_, v)| *v)
+}
+
+/// A gate kind parses from `elevated` / `deferred`; anything else is `Core`.
+impl Keyword for Kind {
+    const KEYWORDS: &'static [(&'static str, Self)] =
+        &[("elevated", Kind::Elevated), ("deferred", Kind::Deferred)];
+    const DEFAULT: Self = Kind::Core;
+}
+
+impl Kind {
     /// The highest autonomy this kind of gate is allowed to ratchet to. `Core`
     /// and `Deferred` gates may reach `Silent`; an `Elevated` gate tops out at
     /// `AutoNotify` so its verdicts always surface for a human to veto.
@@ -61,19 +78,17 @@ pub enum Autonomy {
     Silent,
 }
 
-impl Autonomy {
-    /// Parse an autonomy string. An empty / unset value defaults to `AutoNotify`
-    /// (§4.3): an unconfigured gate still runs and integrates unattended; only an
-    /// explicit `manual` pauses a unit for human review. `manual` is therefore
-    /// opt-in, never the silent default.
-    pub fn parse(s: &str) -> Autonomy {
-        match s {
-            "manual" => Autonomy::Manual,
-            "silent" => Autonomy::Silent,
-            _ => Autonomy::AutoNotify,
-        }
-    }
+/// An autonomy string parses from `manual` / `silent`. An empty / unset value defaults to
+/// `AutoNotify` (§4.3): an unconfigured gate still runs and integrates unattended; only an
+/// explicit `manual` pauses a unit for human review. `manual` is therefore opt-in, never the
+/// silent default.
+impl Keyword for Autonomy {
+    const KEYWORDS: &'static [(&'static str, Self)] =
+        &[("manual", Autonomy::Manual), ("silent", Autonomy::Silent)];
+    const DEFAULT: Self = Autonomy::AutoNotify;
+}
 
+impl Autonomy {
     pub fn as_str(&self) -> &'static str {
         match self {
             Autonomy::Manual => "manual",
@@ -1784,16 +1799,28 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert_eq!(resolve_wrapper_name_from("  OFF  ", &empty_path), Ok(None));
     }
 
-    #[test]
-    fn resolve_wrapper_name_auto_probes_known_wrappers_and_finds_one_present() {
+    /// The shared case body: with only `present` on PATH, `requested` resolves to it.
+    fn assert_wrapper_resolves(present: &str, requested: &str, why: &str) {
         let dir = tempfile::tempdir().expect("tempdir");
-        write_executable(dir.path(), "ccache");
+        write_executable(dir.path(), present);
         let path = path_var(&[dir.path()]);
         assert_eq!(
-            resolve_wrapper_name_from("auto", &path),
-            Ok(Some("ccache".to_string())),
-            "auto must find the known wrapper present on PATH"
+            resolve_wrapper_name_from(requested, &path),
+            Ok(Some(present.to_string())),
+            "{why}"
         );
+    }
+
+    test_cases! {
+        resolve_wrapper_name_auto_probes_known_wrappers_and_finds_one_present =>
+            assert_wrapper_resolves("ccache", "auto", "auto must find the known wrapper present on PATH");
+        resolve_wrapper_name_named_wrapper_present_on_path_resolves_to_itself =>
+            assert_wrapper_resolves(
+                "my-custom-wrapper",
+                "my-custom-wrapper",
+                "a NAMED wrapper is not restricted to the known-wrapper list - any binary name \
+                 on PATH resolves",
+            );
     }
 
     #[test]
@@ -1805,19 +1832,6 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             resolve_wrapper_name_from("auto", &path),
             Ok(None),
             "auto finding nothing must DEGRADE (inject nothing), never error"
-        );
-    }
-
-    #[test]
-    fn resolve_wrapper_name_named_wrapper_present_on_path_resolves_to_itself() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        write_executable(dir.path(), "my-custom-wrapper");
-        let path = path_var(&[dir.path()]);
-        assert_eq!(
-            resolve_wrapper_name_from("my-custom-wrapper", &path),
-            Ok(Some("my-custom-wrapper".to_string())),
-            "a NAMED wrapper is not restricted to the known-wrapper list - any binary name \
-             on PATH resolves"
         );
     }
 
@@ -1982,21 +1996,29 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
-    #[test]
-    fn resolve_build_layer_auto_with_an_uncreatable_dir_skips_the_whole_layer() {
+    /// The shared case body: a KNOWN wrapper IS present on PATH, so the wrapper-binary axis
+    /// alone would resolve `Some` - but the cache dir `unusable_dir` makes cannot be used, so
+    /// under `auto` the whole layer must degrade to `None` (mirroring auto finding no wrapper
+    /// at all), never error and never report the layer live.
+    fn assert_auto_skips_the_layer(unusable_dir: fn(&std::path::Path) -> String, why: &str) {
         let dir = tempfile::tempdir().expect("tempdir");
-        // A KNOWN wrapper IS present on PATH, so the wrapper-binary axis alone would
-        // resolve `Some` - but its cache dir cannot be created, so under `auto` the whole
-        // layer must degrade to `None` (mirroring auto finding no wrapper at all), never
-        // error.
         write_executable(dir.path(), "ccache");
         let path = path_var(&[dir.path()]);
-        let blocked = uncreatable_dir(dir.path());
+        let unusable = unusable_dir(dir.path());
         assert_eq!(
-            resolve_build_layer_from("auto", &blocked, &path),
+            resolve_build_layer_from("auto", &unusable, &path),
             Ok(None),
-            "auto must silently skip the whole layer when the cache dir is unusable"
+            "{why}"
         );
+    }
+
+    test_cases! {
+        /// The cache dir cannot be created.
+        resolve_build_layer_auto_with_an_uncreatable_dir_skips_the_whole_layer =>
+            assert_auto_skips_the_layer(
+                uncreatable_dir,
+                "auto must silently skip the whole layer when the cache dir is unusable",
+            );
     }
 
     #[test]
@@ -2069,22 +2091,14 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn resolve_build_layer_auto_with_a_preexisting_unwritable_dir_skips_the_whole_layer() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // A KNOWN wrapper IS present on PATH, so the wrapper-binary axis alone would
-        // resolve `Some` - but its cache dir, though it already EXISTS, cannot be written
-        // into, so under `auto` the whole layer must degrade to `None`, never error and
-        // never report the layer live.
-        write_executable(dir.path(), "ccache");
-        let path = path_var(&[dir.path()]);
-        let unwritable = preexisting_unwritable_dir(dir.path());
-        assert_eq!(
-            resolve_build_layer_from("auto", &unwritable, &path),
-            Ok(None),
-            "auto must silently skip the whole layer when the (pre-existing) cache dir is \
-             not writable"
-        );
+    test_cases! {
+        /// The cache dir already EXISTS but cannot be written into.
+        #[cfg(unix)]
+        resolve_build_layer_auto_with_a_preexisting_unwritable_dir_skips_the_whole_layer =>
+            assert_auto_skips_the_layer(
+                preexisting_unwritable_dir,
+                "auto must silently skip the whole layer when the (pre-existing) cache dir is \
+                 not writable",
+            );
     }
 }
