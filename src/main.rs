@@ -10634,7 +10634,7 @@ fn residue_advisories(
     // cleanly.
     let run_units = read_run_units(&cwd)?;
     let slugs = live_slugs(&run_units.live_branches);
-    let local_branches = local_unit_branches(&cwd);
+    let local_branches = rigger::worktree::unit_branches(&cwd);
     let report = scan_residue(
         &scratch,
         &slugs,
@@ -10952,27 +10952,6 @@ fn reclaim_orphan_scratch(
         // here and reclaimed, if ever, by the run-level fixpoint/teardown - never this backstop.
     }
     removed
-}
-
-/// The local `rigger/u/*` branches in the repo governing `cwd`, via `git for-each-ref`.
-/// Empty when git is unavailable or `cwd` is not a repo (nothing to flag then).
-fn local_unit_branches(cwd: &Path) -> Vec<String> {
-    let out = subprocess::git_in(cwd)
-        .args([
-            "for-each-ref",
-            "--format=%(refname:short)",
-            "refs/heads/rigger/u/",
-        ])
-        .output();
-    match out {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(str::to_string)
-            .collect(),
-        _ => Vec::new(),
-    }
 }
 
 /// Scan `scratch_root` (a filesystem read, no mutation) plus the given local `rigger/u/*`

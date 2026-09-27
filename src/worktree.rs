@@ -1552,28 +1552,28 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
-/// Every unit branch (`rigger/u/*`) currently present in `repo`, sorted for determinism.
-/// Used by the conductor's land-refused lesson (spec 103 criterion 8) to search every unit's
-/// branch - not just the currently-live/ready set - for one whose tip already carries the
-/// exact content a refused landing was blocked by, proof the blocked local content is not
-/// lost work.
-pub fn unit_branches(repo: &str) -> Vec<String> {
-    let out = match run_git(
-        repo,
-        &[
+/// Every unit branch (`rigger/u/*`) currently present in `repo`, sorted for determinism, via
+/// `git for-each-ref`. Empty when git is unavailable or `repo` is not a repository. Used by the
+/// conductor's land-refused lesson (spec 103 criterion 8) to search every unit's branch for one
+/// whose tip already carries the content a refused landing was blocked by, and by `rigger
+/// validate`'s residue scan to flag unit branches no live unit owns.
+pub fn unit_branches(repo: impl AsRef<std::ffi::OsStr>) -> Vec<String> {
+    let out = crate::subprocess::git_in(repo)
+        .args([
             "for-each-ref",
             "--format=%(refname:short)",
             "refs/heads/rigger/u/",
-        ],
-    ) {
-        Ok(out) => out,
-        Err(_) => return Vec::new(),
+        ])
+        .output();
+    let mut branches: Vec<String> = match out {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
     };
-    let mut branches: Vec<String> = out
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
     branches.sort();
     branches
 }

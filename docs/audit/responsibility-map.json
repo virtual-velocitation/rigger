@@ -8229,7 +8229,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "3d99524b44fc6476"
+    "content_hash": "d2aebb8b34037e99"
   },
   {
     "file": "src/main.rs",
@@ -8270,14 +8270,6 @@
     "proposed_module": "main::store",
     "reason": "name contains \"reclaim_\" (store hygiene); grouped under `main::store`.",
     "content_hash": "33eadfdca27debed"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "local_unit_branches",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "91ff3e48978b0231"
   },
   {
     "file": "src/main.rs",
