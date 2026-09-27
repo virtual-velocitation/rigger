@@ -24,6 +24,7 @@
 //! own call chains.
 
 mod common;
+use common::git::git_ok;
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -390,13 +391,7 @@ fn sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_through_the_real
     let repo = tempfile::tempdir().unwrap();
     let repo_path = repo.path().canonicalize().unwrap();
     init_repo(&repo_path);
-    assert!(Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["checkout", "-b", "rigger-run"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(&repo_path, &["checkout", "-b", "rigger-run"]);
 
     let repo_str = repo_path.to_str().unwrap().to_string();
     let root = scratch_root(&repo_str, "", None);

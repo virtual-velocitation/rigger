@@ -80,6 +80,7 @@
 //! most once, and the two modes composing in EITHER order.
 
 mod common;
+use common::git::run_git;
 
 use common::cli::keyed;
 use common::cli::run_rigger;
@@ -2328,12 +2329,7 @@ fn a_compacted_run_stream_still_answers_the_couriers_compare_and_append() {
 /// does not succeed - a silently skipped `commit` would leave `--against HEAD` with no rev to
 /// check out, and the test would then be asserting on an error message.
 fn git_in(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .expect("run git in the throwaway repo");
+    let out = run_git(root, args);
     assert!(
         out.status.success(),
         "git {args:?} must succeed in the throwaway repo: {}",

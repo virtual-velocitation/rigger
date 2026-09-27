@@ -2976,6 +2976,33 @@ fn sweep_cluster_named<'a>(clusters: &'a [DupCluster], name: &str) -> Option<&'a
     clusters.iter().find(|c| c.note.starts_with(&prefix))
 }
 
+/// The process-spawn port: the ONE production module that constructs a `Command`. Every other
+/// production spawn routes through it, so the `Command::new` sweep can never reopen in `src/`.
+const PROCESS_SPAWN_PORT: &str = "src/subprocess.rs";
+
+/// Every `Command::new` call site in production code outside [`PROCESS_SPAWN_PORT`]: a site in a
+/// production source file, not in a wholly-test file (`whole_file_test`) and not inside a test
+/// fn or test mod ([`test_line_ranges`]).
+fn production_spawns_outside_the_port(
+    files: &[FileScan],
+    whole_file_test: &BTreeSet<String>,
+) -> Vec<DupSite> {
+    find_ident_path_call_sites(files, "Command", &["new"])
+        .into_iter()
+        .filter(|s| {
+            let Some(f) = files.iter().find(|f| f.rel == s.file) else {
+                return false;
+            };
+            s.file != PROCESS_SPAWN_PORT
+                && is_production_source(&s.file)
+                && !whole_file_test.contains(&s.file)
+                && !test_line_ranges(f)
+                    .iter()
+                    .any(|&(a, b)| s.start_line >= a && s.start_line <= b)
+        })
+        .collect()
+}
+
 fn build_sweep_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupCluster> {
     vec![
         sweep_cluster(
@@ -5198,28 +5225,30 @@ fn render_section_6() -> String {
         - Unblocks: the biggest single site-count reduction available anywhere in the \
         duplication catalog.\n\n",
     ));
+    let port_n = command_new
+        .sites
+        .iter()
+        .filter(|s| s.file == PROCESS_SPAWN_PORT)
+        .count();
+    let test_n = command_n - port_n;
     out.push_str(&format!(
-        "#### 11. Consolidate the {command_n} `Command::new` call sites (`{command_id}`) behind one \
-        injected process-spawn port\n\n",
+        "#### 11. The {command_n} `Command::new` call sites (`{command_id}`) - production spawns \
+        already route through one process-spawn port\n\n",
     ));
     out.push_str(&format!(
-        "- Scope: one process-spawn seam every `Command::new` site routes through (the \
-        cluster's own `proposed_home`).\n\
-        - Files: spans `src/budget.rs`, `src/conductor.rs`, `src/dash.rs`, \
-        `src/driver/cli.rs`, `src/gate.rs`, `src/main.rs`, `src/worktree.rs` plus many \
-        `tests/` files - full site list in `docs/audit/duplication-catalog.json` under \
-        `{command_id}`.\n\
-        - Expected line delta: negative, though smaller per-site than `{rigger_id}` since each \
-        `Command::new` call already carries real configuration (args, env, cwd) that must \
-        move with it, not just a literal.\n\
-        - Risk: medium-high - several of these {command_n} sites sit inside `src/budget.rs`'s and \
-        `src/conductor.rs`'s already-hardened process-lifecycle code (spec 78's no-os-kill \
-        discipline); the follow-up spec must preserve every existing handle-bound-kill \
-        invariant at each site it touches, and the no-os-kill gate is the acceptance bar, \
-        not merely `cargo test`.\n\
-        - Unblocks: one seam instead of {command_n} independent constructions - the next \
-        process-spawning concern added anywhere in the crate reuses it instead of adding \
-        one more.\n\n",
+        "- Scope: every production spawn routes through `{PROCESS_SPAWN_PORT}` (the cluster's own \
+        `proposed_home`), and the audit's \
+        `the_process_spawn_port_is_the_only_production_command_new_caller` gate refuses a new \
+        direct construction anywhere else in production code. The {port_n} site(s) in \
+        `{PROCESS_SPAWN_PORT}` are the port itself; the other {test_n} are test code spawning \
+        git, shells and the product binary.\n\
+        - Files: `{PROCESS_SPAWN_PORT}` plus test code in `src/` and `tests/` - full site list in \
+        `docs/audit/duplication-catalog.json` under `{command_id}`.\n\
+        - Expected line delta: none left in production; a test site that repeats a shared \
+        fixture's spawn routes through that fixture instead.\n\
+        - Risk: low - no production spawn is left to move, and the gate keeps it that way.\n\
+        - Unblocks: the next process-spawning concern added anywhere in the crate reuses the \
+        port instead of constructing its own `Command`.\n\n",
     ));
     out.push_str(&format!(
         "#### 12. Consolidate the {conn_n} sqlite `Connection::open` call sites (`{conn_id}`)\n\n",
@@ -5828,6 +5857,22 @@ fn collect_files_with_content(root: &Path, dirs: &[String]) -> Vec<(String, Stri
         .collect()
 }
 
+/// `f`'s test-code line spans: every test fn's span AND every test mod's span, so an item at a
+/// `#[cfg(test)] mod`'s own top level (outside every fn body) still reads as test code.
+fn test_line_ranges(f: &FileScan) -> Vec<(usize, usize)> {
+    f.fns
+        .iter()
+        .filter(|sf| sf.is_test)
+        .map(|sf| (sf.start_line, sf.end_line))
+        .chain(
+            f.mod_spans
+                .iter()
+                .filter(|m| m.is_test)
+                .map(|m| (m.start_line, m.end_line)),
+        )
+        .collect()
+}
+
 /// Every identifier occurrence across `files` (whole `src`+`tests` tree, per [`scan_tree`]),
 /// indexed by name - computed ONCE and shared by every candidate's lookup. `whole_file_test`
 /// (from [`resolve_out_of_line_test_files`], `src/`-scoped) forces every fn in a wholly-test
@@ -5847,18 +5892,7 @@ fn all_ident_ref_sites(
         // tests { .. }`'s own top level (outside every fn body) is still test code. A
         // wholly-test FILE (`file_wholly_test`) is handled separately below, directly on
         // `production`, rather than by synthesizing a whole-file span here.
-        let test_ranges: Vec<(usize, usize)> = f
-            .fns
-            .iter()
-            .filter(|sf| sf.is_test)
-            .map(|sf| (sf.start_line, sf.end_line))
-            .chain(
-                f.mod_spans
-                    .iter()
-                    .filter(|m| m.is_test)
-                    .map(|m| (m.start_line, m.end_line)),
-            )
-            .collect();
+        let test_ranges = test_line_ranges(f);
         let in_test_range = |line: usize| test_ranges.iter().any(|&(s, e)| line >= s && line <= e);
         let is_production_line = |line: usize| is_src && !file_wholly_test && !in_test_range(line);
 
@@ -8184,6 +8218,41 @@ mod tests {
         write_fixture(dir.path(), "src/a.rs", "fn run() {\n    Other::new();\n}\n");
         let files = scan_tree(dir.path());
         assert!(find_ident_path_call_sites(&files, "Command", &["new"]).is_empty());
+    }
+
+    /// The port gate's detection: a production fn's `Command::new` is flagged, while the same
+    /// call inside a `#[cfg(test)]` mod, or inside the port module itself, is not.
+    #[test]
+    fn a_production_spawn_outside_the_port_is_flagged_and_test_or_port_spawns_are_not() {
+        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
+        let spawn = "fn run() {\n    let _ = std::process::Command::new(\"true\").status();\n}\n";
+        write_fixture(dir.path(), "src/a.rs", spawn);
+        write_fixture(dir.path(), PROCESS_SPAWN_PORT, spawn);
+        write_fixture(
+            dir.path(),
+            "src/b.rs",
+            &format!("#[cfg(test)]\nmod tests {{\n    {spawn}}}\n"),
+        );
+        let files = scan_tree(dir.path());
+        let hits = production_spawns_outside_the_port(&files, &BTreeSet::new());
+        let files_hit: Vec<&str> = hits.iter().map(|s| s.file.as_str()).collect();
+        assert_eq!(files_hit, vec!["src/a.rs"], "{hits:?}");
+    }
+
+    /// THE PROCESS-SPAWN PORT GATE: on the real tree, [`PROCESS_SPAWN_PORT`] is the only
+    /// production caller of `Command::new` - every production spawn routes through it.
+    #[test]
+    fn the_process_spawn_port_is_the_only_production_command_new_caller() {
+        let outside: Vec<String> =
+            production_spawns_outside_the_port(real_files(), real_whole_file_test_set())
+                .iter()
+                .map(|s| format!("{}:{}", s.file, s.start_line))
+                .collect();
+        assert!(
+            outside.is_empty(),
+            "production Command::new sites outside {PROCESS_SPAWN_PORT} - route each through the \
+             port: {outside:?}"
+        );
     }
 
     #[test]

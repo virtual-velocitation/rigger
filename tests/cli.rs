@@ -16,6 +16,7 @@ use std::process::Command;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::git::run_git;
 
 use common::cli::plant_stale_marker;
 use common::cli::run_rigger;
@@ -5903,12 +5904,7 @@ stages:
     // step-start sweep (spec 64 criterion 4, unmerged here) can see an undiverged tip.
     std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
     for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(&wt_dir)
-            .status()
-            .expect("git must be runnable")
-            .success();
+        let ok = run_git(&wt_dir, args).status.success();
         assert!(
             ok,
             "git {args:?} must succeed committing the test's setup diff"
@@ -6343,12 +6339,7 @@ stages:
     );
     std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
     for args in [&["add", "-A"][..], &["commit", "-q", "-m", "wip"]] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(&wt_dir)
-            .status()
-            .expect("git must be runnable")
-            .success();
+        let ok = run_git(&wt_dir, args).status.success();
         assert!(
             ok,
             "git {args:?} must succeed committing the test's setup diff"
@@ -11835,21 +11826,15 @@ fn step_missing_files_refusal_recovery_anchors_on_the_corrected_base() {
     );
     // The run branch is anchored where the spec's path exists: src/lib.rs is in its tree
     // (it is absent from `wrong`), so the run did NOT stay stuck on the wrong base.
-    let run_has_lib = Command::new("git")
-        .args(["cat-file", "-e", "rigger-run:src/lib.rs"])
-        .current_dir(root)
-        .status()
-        .expect("git must run")
+    let run_has_lib = run_git(root, &["cat-file", "-e", "rigger-run:src/lib.rs"])
+        .status
         .success();
     assert!(
         run_has_lib,
         "the run branch must be anchored on the corrected base `right` (which has src/lib.rs)"
     );
-    let wrong_has_lib = Command::new("git")
-        .args(["cat-file", "-e", "wrong:src/lib.rs"])
-        .current_dir(root)
-        .status()
-        .expect("git must run")
+    let wrong_has_lib = run_git(root, &["cat-file", "-e", "wrong:src/lib.rs"])
+        .status
         .success();
     assert!(
         !wrong_has_lib,
@@ -11877,12 +11862,12 @@ fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
 
     // Simulate a prior step integrating a unit onto the run branch.
     assert!(
-        Command::new("git")
-            .args(["commit", "--allow-empty", "-q", "-m", "integrated unit"])
-            .current_dir(root)
-            .status()
-            .expect("git must run")
-            .success(),
+        run_git(
+            root,
+            &["commit", "--allow-empty", "-q", "-m", "integrated unit"]
+        )
+        .status
+        .success(),
         "seeding an integrated commit must succeed"
     );
     let integrated_tip =
@@ -15431,11 +15416,8 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
         ".rigger/dash.marker",
         ".rigger/dash.attempt",
     ] {
-        let ignored = Command::new("git")
-            .args(["check-ignore", "-q", breadcrumb])
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
+        let ignored = run_git(root, &["check-ignore", "-q", breadcrumb])
+            .status
             .success();
         assert!(
             ignored,

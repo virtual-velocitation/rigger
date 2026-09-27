@@ -295,20 +295,115 @@ mod tests {
         }
     }
 
-    #[test]
-    fn write_then_read_round_trips_a_live_entry() {
+    /// Register `inst` in a fresh instances dir, then read it back through `read`: the entry is
+    /// returned verbatim exactly when `returned` (`why`), and its file survives the read
+    /// exactly when `kept`.
+    fn assert_read_back(
+        inst: Instance,
+        read: impl Fn(&Path) -> Vec<Instance>,
+        returned: bool,
+        kept: bool,
+        why: &str,
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let dir = instances_dir(tmp.path());
-        let inst = local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 1_000);
-
         let path = write(&dir, &inst).expect("write");
         assert!(path.exists(), "entry file exists after write");
-
-        let live = read_live(&dir, 1_000, DEFAULT_IDLE_MS);
+        let expected = if returned { vec![inst] } else { vec![] };
+        assert_eq!(read(&dir), expected, "{why}");
         assert_eq!(
-            live,
-            vec![inst],
-            "the live reader returns the entry verbatim"
+            path.exists(),
+            kept,
+            "{why}: the entry file is kept exactly when expected"
+        );
+    }
+
+    crate::test_cases! {
+        write_then_read_round_trips_a_live_entry: assert_read_back(
+            local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 1_000),
+            |dir| read_live(dir, 1_000, DEFAULT_IDLE_MS),
+            true,
+            true,
+            "the live reader returns the entry verbatim",
+        );
+        /// now is well past the idle window from the heartbeat at 0 => stale => pruned: the
+        /// stale entry is not returned, and its file is pruned from disk by the reader.
+        a_reader_prunes_a_stale_heartbeat: assert_read_back(
+            local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 0),
+            |dir| read_live(dir, DEFAULT_IDLE_MS + 1, DEFAULT_IDLE_MS),
+            false,
+            false,
+            "the stale entry is not returned",
+        );
+        /// Spec 62 criterion 5 round 4 (adv-u62c5r4-known-roots-prune-race-with-instances-provider):
+        /// `read_live`'s prune side effect is only safe from the self-reap watcher's OWN
+        /// read_all-then-read_live tick, which is the sole place `known_roots` is ever seeded
+        /// from. Every OTHER concurrent reader (a `/api/instances` poll, an attach resolve, the
+        /// `reset --derived` live-writer check) must filter the SAME staleness bound WITHOUT
+        /// deleting - otherwise one of those reads can win a race against the watcher's own
+        /// first tick and permanently erase a foreign project's only route into `known_roots`,
+        /// even though that project's own agent is still live. Well past the idle window,
+        /// `read_live` would prune this outright; deletion is reserved exclusively for the
+        /// watcher's own read_live tick.
+        read_live_no_prune_filters_a_stale_heartbeat_but_never_deletes_its_file: assert_read_back(
+            local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 0),
+            |dir| read_live_no_prune(dir, DEFAULT_IDLE_MS + 1, DEFAULT_IDLE_MS),
+            false,
+            true,
+            "a stale entry is filtered from the returned set, exactly like read_live",
+        );
+        read_live_no_prune_still_returns_a_fresh_entry: assert_read_back(
+            local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 1_000),
+            |dir| read_live_no_prune(dir, 1_500, DEFAULT_IDLE_MS),
+            true,
+            true,
+            "a within-window heartbeat is returned verbatim, same as read_live",
+        );
+        /// Spec 62 criterion 5 round 2: `read_all` is the non-pruning, non-filtering sibling of
+        /// `read_live` - a project whose registry heartbeat has aged out (the exact
+        /// courier-cadence-lapse gap criterion 5 exists to survive) must still be discoverable by
+        /// its `root`, not silently dropped the way `read_live`'s freshness filter would. Well
+        /// past the idle window, `read_live` would prune this entry outright; `read_all` must
+        /// never delete an entry, stale or not.
+        read_all_returns_a_stale_entry_read_live_would_have_pruned_and_never_deletes_it:
+            assert_read_back(
+                local("/home/dev/proj-b", "/home/dev/proj-b/.rigger/events.db", 0),
+                read_all,
+                true,
+                true,
+                "a stale-heartbeat entry is still returned verbatim by read_all",
+            );
+    }
+
+    /// Projects `/a` and `/b` registered with heartbeats `a_hb` and `b_hb` are both returned by
+    /// `read`, as two distinct entries (`why`).
+    fn assert_both_roots_read(
+        a_hb: u64,
+        b_hb: u64,
+        read: impl Fn(&Path) -> Vec<Instance>,
+        why: &str,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = instances_dir(tmp.path());
+        write(&dir, &local("/a", "/a/.rigger/events.db", a_hb)).unwrap();
+        write(&dir, &local("/b", "/b/.rigger/events.db", b_hb)).unwrap();
+        let mut roots: Vec<String> = read(&dir).into_iter().map(|i| i.root).collect();
+        roots.sort();
+        assert_eq!(roots, vec!["/a".to_string(), "/b".to_string()], "{why}");
+    }
+
+    crate::test_cases! {
+        two_projects_get_distinct_entries: assert_both_roots_read(
+            5,
+            5,
+            |dir| read_live(dir, 5, DEFAULT_IDLE_MS),
+            "two projects get distinct entries",
+        );
+        read_all_returns_every_registered_root_regardless_of_freshness: assert_both_roots_read(
+            0,
+            u64::MAX,
+            read_all,
+            "read_all returns a fresh AND a hopelessly stale entry alike",
         );
     }
 
@@ -332,36 +427,6 @@ mod tests {
     }
 
     #[test]
-    fn two_projects_get_distinct_entries() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = instances_dir(tmp.path());
-        write(&dir, &local("/a", "/a/.rigger/events.db", 5)).unwrap();
-        write(&dir, &local("/b", "/b/.rigger/events.db", 5)).unwrap();
-        let mut roots: Vec<String> = read_live(&dir, 5, DEFAULT_IDLE_MS)
-            .into_iter()
-            .map(|i| i.root)
-            .collect();
-        roots.sort();
-        assert_eq!(roots, vec!["/a".to_string(), "/b".to_string()]);
-    }
-
-    #[test]
-    fn a_reader_prunes_a_stale_heartbeat() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = instances_dir(tmp.path());
-        let inst = local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 0);
-        let path = write(&dir, &inst).unwrap();
-
-        // now is well past the idle window from the heartbeat at 0 => stale => pruned.
-        let live = read_live(&dir, DEFAULT_IDLE_MS + 1, DEFAULT_IDLE_MS);
-        assert!(live.is_empty(), "the stale entry is not returned");
-        assert!(
-            !path.exists(),
-            "the stale entry file is pruned from disk by the reader"
-        );
-    }
-
-    #[test]
     fn a_fresh_heartbeat_survives_the_reader() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = instances_dir(tmp.path());
@@ -377,88 +442,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = instances_dir(tmp.path()).join("does-not-exist");
         assert!(read_live(&dir, 0, DEFAULT_IDLE_MS).is_empty());
-    }
-
-    #[test]
-    fn read_live_no_prune_filters_a_stale_heartbeat_but_never_deletes_its_file() {
-        // Spec 62 criterion 5 round 4 (adv-u62c5r4-known-roots-prune-race-with-instances-provider):
-        // `read_live`'s prune side effect is only safe from the self-reap watcher's OWN
-        // read_all-then-read_live tick, which is the sole place `known_roots` is ever seeded from.
-        // Every OTHER concurrent reader (a `/api/instances` poll, an attach resolve, the
-        // `reset --derived` live-writer check) must filter the SAME staleness bound WITHOUT
-        // deleting - otherwise one of those reads can win a race against the watcher's own
-        // first tick and permanently erase a foreign project's only route into `known_roots`,
-        // even though that project's own agent is still live.
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = instances_dir(tmp.path());
-        let inst = local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 0);
-        let path = write(&dir, &inst).unwrap();
-
-        // Well past the idle window: `read_live` would prune this outright.
-        let live = read_live_no_prune(&dir, DEFAULT_IDLE_MS + 1, DEFAULT_IDLE_MS);
-        assert!(
-            live.is_empty(),
-            "a stale entry is filtered from the returned set, exactly like read_live"
-        );
-        assert!(
-            path.exists(),
-            "read_live_no_prune must never delete a stale entry's file - deletion is reserved \
-             exclusively for the watcher's own read_live tick"
-        );
-    }
-
-    #[test]
-    fn read_live_no_prune_still_returns_a_fresh_entry() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = instances_dir(tmp.path());
-        let inst = local("/home/dev/proj", "/home/dev/proj/.rigger/events.db", 1_000);
-        let path = write(&dir, &inst).unwrap();
-        let live = read_live_no_prune(&dir, 1_500, DEFAULT_IDLE_MS);
-        assert_eq!(
-            live,
-            vec![inst],
-            "a within-window heartbeat is returned verbatim, same as read_live"
-        );
-        assert!(path.exists());
-    }
-
-    #[test]
-    fn read_all_returns_a_stale_entry_read_live_would_have_pruned_and_never_deletes_it() {
-        // Spec 62 criterion 5 round 2: `read_all` is the non-pruning, non-filtering sibling of
-        // `read_live` - a project whose registry heartbeat has aged out (the exact
-        // courier-cadence-lapse gap criterion 5 exists to survive) must still be discoverable by
-        // its `root`, not silently dropped the way `read_live`'s freshness filter would.
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = instances_dir(tmp.path());
-        let inst = local("/home/dev/proj-b", "/home/dev/proj-b/.rigger/events.db", 0);
-        let path = write(&dir, &inst).unwrap();
-
-        // Well past the idle window: `read_live` would prune this entry outright.
-        let all = read_all(&dir);
-        assert_eq!(
-            all,
-            vec![inst],
-            "a stale-heartbeat entry is still returned verbatim by read_all"
-        );
-        assert!(
-            path.exists(),
-            "read_all must never delete an entry, stale or not"
-        );
-    }
-
-    #[test]
-    fn read_all_returns_every_registered_root_regardless_of_freshness() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = instances_dir(tmp.path());
-        write(&dir, &local("/a", "/a/.rigger/events.db", 0)).unwrap();
-        write(&dir, &local("/b", "/b/.rigger/events.db", u64::MAX)).unwrap();
-        let mut roots: Vec<String> = read_all(&dir).into_iter().map(|i| i.root).collect();
-        roots.sort();
-        assert_eq!(
-            roots,
-            vec!["/a".to_string(), "/b".to_string()],
-            "read_all returns a fresh AND a hopelessly stale entry alike"
-        );
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //!
 //! WHAT THE IMPLEMENTER'S OWN TEST ALREADY COVERS (not re-proven here).
 //! `src/conductor.rs`'s own `mod tests` proves the NEW fold and lookup
-//! (`landed_from_log`/`RunCtx::landed`/`RunCtx::landed_sha_for`) drive the fixed entry-level
+//! (`landings_from_log`/`RunCtx::landed`/`RunCtx::landed_sha_for`) drive the fixed entry-level
 //! fast path for ONE shape: a single `run()` call against a store HAND-SEEDED with the exact
 //! four events a real prior window would have left (`UnitStarted`, `verified`, `reviewed`,
 //! `integrate-landed` carrying the new `pre_merge` evidence field) - proving that IF the log
@@ -35,7 +35,7 @@
 //! GAP 2 (event type / serialized form - back-compat, the OTHER half of the same probe hit),
 //! `a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavior`. Every
 //! `integrate-landed` row a binary built BEFORE this fix ever recorded carries no `pre_merge`
-//! field at all (the field is new); `landed_from_log`'s own doc comment asserts such a row "is
+//! field at all (the field is new); `landings_from_log`'s own doc comment asserts such a row "is
 //! skipped rather than guessed" so "a unit whose ONLY landed row predates the fix keeps taking
 //! the true no-op short circuit it always did, no regression" - a claim the diff states but
 //! never proves anywhere. This hand-seeds exactly that legacy shape (the one shape GAP 1 never
@@ -45,6 +45,7 @@
 //! `commit` sentinel a pre-fix binary always reported for this shape.
 
 mod common;
+use common::git::run_git;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
@@ -353,7 +354,7 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_
 // ============================================================================================
 // GAP 2: a landed row recorded by a binary BEFORE this fix shipped (no `pre_merge` in its
 // evidence) must not crash or misresolve a resumed call - it must keep the exact pre-fix
-// true-no-op behavior, the back-compat contract `landed_from_log`'s own doc comment asserts
+// true-no-op behavior, the back-compat contract `landings_from_log`'s own doc comment asserts
 // but never proves.
 // ============================================================================================
 
@@ -370,12 +371,10 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
     // then remove the checkout - the branch ref survives as the durable checkpoint.
     let seed_wt = tempfile::tempdir().unwrap();
     let seed_dir = seed_wt.path().to_str().unwrap().to_string();
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["worktree", "add", "-b", &branch, &seed_dir, "HEAD"])
-        .output()
-        .unwrap();
+    let out = run_git(
+        &repo_path,
+        &["worktree", "add", "-b", &branch, &seed_dir, "HEAD"],
+    );
     assert!(
         out.status.success(),
         "test setup: git worktree add must succeed: {}",
@@ -384,12 +383,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
     std::fs::write(Path::new(&seed_dir).join("feature.rs"), "fn feature() {}\n").unwrap();
     git_commit_all(&seed_dir, "rigger: prior window work");
     let unit_sha = git_stdout(&seed_dir, &["rev-parse", "HEAD"]);
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["worktree", "remove", "--force", &seed_dir])
-        .output()
-        .unwrap();
+    let out = run_git(&repo_path, &["worktree", "remove", "--force", &seed_dir]);
     assert!(
         out.status.success(),
         "test setup: git worktree remove must succeed"
@@ -397,12 +391,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
 
     // Simulate `Worktree::land`'s fast-forward already having happened: the run branch (the
     // checked-out repo) is ALREADY at the unit's own landed tip.
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["merge", "--ff-only", &branch])
-        .output()
-        .unwrap();
+    let out = run_git(&repo_path, &["merge", "--ff-only", &branch]);
     assert!(
         out.status.success(),
         "test setup: the fast-forward must succeed: {out:?}"
@@ -440,7 +429,7 @@ fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavi
         ),
         // THE LEGACY SHAPE: a real `record_landed` write from a binary built BEFORE this
         // criterion - `evidence` carries only `sha`, never `pre_merge` (the field did not
-        // exist yet). `landed_from_log` must skip this row rather than guess, and the caller
+        // exist yet). `landings_from_log` must skip this row rather than guess, and the caller
         // must fall through to the SAME true no-op short circuit it always took.
         Event::new(
             ledger::TYPE_UNIT_STATUS,

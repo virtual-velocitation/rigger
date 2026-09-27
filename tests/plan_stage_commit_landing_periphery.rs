@@ -147,7 +147,7 @@
 //!     wrapper over `integrate_plan_commits_inner` that tags EVERY hard Err with a new, private
 //!     `PLAN_LANDING_MARKER` sentinel (the fifth alongside the pre-existing PARKED/BUDGET/
 //!     DEGENERATE/MISMATCH markers), and `RunCtx::run_wave` gained a matching `Err(e) if
-//!     is_plan_landing_failed(&e)` arm that propagates the halt loudly but records NO per-unit
+//!     carries_marker(&e, PLAN_LANDING_MARKER)` arm that propagates the halt loudly but records NO per-unit
 //!     lesson and charges NO attempt - fixing `adv-u88c4-r7-plan-commit-errors-still-carry-no-
 //!     infra-fault-marker`, the same structural gap named at round 2 and round 4 and never
 //!     closed by three successive git-level-only fixes to the trigger. The implementer's own
@@ -196,6 +196,7 @@
 //!     and 13 above already established for this file's other `Worktree` methods.
 
 mod common;
+use common::git::{commit_at_fixed_date, git_ok, git_out, init_repo as init_repo_at, run_git};
 
 use common::fixtures::agent;
 use rigger::conductor::{
@@ -218,48 +219,8 @@ use std::sync::Mutex;
 /// ultimately branches from or merges into.
 fn init_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    // A local closure over four direct calls, not a loop over an array literal
-    // (kept distinct in SHAPE from the crate's own internal `init_repo` test
-    // helper it otherwise mirrors, so the two never collide as a mechanical
-    // near-duplicate pair and silently renumber the duplication catalog's
-    // unrelated ids - sdet-u88c2-audit-cascade-root-cause's fix pattern).
-    let step = |args: &[&str]| {
-        assert!(std::process::Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .status()
-            .unwrap()
-            .success());
-    };
-    step(&["init", "-q"]);
-    step(&["config", "user.email", "t@example.com"]);
-    step(&["config", "user.name", "t"]);
-    step(&["commit", "--allow-empty", "-q", "-m", "init"]);
+    init_repo_at(dir.path());
     dir
-}
-
-/// Run `git <args>` in `dir`, returning trimmed stdout; panics with stderr on failure. For
-/// read-only plumbing only (`rev-parse`, `diff-tree`, ...) - the driver below never uses this
-/// for its own commits, since a RETRY must tolerate "nothing to commit" (see its doc comment).
-fn run_git(dir: &str, args: &[&str]) -> String {
-    let out = match std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-    {
-        Ok(out) => out,
-        Err(e) => panic!("git must be installed and runnable: {e}"),
-    };
-    if !out.status.success() {
-        panic!(
-            "git {args:?} in {dir} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 /// Drives a `produces` (planner) stage that commits its own paths directly with its OWN git
@@ -376,11 +337,7 @@ impl AgentDriver for PlanAmendDriver {
                     }
                     std::fs::write(&full, content).unwrap();
                 }
-                let _ = std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(&opts.dir)
-                    .args(["add", "-A"])
-                    .output();
+                let _ = run_git(&opts.dir, &["add", "-A"]);
                 let msg = format!(
                     "amend {}",
                     group
@@ -389,23 +346,13 @@ impl AgentDriver for PlanAmendDriver {
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
-                let _ = std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(&opts.dir)
-                    .args(["commit", "-q", "-m", &msg])
-                    .output();
+                let _ = run_git(&opts.dir, &["commit", "-q", "-m", &msg]);
             }
             if !self.commits.is_empty() {
-                if let Ok(out) = std::process::Command::new("git")
-                    .arg("-C")
-                    .arg(&opts.dir)
-                    .args(["rev-parse", "HEAD"])
-                    .output()
-                {
-                    if out.status.success() {
-                        *self.committed_sha.lock().unwrap() =
-                            Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
-                    }
+                let out = run_git(&opts.dir, &["rev-parse", "HEAD"]);
+                if out.status.success() {
+                    *self.committed_sha.lock().unwrap() =
+                        Some(String::from_utf8_lossy(&out.stdout).trim().to_string());
                 }
             }
         }
@@ -511,7 +458,7 @@ fn multiple_specs_commits_land_in_order_and_the_next_worktree_sees_both() {
 
     // Independent, real-git proof of ORDER: the projected `commit` is the NEWEST landed
     // sha, whose own diff is the SECOND amendment; its parent's diff is the FIRST.
-    let newest_files = run_git(
+    let newest_files = git_out(
         &repo_path,
         &["diff-tree", "--no-commit-id", "--name-only", "-r", &commit],
     );
@@ -519,8 +466,8 @@ fn multiple_specs_commits_land_in_order_and_the_next_worktree_sees_both() {
         newest_files.contains("specs/91-second.md"),
         "the newest landed commit must be the second amendment; files: {newest_files:?}"
     );
-    let parent = run_git(&repo_path, &["rev-parse", &format!("{commit}^")]);
-    let parent_files = run_git(
+    let parent = git_out(&repo_path, &["rev-parse", &format!("{commit}^")]);
+    let parent_files = git_out(
         &repo_path,
         &["diff-tree", "--no-commit-id", "--name-only", "-r", &parent],
     );
@@ -556,7 +503,7 @@ fn multiple_specs_commits_land_in_order_and_the_next_worktree_sees_both() {
 fn unit_integrated_shas_field_round_trips_through_a_reopened_store_and_tolerates_legacy_events() {
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
-    let init_sha = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let init_sha = git_out(&repo_path, &["rev-parse", "HEAD"]);
 
     let mut cfg = Config::default();
     // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
@@ -646,7 +593,7 @@ fn unit_integrated_shas_field_round_trips_through_a_reopened_store_and_tolerates
 
     // The recorded order matches the run branch's OWN real git history, oldest-first -
     // the exact order `commits_since_base` / `cherry_pick_onto_run_branch` document.
-    let real_order: Vec<String> = run_git(
+    let real_order: Vec<String> = git_out(
         &repo_path,
         &["rev-list", "--reverse", &format!("{init_sha}..HEAD")],
     )
@@ -757,20 +704,8 @@ fn plan_stage_conflicting_amendment_escalates_with_the_integrate_conflict_cause(
         "planner amend\n",
     )
     .unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(seed_dir.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap()
-        .success());
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(seed_dir.path())
-        .args(["commit", "-q", "-m", "planner amend"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(seed_dir.path(), &["add", "-A"]);
+    git_ok(seed_dir.path(), &["commit", "-q", "-m", "planner amend"]);
     seed.remove().unwrap(); // only the transient dir goes; the branch persists.
 
     // Meanwhile the run branch independently gains a CONFLICTING concurrent operator edit
@@ -781,20 +716,8 @@ fn plan_stage_conflicting_amendment_escalates_with_the_integrate_conflict_cause(
         "operator edit\n",
     )
     .unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap()
-        .success());
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["commit", "-q", "-m", "operator edit"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(repo.path(), &["add", "-A"]);
+    git_ok(repo.path(), &["commit", "-q", "-m", "operator edit"]);
 
     let mut cfg = Config::default();
     // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
@@ -854,7 +777,7 @@ fn plan_stage_conflicting_amendment_escalates_with_the_integrate_conflict_cause(
 fn cherry_pick_onto_run_branch_public_api_no_op_on_empty_shas() {
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
-    let head_before = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let head_before = git_out(&repo_path, &["rev-parse", "HEAD"]);
 
     let wt_dir = tempfile::tempdir().unwrap();
     let wt = Worktree::create(
@@ -883,7 +806,7 @@ fn cherry_pick_onto_run_branch_public_api_no_op_on_empty_shas() {
         }
     }
     assert_eq!(
-        run_git(&repo_path, &["rev-parse", "HEAD"]),
+        git_out(&repo_path, &["rev-parse", "HEAD"]),
         head_before,
         "a no-op cherry-pick must never move the run branch's HEAD"
     );
@@ -1035,12 +958,7 @@ fn plan_stage_compensation_reverts_every_landed_commit_not_just_the_newest() {
     // (2) REVERTED ON THE RUN BRANCH via an evented (not history-rewriting) rollback: one
     // "compensate plan (revert <sha>)" commit per originally-landed sha - real git proof,
     // independent of the folded projection above.
-    let log = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["log", "--pretty=%s"])
-        .output()
-        .unwrap();
+    let log = run_git(&repo_path, &["log", "--pretty=%s"]);
     let log = String::from_utf8_lossy(&log.stdout);
     for sha in &landed_shas {
         assert!(
@@ -1094,8 +1012,8 @@ fn plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_stage_
     // path base never had (mirrors the implementer's own inside-out fixture for this shape).
     std::fs::create_dir_all(repo.path().join("docs")).unwrap();
     std::fs::write(repo.path().join(touched_path), "seed\n").unwrap();
-    run_git(&repo_path, &["add", "-A"]);
-    run_git(&repo_path, &["commit", "-q", "-m", "seed docs/existing.md"]);
+    git_out(&repo_path, &["add", "-A"]);
+    git_out(&repo_path, &["commit", "-q", "-m", "seed docs/existing.md"]);
 
     let mut cfg = Config::default();
     // Spec 89 criterion 2 ruling item 2: nest the scratch/worktree default back inside
@@ -1190,28 +1108,14 @@ fn plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable(
         "amend\n",
     )
     .unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(seed_dir.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(seed_dir.path(), &["add", "-A"]);
     // A FIXED, deliberately old author/committer date - never the wall-clock "now" a bare
     // `git commit` would use - so the cherry-pick just below (which stamps its OWN committer
     // time as real "now") cannot coincidentally reproduce a byte-identical commit object (the
     // same-committer-second case `CherryPickOutcome::Picked`'s own doc comment names). A real
     // crash-and-later-resume always spans wall-clock seconds, so the two dates would never
     // coincide in production; this only guards the test against a same-second fluke.
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(seed_dir.path())
-        .args(["commit", "-q", "-m", "amend"])
-        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
-        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
-        .status()
-        .unwrap()
-        .success());
+    commit_at_fixed_date(seed_dir.path(), "amend");
     let original_shas = seed.commits_since_base().unwrap();
     assert_eq!(original_shas.len(), 1);
 
@@ -1332,12 +1236,7 @@ fn plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable(
     // (2) REAL COMPENSABILITY: an evented (not history-rewriting) revert of the recovered
     // commit actually reaches the run branch - the concrete consequence the bug's silent,
     // permanent uncompensability would otherwise have prevented forever.
-    let log = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["log", "--pretty=%s"])
-        .output()
-        .unwrap();
+    let log = run_git(&repo_path, &["log", "--pretty=%s"]);
     let log = String::from_utf8_lossy(&log.stdout);
     assert!(
         log.lines()
@@ -1392,13 +1291,7 @@ fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_still_confir
         "amend\n",
     )
     .unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(seed_dir.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(seed_dir.path(), &["add", "-A"]);
     // A FIXED, deliberately old author/committer date - never the wall-clock "now" a bare
     // `git commit` would use - so the cherry-pick just below (which stamps its OWN
     // committer time as real "now") cannot coincidentally reproduce a byte-identical
@@ -1407,15 +1300,7 @@ fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_still_confir
     // fast test run risks the landed pick being the SAME object as `original_shas[0]`,
     // which would make it a (misleading) ancestor of itself once the operator commit
     // lands on top - never exercising the tree-mismatch this test exists to prove.
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(seed_dir.path())
-        .args(["commit", "-q", "-m", "amend"])
-        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
-        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
-        .status()
-        .unwrap()
-        .success());
+    commit_at_fixed_date(seed_dir.path(), "amend");
     let original_shas = seed.commits_since_base().unwrap();
     assert_eq!(original_shas.len(), 1);
 
@@ -1443,21 +1328,9 @@ fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_still_confir
         "unrelated\n",
     )
     .unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap()
-        .success());
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["commit", "-q", "-m", "unrelated meanwhile"])
-        .status()
-        .unwrap()
-        .success());
-    let head_before_run = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    git_ok(repo.path(), &["add", "-A"]);
+    git_ok(repo.path(), &["commit", "-q", "-m", "unrelated meanwhile"]);
+    let head_before_run = git_out(&repo_path, &["rev-parse", "HEAD"]);
 
     // A FRESH run() adopts the SAME producer branch, exactly like the sibling recovery
     // test - the planner's fresh spawn commits nothing new.
@@ -1520,7 +1393,7 @@ fn plan_stage_resumed_amendment_with_an_intervening_operator_commit_still_confir
     // read-only patch-id search, never a new commit; neither the operator's unrelated
     // commit nor the earlier landed content moves.
     assert_eq!(
-        run_git(&repo_path, &["rev-parse", "HEAD"]),
+        git_out(&repo_path, &["rev-parse", "HEAD"]),
         head_before_run,
         "content-based confirmation must not mutate the run branch at all"
     );
@@ -1565,28 +1438,14 @@ fn patch_id_and_find_landed_by_patch_id_are_a_public_content_identity_api() {
 
     std::fs::create_dir_all(wt_dir.path().join("specs")).unwrap();
     std::fs::write(wt_dir.path().join("specs").join("95-a.md"), "amend a\n").unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(wt_dir.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(wt_dir.path(), &["add", "-A"]);
     // A FIXED, deliberately old author/committer date - never the wall-clock "now" a bare
     // `git commit` would use - so the cherry-pick below (which stamps its own committer time as
     // real "now") cannot coincidentally reproduce a byte-identical commit object in the rare
     // same-committer-second case, which would defeat this test's own `assert_ne!` below (the
     // implementer's own sibling unit test guards the identical risk the identical way).
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(wt_dir.path())
-        .args(["commit", "-q", "-m", "amend a"])
-        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
-        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "fixed-date commit failed");
-    let original = run_git(wt_dir.path().to_str().unwrap(), &["rev-parse", "HEAD"]);
+    commit_at_fixed_date(wt_dir.path(), "amend a");
+    let original = git_out(wt_dir.path().to_str().unwrap(), &["rev-parse", "HEAD"]);
 
     let landed = match wt
         .cherry_pick_onto_run_branch(std::slice::from_ref(&original))
@@ -1613,21 +1472,9 @@ fn patch_id_and_find_landed_by_patch_id_are_a_public_content_identity_api() {
 
     // (2) DIFFERENT CONTENT DIFFERS: proves this is a real content hash, not a constant.
     std::fs::write(wt_dir.path().join("specs").join("95-b.md"), "amend b\n").unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(wt_dir.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap()
-        .success());
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(wt_dir.path())
-        .args(["commit", "-q", "-m", "amend b"])
-        .status()
-        .unwrap()
-        .success());
-    let other = run_git(wt_dir.path().to_str().unwrap(), &["rev-parse", "HEAD"]);
+    git_ok(wt_dir.path(), &["add", "-A"]);
+    git_ok(wt_dir.path(), &["commit", "-q", "-m", "amend b"]);
+    let other = git_out(wt_dir.path().to_str().unwrap(), &["rev-parse", "HEAD"]);
     assert_ne!(
         wt.patch_id(&original).unwrap(),
         wt.patch_id(&other).unwrap(),
@@ -1637,20 +1484,8 @@ fn patch_id_and_find_landed_by_patch_id_are_a_public_content_identity_api() {
     // (3) CONFIRMS BY CONTENT DESPITE AN INTERVENING, UNRELATED COMMIT - the exact position
     // shift that defeated the removed tree-position walk.
     std::fs::write(repo.path().join("specs").join("95-unrelated.md"), "x\n").unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap()
-        .success());
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo.path())
-        .args(["commit", "-q", "-m", "unrelated meanwhile"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(repo.path(), &["add", "-A"]);
+    git_ok(repo.path(), &["commit", "-q", "-m", "unrelated meanwhile"]);
     let recovered = wt
         .find_landed_by_patch_id(&original, 50)
         .unwrap()
@@ -1821,24 +1656,10 @@ fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_an
         "amend\n",
     )
     .unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(seed_dir.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(seed_dir.path(), &["add", "-A"]);
     // A FIXED, deliberately old date - the same guard every sibling crash-resume test in this
     // file uses, so this cherry-pick cannot coincidentally reproduce a byte-identical object.
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(seed_dir.path())
-        .args(["commit", "-q", "-m", "amend"])
-        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00")
-        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00")
-        .status()
-        .unwrap()
-        .success());
+    commit_at_fixed_date(seed_dir.path(), "amend");
     let original_shas = seed.commits_since_base().unwrap();
     assert_eq!(original_shas.len(), 1);
     let original_sha = original_shas[0].clone();
@@ -1862,22 +1683,19 @@ fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_an
     // scenario below would ALSO resolve correctly via patch-id search alone (gap 9's mechanism),
     // which would prove nothing distinct about the NEW fold arm this test exists to close.
     for i in 0..260 {
-        assert!(std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args([
+        git_ok(
+            &repo_path,
+            &[
                 "commit",
                 "-q",
                 "--allow-empty",
                 "-m",
-                &format!("filler {i}")
-            ])
-            .status()
-            .unwrap()
-            .success());
+                &format!("filler {i}"),
+            ],
+        );
     }
 
-    let head_after_prior_landing = run_git(&repo_path, &["rev-parse", "HEAD"]);
+    let head_after_prior_landing = git_out(&repo_path, &["rev-parse", "HEAD"]);
 
     // The CRASHED PRIOR ATTEMPT'S OWN CONFIRMATION WRITE: the EXACT `DecisionMade` shape
     // `RunCtx::record_plan_landed` itself produces, hand-seeded directly onto the store before
@@ -1948,7 +1766,7 @@ fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_an
     // (crashed) attempt's real cherry-pick already left it in - the durable record alone
     // answers this call; no fresh cherry-pick and no patch-id search are needed to reach it.
     assert_eq!(
-        run_git(&repo_path, &["rev-parse", "HEAD"]),
+        git_out(&repo_path, &["rev-parse", "HEAD"]),
         head_after_prior_landing,
         "a resume driven purely by the log record must not mutate the run branch at all"
     );
@@ -2002,21 +1820,9 @@ fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained
             format!("amend {name}\n"),
         )
         .unwrap();
-        assert!(std::process::Command::new("git")
-            .arg("-C")
-            .arg(&wt_path)
-            .args(["add", "-A"])
-            .status()
-            .unwrap()
-            .success());
-        assert!(std::process::Command::new("git")
-            .arg("-C")
-            .arg(&wt_path)
-            .args(["commit", "-q", "-m", &format!("amend {name}")])
-            .status()
-            .unwrap()
-            .success());
-        shas.push(run_git(&wt_path, &["rev-parse", "HEAD"]));
+        git_ok(&wt_path, &["add", "-A"]);
+        git_ok(&wt_path, &["commit", "-q", "-m", &format!("amend {name}")]);
+        shas.push(git_out(&wt_path, &["rev-parse", "HEAD"]));
     }
     assert_eq!(shas.len(), 3);
 
@@ -2024,13 +1830,7 @@ fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained
     // the interrupted sequence below - so replaying the full sequence pauses on the first (now
     // empty) commit, and a single skip lands on the second, which is ALSO empty: exactly the
     // "2+ chained empty commits ahead of the marker" shape.
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["cherry-pick", &shas[0], &shas[1]])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(&repo_path, &["cherry-pick", &shas[0], &shas[1]]);
     for name in ["98-a.md", "98-b.md"] {
         assert!(
             repo.path().join("specs").join(name).exists(),
@@ -2043,12 +1843,7 @@ fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained
     // (bypassing the public API entirely, via a bare git subprocess), so it naturally pauses on
     // the first, now-empty commit - exactly the state a process death right after the pause
     // (before even one skip ran) leaves, never a synthetic one.
-    let raw = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["cherry-pick", &shas[0], &shas[1], &shas[2]])
-        .status()
-        .unwrap();
+    let raw = run_git(&repo_path, &["cherry-pick", &shas[0], &shas[1], &shas[2]]).status;
     assert!(
         !raw.success(),
         "the raw sequence must pause on the empty first commit, not succeed outright"
@@ -2058,7 +1853,7 @@ fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained
         "precondition: a leftover cherry-pick sequencer marker is left in progress"
     );
     assert!(
-        run_git(&repo_path, &["ls-files", "--unmerged"]).is_empty(),
+        git_out(&repo_path, &["ls-files", "--unmerged"]).is_empty(),
         "precondition: the pause carries ZERO unmerged files - it is not a conflict"
     );
 
@@ -2139,7 +1934,7 @@ impl EventStore for FailingExternalStore<'_> {
     crate::delegate_event_store_reads!();
 }
 
-/// Criterion 4, gap 14 (round 8, new cross-module seam `is_plan_landing_failed` / `run_wave`):
+/// Criterion 4, gap 14 (round 8, new cross-module seam `carries_marker(.., PLAN_LANDING_MARKER)` / `run_wave`):
 /// `RunCtx::integrate_plan_commits` is now a thin wrapper over `integrate_plan_commits_inner`
 /// that tags EVERY hard Err with a new, private `PLAN_LANDING_MARKER` sentinel (the fifth
 /// alongside the pre-existing PARKED/BUDGET/DEGENERATE/MISMATCH markers), and `RunCtx::run_wave`
@@ -2268,32 +2063,14 @@ fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_with_a_missing_seque
         "amend 99-solo.md\n",
     )
     .unwrap();
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(&wt_path)
-        .args(["add", "-A"])
-        .status()
-        .unwrap()
-        .success());
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(&wt_path)
-        .args(["commit", "-q", "-m", "amend 99-solo.md"])
-        .status()
-        .unwrap()
-        .success());
-    let sha = run_git(&wt_path, &["rev-parse", "HEAD"]);
+    git_ok(&wt_path, &["add", "-A"]);
+    git_ok(&wt_path, &["commit", "-q", "-m", "amend 99-solo.md"]);
+    let sha = git_out(&wt_path, &["rev-parse", "HEAD"]);
     let shas = vec![sha.clone()];
 
     // Pre-land the sole commit's content directly on the run branch, independent of the
     // interrupted attempt below, so replaying it becomes an EMPTY re-pick.
-    assert!(std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["cherry-pick", &sha])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(&repo_path, &["cherry-pick", &sha]);
     assert!(
         repo.path().join("specs").join("99-solo.md").exists(),
         "precondition: the sole commit's content is already present"
@@ -2303,12 +2080,7 @@ fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_with_a_missing_seque
     // (bypassing the public API entirely, via a bare git subprocess) - the exact same
     // invocation shape a call with `shas.len() == 1` makes - so it naturally pauses empty with
     // NO sequencer directory ever created.
-    let raw = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["cherry-pick", &sha])
-        .status()
-        .unwrap();
+    let raw = run_git(&repo_path, &["cherry-pick", &sha]).status;
     assert!(
         !raw.success(),
         "the raw single-sha pick must pause on the empty commit, not succeed outright"
@@ -2318,10 +2090,10 @@ fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_with_a_missing_seque
         "precondition: a leftover cherry-pick sequencer marker is left in progress"
     );
     assert!(
-        run_git(&repo_path, &["ls-files", "--unmerged"]).is_empty(),
+        git_out(&repo_path, &["ls-files", "--unmerged"]).is_empty(),
         "precondition: the pause carries ZERO unmerged files - it is not a conflict"
     );
-    let todo_path = run_git(&repo_path, &["rev-parse", "--git-path", "sequencer/todo"]);
+    let todo_path = git_out(&repo_path, &["rev-parse", "--git-path", "sequencer/todo"]);
     let todo_path = std::path::Path::new(&todo_path);
     let todo_path = if todo_path.is_absolute() {
         todo_path.to_path_buf()

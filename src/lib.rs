@@ -109,6 +109,8 @@ pub mod spec;
 /// folded from already-gathered inputs into one line per anomaly, with in-process
 /// streaming dedup. Never touches the driver.
 #[cfg(any(feature = "store", not(feature = "core")))]
+pub mod subprocess;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub mod watch;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod worktree;

@@ -37,6 +37,7 @@ use tempfile::TempDir;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::git::run_git;
 
 use common::cli::write_workflow;
 use common::rigger_bin;
@@ -59,12 +60,7 @@ fn committed_project() -> TempDir {
         &["config", "user.name", "t"],
         &["commit", "--allow-empty", "-q", "-m", "init"],
     ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
+        let ok = run_git(root, args).status.success();
         assert!(ok, "git {args:?} must succeed while seeding the repo");
     }
     dir

@@ -265,6 +265,7 @@
 //! `land`'s own "the repo is untouched" half of its contract, checked at the whole-run level.
 
 mod common;
+use common::git::run_git;
 
 use common::cli::write_workflow;
 use common::fixtures::agent;
@@ -326,12 +327,7 @@ fn git_commit_paths(dir: &str, paths: &[&str], msg: &str) {
     let mut add = vec!["add", "--"];
     add.extend_from_slice(paths);
     for args in [add, vec!["commit", "-q", "-m", msg]] {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(&args)
-            .output()
-            .unwrap_or_else(|e| panic!("git {args:?} in {dir}: {e}"));
+        let out = run_git(dir, &args);
         assert!(
             out.status.success(),
             "git {args:?} in {dir} failed (a leftover unresolved conflict would show up here): \
@@ -2467,12 +2463,7 @@ fn a_crash_right_after_placeholder_staging_resumes_and_completes_row_2() {
     // independent of the log append that failed right after it - locate the unit's own worktree
     // via `git worktree list --porcelain` off the repo and read it back directly.
     let gen_in_worktree = {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(&repo_path)
-            .args(["worktree", "list", "--porcelain"])
-            .output()
-            .unwrap();
+        let out = run_git(&repo_path, &["worktree", "list", "--porcelain"]);
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .find(|l| l.starts_with("worktree "))

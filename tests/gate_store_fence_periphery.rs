@@ -174,15 +174,8 @@ use rigger::registry::{self, Instance};
 use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
+use common::git::git_init_quiet;
 use common::{rigger_bin, RestoreEnvVars};
-
-fn git_init_quiet(root: &Path) {
-    Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status()
-        .expect("git init");
-}
 
 /// The real production topology (matching the implementer's own
 /// `require_store_dir_pins_to_the_fence_env_and_never_reaches_the_live_store_above_it`
@@ -621,7 +614,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
     std::fs::File::create(&live_events).unwrap();
     let live_before = std::fs::read(&live_events).unwrap();
 
-    // The real production derivation (conductor's `review_worktree_dir`, mirrored here): a
+    // The real production derivation (conductor's `Throwaway::REVIEW.dir_and_branch`, mirrored here): a
     // standalone review worktree lives under
     // `<repo>/.rigger/tmp/rigger-review-<stage>-<attempt>` - no per-unit cache sibling,
     // unlike a unit worktree.

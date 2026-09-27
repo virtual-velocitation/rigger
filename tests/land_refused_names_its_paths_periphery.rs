@@ -15,6 +15,7 @@
 //! through a real `AgentDriver` and a real git repo, never hand-seeded events.
 
 mod common;
+use common::git::run_git;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
@@ -209,49 +210,33 @@ fn a_land_refused_names_a_unit_branch_whose_tip_already_holds_identical_content(
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let stray = "PREVIOUSLY CAPTURED CONTENT\n";
-    Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["branch", "rigger/u/unit-old"])
-        .output()
-        .unwrap();
+    run_git(&repo_path, &["branch", "rigger/u/unit-old"]);
     let old_wt = tempfile::tempdir().unwrap();
-    Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args([
+    run_git(
+        &repo_path,
+        &[
             "worktree",
             "add",
             "-q",
             old_wt.path().to_str().unwrap(),
             "rigger/u/unit-old",
-        ])
-        .output()
-        .unwrap();
+        ],
+    );
     std::fs::write(old_wt.path().join("new.txt"), stray).unwrap();
-    Command::new("git")
-        .arg("-C")
-        .arg(old_wt.path().to_str().unwrap())
-        .args(["add", "new.txt"])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .arg("-C")
-        .arg(old_wt.path().to_str().unwrap())
-        .args(["commit", "-q", "-m", "unit-old: lands new.txt"])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args([
+    run_git(old_wt.path().to_str().unwrap(), &["add", "new.txt"]);
+    run_git(
+        old_wt.path().to_str().unwrap(),
+        &["commit", "-q", "-m", "unit-old: lands new.txt"],
+    );
+    run_git(
+        &repo_path,
+        &[
             "worktree",
             "remove",
             "--force",
             old_wt.path().to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
+        ],
+    );
 
     let store = Store::open(":memory:").unwrap();
     let driver = LandRefusedDriver {

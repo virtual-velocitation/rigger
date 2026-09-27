@@ -159,31 +159,86 @@ fn seed_key_under_two_covered_types(root: &Path, key: &str) {
 // (a) INDEX STALENESS
 // ---------------------------------------------------------------------------------------
 
-#[test]
-fn validate_warns_of_index_staleness_and_names_reindex() {
+/// `rigger validate`'s stderr over a fresh `rigger init` project that `prepare` then edited;
+/// validate must still succeed - an advisory never fails its exit status.
+fn validate_stderr_after(prepare: impl FnOnce(&Path)) -> String {
     let dir = temp_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    // Persist an index over `a.rs` at its ORIGINAL content, then edit the file on disk without
-    // reindexing - the drift a path-set-only check cannot see (same path, changed content).
-    std::fs::write(root.join("a.rs"), "fn one() {}\n").unwrap();
-    persist_index(root, &[("a.rs", "fn one() {}\n")]);
-    std::fs::write(root.join("a.rs"), "fn onemodified() {}\n").unwrap();
-
+    prepare(root);
     let (_out, err, ok) = run_rigger(root, &["validate"]);
     assert!(
         ok,
         "an advisory must never fail validate's exit status; stderr:\n{err}"
     );
+    err
+}
+
+/// Validate's stderr after `prepare` carries an advisory naming (case-insensitively) at least one
+/// of `any_of` (`warning_why`), and every `(needle, why)` of `names` - the fix it points at among
+/// them.
+fn assert_validate_advises(
+    prepare: impl FnOnce(&Path),
+    any_of: &[&str],
+    warning_why: &str,
+    names: &[(&str, &str)],
+) {
+    let err = validate_stderr_after(prepare);
+    let lower = err.to_lowercase();
     assert!(
-        err.to_lowercase().contains("drift") || err.to_lowercase().contains("stale"),
-        "validate must warn that the symbols index has drifted; stderr:\n{err}"
+        any_of.iter().any(|w| lower.contains(w)),
+        "{warning_why}; stderr:\n{err}"
     );
-    assert!(
-        err.contains("rigger reindex"),
-        "the staleness warning must name `rigger reindex` as the fix; stderr:\n{err}"
+    for (needle, why) in names {
+        assert!(err.contains(needle), "{why}; stderr:\n{err}");
+    }
+}
+
+rigger::test_cases! {
+    /// Persist an index over `a.rs` at its ORIGINAL content, then edit the file on disk without
+    /// reindexing - the drift a path-set-only check cannot see (same path, changed content).
+    validate_warns_of_index_staleness_and_names_reindex: assert_validate_advises(
+        |root| {
+            std::fs::write(root.join("a.rs"), "fn one() {}\n").unwrap();
+            persist_index(root, &[("a.rs", "fn one() {}\n")]);
+            std::fs::write(root.join("a.rs"), "fn onemodified() {}\n").unwrap();
+        },
+        &["drift", "stale"],
+        "validate must warn that the symbols index has drifted",
+        &[(
+            "rigger reindex",
+            "the staleness warning must name `rigger reindex` as the fix",
+        )],
+    );
+    /// The `symbols` feature is what compiles the extraction pass `ingest_files_batched` needs to
+    /// find `fn original() {}`/`fn renamed() {}` as real definitions in the first place (mirrors
+    /// [`locate_definition_extent`]'s own light-lane stub, main.rs): the light lane's
+    /// `graph_index_lag_sample` is unconditionally a no-op stub, exactly like its INDEX STALENESS
+    /// counterpart is NOT (that one is content-hash-only, ungated) - so this positive case is
+    /// `symbols`-only; the two SILENT cases below hold in both lanes (nothing can ever disagree in
+    /// the light lane, so "no warning" is trivially true there too).
+    ///
+    /// The graph recorded churn.rs's ORIGINAL content, then the file was edited on disk without an
+    /// integration ever reindexing it into the graph - the exact drift the audit
+    /// (docs/audit/2026-09-graph-vs-grep.md, findings 9/11/12) found: a `graph.db` generation the
+    /// tree has since moved past.
+    #[cfg(feature = "symbols")]
+    validate_warns_of_graph_index_lag_and_names_reindex: assert_validate_advises(
+        |root| {
+            std::fs::write(root.join("churn.rs"), "fn original() {}\n").unwrap();
+            seed_graph_generation(root, "churn.rs");
+            std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
+        },
+        &["context graph", "graph index lag", "fallen behind"],
+        "validate must warn that the context graph has fallen behind",
+        &[
+            ("churn.rs", "the warning must name the lagging file"),
+            (
+                "rigger reindex",
+                "the graph-lag warning must name `rigger reindex` as the fix",
+            ),
+        ],
     );
 }
 
@@ -395,86 +450,34 @@ fn seed_graph_generation(root: &Path, file: &str) {
         .unwrap();
 }
 
-/// The `symbols` feature is what compiles the extraction pass `ingest_files_batched` needs to
-/// find `fn original() {}`/`fn renamed() {}` as real definitions in the first place (mirrors
-/// [`locate_definition_extent`]'s own light-lane stub, main.rs): the light lane's
-/// `graph_index_lag_sample` is unconditionally a no-op stub, exactly like its INDEX STALENESS
-/// counterpart is NOT (that one is content-hash-only, ungated) - so this positive case is
-/// `symbols`-only; the two SILENT cases below hold in both lanes (nothing can ever disagree in
-/// the light lane, so "no warning" is trivially true there too).
-#[cfg(feature = "symbols")]
-#[test]
-fn validate_warns_of_graph_index_lag_and_names_reindex() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    // The graph recorded churn.rs's ORIGINAL content, then the file was edited on disk without
-    // an integration ever reindexing it into the graph - the exact drift the audit
-    // (docs/audit/2026-09-graph-vs-grep.md, findings 9/11/12) found: a `graph.db` generation the
-    // tree has since moved past.
-    std::fs::write(root.join("churn.rs"), "fn original() {}\n").unwrap();
-    seed_graph_generation(root, "churn.rs");
-    std::fs::write(root.join("churn.rs"), "fn renamed() {}\n").unwrap();
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
+/// A project `prepare` left in a state with nothing to compare, or nothing that disagrees, draws
+/// no graph index-lag warning from validate (`why`).
+fn assert_validate_is_silent_on_graph_index_lag(prepare: impl FnOnce(&Path), why: &str) {
+    let err = validate_stderr_after(prepare);
     assert!(
-        ok,
-        "an advisory must never fail validate's exit status; stderr:\n{err}"
-    );
-    assert!(
-        err.to_lowercase().contains("context graph")
-            || err.to_lowercase().contains("graph index lag")
-            || err.to_lowercase().contains("fallen behind"),
-        "validate must warn that the context graph has fallen behind; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("churn.rs"),
-        "the warning must name the lagging file; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("rigger reindex"),
-        "the graph-lag warning must name `rigger reindex` as the fix; stderr:\n{err}"
+        !err.to_lowercase().contains("fallen behind"),
+        "{why}; stderr:\n{err}"
     );
 }
 
-#[test]
-fn validate_is_silent_on_graph_index_lag_when_the_graph_matches_the_tree() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-
-    // The graph recorded churn.rs's CURRENT content, and it is never edited afterward - a fresh
-    // graph, exactly what an integration that just reindexed it leaves behind.
-    std::fs::write(root.join("churn.rs"), "fn stable() {}\n").unwrap();
-    seed_graph_generation(root, "churn.rs");
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
-    assert!(
-        !err.to_lowercase().contains("fallen behind"),
-        "a graph that agrees with the tree must draw no index-lag warning; stderr:\n{err}"
-    );
-}
-
-#[test]
-fn validate_is_silent_on_graph_index_lag_when_the_graph_has_recorded_nothing() {
-    // No `gc/`-keyed event was ever recorded (no integration has run yet) - there is nothing to
-    // compare, so this must never manufacture a warning from the mere absence of a graph.
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    std::fs::write(root.join("untracked.rs"), "fn untracked() {}\n").unwrap();
-
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "validate must succeed; stderr:\n{err}");
-    assert!(
-        !err.to_lowercase().contains("fallen behind"),
-        "a project the graph has never indexed must draw no index-lag warning; stderr:\n{err}"
-    );
+rigger::test_cases! {
+    /// The graph recorded churn.rs's CURRENT content, and it is never edited afterward - a fresh
+    /// graph, exactly what an integration that just reindexed it leaves behind.
+    validate_is_silent_on_graph_index_lag_when_the_graph_matches_the_tree:
+        assert_validate_is_silent_on_graph_index_lag(
+            |root| {
+                std::fs::write(root.join("churn.rs"), "fn stable() {}\n").unwrap();
+                seed_graph_generation(root, "churn.rs");
+            },
+            "a graph that agrees with the tree must draw no index-lag warning",
+        );
+    /// No `gc/`-keyed event was ever recorded (no integration has run yet) - there is nothing to
+    /// compare, so this must never manufacture a warning from the mere absence of a graph.
+    validate_is_silent_on_graph_index_lag_when_the_graph_has_recorded_nothing:
+        assert_validate_is_silent_on_graph_index_lag(
+            |root| std::fs::write(root.join("untracked.rs"), "fn untracked() {}\n").unwrap(),
+            "a project the graph has never indexed must draw no index-lag warning",
+        );
 }
 
 // ---------------------------------------------------------------------------------------

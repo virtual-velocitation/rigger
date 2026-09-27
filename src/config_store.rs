@@ -166,25 +166,32 @@ pub fn load_workflow(path: &Path) -> Result<Workflow, Error> {
 /// Anchored at the `.rigger` directory (not the project root) so the store resolver, which already
 /// resolves that directory once at the owning repo root, passes it straight through.
 pub fn read_store_config(rigger_dir: &Path) -> Result<StoreConfig, Error> {
-    let path = rigger_dir.join("workflow.yml");
-    let body = match std::fs::read_to_string(&path) {
-        Ok(b) => b,
-        // An ABSENT file is "no opinion" - the project pins nothing, so the resolver falls through
-        // to its next rung (the default). Any OTHER IO error (a PRESENT-but-unreadable file: a
-        // permission or IO fault) surfaces LOUDLY, never collapsing into the same default an absent
-        // file returns - a silent wrong-store fallback off an unreadable config is the exact
-        // fracture this rung guards against.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(StoreConfig::default()),
-        Err(e) => return Err(err(format!("read store config: {e}"))),
-    };
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Default)]
     struct Probe {
         #[serde(default)]
         store: StoreConfig,
     }
-    let probe: Probe = parse_yaml_naming_unknown_keys(&body)
-        .map_err(|msg| err(format!("parse store config: {msg}")))?;
+    let probe: Probe = read_workflow_probe(rigger_dir, "store config")?;
     Ok(probe.store)
+}
+
+/// THE LIGHTWEIGHT WORKFLOW PROBE: parse `<rigger_dir>/workflow.yml` into the throwaway probe
+/// struct `P` (which names only the keys its caller needs), naming the probe `label` in any
+/// error. An ABSENT file is "no opinion" - the project pins nothing, so it resolves to
+/// `P::default()` and the caller falls through to its next rung. Any OTHER IO error (a
+/// PRESENT-but-unreadable file: a permission or IO fault) surfaces LOUDLY, never collapsing into
+/// the same default an absent file returns - a silent wrong-store fallback off an unreadable
+/// config is the exact fracture the store rung guards against.
+fn read_workflow_probe<P>(rigger_dir: &Path, label: &str) -> Result<P, Error>
+where
+    P: serde::de::DeserializeOwned + Default,
+{
+    let body = match std::fs::read_to_string(rigger_dir.join("workflow.yml")) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(P::default()),
+        Err(e) => return Err(err(format!("read {label}: {e}"))),
+    };
+    parse_yaml_naming_unknown_keys(&body).map_err(|msg| err(format!("parse {label}: {msg}")))
 }
 
 /// Read ONLY `defaults.workdir` from `<rigger_dir>/workflow.yml` (spec 77 criterion 5,
@@ -223,19 +230,12 @@ pub fn read_scratch_workdir(rigger_dir: &Path) -> Result<String, Error> {
 ///
 /// Anchored at the `.rigger` directory, matching [`read_store_config`]'s own convention.
 pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
-    let path = rigger_dir.join("workflow.yml");
-    let body = match std::fs::read_to_string(&path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Defaults::default()),
-        Err(e) => return Err(err(format!("read workflow: {e}"))),
-    };
     #[derive(Deserialize, Default)]
     struct Probe {
         #[serde(default)]
         defaults: Defaults,
     }
-    let probe: Probe = parse_yaml_naming_unknown_keys(&body)
-        .map_err(|msg| err(format!("parse workflow: {msg}")))?;
+    let probe: Probe = read_workflow_probe(rigger_dir, "workflow")?;
     Ok(probe.defaults)
 }
 
@@ -543,151 +543,155 @@ mod tests {
         );
     }
 
-    /// spec 18 unit 1's hard promise, pinned against the RESIDUAL false-positive class the prior
-    /// fix left reachable (adj-u18-1 REJECT / adv-u18-1-residual-false-positive-same-clause-emit):
-    /// an unrelated emit instruction sharing the SAME sentence as a verdict-output clause must NOT
-    /// bind the literal. The earlier "any emit word in the clause" rule flagged these because an
-    /// emit word (governing a DIFFERENT target - a DecisionMade, reasoning) sat in the clause with
-    /// no whitelisted output cue; each nonetheless presents `{"verdict"...}` AS the verdict output
-    /// and must PASS. None of these strings hit [`OUTPUT_CUES`], so they pin the emit-payload
-    /// binding itself, not the whitelist. Compliance must NOT flip on clause order.
-    #[test]
-    fn verdict_line_lint_passes_an_unrelated_same_sentence_emit_before_a_verdict_output_clause() {
-        let compliant = [
-            // The exact string the adjudicator's directive named: an unrelated `emit a
-            // DecisionMade` instruction precedes a non-whitelisted verdict-output clause.
-            "You must emit a DecisionMade for each call and your verdict must be \
-             {\"verdict\":\"approve\"}.",
-            // Emit-clause first, verdict-output clause second, one sentence (no cue word).
-            "Emit each decision via rigger_emit, then your verdict is the JSON \
-             {\"verdict\":\"approve\"}.",
-            "Having emitted your reasoning, your verdict {\"verdict\":\"approve\"} governs.",
-            // The ORDER-FLIP of a previously-blessed string: verdict-first passed before; the
-            // emit-first reordering must pass too - compliance cannot flip on clause order.
-            "Also emit a DecisionMade as you go and your verdict is the JSON \
-             {\"verdict\":\"approve\"}.",
-            "Record each DecisionMade via rigger_emit as you go, and your verdict is \
-             {\"verdict\":\"approve\"}.",
-            "After you emit your DecisionMade events, your verdict is {\"verdict\":\"approve\"}.",
-            "Deliver two things: reasoning emitted via rigger_emit, and the verdict \
-             {\"verdict\":\"approve\"}.",
-        ];
-        for prompt in compliant {
-            assert!(
-                puts_verdict_on_result_channel(prompt),
-                "an unrelated emit instruction in the same sentence must not bind a verdict that \
-                 is independently presented as output:\n{prompt}"
-            );
-        }
-        // Teeth preserved even IN-sentence: when the emit verb GENUINELY serializes the verdict
-        // as its `data` payload (not an unrelated target), it is still the stall - regardless of a
-        // determiner-`verdict` phrase, because the span to the literal carries the payload marker.
-        for stall in [
-            "Emit a note, then rigger_emit your verdict as data {\"verdict\":\"approve\"}.",
-            "Record notes and rigger_emit the verdict with data {\"verdict\":\"approve\"}.",
-        ] {
-            assert!(
-                !puts_verdict_on_result_channel(stall),
-                "a verdict serialized as the emit `data` payload is still the stall:\n{stall}"
-            );
-        }
-    }
-
-    /// spec 18 unit 1's hard promise, pinned against the PAYLOAD-SLOT residual false-positive class
-    /// (adj-u18-1rr REJECT / adv-u18-1rr-residual-fp-defeats-your-verdict-escape): an explicit
-    /// determiner-`verdict` presentation ("your verdict ... is {..}") is on the result channel even
-    /// when a payload-slot noun sits in the span but does NOT abut the literal. The prior rule
-    /// treated ANY payload-slot word in the span as defeating the presentation, so it flagged these
-    /// clearly-compliant personas; only a payload word IMMEDIATELY abutting the literal ("as data
-    /// {..}") marks it as the serialized emit data. None of these strings carries an output-cue
-    /// word, and each shares its sentence with an unrelated emit instruction, so they pin the
-    /// determiner-verdict escape against a payload noun in the span - not the output whitelist.
-    #[test]
-    fn verdict_line_lint_passes_a_determiner_verdict_when_a_payload_noun_sits_in_the_span() {
-        let compliant = [
-            // A dropped ambiguous common noun ("value"/"object") after the verdict subject.
-            "Emit each decision via rigger_emit and your verdict value is {\"verdict\":\"approve\"}.",
-            "Emit each decision via rigger_emit and your verdict object is \
-             {\"verdict\":\"approve\"}.",
-            // A KEPT emit-API token ("payload"/"data") that does NOT abut the literal - descriptive
-            // here, not the serialized argument, so the determiner-verdict presentation stands.
-            "Emit each decision via rigger_emit and the verdict payload is \
-             {\"verdict\":\"approve\"}.",
-            "Record notes via rigger_emit as you go, and your verdict data is \
-             {\"verdict\":\"approve\"}.",
-        ];
-        for prompt in compliant {
-            assert!(
-                puts_verdict_on_result_channel(prompt),
-                "a determiner-verdict presentation is on the result channel even when a payload \
-                 noun sits in its span but does not abut the literal:\n{prompt}"
-            );
-        }
-        // Teeth: when the payload word IMMEDIATELY abuts the literal after an emit, the verdict IS
-        // the serialized emit data - still the stall, even behind a determiner-`verdict` phrase.
-        for stall in [
-            "Emit a note, then rigger_emit your verdict as data {\"verdict\":\"approve\"}.",
-            "Record decisions, then rigger_emit the verdict payload {\"verdict\":\"approve\"}.",
-        ] {
-            assert!(
-                !puts_verdict_on_result_channel(stall),
-                "a verdict literal a payload word directly introduces is the serialized emit data \
-                 - still the stall:\n{stall}"
-            );
-        }
-    }
-
-    /// spec 18 unit 1's hard promise, pinned against the UNRELATED-EMIT-EXAMPLE-BRACE false-positive
-    /// class (adj-u18-1r3 REJECT, FP#1): an explicit determiner-`verdict` presentation
-    /// ("your verdict is {..}") is on the result channel even when an UNRELATED emit-payload EXAMPLE
-    /// brace ("... data {id} ...") shares its clause EARLIER, before the `verdict` word. The prior
-    /// rule scanned EVERY brace in the clause, so a different literal's `data {id}` example
-    /// short-circuited the determiner-verdict escape to a false flag - it fired on the EXACT wording
-    /// rigger's own communication discipline mandates of every gating persona. The fix scopes the
-    /// emit-payload test to the SPAN from the `verdict` word to the trailing literal, so an example
-    /// brace before the presentation no longer defeats it. None of these strings carries an output
-    /// cue, and each shares its sentence with a genuine `rigger_emit ... data {id}` example.
-    #[test]
-    fn verdict_line_lint_passes_a_determiner_verdict_when_an_unrelated_emit_example_brace_precedes_it(
+    /// Every `compliant` prompt puts its verdict on the result channel (`compliant_why`), and
+    /// every `stalls` prompt - the teeth - does not (`stall_why`).
+    fn assert_verdict_channel(
+        compliant: &[&str],
+        compliant_why: &str,
+        stalls: &[&str],
+        stall_why: &str,
     ) {
-        let compliant = [
-            // A/B delta of the reject: only difference from a passing twin is an inline `data {id}`
-            // example after the emit token; the determiner-verdict escape must survive it.
-            "Record each decision via rigger_emit with data {id}, and your verdict is \
-             {\"verdict\":\"approve\"}.",
-            // The A-side twin (no example brace) - a control that must also pass.
-            "Record each decision via rigger_emit with a DecisionMade payload, and your verdict is \
-             {\"verdict\":\"approve\"}.",
-            // The EXACT rigger DecisionMade-discipline wording mandated of every gating persona: an
-            // emit-payload example `data {id,summary}` precedes the determiner-verdict presentation.
-            "Record every decision via rigger_emit with type DecisionMade and data {id,summary}, \
-             then your verdict is {\"verdict\":\"approve\"}.",
-            // The example brace can even be a `{id}` immediately after `rigger_emit`; still unrelated
-            // to the trailing determiner-verdict literal.
-            "Emit each decision as rigger_emit {id}, and your verdict is {\"verdict\":\"approve\"}.",
-        ];
         for prompt in compliant {
             assert!(
                 puts_verdict_on_result_channel(prompt),
-                "an unrelated emit-payload EXAMPLE brace earlier in the clause must not defeat a \
-                 determiner-verdict presentation of the trailing literal:\n{prompt}"
+                "{compliant_why}:\n{prompt}"
             );
         }
-        // Teeth preserved: when the payload word abuts the TRAILING verdict literal itself (in the
-        // presentation span), it IS the serialized emit data - still the stall, even behind a
-        // determiner-`verdict` phrase and even with an unrelated example brace elsewhere.
-        for stall in [
-            "Record notes via rigger_emit {id}, then rigger_emit your verdict as data \
-             {\"verdict\":\"approve\"}.",
-            "Emit a note with data {id}, then rigger_emit the verdict with data \
-             {\"verdict\":\"approve\"}.",
-        ] {
+        for stall in stalls {
             assert!(
                 !puts_verdict_on_result_channel(stall),
-                "a verdict literal a payload word directly introduces IN the presentation span is \
-                 the serialized emit data - still the stall:\n{stall}"
+                "{stall_why}:\n{stall}"
             );
         }
+    }
+
+    crate::test_cases! {
+        /// spec 18 unit 1's hard promise, pinned against the RESIDUAL false-positive class the
+        /// prior fix left reachable (adj-u18-1 REJECT /
+        /// adv-u18-1-residual-false-positive-same-clause-emit): an unrelated emit instruction
+        /// sharing the SAME sentence as a verdict-output clause must NOT bind the literal. The
+        /// earlier "any emit word in the clause" rule flagged these because an emit word
+        /// (governing a DIFFERENT target - a DecisionMade, reasoning) sat in the clause with no
+        /// whitelisted output cue; each nonetheless presents `{"verdict"...}` AS the verdict
+        /// output and must PASS. None of these strings hit [`OUTPUT_CUES`], so they pin the
+        /// emit-payload binding itself, not the whitelist. Compliance must NOT flip on clause
+        /// order. Teeth preserved even IN-sentence: when the emit verb GENUINELY serializes the
+        /// verdict as its `data` payload (not an unrelated target), it is still the stall -
+        /// regardless of a determiner-`verdict` phrase, because the span to the literal carries
+        /// the payload marker.
+        verdict_line_lint_passes_an_unrelated_same_sentence_emit_before_a_verdict_output_clause:
+            assert_verdict_channel(
+                &[
+                    // The exact string the adjudicator's directive named: an unrelated `emit a
+                    // DecisionMade` instruction precedes a non-whitelisted verdict-output clause.
+                    "You must emit a DecisionMade for each call and your verdict must be \
+                     {\"verdict\":\"approve\"}.",
+                    // Emit-clause first, verdict-output clause second, one sentence (no cue word).
+                    "Emit each decision via rigger_emit, then your verdict is the JSON \
+                     {\"verdict\":\"approve\"}.",
+                    "Having emitted your reasoning, your verdict {\"verdict\":\"approve\"} governs.",
+                    // The ORDER-FLIP of a previously-blessed string: verdict-first passed before;
+                    // the emit-first reordering must pass too - compliance cannot flip on order.
+                    "Also emit a DecisionMade as you go and your verdict is the JSON \
+                     {\"verdict\":\"approve\"}.",
+                    "Record each DecisionMade via rigger_emit as you go, and your verdict is \
+                     {\"verdict\":\"approve\"}.",
+                    "After you emit your DecisionMade events, your verdict is \
+                     {\"verdict\":\"approve\"}.",
+                    "Deliver two things: reasoning emitted via rigger_emit, and the verdict \
+                     {\"verdict\":\"approve\"}.",
+                ],
+                "an unrelated emit instruction in the same sentence must not bind a verdict \
+                 that is independently presented as output",
+                &[
+                    "Emit a note, then rigger_emit your verdict as data {\"verdict\":\"approve\"}.",
+                    "Record notes and rigger_emit the verdict with data {\"verdict\":\"approve\"}.",
+                ],
+                "a verdict serialized as the emit `data` payload is still the stall",
+            );
+        /// spec 18 unit 1's hard promise, pinned against the PAYLOAD-SLOT residual
+        /// false-positive class (adj-u18-1rr REJECT /
+        /// adv-u18-1rr-residual-fp-defeats-your-verdict-escape): an explicit
+        /// determiner-`verdict` presentation ("your verdict ... is {..}") is on the result
+        /// channel even when a payload-slot noun sits in the span but does NOT abut the
+        /// literal. The prior rule treated ANY payload-slot word in the span as defeating the
+        /// presentation, so it flagged these clearly-compliant personas; only a payload word
+        /// IMMEDIATELY abutting the literal ("as data {..}") marks it as the serialized emit
+        /// data. None of these strings carries an output-cue word, and each shares its sentence
+        /// with an unrelated emit instruction, so they pin the determiner-verdict escape against
+        /// a payload noun in the span - not the output whitelist. Teeth: when the payload word
+        /// IMMEDIATELY abuts the literal after an emit, the verdict IS the serialized emit data
+        /// - still the stall, even behind a determiner-`verdict` phrase.
+        verdict_line_lint_passes_a_determiner_verdict_when_a_payload_noun_sits_in_the_span:
+            assert_verdict_channel(
+                &[
+                    // A dropped ambiguous common noun ("value"/"object") after the verdict subject.
+                    "Emit each decision via rigger_emit and your verdict value is \
+                     {\"verdict\":\"approve\"}.",
+                    "Emit each decision via rigger_emit and your verdict object is \
+                     {\"verdict\":\"approve\"}.",
+                    // A KEPT emit-API token ("payload"/"data") that does NOT abut the literal -
+                    // descriptive here, not the serialized argument, so the presentation stands.
+                    "Emit each decision via rigger_emit and the verdict payload is \
+                     {\"verdict\":\"approve\"}.",
+                    "Record notes via rigger_emit as you go, and your verdict data is \
+                     {\"verdict\":\"approve\"}.",
+                ],
+                "a determiner-verdict presentation is on the result channel even when a payload \
+                 noun sits in its span but does not abut the literal",
+                &[
+                    "Emit a note, then rigger_emit your verdict as data {\"verdict\":\"approve\"}.",
+                    "Record decisions, then rigger_emit the verdict payload \
+                     {\"verdict\":\"approve\"}.",
+                ],
+                "a verdict literal a payload word directly introduces is the serialized emit \
+                 data - still the stall",
+            );
+        /// spec 18 unit 1's hard promise, pinned against the UNRELATED-EMIT-EXAMPLE-BRACE
+        /// false-positive class (adj-u18-1r3 REJECT, FP#1): an explicit determiner-`verdict`
+        /// presentation ("your verdict is {..}") is on the result channel even when an
+        /// UNRELATED emit-payload EXAMPLE brace ("... data {id} ...") shares its clause EARLIER,
+        /// before the `verdict` word. The prior rule scanned EVERY brace in the clause, so a
+        /// different literal's `data {id}` example short-circuited the determiner-verdict escape
+        /// to a false flag - it fired on the EXACT wording rigger's own communication
+        /// discipline mandates of every gating persona. The fix scopes the emit-payload test to
+        /// the SPAN from the `verdict` word to the trailing literal, so an example brace before
+        /// the presentation no longer defeats it. None of these strings carries an output cue,
+        /// and each shares its sentence with a genuine `rigger_emit ... data {id}` example.
+        /// Teeth preserved: when the payload word abuts the TRAILING verdict literal itself (in
+        /// the presentation span), it IS the serialized emit data - still the stall, even behind
+        /// a determiner-`verdict` phrase and even with an unrelated example brace elsewhere.
+        verdict_line_lint_passes_a_determiner_verdict_when_an_unrelated_emit_example_brace_precedes_it:
+            assert_verdict_channel(
+                &[
+                    // A/B delta of the reject: only difference from a passing twin is an inline
+                    // `data {id}` example after the emit token; the escape must survive it.
+                    "Record each decision via rigger_emit with data {id}, and your verdict is \
+                     {\"verdict\":\"approve\"}.",
+                    // The A-side twin (no example brace) - a control that must also pass.
+                    "Record each decision via rigger_emit with a DecisionMade payload, and your \
+                     verdict is {\"verdict\":\"approve\"}.",
+                    // The EXACT rigger DecisionMade-discipline wording mandated of every gating
+                    // persona: an emit-payload example `data {id,summary}` precedes the
+                    // determiner-verdict presentation.
+                    "Record every decision via rigger_emit with type DecisionMade and data \
+                     {id,summary}, then your verdict is {\"verdict\":\"approve\"}.",
+                    // The example brace can even be a `{id}` immediately after `rigger_emit`;
+                    // still unrelated to the trailing determiner-verdict literal.
+                    "Emit each decision as rigger_emit {id}, and your verdict is \
+                     {\"verdict\":\"approve\"}.",
+                ],
+                "an unrelated emit-payload EXAMPLE brace earlier in the clause must not defeat a \
+                 determiner-verdict presentation of the trailing literal",
+                &[
+                    "Record notes via rigger_emit {id}, then rigger_emit your verdict as data \
+                     {\"verdict\":\"approve\"}.",
+                    "Emit a note with data {id}, then rigger_emit the verdict with data \
+                     {\"verdict\":\"approve\"}.",
+                ],
+                "a verdict literal a payload word directly introduces IN the presentation span \
+                 is the serialized emit data - still the stall",
+            );
     }
 
     /// spec 18 unit 1 residual class (adj-u18-1rr): a natural output verb OUTSIDE the fixed output
@@ -1112,6 +1116,29 @@ mod tests {
         );
     }
 
+    /// A `deny_unknown_fields` stage probe with one known `agent` field, keyed by name under a
+    /// `stages:` map ([`WithStages`]) - the shape where a stage name's own text lands in the
+    /// reported path as a MAP KEY, not a struct field name.
+    #[derive(Debug, Default, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ProbeStage {
+        #[serde(default)]
+        #[allow(dead_code)]
+        agent: String,
+    }
+
+    #[derive(Debug, Default, serde::Deserialize)]
+    struct WithStages {
+        #[serde(default)]
+        #[allow(dead_code)]
+        stages: BTreeMap<String, ProbeStage>,
+    }
+
+    /// The rendered error of parsing `yaml` into `T`, which must fail.
+    fn unknown_key_err<T: serde::de::DeserializeOwned + std::fmt::Debug>(yaml: &str) -> String {
+        crate::config::parse_yaml_naming_unknown_keys::<T>(yaml).expect_err("must fail to parse")
+    }
+
     /// Two cases where the offending key or a path segment is sourced from arbitrary
     /// operator-writable YAML text (a MAP KEY, unlike a plain struct field name) that echoes
     /// text a naive path/marker split would anchor on - the tracker composes the path from
@@ -1125,23 +1152,7 @@ mod tests {
     ///   marker text appear twice in the rendered message.
     #[test]
     fn parse_yaml_naming_unknown_keys_recomposes_paths_through_colon_and_marker_bearing_map_keys() {
-        #[derive(Debug, Default, serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Stage {
-            #[serde(default)]
-            #[allow(dead_code)]
-            agent: String,
-        }
-        #[derive(Debug, Default, serde::Deserialize)]
-        struct WithStages {
-            #[serde(default)]
-            #[allow(dead_code)]
-            stages: BTreeMap<String, Stage>,
-        }
-        let map_key_err = crate::config::parse_yaml_naming_unknown_keys::<WithStages>(
-            "stages:\n  \"foo: bar\":\n    gatez: x\n",
-        )
-        .expect_err("must fail to parse");
+        let map_key_err = unknown_key_err::<WithStages>("stages:\n  \"foo: bar\":\n    gatez: x\n");
         assert_eq!(
             map_key_err, "stages.foo: bar.gatez: unknown key",
             "a map-key path segment containing its own ': ' is recovered in full: {map_key_err}"
@@ -1160,10 +1171,7 @@ mod tests {
             #[allow(dead_code)]
             defaults: Defaults,
         }
-        let boundary_err = crate::config::parse_yaml_naming_unknown_keys::<Workflow>(
-            "defaults:\n  \"z: unknown field `y\": 1\n",
-        )
-        .expect_err("must fail to parse");
+        let boundary_err = unknown_key_err::<Workflow>("defaults:\n  \"z: unknown field `y\": 1\n");
         assert_eq!(
             boundary_err, "defaults.z: unknown field `y: unknown key",
             "the dotted path is named even when the key itself echoes the path/marker \
@@ -1218,23 +1226,8 @@ mod tests {
     /// separator, so the two cases below are now textually distinct.
     #[test]
     fn parse_yaml_naming_unknown_keys_escapes_a_literal_dot_inside_a_map_key() {
-        #[derive(Debug, Default, serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Stage {
-            #[serde(default)]
-            #[allow(dead_code)]
-            agent: String,
-        }
-        #[derive(Debug, Default, serde::Deserialize)]
-        struct WithStages {
-            #[serde(default)]
-            #[allow(dead_code)]
-            stages: BTreeMap<String, Stage>,
-        }
-        let dotted_key_err = crate::config::parse_yaml_naming_unknown_keys::<WithStages>(
-            "stages:\n  \"foo.bar\":\n    bogus_field: 1\n",
-        )
-        .expect_err("must fail to parse");
+        let dotted_key_err =
+            unknown_key_err::<WithStages>("stages:\n  \"foo.bar\":\n    bogus_field: 1\n");
         assert_eq!(
             dotted_key_err, "stages.foo\\.bar.bogus_field: unknown key",
             "a literal '.' inside a single map key is backslash-escaped so it cannot read as \
@@ -1261,11 +1254,9 @@ mod tests {
             #[allow(dead_code)]
             stages: BTreeMap<String, StageWithNested>,
         }
-        let genuinely_nested_err =
-            crate::config::parse_yaml_naming_unknown_keys::<WithNestedStages>(
-                "stages:\n  foo:\n    bar:\n      bogus_field: 1\n",
-            )
-            .expect_err("must fail to parse");
+        let genuinely_nested_err = unknown_key_err::<WithNestedStages>(
+            "stages:\n  foo:\n    bar:\n      bogus_field: 1\n",
+        );
         assert_eq!(
             genuinely_nested_err, "stages.foo.bar.bogus_field: unknown key",
             "true nesting (a stage \"foo\" containing substructure \"bar\") has no embedded \
@@ -1368,15 +1359,137 @@ mod tests {
         );
     }
 
-    #[test]
-    fn defaults_max_wall_clock_parses_and_is_zero_when_absent() {
-        let present: Workflow = serde_yaml::from_str("defaults:\n  max_wall_clock: 600\n").unwrap();
-        assert_eq!(present.defaults.max_wall_clock, 600);
-        let absent: Workflow = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(
-            absent.defaults.max_wall_clock, 0,
-            "an absent default is 0 (unbounded - liveness timeouts are opt-in)"
-        );
+    /// Parsing `yaml` as a [`Workflow`] yields `expected` for the `field` it reads.
+    fn assert_parsed<T: PartialEq + std::fmt::Debug>(
+        yaml: &str,
+        field: impl Fn(&Workflow) -> T,
+        expected: T,
+        why: &str,
+    ) {
+        let wf: Workflow = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(field(&wf), expected, "{why}");
+    }
+
+    crate::test_cases! {
+        defaults_max_wall_clock_parses_and_is_zero_when_absent: {
+            assert_parsed(
+                "defaults:\n  max_wall_clock: 600\n",
+                |w| w.defaults.max_wall_clock,
+                600,
+                "an explicit defaults.max_wall_clock parses through",
+            );
+            assert_parsed(
+                "{}",
+                |w| w.defaults.max_wall_clock,
+                0,
+                "an absent default is 0 (unbounded - liveness timeouts are opt-in)",
+            );
+        };
+        /// The remediation-depth knob parses from `defaults.max_retries` and is 0 when omitted
+        /// - the sentinel the conductor reads as "fall back to the historical default of 3", so
+        /// an un-set workflow is exactly back-compatible.
+        max_retries_parses_from_defaults_and_defaults_to_zero_when_absent: {
+            assert_parsed(
+                "defaults:\n  max_retries: 6\n",
+                |w| w.defaults.max_retries,
+                6,
+                "an explicit defaults.max_retries must parse through",
+            );
+            assert_parsed(
+                "defaults:\n  budget: 60\n",
+                |w| w.defaults.max_retries,
+                0,
+                "an absent defaults.max_retries must default to 0 (the fall-back-to-3 sentinel)",
+            );
+        };
+        /// Spec 65: `build.wrapper` / `build.cache_dir` are the config plumbing the shared
+        /// build-environment resolver reads. An omitted `build:` section (the common case)
+        /// resolves to the defaults - empty wrapper, empty cache_dir - so the workflow's ONE
+        /// resolver ([`crate::gate::BuildEnv::resolve`]) treats it exactly like an explicit
+        /// `wrapper: off`.
+        build_config_parses_wrapper_and_cache_dir_and_defaults_when_omitted: {
+            let wrapper_and_cache =
+                |w: &Workflow| (w.build.wrapper.clone(), w.build.cache_dir.clone());
+            assert_parsed(
+                "{}",
+                wrapper_and_cache,
+                (String::new(), String::new()),
+                "an omitted build: section defaults empty",
+            );
+            assert_parsed(
+                "build:\n  wrapper: sccache\n  cache_dir: /shared/cache\n",
+                wrapper_and_cache,
+                ("sccache".to_string(), "/shared/cache".to_string()),
+                "an explicit wrapper and cache_dir parse through",
+            );
+        };
+        /// Spec 65 unit 4 (JOBS CAP): `build.jobs` is the config plumbing
+        /// [`crate::gate::BuildEnv::resolve`]'s jobs facet reads. Omitted (the common case)
+        /// parses to `0` - unset, matching this config's own zero-as-unset convention
+        /// (`budget`, `max_retries`, `speculation_width`) - so a pre-existing workflow with no
+        /// opinion on `build.jobs` is byte-for-byte back-compatible. An explicit positive value
+        /// parses through untouched, and jobs is independent of wrapper - both may be set
+        /// together without either suppressing the other's parse.
+        build_config_parses_jobs_and_defaults_to_zero_when_omitted: {
+            assert_parsed(
+                "{}",
+                |w| w.build.jobs,
+                0,
+                "an omitted build: section defaults jobs to 0 (unset)",
+            );
+            assert_parsed("build:\n  jobs: 4\n", |w| w.build.jobs, 4, "explicit jobs");
+            assert_parsed(
+                "build:\n  wrapper: sccache\n  jobs: 8\n",
+                |w| (w.build.wrapper.clone(), w.build.jobs),
+                ("sccache".to_string(), 8),
+                "jobs and wrapper parse together",
+            );
+        };
+        /// Spec 65: `build.max_concurrent` is the machine-wide build budget's config plumbing
+        /// ([`crate::budget::BuildBudget`] is the resolver that reads it). Omitted resolves to
+        /// the documented default of 4 - NOT to a bare `u32::default()` of 0, which the `0`
+        /// value is separately reserved to mean (the `budget: 0` convention `defaults.budget`
+        /// already uses): an explicit `max_concurrent: 0` must parse distinctly from an absent
+        /// key.
+        build_config_parses_max_concurrent_defaulting_to_four_when_omitted: {
+            assert_parsed(
+                "{}",
+                |w| w.build.max_concurrent,
+                4,
+                "an omitted build: section defaults max_concurrent to 4",
+            );
+            assert_parsed(
+                "build:\n  max_concurrent: 9\n",
+                |w| w.build.max_concurrent,
+                9,
+                "explicit max_concurrent",
+            );
+            assert_parsed(
+                "build:\n  max_concurrent: 0\n",
+                |w| w.build.max_concurrent,
+                0,
+                "an EXPLICIT 0 must parse as 0 (unlimited), distinct from the omitted default",
+            );
+        };
+        /// Spec 91: `build.mutation` is RETIRED - an omitted `build:` section (the common case,
+        /// and every workflow committed before either the retired spec-73 key or this key
+        /// existed) still resolves the field empty, so `Config::validate` never rejects a
+        /// pre-existing project that never touched this key.
+        build_config_parses_mutation_and_defaults_to_empty_when_omitted: {
+            assert_parsed(
+                "{}",
+                |w| w.build.mutation.clone(),
+                String::new(),
+                "an omitted build: section defaults mutation empty",
+            );
+            assert_parsed(
+                "build:\n  mutation: on\n",
+                |w| w.build.mutation.clone(),
+                "on".to_string(),
+                "the field still parses (so validate can name it in its rejection), it is just \
+                 no longer an accepted value",
+            );
+        };
     }
 
     #[test]
@@ -1627,25 +1740,28 @@ mod tests {
         assert!(unset.isolated());
     }
 
-    #[test]
-    fn validate_catches_unknown_ref() {
+    /// A config declaring agent `a` and each `(name, agent, needs)` stage of `stages` must fail
+    /// validation.
+    fn assert_stages_invalid(stages: &[(&str, &str, &[&str])]) {
         let mut cfg = Config::default();
-        cfg.agents.insert(
-            "a".into(),
-            AgentDef {
-                id: "a".into(),
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "ghost".into(),
-                ..Default::default()
-            },
-        );
+        cfg.agents.insert("a".into(), agent_def("a"));
+        for (name, agent, needs) in stages {
+            cfg.workflow.stages.insert(
+                (*name).into(),
+                Stage {
+                    name: (*name).into(),
+                    agent: (*agent).into(),
+                    needs: needs.iter().map(|n| (*n).into()).collect(),
+                    ..Default::default()
+                },
+            );
+        }
         assert!(cfg.validate().is_err());
+    }
+
+    crate::test_cases! {
+        validate_catches_unknown_ref: assert_stages_invalid(&[("s", "ghost", &[])]);
+        validate_catches_cycle: assert_stages_invalid(&[("x", "a", &["y"]), ("y", "a", &["x"])]);
     }
 
     #[test]
@@ -1735,57 +1851,61 @@ agent: worker\n";
         );
     }
 
-    #[test]
-    fn validate_catches_an_unknown_light_panel_agent() {
-        // The light panel's agent ids are validated exactly like the full panel's: an
-        // unknown light-panel lens/adversary/adjudicator fails `config::load` (spec 03).
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent_def("a"));
-        cfg.workflow.defaults.review = ReviewPanel {
-            lenses: vec!["a".into()],
-            adjudicator: "a".into(),
-            tiers: Some(Box::new(ReviewDepth {
-                light: ReviewPanel {
-                    lenses: vec!["ghost".into()],
-                    adjudicator: "a".into(),
-                    ..Default::default()
-                },
-                threshold: 2,
-                ..Default::default()
-            })),
+    /// A review panel of `lenses` gated by `adjudicator`.
+    fn panel(lenses: &[&str], adjudicator: &str) -> ReviewPanel {
+        ReviewPanel {
+            lenses: lenses.iter().map(|l| (*l).into()).collect(),
+            adjudicator: adjudicator.into(),
             ..Default::default()
-        };
-        assert!(
-            cfg.validate().is_err(),
-            "an unknown light-panel lens must fail validation"
-        );
+        }
     }
 
-    #[test]
-    fn validate_rejects_a_light_panel_with_no_adjudicator() {
-        // The adjudicator's gating verdict is mandatory on every tier - only the
-        // adversary flexes (spec 03 / spec 13 unit 4). A configured light panel that
-        // names no adjudicator would let a low-risk unit approve trivially, so it fails
-        // `config::load` loudly.
+    /// A config declaring agent `a` whose default review is `full` with a tiers policy routing
+    /// risk below 2 to the `light` panel must fail validation (`why`).
+    fn assert_tiered_review_invalid(full: ReviewPanel, light: ReviewPanel, why: &str) {
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent_def("a"));
         cfg.workflow.defaults.review = ReviewPanel {
-            lenses: vec!["a".into()],
-            adjudicator: "a".into(),
             tiers: Some(Box::new(ReviewDepth {
-                light: ReviewPanel {
-                    lenses: vec!["a".into()],
-                    ..Default::default()
-                },
+                light,
                 threshold: 2,
                 ..Default::default()
             })),
-            ..Default::default()
+            ..full
         };
-        assert!(
-            cfg.validate().is_err(),
-            "a light panel with no adjudicator must fail validation"
+        assert!(cfg.validate().is_err(), "{why}");
+    }
+
+    crate::test_cases! {
+        /// The light panel's agent ids are validated exactly like the full panel's: an unknown
+        /// light-panel lens/adversary/adjudicator fails `config::load` (spec 03).
+        validate_catches_an_unknown_light_panel_agent: assert_tiered_review_invalid(
+            panel(&["a"], "a"),
+            panel(&["ghost"], "a"),
+            "an unknown light-panel lens must fail validation",
         );
+        /// The adjudicator's gating verdict is mandatory on every tier - only the adversary
+        /// flexes (spec 03 / spec 13 unit 4). A configured light panel that names no
+        /// adjudicator would let a low-risk unit approve trivially, so it fails `config::load`
+        /// loudly.
+        validate_rejects_a_light_panel_with_no_adjudicator: assert_tiered_review_invalid(
+            panel(&["a"], "a"),
+            panel(&["a"], ""),
+            "a light panel with no adjudicator must fail validation",
+        );
+        /// The gating verdict is mandatory on EVERY tier, including the FULL one a high-risk
+        /// unit routes to (remediation of sdet-u13-empty-full-tiers-skips-adjudicator). A tiers
+        /// policy whose ENCLOSING full panel names no adjudicator (here, no roster at all) -
+        /// even with a perfectly valid light tier - would let a high-risk unit route to a panel
+        /// that approves trivially via `is_empty()`, skipping the adjudicator. So it must fail
+        /// `config::load` loudly. Before the fix, `validate_depth` guarded only the light tier,
+        /// so `{empty full roster + valid tiers.light}` was ACCEPTED.
+        validate_rejects_a_tiers_policy_on_a_full_panel_with_no_adjudicator:
+            assert_tiered_review_invalid(
+                panel(&[], ""),
+                panel(&["a"], "a"),
+                "a tiers policy on a full panel that names no adjudicator must fail validation",
+            );
     }
 
     #[test]
@@ -1813,36 +1933,6 @@ agent: worker\n";
         assert!(
             cfg.validate().is_ok(),
             "a well-formed depth policy must validate"
-        );
-    }
-
-    #[test]
-    fn validate_rejects_a_tiers_policy_on_a_full_panel_with_no_adjudicator() {
-        // The gating verdict is mandatory on EVERY tier, including the FULL one a high-risk
-        // unit routes to (remediation of sdet-u13-empty-full-tiers-skips-adjudicator). A
-        // tiers policy whose ENCLOSING full panel names no adjudicator - even with a
-        // perfectly valid light tier - would let a high-risk unit route to a panel that
-        // approves trivially via `is_empty()`, skipping the adjudicator. So it must fail
-        // `config::load` loudly. Before the fix, `validate_depth` guarded only the light
-        // tier, so `{empty full roster + valid tiers.light}` was ACCEPTED.
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent_def("a"));
-        cfg.workflow.defaults.review = ReviewPanel {
-            // A full panel that names NO adjudicator (here, no roster at all).
-            tiers: Some(Box::new(ReviewDepth {
-                light: ReviewPanel {
-                    lenses: vec!["a".into()],
-                    adjudicator: "a".into(),
-                    ..Default::default()
-                },
-                threshold: 2,
-                ..Default::default()
-            })),
-            ..Default::default()
-        };
-        assert!(
-            cfg.validate().is_err(),
-            "a tiers policy on a full panel that names no adjudicator must fail validation"
         );
     }
 
@@ -1879,24 +1969,6 @@ agent: worker\n";
         assert!(
             cfg.validate().is_err(),
             "a stage review declaring only a tiers policy (no full adjudicator) must fail validation"
-        );
-    }
-
-    #[test]
-    fn max_retries_parses_from_defaults_and_defaults_to_zero_when_absent() {
-        // The remediation-depth knob parses from `defaults.max_retries` and is 0 when
-        // omitted - the sentinel the conductor reads as "fall back to the historical
-        // default of 3", so an un-set workflow is exactly back-compatible.
-        let present: Workflow = serde_yaml::from_str("defaults:\n  max_retries: 6\n").unwrap();
-        assert_eq!(
-            present.defaults.max_retries, 6,
-            "an explicit defaults.max_retries must parse through"
-        );
-
-        let absent: Workflow = serde_yaml::from_str("defaults:\n  budget: 60\n").unwrap();
-        assert_eq!(
-            absent.defaults.max_retries, 0,
-            "an absent defaults.max_retries must default to 0 (the fall-back-to-3 sentinel)"
         );
     }
 
@@ -2139,75 +2211,6 @@ class: product\n";
         }
     }
 
-    /// Spec 65: `build.wrapper` / `build.cache_dir` are the config plumbing the shared
-    /// build-environment resolver reads. An omitted `build:` section (the common case)
-    /// resolves to the defaults - empty wrapper, empty cache_dir - so the workflow's ONE
-    /// resolver ([`crate::gate::BuildEnv::resolve`]) treats it exactly like an explicit
-    /// `wrapper: off`.
-    #[test]
-    fn build_config_parses_wrapper_and_cache_dir_and_defaults_when_omitted() {
-        let wf: Workflow = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(
-            wf.build.wrapper, "",
-            "an omitted build: section defaults empty"
-        );
-        assert_eq!(wf.build.cache_dir, "");
-
-        let wf: Workflow =
-            serde_yaml::from_str("build:\n  wrapper: sccache\n  cache_dir: /shared/cache\n")
-                .unwrap();
-        assert_eq!(wf.build.wrapper, "sccache");
-        assert_eq!(wf.build.cache_dir, "/shared/cache");
-    }
-
-    /// Spec 65 unit 4 (JOBS CAP): `build.jobs` is the config plumbing
-    /// [`crate::gate::BuildEnv::resolve`]'s jobs facet reads. Omitted (the common
-    /// case) parses to `0` - unset, matching this config's own zero-as-unset
-    /// convention (`budget`, `max_retries`, `speculation_width`) - so a pre-existing
-    /// workflow with no opinion on `build.jobs` is byte-for-byte back-compatible. An
-    /// explicit positive value parses through untouched.
-    #[test]
-    fn build_config_parses_jobs_and_defaults_to_zero_when_omitted() {
-        let wf: Workflow = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(
-            wf.build.jobs, 0,
-            "an omitted build: section defaults jobs to 0 (unset)"
-        );
-
-        let wf: Workflow = serde_yaml::from_str("build:\n  jobs: 4\n").unwrap();
-        assert_eq!(wf.build.jobs, 4);
-
-        // jobs is independent of wrapper - both may be set together without either
-        // suppressing the other's parse.
-        let wf: Workflow = serde_yaml::from_str("build:\n  wrapper: sccache\n  jobs: 8\n").unwrap();
-        assert_eq!(wf.build.wrapper, "sccache");
-        assert_eq!(wf.build.jobs, 8);
-    }
-
-    /// Spec 65: `build.max_concurrent` is the machine-wide build budget's config plumbing
-    /// ([`crate::budget::BuildBudget`] is the resolver that reads it). Omitted resolves to
-    /// the documented default of 4 - NOT to a bare `u32::default()` of 0, which the `0`
-    /// value is separately reserved to mean (the `budget: 0` convention `defaults.budget`
-    /// already uses): an explicit `max_concurrent: 0` must parse distinctly from an absent
-    /// key.
-    #[test]
-    fn build_config_parses_max_concurrent_defaulting_to_four_when_omitted() {
-        let wf: Workflow = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(
-            wf.build.max_concurrent, 4,
-            "an omitted build: section defaults max_concurrent to 4"
-        );
-
-        let wf: Workflow = serde_yaml::from_str("build:\n  max_concurrent: 9\n").unwrap();
-        assert_eq!(wf.build.max_concurrent, 9);
-
-        let wf: Workflow = serde_yaml::from_str("build:\n  max_concurrent: 0\n").unwrap();
-        assert_eq!(
-            wf.build.max_concurrent, 0,
-            "an EXPLICIT 0 must parse as 0 (unlimited), distinct from the omitted default"
-        );
-    }
-
     /// Spec 65 unit 2 (NO SILENT DEGRADE): a CONFIGURED (non-auto, non-off) `build.wrapper`
     /// absent from PATH must fail `Config::validate` - a run-start loud error naming both
     /// the missing binary and the `build.wrapper` config key - rather than silently letting
@@ -2247,26 +2250,6 @@ class: product\n";
                 "build.wrapper: {wrapper:?} must never fail validation"
             );
         }
-    }
-
-    /// Spec 91: `build.mutation` is RETIRED - an omitted `build:` section (the common case,
-    /// and every workflow committed before either the retired spec-73 key or this key
-    /// existed) still resolves the field empty, so `Config::validate` never rejects a
-    /// pre-existing project that never touched this key.
-    #[test]
-    fn build_config_parses_mutation_and_defaults_to_empty_when_omitted() {
-        let wf: Workflow = serde_yaml::from_str("{}").unwrap();
-        assert_eq!(
-            wf.build.mutation, "",
-            "an omitted build: section defaults mutation empty"
-        );
-
-        let wf: Workflow = serde_yaml::from_str("build:\n  mutation: on\n").unwrap();
-        assert_eq!(
-            wf.build.mutation, "on",
-            "the field still parses (so validate can name it in its rejection), it is just no \
-             longer an accepted value"
-        );
     }
 
     /// Spec 91 (SCHEMA RETIREMENT): ANY explicit `build.mutation` value - not just the
@@ -2456,36 +2439,5 @@ class: product\n";
             cfg.validate().is_ok(),
             "auto must never fail validation regardless of cache-dir writability"
         );
-    }
-
-    #[test]
-    fn validate_catches_cycle() {
-        let mut cfg = Config::default();
-        cfg.agents.insert(
-            "a".into(),
-            AgentDef {
-                id: "a".into(),
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "x".into(),
-            Stage {
-                name: "x".into(),
-                agent: "a".into(),
-                needs: vec!["y".into()],
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "y".into(),
-            Stage {
-                name: "y".into(),
-                agent: "a".into(),
-                needs: vec!["x".into()],
-                ..Default::default()
-            },
-        );
-        assert!(cfg.validate().is_err());
     }
 }

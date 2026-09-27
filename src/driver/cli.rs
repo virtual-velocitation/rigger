@@ -8,8 +8,6 @@
 //! living DAG (UnitProposed), and feeds the side-car - the only difference from the
 //! workflow driver is that emission is post-hoc, not live mid-run.
 
-use std::process::Command;
-
 use serde_json::Value;
 
 use crate::conductor::{AgentDriver, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED};
@@ -42,7 +40,7 @@ impl AgentDriver for Driver {
         } else {
             &self.bin
         };
-        let mut cmd = Command::new(bin);
+        let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
         // Live progress (spec 14): frame the same per-step progress instruction the workflow
         // drivers give, so a worker on this path also reports what it is doing between
         // milestones. (This synchronous, non-parking path has no parked frontier entry, so the
@@ -57,9 +55,6 @@ impl AgentDriver for Driver {
             &opts.system_prompt,
             opts.attempt,
         ));
-        if !opts.dir.is_empty() {
-            cmd.current_dir(&opts.dir);
-        }
         // The ONE build-environment authority's second injection site (spec 65): every
         // var the resolver derived (empty when no wrapper is configured, applying
         // nothing) so this agent's OWN `cargo test`/`cargo build` invocations hit the

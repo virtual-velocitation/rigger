@@ -42,6 +42,7 @@
 //! call verbatim (`git diff` on `src/` clean) returns it to green.
 
 mod common;
+use common::git::run_git;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
@@ -226,12 +227,10 @@ fn a_non_ancestor_amend_names_the_true_diff_not_the_triple_dot_under_report() {
     // construction - asserted here by confirming `round_start_sha` has exactly one parent
     // and that parent is the repo's root commit (the amended commit's parent too, since both
     // share it), which is only possible when the two are siblings, never ancestor/descendant.
-    let parents = Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["rev-list", "--parents", "-n", "1", &round_start_sha])
-        .output()
-        .unwrap();
+    let parents = run_git(
+        &repo_path,
+        &["rev-list", "--parents", "-n", "1", &round_start_sha],
+    );
     assert!(
         parents.status.success(),
         "premise: round_start_sha must resolve"
@@ -285,23 +284,19 @@ fn a_non_ancestor_amend_names_the_true_diff_not_the_triple_dot_under_report() {
     // round_start_sha - `guard_review_round_tree` restores the BRANCH, which
     // `integrate_and_emit` then merges, so this is the same invariant the round-1 moved-tip
     // tests assert, now proven in the non-ancestor shape too.
-    let branch_tip = Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["rev-parse", &unit_branch("unit-a")])
-        .output();
+    let branch_tip = run_git(&repo_path, &["rev-parse", &unit_branch("unit-a")]);
     // Integration deletes the unit branch on success (round-1 precedent), so a missing ref
     // here is expected - the meaningful assertion already ran above (the integrated repo
     // tree content); this block only guards against a future change accidentally leaving a
     // stray branch pointed at the wrong (unrestored) sha.
-    if let Ok(out) = branch_tip {
-        if out.status.success() {
-            let tip = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            assert_eq!(
-                tip, round_start_sha,
-                "if the unit branch still exists, it must be exactly round_start_sha"
-            );
-        }
+    if branch_tip.status.success() {
+        let tip = String::from_utf8_lossy(&branch_tip.stdout)
+            .trim()
+            .to_string();
+        assert_eq!(
+            tip, round_start_sha,
+            "if the unit branch still exists, it must be exactly round_start_sha"
+        );
     }
 
     drop(repo);

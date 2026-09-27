@@ -42,6 +42,7 @@
 //! either assertion.
 
 mod common;
+use common::git::git_ok;
 
 use std::path::Path;
 use std::process::{Child, Command};
@@ -134,13 +135,7 @@ fn reclaim_unit_mutation_scratch_still_reaps_when_its_base_legitimately_lies_und
     // isolation of which half of the call chain is refusing the reap.)
     let repo = tempfile::tempdir().unwrap();
     let repo_path = repo.path().canonicalize().unwrap();
-    assert!(Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["init", "-q"])
-        .status()
-        .unwrap()
-        .success());
+    git_ok(&repo_path, &["init", "-q"]);
     let cache_home = repo_path
         .join(".rigger")
         .join("tmp")

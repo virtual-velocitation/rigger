@@ -48,6 +48,7 @@
 //! the call verbatim (`git diff` on `src/` clean) returns it to green.
 
 mod common;
+use common::git::run_git;
 
 use common::fixtures::agent;
 use common::fixtures::gate_def;
@@ -233,12 +234,7 @@ fn a_lenses_only_panels_log_derived_start_sha_survives_a_same_chunk_sibling_park
     );
 
     let branch = unit_branch("unit-a");
-    let residue_tip = Command::new("git")
-        .arg("-C")
-        .arg(&repo_path)
-        .args(["rev-parse", &branch])
-        .output()
-        .unwrap();
+    let residue_tip = run_git(&repo_path, &["rev-parse", &branch]);
     assert!(
         residue_tip.status.success(),
         "premise: the unit branch must still exist after a park"

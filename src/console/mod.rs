@@ -537,41 +537,60 @@ mod tests {
         assert!(!want.is_empty(), "fixture must actually exercise a blocker");
     }
 
-    /// The dock lists a currently-escalated unit, and nothing else, for an
-    /// otherwise clean run - mutation-discriminating: dropping the escalated
-    /// arm empties this list.
-    #[test]
-    fn dock_lists_a_currently_escalated_unit() {
-        let events = vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-esc"}"#),
-            ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u-esc"}"#),
-        ];
-        let run = ledger::project(&events).unwrap();
-        let d = dock(&run, &events);
+    /// The dock of `events` lists exactly one needs-you entry, of `kind` for `unit` (`""` for a
+    /// run-scoped one); the dock is returned for any further assertion.
+    fn docked_one(events: &[Event], kind: &str, unit: &str) -> Dock {
+        let run = ledger::project(events).unwrap();
+        let d = dock(&run, events);
         assert_eq!(d.needs_you.len(), 1, "{:?}", d.needs_you);
-        assert_eq!(d.needs_you[0].kind, ledger::ATTENTION_ESCALATED);
-        assert_eq!(d.needs_you[0].unit, "u-esc");
-        assert_eq!(
-            d.lines(),
-            vec!["u-esc: escalated after exhausting remediation"]
-        );
+        assert_eq!(d.needs_you[0].kind, kind);
+        assert_eq!(d.needs_you[0].unit, unit);
+        d
     }
 
-    /// The dock lists a currently-spent budget, run-scoped (no `unit`), from
-    /// the SAME durable `BudgetExhausted` fact `blocker::classify`'s
-    /// run-level line already reads.
-    #[test]
-    fn dock_lists_a_currently_spent_budget() {
-        let events = vec![ev(
-            blocker::TYPE_BUDGET_EXHAUSTED,
-            r#"{"budget":10,"spawns":10}"#,
-        )];
-        let run = ledger::project(&events).unwrap();
-        let d = dock(&run, &events);
-        assert_eq!(d.needs_you.len(), 1, "{:?}", d.needs_you);
-        assert_eq!(d.needs_you[0].kind, ledger::ATTENTION_HALTED);
-        assert_eq!(d.needs_you[0].unit, "");
-        assert_eq!(d.lines(), vec!["run: budget spent 10/10"]);
+    crate::test_cases! {
+        /// The dock lists a currently-escalated unit, and nothing else, for an otherwise clean
+        /// run - mutation-discriminating: dropping the escalated arm empties this list.
+        dock_lists_a_currently_escalated_unit: assert_eq!(
+            docked_one(
+                &[
+                    ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-esc"}"#),
+                    ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u-esc"}"#),
+                ],
+                ledger::ATTENTION_ESCALATED,
+                "u-esc",
+            )
+            .lines(),
+            vec!["u-esc: escalated after exhausting remediation"]
+        );
+        /// The dock lists a currently-spent budget, run-scoped (no `unit`), from the SAME
+        /// durable `BudgetExhausted` fact `blocker::classify`'s run-level line already reads.
+        dock_lists_a_currently_spent_budget: assert_eq!(
+            docked_one(
+                &[ev(
+                    blocker::TYPE_BUDGET_EXHAUSTED,
+                    r#"{"budget":10,"spawns":10}"#,
+                )],
+                ledger::ATTENTION_HALTED,
+                "",
+            )
+            .lines(),
+            vec!["run: budget spent 10/10"]
+        );
+        /// The dock lists a unit past the recurrence threshold that is STILL failed
+        /// (mid-remediation, parked awaiting its next attempt) - never an escalated or
+        /// integrated one, which have left `Failed` for good.
+        dock_lists_a_unit_still_failed_past_the_recurrence_threshold: docked_one(
+            &[
+                ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-churn"}"#),
+                ev(
+                    ledger::TYPE_UNIT_FAILED,
+                    r#"{"id":"u-churn","attempts":3,"cause":"reject"}"#,
+                ),
+            ],
+            ledger::ATTENTION_WORKER_DEATH_RECURRED,
+            "u-churn",
+        );
     }
 
     /// A budget halt already RESOLVED (a later unit-lifecycle event followed
@@ -633,25 +652,6 @@ mod tests {
         );
     }
 
-    /// The dock lists a unit past the recurrence threshold that is STILL
-    /// failed (mid-remediation, parked awaiting its next attempt) - never an
-    /// escalated or integrated one, which have left `Failed` for good.
-    #[test]
-    fn dock_lists_a_unit_still_failed_past_the_recurrence_threshold() {
-        let events = vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-churn"}"#),
-            ev(
-                ledger::TYPE_UNIT_FAILED,
-                r#"{"id":"u-churn","attempts":3,"cause":"reject"}"#,
-            ),
-        ];
-        let run = ledger::project(&events).unwrap();
-        let d = dock(&run, &events);
-        assert_eq!(d.needs_you.len(), 1, "{:?}", d.needs_you);
-        assert_eq!(d.needs_you[0].kind, ledger::ATTENTION_WORKER_DEATH_RECURRED);
-        assert_eq!(d.needs_you[0].unit, "u-churn");
-    }
-
     /// A unit's FIRST failure (attempts == 1) is not a recurrence yet, so the
     /// dock stays silent on it - mirrors `blocker::classify`'s own
     /// `RejectRecurrence` numbering (`#1/max` still prints, but the dock's
@@ -682,56 +682,55 @@ mod tests {
         assert_eq!(statusline(&run, &blockers, &d), "- . 0/0 units . healthy");
     }
 
-    /// The statusline names the focus unit (the first non-terminal one, in
-    /// lexical id order), the landed/total count, and the `working` health
-    /// word for a unit still building with no needs-you condition.
-    #[test]
-    fn statusline_reports_focus_landed_and_working() {
-        let events = vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
-            ev(
-                ledger::TYPE_UNIT_INTEGRATED,
-                r#"{"id":"u1","commit":"abc"}"#,
-            ),
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u2"}"#),
-        ];
-        let run = ledger::project(&events).unwrap();
-        let blockers = blocker::from_state(&run, &events, 3);
-        let d = dock(&run, &events);
-        assert_eq!(statusline(&run, &blockers, &d), "u2 . 1/2 units . working");
+    /// The statusline of `events` (blockers at the recurrence threshold 3), with how many
+    /// current blockers it was built over.
+    fn statusline_of(events: &[Event]) -> (String, usize) {
+        let run = ledger::project(events).unwrap();
+        let blockers = blocker::from_state(&run, events, 3);
+        let d = dock(&run, events);
+        (statusline(&run, &blockers, &d), blockers.len())
     }
 
-    /// The statusline reports `done` once every unit has landed and nothing
-    /// else needs attention.
-    #[test]
-    fn statusline_reports_done_when_every_unit_landed() {
-        let events = vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
-            ev(
-                ledger::TYPE_UNIT_INTEGRATED,
-                r#"{"id":"u1","commit":"abc"}"#,
-            ),
-        ];
-        let run = ledger::project(&events).unwrap();
-        let blockers = blocker::from_state(&run, &events, 3);
-        let d = dock(&run, &events);
-        assert_eq!(statusline(&run, &blockers, &d), "- . 1/1 units . done");
-    }
-
-    /// The statusline's health word is `needs-you` whenever the dock is
-    /// non-empty, even if that same unit also carries a current-blocker line
-    /// (an escalated unit is both) - needs-you takes precedence over working.
-    #[test]
-    fn statusline_reports_needs_you_over_working() {
-        let events = vec![
-            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-esc"}"#),
-            ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u-esc"}"#),
-        ];
-        let run = ledger::project(&events).unwrap();
-        let blockers = blocker::from_state(&run, &events, 3);
-        let d = dock(&run, &events);
-        assert!(!blockers.is_empty(), "an escalated unit is also a blocker");
-        assert_eq!(statusline(&run, &blockers, &d), "- . 0/1 units . needs-you");
+    crate::test_cases! {
+        /// The statusline names the focus unit (the first non-terminal one, in lexical id
+        /// order), the landed/total count, and the `working` health word for a unit still
+        /// building with no needs-you condition.
+        statusline_reports_focus_landed_and_working: assert_eq!(
+            statusline_of(&[
+                ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
+                ev(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    r#"{"id":"u1","commit":"abc"}"#,
+                ),
+                ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u2"}"#),
+            ])
+            .0,
+            "u2 . 1/2 units . working"
+        );
+        /// The statusline reports `done` once every unit has landed and nothing else needs
+        /// attention.
+        statusline_reports_done_when_every_unit_landed: assert_eq!(
+            statusline_of(&[
+                ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#),
+                ev(
+                    ledger::TYPE_UNIT_INTEGRATED,
+                    r#"{"id":"u1","commit":"abc"}"#,
+                ),
+            ])
+            .0,
+            "- . 1/1 units . done"
+        );
+        /// The statusline's health word is `needs-you` whenever the dock is non-empty, even if
+        /// that same unit also carries a current-blocker line (an escalated unit is both) -
+        /// needs-you takes precedence over working.
+        statusline_reports_needs_you_over_working: {
+            let (line, blockers) = statusline_of(&[
+                ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u-esc"}"#),
+                ev(ledger::TYPE_UNIT_ESCALATED, r#"{"id":"u-esc"}"#),
+            ]);
+            assert!(blockers > 0, "an escalated unit is also a blocker");
+            assert_eq!(line, "- . 0/1 units . needs-you");
+        };
     }
 
     /// Determinism: folding the same stream twice yields byte-identical
@@ -863,75 +862,63 @@ mod tests {
         );
     }
 
-    /// SCRUB_TRACK, hour ticks: consecutive events whose `recorded_at` crosses an hour
-    /// boundary produce one tick per crossing, pinned to the position of the first event
-    /// AT OR AFTER that boundary, labelled by the UTC hour - never a tick at the very first
-    /// event (which only seeds the baseline, crossing nothing yet).
-    #[test]
-    fn scrub_track_ticks_one_per_hour_boundary_crossed() {
+    /// Events at positions 1.. recorded `secs` past the epoch (one per entry of `recorded`)
+    /// yield exactly the hour ticks `(position, label)` of `expected` (`why`).
+    fn assert_hour_ticks(recorded: &[u64], expected: &[(Position, &str)], why: &str) {
         use std::time::{Duration, SystemTime};
-        let based = |secs: u64, pos: Position| {
-            let mut e = ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#);
-            e.position = pos;
-            e.recorded_at = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
-            e
-        };
-        let events = vec![
-            based(0, 1),        // 00:00 - baseline, no tick
-            based(30 * 60, 2),  // 00:30 - same hour, no tick
-            based(70 * 60, 3),  // 01:10 - crosses into hour 1: tick at position 3
-            based(3 * 3600, 4), // 03:00 - crosses straight through hour 2 into hour 3
-        ];
+        let events: Vec<Event> = recorded
+            .iter()
+            .enumerate()
+            .map(|(i, secs)| {
+                let mut e = ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#);
+                e.position = i as Position + 1;
+                e.recorded_at = SystemTime::UNIX_EPOCH + Duration::from_secs(*secs);
+                e
+            })
+            .collect();
         let track = scrub_track(&events);
-        assert_eq!(
-            track.ticks,
-            vec![
-                ScrubTick {
-                    position: 3,
-                    label: "01:00".to_string()
-                },
-                ScrubTick {
-                    position: 4,
-                    label: "03:00".to_string()
-                },
-            ],
-            "{:?}",
-            track.ticks
-        );
+        let expected: Vec<ScrubTick> = expected
+            .iter()
+            .map(|(position, label)| ScrubTick {
+                position: *position,
+                label: label.to_string(),
+            })
+            .collect();
+        assert_eq!(track.ticks, expected, "{why}: {:?}", track.ticks);
     }
 
-    /// SCRUB_TRACK, hour ticks, the `>` vs `>=` boundary: once a REAL (non-epoch-sentinel)
-    /// timestamp has seeded `last_hour`, a SECOND event still within that SAME hour must
-    /// tick NEVER - only a STRICTLY greater hour crosses a boundary. The prior test's own
-    /// same-hour event (`based(30 * 60, 2)`) cannot pin this: it is the run's very FIRST
-    /// real timestamp, so `last_hour` is still `None` entering that check and the
-    /// `is_some_and` short-circuits to `false` regardless of `>` vs `>=` - it exercises
-    /// only the epoch-sentinel `continue` above, never this comparison. Here the baseline
-    /// event carries a genuine non-zero timestamp, so the second, same-hour event actually
-    /// reaches the `>`/`>=` comparison with `last_hour` already `Some(_)`.
-    #[test]
-    fn hour_ticks_never_double_ticks_a_second_event_within_the_seeded_hour() {
-        use std::time::{Duration, SystemTime};
-        let based = |secs: u64, pos: Position| {
-            let mut e = ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u1"}"#);
-            e.position = pos;
-            e.recorded_at = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
-            e
-        };
-        let events = vec![
-            based(60, 1),   // 00:01 - the first REAL timestamp: seeds hour 0, no tick
-            based(1800, 2), // 00:30 - still hour 0: no tick (pins `>`, not `>=`)
-            based(3660, 3), // 01:01 - crosses into hour 1: tick at position 3
-        ];
-        let track = scrub_track(&events);
-        assert_eq!(
-            track.ticks,
-            vec![ScrubTick {
-                position: 3,
-                label: "01:00".to_string()
-            }],
-            "a same-hour event right after the seeded baseline must never tick: {:?}",
-            track.ticks
+    crate::test_cases! {
+        /// SCRUB_TRACK, hour ticks: consecutive events whose `recorded_at` crosses an hour
+        /// boundary produce one tick per crossing, pinned to the position of the first event AT
+        /// OR AFTER that boundary, labelled by the UTC hour - never a tick at the very first
+        /// event (which only seeds the baseline, crossing nothing yet).
+        scrub_track_ticks_one_per_hour_boundary_crossed: assert_hour_ticks(
+            &[
+                0,        // 00:00 - baseline, no tick
+                30 * 60,  // 00:30 - same hour, no tick
+                70 * 60,  // 01:10 - crosses into hour 1: tick at position 3
+                3 * 3600, // 03:00 - crosses straight through hour 2 into hour 3
+            ],
+            &[(3, "01:00"), (4, "03:00")],
+            "one tick per hour boundary crossed",
+        );
+        /// SCRUB_TRACK, hour ticks, the `>` vs `>=` boundary: once a REAL (non-epoch-sentinel)
+        /// timestamp has seeded `last_hour`, a SECOND event still within that SAME hour must
+        /// tick NEVER - only a STRICTLY greater hour crosses a boundary. The prior case's own
+        /// same-hour event (`30 * 60` at position 2) cannot pin this: it is the run's very FIRST
+        /// real timestamp, so `last_hour` is still `None` entering that check and the
+        /// `is_some_and` short-circuits to `false` regardless of `>` vs `>=` - it exercises only
+        /// the epoch-sentinel `continue` above, never this comparison. Here the baseline event
+        /// carries a genuine non-zero timestamp, so the second, same-hour event actually reaches
+        /// the `>`/`>=` comparison with `last_hour` already `Some(_)`.
+        hour_ticks_never_double_ticks_a_second_event_within_the_seeded_hour: assert_hour_ticks(
+            &[
+                60,   // 00:01 - the first REAL timestamp: seeds hour 0, no tick
+                1800, // 00:30 - still hour 0: no tick (pins `>`, not `>=`)
+                3660, // 01:01 - crosses into hour 1: tick at position 3
+            ],
+            &[(3, "01:00")],
+            "a same-hour event right after the seeded baseline must never tick",
         );
     }
 

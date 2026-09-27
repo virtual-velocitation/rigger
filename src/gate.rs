@@ -746,22 +746,13 @@ impl Runner for ExecRunner {
         let guard_requested = !build_cache_guard.is_empty();
         let guarded = guard_requested && build_cache_guard_is_usable(build_cache_guard);
         let mut cmd = if guarded {
-            let mut c = Command::new("flock");
-            c.arg("-s")
-                .arg("-F")
-                .arg(build_cache_guard)
-                .arg("sh")
-                .arg("-c")
-                .arg(&g.run);
+            let mut c = crate::subprocess::command_in("flock", dir);
+            c.arg("-s").arg("-F").arg(build_cache_guard).arg("sh");
             c
         } else {
-            let mut c = Command::new("sh");
-            c.arg("-c").arg(&g.run);
-            c
+            crate::subprocess::command_in("sh", dir)
         };
-        if !dir.is_empty() {
-            cmd.current_dir(dir);
-        }
+        cmd.arg("-c").arg(&g.run);
         // Per-unit build cache (Gap 19): a non-empty target_dir points cargo at a
         // unit-keyed CARGO_TARGET_DIR so this gate's incremental state is never shared
         // with a concurrent unit's divergent tree. The empty/ambient case (below) is the

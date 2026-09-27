@@ -20,6 +20,7 @@
 //!     criterion 1), and the validate advisory (spec 71, criterion 3).
 
 mod common;
+use common::git::run_git;
 
 use common::cli::run_rigger_envs;
 use rigger::eventstore::namespace::Namespaced;
@@ -264,20 +265,12 @@ fn reset_derived_from_a_nested_worktree_still_refuses_the_resolved_stores_held_l
         &["config", "user.name", "t"],
         &["commit", "--allow-empty", "-q", "-m", "init"],
     ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
+        let ok = run_git(root, args).status.success();
         assert!(ok, "git {args:?} must succeed while seeding the repo");
     }
     let nested = root.join("wt");
-    let ok = Command::new("git")
-        .args(["worktree", "add", "-q", "--detach", "wt"])
-        .current_dir(root)
-        .status()
-        .expect("git worktree add must run")
+    let ok = run_git(root, &["worktree", "add", "-q", "--detach", "wt"])
+        .status
         .success();
     assert!(ok, "git worktree add must succeed");
     assert!(

@@ -50,6 +50,7 @@ const STABLE: &str = "pub fn stable_symbol() {}\npub fn stable_caller() { stable
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::git::run_git;
 
 use common::cli::ingested_count;
 
@@ -92,10 +93,7 @@ fn build(root: &std::path::Path, stage: &str) -> usize {
 /// The live project and the cold reference build both come through here, so the two trees are
 /// byte-identical by construction rather than by a comment claiming they are.
 fn write_tree(root: &std::path::Path, churn: &str) {
-    let _ = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
+    let _ = run_git(root, &["init", "-q"]);
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("specs")).unwrap();
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
