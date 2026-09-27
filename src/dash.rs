@@ -3924,10 +3924,7 @@ mod tests {
         TIER_INFERRED,
     };
     use crate::eventstore::Event;
-
-    fn ev(type_: &str, json: &str) -> Event {
-        Event::new(type_, json.as_bytes().to_vec())
-    }
+    use crate::test_support::ev;
 
     /// Give a slice of events 1-based positions, as the store would on append, so
     /// position-sensitive reads (`/api/events?since=`) are exercised realistically.

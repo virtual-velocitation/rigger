@@ -603,10 +603,7 @@ impl Dedup {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn ev(type_: &str, json: &str) -> Event {
-        Event::new(type_, json.as_bytes().to_vec())
-    }
+    use crate::test_support::ev;
 
     fn positioned(mut events: Vec<Event>) -> Vec<Event> {
         for (i, e) in events.iter_mut().enumerate() {

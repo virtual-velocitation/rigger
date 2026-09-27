@@ -349,10 +349,7 @@ impl RunStart {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn ev(type_: &str, data: &str) -> Event {
-        Event::new(type_, data.as_bytes().to_vec())
-    }
+    use crate::test_support::ev;
 
     fn run_started(run: &str, criteria: &[&str]) -> Event {
         RunStarted {

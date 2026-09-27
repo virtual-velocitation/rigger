@@ -471,10 +471,7 @@ pub fn palette_commands(events: &[Event], units: &UnitStatuses) -> Vec<PaletteCo
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn ev(type_: &str, json: &str) -> Event {
-        Event::new(type_, json.as_bytes().to_vec())
-    }
+    use crate::test_support::ev;
 
     /// An adjudicator `SpawnResult` event for `id`, its verdict line `output`, at `position`.
     fn adjudicator_result(id: &str, output: &str, position: Position) -> Event {

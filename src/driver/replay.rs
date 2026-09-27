@@ -377,11 +377,7 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::gate::ExecRunner;
     use crate::spawn::{lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_IMPLEMENTER};
-
-    /// A no-op emit sink: the replay driver never emits, so tests pass this.
-    fn no_emit(_: &str, _: Value) -> Result<(), Error> {
-        Ok(())
-    }
+    use crate::test_support::no_emit;
 
     fn worker() -> AgentDef {
         AgentDef {

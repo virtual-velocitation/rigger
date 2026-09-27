@@ -38,13 +38,14 @@
 //!    real subprocess's environment, exactly mirroring `gate::Runner`'s existing
 //!    "target_dir always wins, else inherit" contract at the gate boundary.
 
+mod common;
+
 use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
 
-use serde_json::Value;
-
-use rigger::conductor::{AgentDriver, Error as ConductorError, SpawnOpts};
+use common::fixtures::no_emit;
+use rigger::conductor::{AgentDriver, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::driver::cli;
 use rigger::worktree::{scratch_root, unit_cache_sibling, Worktree};
@@ -81,10 +82,6 @@ fn seed_minimal_crate(dir: &str) {
     .unwrap();
     std::fs::create_dir_all(Path::new(dir).join("src")).unwrap();
     std::fs::write(Path::new(dir).join("src").join("main.rs"), "fn main() {}\n").unwrap();
-}
-
-fn no_emit(_t: &str, _v: Value) -> Result<(), ConductorError> {
-    Ok(())
 }
 
 /// Serializes the two tests in this file against the same POSIX getenv/setenv hazard

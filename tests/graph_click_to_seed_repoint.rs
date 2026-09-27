@@ -14,20 +14,16 @@
 //! adds the cross-unit isolation boundary a single-unit unit test cannot reach. It intentionally does
 //! NOT re-author the implementer's inside-out tests; it adds the outside-in periphery layer.
 
+mod common;
+
 use std::collections::HashMap;
 
+use common::fixtures::ev_at;
 use rigger::conductor::META_SPAWN;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{Graph, Projection, KIND_UNIT};
 use rigger::dash::{graph_seeds, repoint_seed, route, unit_seeds};
 use rigger::eventstore::Event;
-
-/// Build one event from its raw on-log JSON at `pos` - the shape the loop actually records.
-fn ev(pos: u64, type_: &str, payload: serde_json::Value) -> Event {
-    let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    e
-}
 
 /// Fold a run into a real projection and pre-fetch its subgraph EXACTLY as the dash does on open
 /// (`graph_seeds` -> `subgraph` at depth 2), so the route below sees the same in-memory graph
@@ -76,18 +72,18 @@ fn a_de_noised_unit_click_lands_on_a_real_neighborhood_through_the_route() {
     // lens), exactly as `rigger emit --spawn` records them. The finding carries no `$.unit` field; its
     // unit is the `meta.spawn` stamp, as in production.
     let run = vec![
-        ev(
+        ev_at(
             1,
             "UnitStarted",
             serde_json::json!({ "unit": "u1", "criterion": "c", "agent": "impl", "needs": [] }),
         ),
-        ev(
+        ev_at(
             2,
             "DecisionMade",
             serde_json::json!({ "id": "d1", "summary": "use the shared authority", "governs": ["combat.rs"], "supersedes": "" }),
         )
         .with_meta(META_SPAWN, "u1/implementer#0"),
-        ev(
+        ev_at(
             3,
             "ReviewFinding",
             serde_json::json!({ "id": "f1", "by": "sdet", "summary": "y", "about": ["render.rs"] }),
@@ -159,13 +155,13 @@ fn a_unit_click_is_scoped_to_the_clicked_unit_and_never_drags_in_another() {
     // spawn's `meta.spawn` (the production shape: a finding carries no `$.unit` field). Clicking `uA`
     // must land on ONLY uA's content - never uB's.
     let run = vec![
-        ev(1, "DecisionMade", serde_json::json!({ "id": "dA", "summary": "x", "governs": ["a.rs"], "supersedes": "" }))
+        ev_at(1, "DecisionMade", serde_json::json!({ "id": "dA", "summary": "x", "governs": ["a.rs"], "supersedes": "" }))
             .with_meta(META_SPAWN, "uA/implementer#0"),
-        ev(2, "DecisionMade", serde_json::json!({ "id": "dB", "summary": "y", "governs": ["b.rs"], "supersedes": "" }))
+        ev_at(2, "DecisionMade", serde_json::json!({ "id": "dB", "summary": "y", "governs": ["b.rs"], "supersedes": "" }))
             .with_meta(META_SPAWN, "uB/implementer#0"),
-        ev(3, "ReviewFinding", serde_json::json!({ "id": "fA", "by": "sdet", "summary": "p", "about": ["x.rs"] }))
+        ev_at(3, "ReviewFinding", serde_json::json!({ "id": "fA", "by": "sdet", "summary": "p", "about": ["x.rs"] }))
             .with_meta(META_SPAWN, "uA/lens:sdet#0"),
-        ev(4, "ReviewFinding", serde_json::json!({ "id": "fB", "by": "sdet", "summary": "q", "about": ["y.rs"] }))
+        ev_at(4, "ReviewFinding", serde_json::json!({ "id": "fB", "by": "sdet", "summary": "q", "about": ["y.rs"] }))
             .with_meta(META_SPAWN, "uB/lens:sdet#0"),
     ];
 
@@ -216,9 +212,9 @@ fn a_unit_click_is_scoped_to_the_clicked_unit_and_never_drags_in_another() {
 fn repoint_seed_preserves_a_real_node_click_and_falls_back_gracefully() {
     // The public repoint_seed contract, all three arms, from a downstream consumer's vantage.
     let run = vec![
-        ev(1, "DecisionMade", serde_json::json!({ "id": "d1", "summary": "x", "governs": ["combat.rs"], "supersedes": "" }))
+        ev_at(1, "DecisionMade", serde_json::json!({ "id": "d1", "summary": "x", "governs": ["combat.rs"], "supersedes": "" }))
             .with_meta(META_SPAWN, "u1/implementer#0"),
-        ev(2, "ReviewFinding", serde_json::json!({ "id": "f1", "by": "sdet", "summary": "y", "about": ["render.rs"] }))
+        ev_at(2, "ReviewFinding", serde_json::json!({ "id": "f1", "by": "sdet", "summary": "y", "about": ["render.rs"] }))
             .with_meta(META_SPAWN, "u1/lens:sdet#0"),
     ];
     let graph = fold_and_prefetch(&run);
@@ -269,12 +265,12 @@ fn a_units_rail_dedupes_a_decision_reachable_via_two_of_its_own_content_seeds() 
     // to the SAME decision via its GOVERNS edge - so the rail must list that decision exactly ONCE,
     // never once per seed that reaches it.
     let run = vec![
-        ev(
+        ev_at(
             1,
             "UnitStarted",
             serde_json::json!({ "unit": "u1", "criterion": "c", "agent": "impl", "needs": [] }),
         ),
-        ev(
+        ev_at(
             2,
             "DecisionMade",
             serde_json::json!({ "id": "d1", "summary": "one decision, two files", "governs": ["combat.rs", "render.rs"], "supersedes": "" }),
@@ -318,9 +314,9 @@ fn a_finding_is_attributed_only_by_its_emitting_spawn_never_a_stray_unit_field()
     // `fA` is emitted by uA's sdet lens (its true unit) but ALSO carries a misleading `unit: "uB"`.
     // Attribution must follow the emitting spawn (uA), never the stray field (uB).
     let run = vec![
-        ev(1, "DecisionMade", serde_json::json!({ "id": "dA", "summary": "x", "governs": ["a.rs"], "supersedes": "" }))
+        ev_at(1, "DecisionMade", serde_json::json!({ "id": "dA", "summary": "x", "governs": ["a.rs"], "supersedes": "" }))
             .with_meta(META_SPAWN, "uA/implementer#0"),
-        ev(2, "ReviewFinding", serde_json::json!({ "id": "fA", "by": "sdet", "summary": "s", "about": ["x.rs"], "unit": "uB" }))
+        ev_at(2, "ReviewFinding", serde_json::json!({ "id": "fA", "by": "sdet", "summary": "s", "about": ["x.rs"], "unit": "uB" }))
             .with_meta(META_SPAWN, "uA/lens:sdet#0"),
     ];
 

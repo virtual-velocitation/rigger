@@ -35,6 +35,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
+use common::fixtures::ev;
 use rigger::conductor::META_REPLAY_KEY;
 use rigger::contextgraph::{Graph, TYPE_GATE_VERDICT};
 use rigger::dash::{self, DashInputs};
@@ -48,11 +49,6 @@ use serde_json::Value;
 // ---------------------------------------------------------------------------
 // Fixtures: build the exact serialized events a real run folds, over the public API only.
 // ---------------------------------------------------------------------------
-
-/// One event of `type_` with a JSON body, positioned by the caller via [`positioned`].
-fn ev(type_: &str, json: &str) -> Event {
-    Event::new(type_, json.as_bytes().to_vec())
-}
 
 /// Stamp 1-based stream positions the way the store would, so the snapshot's cursor and any
 /// position-ordered fold see a realistic monotonic stream.

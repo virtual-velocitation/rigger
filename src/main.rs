@@ -63,6 +63,9 @@ use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, wa
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
 mod gitsemver;
+#[cfg(test)]
+#[path = "../tests/common/fixtures/mod.rs"]
+mod test_support;
 
 const RIGGER_DIR: &str = ".rigger";
 
@@ -14661,6 +14664,7 @@ blocks integration no matter what the static gates say.\n",
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::ev;
 
     /// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt`
     /// (so it cannot drift from the labels), every optional field empty.
@@ -16058,9 +16062,6 @@ mod tests {
     #[test]
     fn superseded_graph_nodes_drops_dead_runs_and_preboundary_keeping_lessons_active_and_reused_ids(
     ) {
-        fn ev(type_: &str, data: &str) -> Event {
-            Event::new(type_, data.as_bytes().to_vec())
-        }
         fn run_started(run: &str) -> Event {
             ev(
                 runscope::TYPE_RUN_STARTED,
@@ -16180,99 +16181,95 @@ mod tests {
         // One positioned event in raw on-log JSON. Distinct positions are required: the graph fold
         // dedups on position (`INSERT OR IGNORE INTO applied`), and metrics / attribution key by
         // index, so a monotonic position per event models the real append order.
-        fn ev(pos: u64, type_: &str, json: serde_json::Value) -> Event {
-            let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
-            e.position = pos;
-            e
-        }
+        use crate::test_support::ev_at;
 
         // A whole run stream spanning a DEAD run r1 and the ACTIVE run r2, each interleaving the
         // machinery the de-noise dropped (FileTouched / UnitStarted / GateVerdict / UnitIntegrated)
         // with the content (DecisionMade / ReviewFinding) and the unit lifecycle metrics folds.
         let stream = vec![
             // --- Dead run r1 ---
-            ev(
+            ev_at(
                 1,
                 runscope::TYPE_RUN_STARTED,
                 serde_json::json!({ "run": "r1", "criteria": ["c"] }),
             ),
-            ev(
+            ev_at(
                 2,
                 contextgraph::TYPE_FILE_TOUCHED,
                 serde_json::json!({ "path": "src/combat.rs", "by": "rust-engineer" }),
             ),
-            ev(
+            ev_at(
                 3,
                 ledger::TYPE_UNIT_STARTED,
                 serde_json::json!({ "id": "u_r1", "unit": "u_r1", "criterion": "c1", "agent": "rust-engineer", "needs": [] }),
             ),
-            ev(
+            ev_at(
                 4,
                 contextgraph::TYPE_GATE_VERDICT,
                 serde_json::json!({ "gate": "build", "pass": true }),
             ),
-            ev(
+            ev_at(
                 5,
                 contextgraph::TYPE_DECISION_MADE,
                 serde_json::json!({ "id": "d_r1", "summary": "dead-run decision", "governs": ["src/combat.rs"], "supersedes": "" }),
             ),
-            ev(
+            ev_at(
                 6,
                 contextgraph::TYPE_REVIEW_FINDING,
                 serde_json::json!({ "id": "f_r1", "by": "tech-lens", "unit": "u_r1", "summary": "dead-run finding", "about": ["src/combat.rs"] }),
             ),
-            ev(
+            ev_at(
                 7,
                 ledger::TYPE_UNIT_STATUS,
                 serde_json::json!({ "id": "u_r1", "status": "verified" }),
             ),
-            ev(
+            ev_at(
                 8,
                 ledger::TYPE_UNIT_STATUS,
                 serde_json::json!({ "id": "u_r1", "status": "reviewed" }),
             ),
-            ev(
+            ev_at(
                 9,
                 ledger::TYPE_UNIT_INTEGRATED,
                 serde_json::json!({ "id": "u_r1", "commit": "abc1" }),
             ),
             // --- Active run r2 ---
-            ev(
+            ev_at(
                 10,
                 runscope::TYPE_RUN_STARTED,
                 serde_json::json!({ "run": "r2", "criteria": ["c"] }),
             ),
-            ev(
+            ev_at(
                 11,
                 contextgraph::TYPE_FILE_TOUCHED,
                 serde_json::json!({ "path": "src/combat.rs", "by": "rust-engineer" }),
             ),
-            ev(
+            ev_at(
                 12,
                 ledger::TYPE_UNIT_STARTED,
                 serde_json::json!({ "id": "u_r2", "unit": "u_r2", "criterion": "c1", "agent": "rust-engineer", "needs": [] }),
             ),
-            ev(
+            ev_at(
                 13,
                 contextgraph::TYPE_GATE_VERDICT,
                 serde_json::json!({ "gate": "clippy", "pass": true }),
             ),
-            ev(
+            ev_at(
                 14,
                 contextgraph::TYPE_DECISION_MADE,
                 serde_json::json!({ "id": "d_r2", "summary": "active-run decision", "governs": ["src/combat.rs"], "supersedes": "" }),
             ),
-            ev(
+            ev_at(
                 15,
                 ledger::TYPE_UNIT_STATUS,
                 serde_json::json!({ "id": "u_r2", "status": "verified" }),
             ),
-            ev(
+            ev_at(
                 16,
                 ledger::TYPE_UNIT_STATUS,
                 serde_json::json!({ "id": "u_r2", "status": "reviewed" }),
             ),
-            ev(
+            ev_at(
                 17,
                 ledger::TYPE_UNIT_INTEGRATED,
                 serde_json::json!({ "id": "u_r2", "commit": "abc2" }),
