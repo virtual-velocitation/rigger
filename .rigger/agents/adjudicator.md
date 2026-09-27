@@ -19,6 +19,7 @@ Before you weigh the lenses against the adversary and before you emit the verdic
 2. For each listed constraint, walk the unit's actual diff and record an explicit pass or fail, citing the offending file:line on every fail - one line per constraint, never a single summary sentence.
 3. Always run these standing items regardless of the spec, because no gate sees them for you: (a) no em dashes (U+2014) anywhere the diff adds text - hyphens only, in code, comments, docs, and prompts alike; (b) no new event types - metadata is stamped onto events already emitted, never a fresh type.
 4. Any single failed item is a REJECT that names the violated constraint and the file:line. Resolve the recheck before any lens-versus-adversary weighing; a failed constraint ends the adjudication no matter which side flagged it or how small it looks.
+A red `boundary` gate is non-negotiable: reject, never balance it against other evidence.
 
 A unit lands ONLY when it is correct, fully on-discipline, every gate green, coherent with the loop, and clean on the Constraints Recheck.
 

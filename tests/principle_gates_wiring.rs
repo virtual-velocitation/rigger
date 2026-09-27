@@ -94,16 +94,16 @@ fn this_repository_wires_every_principle_gate_on_the_stages_it_guards() {
     assert!(missing.is_empty(), ".rigger/workflow.yml: {missing:#?}");
 }
 
+/// A consumer project scaffolded by `rigger init` carries every principle gate on the stages it
+/// guards and every persona checklist line ([`PERSONA_CHECKLIST`]).
 #[test]
-fn a_scaffolded_consumer_project_carries_every_principle_gate() {
+fn a_scaffolded_consumer_project_carries_every_principle_gate_and_checklist_line() {
     let dir = temp_project();
     let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let missing = missing_principle_gates(dir.path(), false);
-    assert!(
-        missing.is_empty(),
-        "the scaffolded workflow.yml: {missing:#?}"
-    );
+    let mut missing = missing_principle_gates(dir.path(), false);
+    missing.extend(missing_checklist_lines(dir.path()));
+    assert!(missing.is_empty(), "the scaffolded .rigger/: {missing:#?}");
 }
 
 /// This repository's own command for gate `id`, as the production parser loads it.
@@ -324,13 +324,4 @@ fn missing_checklist_lines(root: &Path) -> Vec<String> {
 fn every_persona_carries_its_principle_gate_checklist_line() {
     let missing = missing_checklist_lines(&repo_root());
     assert!(missing.is_empty(), ".rigger/agents: {missing:#?}");
-}
-
-#[test]
-fn a_scaffolded_persona_carries_its_principle_gate_checklist_line() {
-    let dir = temp_project();
-    let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let missing = missing_checklist_lines(dir.path());
-    assert!(missing.is_empty(), "the scaffolded agents: {missing:#?}");
 }

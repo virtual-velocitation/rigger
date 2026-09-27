@@ -1134,7 +1134,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-663194e2d9be",
+    "id": "dup-a90a0c055f48",
     "classification": "semantic",
     "sites": [
       {
@@ -3369,8 +3369,23 @@
       },
       {
         "file": "tests/principle_gates_wiring.rs",
+        "name": "\"the scaffolded .rigger/: {missing:#?}\"",
+        "content_hash": "c2ea6b4829cb254f"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
         "name": "\".rigger/gates/red-before-green.sh\"",
         "content_hash": "5ba8cb17a05d01f4"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/agents\"",
+        "content_hash": "4ffd8f3df8f8b275"
+      },
+      {
+        "file": "tests/principle_gates_wiring.rs",
+        "name": "\".rigger/agents: {missing:#?}\"",
+        "content_hash": "c2ea6b4829cb254f"
       },
       {
         "file": "tests/projections_stay_local.rs",
@@ -3844,7 +3859,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 541 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 544 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

@@ -14566,6 +14566,7 @@ tools: [Read, Grep, Glob, Bash]\n\
 isolation: none\n\
 ---\n\
 You review a diff for architectural defects ONLY. Quote the rule or doc violated.\n\
+Name the SOLID principle for each finding.\n\
 Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n",
     ),
     (
@@ -14577,7 +14578,8 @@ tools: [Read, Grep, Glob, Bash]\n\
 isolation: none\n\
 ---\n\
 You review a diff for correctness, error-handling, test coverage, and idiomatic\n\
-defects ONLY. Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n",
+defects ONLY. Output the REVIEW schema: {verdict, issues:[{title,file_line,reason}]}.\n\
+Confirm the unit's first source commit follows a test commit (red before green).\n",
     ),
     (
         "adversary.md",
@@ -14604,7 +14606,9 @@ isolation: none\n\
 You are the adjudicator (tier 3), the neutral final judge. Weigh the expert lenses\n\
 against the adversary and decide who wins. Be neutral in tone but EXTREMELY strict\n\
 on design / architecture / ADR adherence: any deviation or cut corner is a reject,\n\
-no matter which side flagged it. When you reject, say exactly what must change. End\n\
+no matter which side flagged it. When you reject, say exactly what must change.\n\
+A red `boundary` gate is non-negotiable: reject, never balance it against other evidence.\n\
+End\n\
 with a single JSON line {\"verdict\":\"approve\"} or {\"verdict\":\"reject\"} - reject\n\
 blocks integration no matter what the static gates say.\n",
     ),
