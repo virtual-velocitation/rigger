@@ -1374,6 +1374,7 @@ fn the_served_graph_route_precedence_and_graceful_empty_cluster() {
 ///
 /// `dash`/`contextgraph` are un-feature-gated, so this guards the served split in both lanes.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_poll() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;

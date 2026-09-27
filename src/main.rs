@@ -2409,6 +2409,8 @@ fn cmd_resume_unit(args: &[String]) -> Res {
     Ok(())
 }
 
+#[expect(clippy::cognitive_complexity)] // lesson: lesson-split-clippy-cognitive-complexity
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn cmd_step(args: &[String]) -> Res {
     let args = parse_step_args(args)?;
     // DISCOVERABILITY (spec 66, criterion 5, round 3): `rigger step` is the PRIMARY,
@@ -6808,6 +6810,7 @@ fn dash_status_json(status: &dash::DashStatus) -> Option<serde_json::Value> {
     Some(serde_json::json!({ "dashboard": dashboard }))
 }
 
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn cmd_dash(args: &[String]) -> Res {
     // `--export <path>` and/or `--port <n>`; loopback only (no host flag by design).
     // `--reap-on-idle` makes this dash SELF-REAP when the run it serves goes idle/complete
@@ -7886,6 +7889,7 @@ const NO_RUN_RECORDED_LINE: &str = "no run recorded; start one with `rigger run 
 /// the same command `rigger setup` registers as the editor's status bar); the default is a
 /// readable table. Read-only over the run store, the separate progress store, and the
 /// liveness markers.
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn cmd_status(args: &[String]) -> Res {
     let mut json = false;
     // Spec 94, criterion 5 (THE STATUSLINE COMMAND): `--line` prints ONLY the core's
@@ -12323,6 +12327,7 @@ const PRECOMMIT_END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
 /// commit that is about to be refused should not go on to run further gates. The hook invokes
 /// `rigger` BY NAME (relying on PATH), like the SessionStart hook runs `rigger prime`, so it
 /// stays portable across a team's clones (no absolute path to one developer's binary).
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn precommit_block() -> String {
     // A raw-string template so the shell indentation is exact and readable; the two doc
     // paths and the sentinels are injected from their single-source consts.
@@ -12731,6 +12736,7 @@ fn run_npm_install(dir: &Path) -> Res {
 /// install`). After it runs the user can drive the loop with the native workflow
 /// (`/rigger <spec>`) with zero manual setup; the standalone `rigger workflow` shim
 /// remains as a fallback.
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn cmd_setup(args: &[String]) -> Res {
     let opts = parse_setup_args(args)?;
     let root = Path::new(".");
@@ -16108,6 +16114,7 @@ mod tests {
     /// (a `UnitStarted` with both `id` and `unit`, a `GateVerdict` with `pass`, a `FileTouched`
     /// with `by`) - the exact payloads the log records and the de-noise now ignores.
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn the_denoise_leaves_metrics_run_pruning_and_blast_radius_unaffected() {
         use rigger::grounder::{Grep, Grounder};
 
@@ -20592,6 +20599,7 @@ mod tests {
     /// deterministic under parallel test execution. Each source carries a DISTINCT value, so the
     /// value the result carries names the winning rung unambiguously.
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn store_selection_precedence_flag_env_secret_file_config_then_default() {
         use std::fs;
         let tmp = tempfile::tempdir().unwrap();
@@ -22650,6 +22658,8 @@ mod tests {
     /// regress it; it supersedes the fat-workflow `buildUnit`/`PH` structure this workflow
     /// replaced.
     #[test]
+    #[expect(clippy::cognitive_complexity)] // lesson: lesson-split-clippy-cognitive-complexity
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn workflow_is_a_thin_courier_driver_with_per_unit_phase_labels() {
         let wf = RIGGER_WORKFLOW;
         // Code assertions run against comment-stripped source so the workflow's own prose
@@ -25981,6 +25991,7 @@ mod tests {
     /// function `cmd_watch` calls with no further logic between it and stdout) must print
     /// one line per anomaly naming signal, subject, and response.
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn watch_once_on_the_seeded_store_reports_one_line_per_anomaly() {
         let (_dir, loc, identity) = watch_test_store();
         let db = loc.file("events.db");

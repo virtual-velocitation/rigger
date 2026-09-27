@@ -250,6 +250,7 @@ fn build_config_max_concurrent_round_trips_through_the_real_on_disk_loader() {
 static TMPDIR_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() {
     let _guard = TMPDIR_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 

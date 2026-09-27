@@ -57,6 +57,7 @@ const SENTINEL_COMMITTED: &str = "clean";
 const SENTINEL_DIRTY: &str = "operator-modified";
 
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_locally_modified_tracked_file_in_the_operators_checkout_never_reaches_the_post_merge_gate() {
     let repo = tempfile::tempdir().unwrap();
     let repo_path = repo.path().to_str().unwrap().to_string();

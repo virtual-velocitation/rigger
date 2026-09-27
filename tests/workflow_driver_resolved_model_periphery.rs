@@ -123,6 +123,7 @@ fn drain_stderr(stderr: Option<ChildStderr>) -> String {
 /// `initialize` handshake, `rigger_next` polled until unit `a`'s implementer spawn is queued, then
 /// `rigger_result` for it carrying `arguments` - and return the `green` `UnitStatus` event the REAL
 /// conductor persists for unit `a` in the on-disk `events.db`.
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn green_event_after_result(arguments: Value) -> Event {
     let proj = temp_git_project_with_commit();
     let root = proj.path();

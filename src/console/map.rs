@@ -219,6 +219,7 @@ const GOLDEN_ANGLE: f64 = 2.399_963_229_728_653;
 /// (the module the largest share of its members' files resolve to, ties broken to the
 /// lexicographically-smallest module), mapped through [`district_purpose`]; several communities
 /// sharing a purpose fold into ONE district.
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 pub fn build(graph: &Graph) -> MapModel {
     let deg = degree_map(graph);
     // Community membership at RESOLUTION comes from the SAME single fold authority the code

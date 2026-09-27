@@ -311,6 +311,7 @@ impl Driver<'_> {
     /// than by an external sweep. An expiry AFTER a result already landed is not a stop at
     /// all - it degrades to the SAME soft-break the post-result read-error path already
     /// takes (round-2 precedent), letting the existing reap decide the child's fate.
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn read_stream(
         &self,
         launch: Launch,

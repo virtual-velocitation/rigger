@@ -33,6 +33,7 @@ use rigger::dash;
 /// (seed). Structural, but each assertion is bound to the c5 mechanism so an unrelated token cannot
 /// satisfy it.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn the_served_page_ships_the_exploration_viz_and_three_way_dispatch() {
     let page = dash::live_page();
 

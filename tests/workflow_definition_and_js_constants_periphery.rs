@@ -358,6 +358,7 @@ fn graph_around_reflects_the_review_panel_fallback_rule_for_a_real_workflow_yml(
 /// light half on).
 #[cfg(feature = "symbols")]
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn graph_around_tags_a_tiers_light_reviewer_with_reviews_light_never_the_plain_reviews_edge() {
     let dir = temp_project();
     let root = dir.path();

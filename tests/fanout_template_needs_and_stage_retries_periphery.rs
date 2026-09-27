@@ -371,6 +371,7 @@ stages:
 /// produced) and criterion B's ordinary baseline BOTH land through real, separate git
 /// merges onto the base branch.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_via_real_git_merges(
 ) {
     let repo = temp_git_project_with_commit();

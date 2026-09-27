@@ -133,6 +133,7 @@ impl AgentDriver for FalsePositiveDriver {
 /// `control_false_positives` - over real wire data recorded and read back through the
 /// actual store, not a hand-typed fixture.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn run_canary_scores_false_positive_controls_and_project_canary_counts_them() {
     let cfg = cfg_for(&["lens", "adj"]);
     let panel = lens_only_panel();

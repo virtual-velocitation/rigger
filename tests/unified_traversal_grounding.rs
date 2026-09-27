@@ -1078,6 +1078,7 @@ fn fold_design_intent(
 /// `write_design_intent` now renders the design half of the one traversal into the prompt. Dropping
 /// the seed scoping would surface decoy A, flipping the negative assertion.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_traversal() {
     let (graph, mut pos) = fresh_graph();
 

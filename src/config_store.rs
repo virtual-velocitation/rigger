@@ -991,6 +991,7 @@ mod tests {
     /// path) names the bare field; anything that is not this error shape (a type mismatch
     /// here) passes through with `serde_yaml`'s own message unchanged.
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn parse_yaml_naming_unknown_keys_recomposes_the_nested_path_and_passes_through_other_errors() {
         #[derive(Debug, Default, serde::Deserialize)]
         #[serde(deny_unknown_fields)]

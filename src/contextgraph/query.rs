@@ -707,6 +707,7 @@ pub const CLUSTER_RENDER_BUDGET: usize = 60;
 /// edge has BOTH endpoints in the rendered set. An unknown / empty `key` yields an empty drill, never
 /// an error. Under [`Lens::Files`] (spec 63 c3), a file cluster is the atomic LEAF subject - drilling
 /// ANY key here is unconditionally EMPTY.
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 pub fn cluster_detail(graph: &Graph, key: &str, lens: &Lens) -> Neighborhood {
     if matches!(lens, Lens::Files) {
         return Neighborhood {

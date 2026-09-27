@@ -37,6 +37,7 @@ enum Contract {
 /// resolver `grounder_for` agree, and each category behaves as spec 57 dictates. One table
 /// so a new name is accounted for in exactly one place.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn public_name_contract_predicate_error_and_resolver_agree() {
     use Contract::*;
     let table: &[(&str, Contract)] = &[

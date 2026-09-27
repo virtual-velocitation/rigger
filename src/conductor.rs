@@ -1987,6 +1987,7 @@ pub fn replay_trajectory(baseline: &[Event]) -> Vec<Event> {
 
 /// Run executes the workflow and returns the final run state, projected from the
 /// events it emitted. Independent stages run concurrently in waves.
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     validate_acyclic(&cfg.workflow.stages)?;
 
@@ -5174,6 +5175,7 @@ impl RunCtx<'_> {
     /// [`Self::review_unit`] call below - it is `run_stage`'s out-of-band any-parked
     /// signal, read there AFTER this function returns, independently of whatever `Result`
     /// this function itself propagates (see `run_stage`'s doc comment at its call site).
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn run_single_stage(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -6015,6 +6017,7 @@ impl RunCtx<'_> {
     /// deterministic lane order and integrates the first gate-green adjudicator-approved one;
     /// if none wins, the unit escalates (its K candidates were its attempts) rather than
     /// re-fanning-out forever.
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn run_speculation(&self, stages: &BTreeMap<String, Stage>, st: &Stage) -> Result<bool, Error> {
         let width = self.effective_speculation_width(st);
         let group = speculation_group_id(&st.name);
@@ -7687,6 +7690,7 @@ impl RunCtx<'_> {
     /// bound ACCUMULATES across steps and a replay parks at the next unrecorded frontier
     /// (mirrors `run_fan_out_review_loop`).
     #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn plan_critique_loop(
         &self,
         gate_st: &Stage,
@@ -8007,6 +8011,7 @@ impl RunCtx<'_> {
     /// duration once, not once per step) and appends no duplicate verdict. Distinct
     /// attempts are distinct gate runs - a re-implementation must re-gate - so only
     /// re-reaching the SAME attempt's gate is a replay.
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn run_gates(
         &self,
         st: &Stage,
@@ -8617,6 +8622,7 @@ impl RunCtx<'_> {
     /// nothing; the step that drains the last park runs the gate once against the fully
     /// integrated tree. A verdict ALREADY recorded is replayed regardless of
     /// `converged`, so re-stepping a completed run stays idempotent.
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn run_deferred_gates(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -8939,6 +8945,7 @@ impl RunCtx<'_> {
     /// crash points this table implies (one between each row's record-before and mutation, one
     /// between each row's mutation and record-after), each resuming to the same final log and
     /// run branch - see that file's own header for the fixture-by-fixture mapping.
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn integrate_and_emit(
         &self,
         // The LIVE unit DAG (spec 12, unit 2): the set of units the staleness pass grounds
@@ -11216,6 +11223,7 @@ impl RunCtx<'_> {
             .unwrap_or_default()
     }
 
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn harvest_proposed(
         &self,
         stages: &mut BTreeMap<String, Stage>,
@@ -14874,6 +14882,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn a_halted_spawns_uncommitted_tree_is_captured_as_a_wip_commit_and_named_in_the_next_prompt() {
         // Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): `stage_worktree`'s call
         // to `Worktree::create` ADOPTS a worktree already sitting at this unit's
@@ -15516,6 +15525,7 @@ mod tests {
         }
     }
     impl AgentDriver for Stub {
+        #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
         fn spawn(
             &self,
             a: &AgentDef,
@@ -19348,6 +19358,7 @@ mod tests {
     ///      grounder returns a ref whose TEXT is empty, so the code entity name can ONLY have come
     ///      from the graph traversal, and the old structural header is gone.
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn structural_grounding_is_one_seeded_traversal_over_the_unified_graph() {
         let seed = vec!["core.rs".to_string()];
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
@@ -20153,6 +20164,7 @@ mod tests {
     /// walk actually extracts.
     #[cfg(feature = "symbols")]
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn editing_one_file_between_runs_re_emits_only_that_files_batch_and_supersedes_its_edges() {
         let repo = temp_git_project_with_commit();
         let root = repo.path();
@@ -20345,6 +20357,7 @@ mod tests {
     /// is no recovery - which is exactly the outcome Global constraint 4 forbids.
     #[cfg(feature = "symbols")]
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn a_file_reverted_to_an_earlier_recorded_generation_re_ingests_and_matches_a_cold_rebuild() {
         const GEN_A: &str = "pub fn alpha_symbol() {}\npub fn churn_caller() { alpha_symbol(); }\n";
         const GEN_B: &str = "pub fn beta_symbol() {}\npub fn churn_caller() { beta_symbol(); }\n";
@@ -20525,6 +20538,7 @@ mod tests {
     /// neither a tree nor a graph (no derived event is involved), so unlike criterion 1's proof it
     /// is not `symbols`-gated and locks the seam in BOTH feature lanes.
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn a_prior_runs_non_ingest_replay_key_never_suppresses_this_runs_keyed_emit() {
         // The stage id is the code ingest's OWN prefix and the gate id carries an `@`, so this
         // run's real gate-verdict key is content-key shaped (asserted below, not assumed). A
@@ -20772,6 +20786,7 @@ mod tests {
     ///      CITES the file (a doc `references` edge, not a code-binding SPECIFIES/GOVERNS), are NOT
     ///      surfaced - mirroring c1's CONTAINS-to-seed scoping of the code neighborhood.
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn design_intent_grounding_renders_the_governing_rule_and_specifying_ra_by_traversal() {
         let seed = vec!["core.rs".to_string()];
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
@@ -24859,6 +24874,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn speculation_defers_green_until_the_winner_and_integrates_across_replay_steps() {
         // Resume coherence under the PRODUCTION stepwise/replay driver: a speculating unit must
         // stay FRESH across every phase-B parking step (its winner's `green`/`verified` are
@@ -25639,6 +25655,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn speculation_blocked_winner_captures_evidence_and_a_later_lane_wins() {
         // MUST-FIX D (adv-u13-blocked-winner-integrate-evidence-lost) + mechanism a
         // (arch-spec-green-verified-stranded-before-blocked-integrate). The speculation unit `s`'s
@@ -30965,6 +30982,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn a_resumed_reviewed_units_merge_break_records_an_integrate_conflict_cause() {
         // spec 69, criterion 3 (the cause wire): the RESUMED counterpart of
         // `integrate_re_gates_the_merged_tree_and_a_merge_break_blocks_the_second_unit`
@@ -31091,6 +31109,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn a_resumed_landed_but_ungated_unit_regates_the_landed_tree() {
         // Spec 103, criterion 3 (RE-GATE WHAT LANDED): a prior window's `integrate_and_emit`
         // already fast-forwarded the run branch onto the unit's own tip and durably recorded
@@ -31224,6 +31243,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn a_resumed_reviewed_units_genuine_unresolved_conflict_reaches_the_idempotent_merge_path() {
         // Spec 89, criterion 1, round 2 fix (arch-u89c1-halted-commit-guard-preempts-resumed-
         // conflict-idempotency / adv-u89c1-conflict-idempotency-preemption-empirically-
@@ -35364,6 +35384,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn blast_radius_narrows_the_inner_loop_and_the_integrate_step_runs_the_full_library() {
         // spec 12, unit 3 (end-to-end): during the implement/remediate INNER LOOP only the gates
         // whose `inputs:` intersect the unit's grounded blast radius run; the rest are SKIPPED and
@@ -35735,6 +35756,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn a_contradiction_compensates_reverts_and_re_enters_the_integrated_unit() {
         // spec 12, unit 4 (end-to-end, seeded two-unit contradiction - done-when line 26):
         // `unit-a` integrates; then `unit-b`'s review proves it wrong (its adjudicator names
@@ -36533,6 +36555,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn integrate_re_gates_the_merged_tree_and_a_merge_break_blocks_the_second_unit() {
         // spec 12, unit 5 (Gap 21): two units each PASS their gate in isolation but merge into
         // a FAILING tree. The grounder placed them in one batch (no dependency), so both cut
@@ -36799,6 +36822,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo() {
         // Spec 103, criterion 7 (POST-MERGE GATES RUN ON THE LANDED TREE): the second of two
         // batch-mates merges into a tree its own gate never saw, so its re-gate MISSES the
@@ -37483,6 +37507,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn integrate_conflict_records_regenerate_pending_before_the_accept_incoming_mutation_that_can_fail(
     ) {
         // adv-u88c1r2-accept-incoming-precedes-durable-record-crash-window (round 2 REJECT,
@@ -37961,6 +37986,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn a_parked_step_never_records_a_partial_tree_deferred_verdict() {
         // BLOCKER 1 (finding adv-deferred-replay-locks-partial-tree): under stepwise
         // replay an early step empties the wave loop with the unit PARKED (its
@@ -38195,6 +38221,7 @@ mod tests {
     }
 
     #[test]
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn an_escalated_dep_still_runs_the_whole_tree_deferred_gate() {
         // SECONDARY BLOCKER (finding adv-converged-escalated-dep-suppresses-deferred,
         // F59): an escalated unit is terminal-forever-yet-never-integrated, and

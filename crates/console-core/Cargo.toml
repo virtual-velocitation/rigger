@@ -28,3 +28,6 @@ serde = { version = "1", features = ["derive"] }
 # (`Cargo.lock` is byte-identical with it on), so the no-new-crate-dependency constraint
 # holds.
 serde_json = { version = "1", features = ["raw_value"] }
+
+[lints]
+workspace = true

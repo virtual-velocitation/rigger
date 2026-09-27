@@ -110,6 +110,7 @@ impl AgentDriver for RecordingDriver {
 ///    authority `rigger stats --canary` reads through - round-trips for a run whose lens tier
 ///    fanned out, not just the in-process return value.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn run_canary_fans_out_the_lens_tier_at_the_real_default_width_through_the_public_entry() {
     let lenses = ["lens-a", "lens-b", "lens-c", "lens-d", "lens-e"];
     let mut ids: Vec<&str> = lenses.to_vec();

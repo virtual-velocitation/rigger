@@ -403,6 +403,7 @@ fn line_of(text: &str, pos: usize) -> usize {
 /// no parens at all. Machine-generated raw source/doc excerpts (`is_site_listing_line`) are
 /// skipped so a self-referential quote of a citation's own wording is never read as a second
 /// citation of it.
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn scan_citations(report: &str) -> Vec<Citation> {
     static ID: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     static ID_BEFORE_PAREN: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();

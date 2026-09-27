@@ -237,6 +237,7 @@ impl Store {
     /// properties of the machine, not of this code, so the only way to pin what the prune does
     /// WITH a failure is to hand it one. Production has exactly one implementation
     /// ([`compact_in_place`]) and the public entry point above passes it; nothing chooses.
+    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     fn prune_derived_index_compacting_with(
         &self,
         stream_prefix: &str,

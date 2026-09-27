@@ -120,6 +120,7 @@ impl AgentDriver for UnattributedDriver {
 /// planted, so it never reaches the fold arm at all) - over real wire data recorded and
 /// read back through the actual store, not a hand-typed fixture.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn run_canary_scores_an_unattributed_correct_reject_and_project_canary_counts_only_it() {
     let cfg = cfg_for(&["lens", "adj"]);
     let panel = lens_only_panel();

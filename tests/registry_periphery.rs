@@ -43,6 +43,7 @@ fn local_instance(project: &str, root: &str, db: &str, heartbeat_ms: u64) -> Ins
 /// Writer format: a freshly-written entry's JSON carries the concrete keys and the snake_case
 /// `kind` discriminator (`local` / `shared`, never `Local` / `Shared`) an external reader keys on.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn registry_entry_wire_format_is_stable_for_local_and_shared() {
     // --- Reader back-compat: FROZEN entries a future reader must still parse. ---
     let reader_home = tempfile::tempdir().unwrap();

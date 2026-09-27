@@ -1,0 +1,3 @@
+# The function-length bound `too_many_lines` (denied in the root Cargo.toml's
+# `[workspace.lints.clippy]`) enforces.
+too-many-lines-threshold = 100

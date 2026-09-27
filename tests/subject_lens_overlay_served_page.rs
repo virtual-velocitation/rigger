@@ -40,6 +40,7 @@ use rigger::dash;
 /// assertion bound to the c4 mechanism so an unrelated token cannot satisfy it, and the existing
 /// exploration handles are asserted still-present (the additive guarantee's structural half).
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn the_served_page_ships_the_subject_lens_and_rationale_overlay_seam() {
     let page = dash::live_page();
 

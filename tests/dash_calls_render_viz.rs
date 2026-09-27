@@ -38,6 +38,8 @@ use rigger::dash;
 /// expand-and-reseed wiring - reached from a code-entity neighborhood's two directed queries. Each
 /// assertion is bound to the c5 mechanism so an unrelated token cannot satisfy it.
 #[test]
+#[expect(clippy::cognitive_complexity)] // lesson: lesson-split-clippy-cognitive-complexity
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn the_served_page_ships_the_directed_call_layered_render() {
     let page = dash::live_page();
 

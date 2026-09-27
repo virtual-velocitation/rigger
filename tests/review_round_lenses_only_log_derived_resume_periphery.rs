@@ -136,6 +136,7 @@ impl AgentDriver for Window2Driver {
 /// baseline - exactly the failure this criterion exists to prevent, now proven at the one
 /// call site none of round 3's own coverage exercises.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_lenses_only_panels_log_derived_start_sha_survives_a_same_chunk_sibling_park_across_a_resume() {
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();

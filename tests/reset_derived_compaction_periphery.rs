@@ -824,6 +824,7 @@ fn reset_accepts_each_mode_at_most_once_and_composes_the_two_in_either_order() {
 /// one failure of this command an operator cannot see, because a prune that removes nothing and a
 /// log that holds nothing redundant print the same report.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_migrated_project_log_is_still_seen_and_compacted_at_its_new_namespace() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("migrated.db");
@@ -2143,6 +2144,7 @@ fn seed_run_with_a_parked_spawn(root: &Path, rounds: u64) {
 /// test of the courier's write runs on a densely numbered stream, where a count-derived cursor and
 /// the real one agree and the bug is invisible.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_compacted_run_stream_still_answers_the_couriers_compare_and_append() {
     let dir = temp_rigger_project();
     let root = dir.path();
@@ -2596,6 +2598,7 @@ fn derived_halves() -> (Vec<&'static str>, Vec<&'static str>) {
 }
 
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn the_carry_forward_partition_is_the_folds_own_and_each_type_compacts_to_the_graph_it_folded() {
     let (reasserted, superseding) = derived_halves();
 

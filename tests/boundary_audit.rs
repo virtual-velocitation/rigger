@@ -496,3 +496,77 @@ fn no_source_file_exceeds_the_line_limit() {
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+// ---------------------------------------------------------------------------------------------
+// Rule 4: the principle lints only lose exemptions
+// ---------------------------------------------------------------------------------------------
+
+/// The lints the root manifest's `[workspace.lints.clippy]` denies, each with the number of
+/// items still exempted by a per-item `#[expect(clippy::<lint>)] // lesson: <id>` marker. A
+/// count may only fall: `expect` fails the build the moment its item complies, and this pin
+/// fails the suite the moment a new exemption appears.
+const LINT_EXEMPTION_PINS: &[(&str, usize)] = &[
+    ("too_many_lines", 108),
+    ("cognitive_complexity", 9),
+    ("large_enum_variant", 0),
+    ("module_inception", 0),
+];
+
+/// Per denied lint: the `expect` markers (each must name its lesson) and any `allow` of it,
+/// over every `.rs` file under `root`'s `src/`, `crates/` and `tests/`.
+fn lint_exemptions(root: &Path) -> BTreeMap<&'static str, (usize, Vec<String>)> {
+    let mut files = Vec::new();
+    for dir in ["src", "crates", "tests"] {
+        collect_rs_files(&root.join(dir), &mut files);
+    }
+    let mut out: BTreeMap<&'static str, (usize, Vec<String>)> = BTreeMap::new();
+    for path in files {
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        for (i, line) in text.lines().enumerate() {
+            for &(lint, _) in LINT_EXEMPTION_PINS {
+                let entry = out.entry(lint).or_default();
+                if line.contains(&format!("#[expect(clippy::{lint})]")) {
+                    entry.0 += 1;
+                    if !line.contains("// lesson: ") {
+                        entry
+                            .1
+                            .push(format!("{rel}:{}: marker names no lesson", i + 1));
+                    }
+                }
+                if line.contains(&format!("allow(clippy::{lint})")) {
+                    entry.1.push(format!(
+                        "{rel}:{}: `allow` hides the lint; use `expect`",
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn principle_lint_exemptions_only_fall() {
+    let found = lint_exemptions(&repo_root());
+    let mut problems = Vec::new();
+    for &(lint, pin) in LINT_EXEMPTION_PINS {
+        let (count, bad) = found.get(lint).cloned().unwrap_or_default();
+        if count > pin {
+            problems.push(format!(
+                "{count} `{lint}` exemptions exceed the pin {pin}: fix the new item instead"
+            ));
+        }
+        if count < pin {
+            problems.push(format!(
+                "`{lint}` exemptions fell to {count}: lower its pin from {pin} to {count}"
+            ));
+        }
+        problems.extend(bad);
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}

@@ -2258,6 +2258,7 @@ fn regenerating_cfg(repo_path: &str) -> Config {
 /// fix) - relying solely on `conflicting_paths()` staying non-empty until the real regeneration
 /// commit lands. This drives BOTH of row 3's boundaries against that branch specifically.
 #[test]
+#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3() {
     // --- Boundary A: before-record | mutation (the regenerate command itself fails once) ---
     {
