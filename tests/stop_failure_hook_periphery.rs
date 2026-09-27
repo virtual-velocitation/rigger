@@ -364,7 +364,7 @@ fn hook_stop_failure_with_no_run_started_yet_stamps_no_run_id() {
     // never populated either (`RunCtx` only exists once a run is underway), so the hook's
     // own `current_run_id` resolving empty here is CORRECT, not a gap - and
     // `classify_no_result`'s filter already treats an empty `opts.run_id` as "match every
-    // event unscoped" for exactly this reason. `StopFailure::to_event` omits the
+    // event unscoped" for exactly this reason. `StopFailure::to_stamped_event` omits the
     // `META_RUN_ID` key entirely on an empty run id (rather than stamping an empty string -
     // `progress.rs`'s own `to_event`), so the recorded meta must carry no run-id key at all.
     // `hook_stop_failure_records_the_spawn_and_class` above already proves the record itself

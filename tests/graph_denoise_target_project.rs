@@ -22,25 +22,15 @@
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_AGENT, KIND_DECISION, KIND_FINDING, KIND_GATE, KIND_UNIT, META_ACTOR,
-    REL_ABOUT, REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED, REL_GATED_BY, REL_GOVERNS, REL_RAISED,
-    REL_TOUCHES, TYPE_DECISION_MADE, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING,
+    Projection, KIND_AGENT, KIND_DECISION, KIND_FINDING, KIND_GATE, KIND_UNIT, REL_ABOUT,
+    REL_ASSIGNED_TO, REL_BLOCKS, REL_DECIDED, REL_GATED_BY, REL_GOVERNS, REL_RAISED, REL_TOUCHES,
+    TYPE_DECISION_MADE, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING,
     TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
-use rigger::eventstore::Event;
 
-/// Fold one event from its raw on-log JSON at `pos`, optionally stamping the acting persona in
-/// `META_ACTOR` (the metadata the conductor puts on every real emit). Bypassing the in-crate
-/// payload structs pins the JSON contract the log actually carries, not the Rust type. `apply`
-/// returns `Err` on a fold failure, so a successful call is itself evidence the payload folded.
-fn fold(p: &Projector, pos: u64, type_: &str, payload: serde_json::Value, actor: Option<&str>) {
-    let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    if let Some(a) = actor {
-        e.meta.insert(META_ACTOR.to_string(), a.to_string());
-    }
-    p.apply(&e).unwrap();
-}
+#[path = "common/graph_fold.rs"]
+mod graph_fold;
+use graph_fold::apply_json_as;
 
 #[test]
 fn a_whole_runs_fold_projects_the_content_but_none_of_the_machinery() {
@@ -52,7 +42,7 @@ fn a_whole_runs_fold_projects_the_content_but_none_of_the_machinery() {
     let p = Projector::open(":memory:", "test").unwrap();
 
     // A file an agent touched - machinery: `agent --TOUCHES--> file`. De-noised to a graph no-op.
-    fold(
+    apply_json_as(
         &p,
         1,
         TYPE_FILE_TOUCHED,
@@ -61,7 +51,7 @@ fn a_whole_runs_fold_projects_the_content_but_none_of_the_machinery() {
     );
     // A unit started, assigned to its agent, blocked on a dependency - machinery: the KIND_UNIT
     // node, ASSIGNED_TO, and BLOCKS. De-noised to a graph no-op.
-    fold(
+    apply_json_as(
         &p,
         2,
         TYPE_UNIT_STARTED,
@@ -70,7 +60,7 @@ fn a_whole_runs_fold_projects_the_content_but_none_of_the_machinery() {
     );
     // A gate ran over a file - machinery: the KIND_GATE node and the GATED_BY edge. De-noised to a
     // graph no-op.
-    fold(
+    apply_json_as(
         &p,
         3,
         TYPE_GATE_VERDICT,
@@ -79,7 +69,7 @@ fn a_whole_runs_fold_projects_the_content_but_none_of_the_machinery() {
     );
     // A decision governing the file - CONTENT (survives) stamped with the acting persona in
     // metadata (whose attribution must NOT survive).
-    fold(
+    apply_json_as(
         &p,
         4,
         TYPE_DECISION_MADE,
@@ -88,7 +78,7 @@ fn a_whole_runs_fold_projects_the_content_but_none_of_the_machinery() {
     );
     // A review finding about the file - CONTENT (survives, with its `by` reviewer kept as a node
     // ATTRIBUTE) stamped with the acting reviewer in metadata (whose attribution must NOT survive).
-    fold(
+    apply_json_as(
         &p,
         5,
         TYPE_REVIEW_FINDING,
@@ -98,7 +88,7 @@ fn a_whole_runs_fold_projects_the_content_but_none_of_the_machinery() {
     // The unit integrated - carrying the `commit` key the log records but the fold no longer models.
     // The arm folds no KIND_UNIT node; its disposition-expiry side effect still runs (no upheld
     // finding here, so it invalidates nothing).
-    fold(
+    apply_json_as(
         &p,
         6,
         TYPE_UNIT_INTEGRATED,
@@ -207,14 +197,14 @@ fn the_actor_metadata_on_a_decision_and_finding_never_folds_an_agent_node() {
     // while keeping the finding's `by` as content - so no agent node exists for the actor OR the
     // `by`, no DECIDED / RAISED edge is folded, and `by` stays exactly the reviewer, never the actor.
     let p = Projector::open(":memory:", "test").unwrap();
-    fold(
+    apply_json_as(
         &p,
         1,
         TYPE_DECISION_MADE,
         serde_json::json!({ "id": "d1", "summary": "x", "governs": ["x.rs"], "supersedes": "" }),
         Some("rust-engineer"),
     );
-    fold(
+    apply_json_as(
         &p,
         2,
         TYPE_REVIEW_FINDING,
@@ -283,7 +273,7 @@ fn disposition_expiry_still_fires_on_integration_with_no_unit_node() {
     // A review finding about a file, in raw production shape (id/by/summary/about). A real finding
     // stamps NO `$.unit` of its own - the owning unit is named only by the adjudicator spawn id
     // below - so an expiry keyed on a hand-injected unit attr would be vacuous here.
-    fold(
+    apply_json_as(
         &p,
         1,
         TYPE_REVIEW_FINDING,
@@ -315,7 +305,7 @@ fn disposition_expiry_still_fires_on_integration_with_no_unit_node() {
     // u1 integrates, in raw production shape (`{id, commit}`). The arm folds NO KIND_UNIT node, yet
     // it STILL drives disposition-expiry: the finding is now ADDRESSED, so its ABOUT edge is
     // invalidated.
-    fold(
+    apply_json_as(
         &p,
         3,
         TYPE_UNIT_INTEGRATED,

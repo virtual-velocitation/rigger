@@ -3718,7 +3718,7 @@ fn render_section_3() -> String {
         violation - calls `crate::grounder::design::events::project_batches` \
         directly by concrete module path for the design-doc half of the same walk. \
         These two calls are two of the three named sites of section 2's own \
-        catalogued duplicate cluster (`dup-0259`: \
+        catalogued duplicate cluster (`dup-0255`: \
         `src/grounder/design/events.rs:90-114`, \
         `src/grounder/symbols/events.rs:89-91`, and \
         `src/grounder/workflowdef.rs:245-252` - all three named `project_batches`), \
@@ -4202,7 +4202,7 @@ pub(crate) fn render_section_5() -> String {
     );
     out.push_str(
         "- `page_script` - a small JS snippet fixture - independently redefined in 19 \
-        different files (`dup-0433`, exact; e.g. \
+        different files (`dup-0424`, exact; e.g. \
         `tests/adaptive_labels_periphery.rs:52-61`, \
         `tests/code_lens_overview_collapse_viz.rs:26-35`, \
         `tests/concepts_lens_view_periphery.rs:689-698`, + 16 more), all inside the \
@@ -4212,19 +4212,19 @@ pub(crate) fn render_section_5() -> String {
         "- `node_available` - a viz-fixture predicate - independently redefined in 20 \
         files; the mechanical pass also clusters it together with the `gitsemver_available`/ \
         `npm_available` availability-check helpers (5 more sites across `src/main.rs` and \
-        three test files) into one 25-site cluster (`dup-0313`, exact).\n",
+        three test files) into one 25-site cluster (`dup-0308`, exact).\n",
     );
     out.push_str(
         "- `temp_project` - a scratch-project-directory fixture - independently \
-        redefined in 28 files (`dup-0469`, semantic; e.g. \
+        redefined in 28 files (`dup-0460`, semantic; e.g. \
         `tests/canary_model_drift_periphery.rs:39-46`, \
         `tests/cause_wire_periphery.rs:54-61`, `tests/cli.rs:19-29`), plus a \
-        near-identical 21-site variant (`dup-0468`) and a 17-site `run_rigger` \
-        companion helper that drives it (`dup-0470`).\n",
+        near-identical 21-site variant (`dup-0459`) and a 17-site `run_rigger` \
+        companion helper that drives it (`dup-0461`).\n",
     );
     out.push_str(
         "- `run_stream_identity` - a store-identity fixture - independently redefined \
-        in 27 files (`dup-0475`, semantic).\n\n",
+        in 27 files (`dup-0466`, semantic).\n\n",
     );
     out.push_str(
         "Proposed home for all four: `tests/common` (the catalog's own \
@@ -4286,19 +4286,19 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "181 test-only clusters in the committed catalog have every site as an \
         ordinary (non-`#[test]`) helper function - the shared-fixture-extraction \
-        candidate class. Beyond the four in 5.2, the widest are: `dup-0445` \
+        candidate class. Beyond the four in 5.2, the widest are: `dup-0436` \
         (`architecture_text` / `main_rs_source` - \
         source-text-loading helpers for doc/architecture-integrity checks, 8 files, \
-        10 sites); `dup-0474` (a companion, 22-file/22-site variant of 5.2's \
-        `run_stream_identity` fixture, alongside `dup-0475`'s 27-file version); \
-        `dup-0521` (`write_two_stage_workflow` / \
+        10 sites); `dup-0465` (a companion, 22-file/22-site variant of 5.2's \
+        `run_stream_identity` fixture, alongside `dup-0466`'s 27-file version); \
+        `dup-0512` (`write_two_stage_workflow` / \
         `write_budget_one_two_stage_workflow` / `write_standalone_review_workflow` - \
         workflow-YAML-literal builders duplicated across `tests/cli.rs` and \
         `tests/step_attention_periphery.rs`, 6 files, 17 sites); \
-        `dup-0476`/`dup-0477` (`seed_run_events`, an event-seeding helper, 9-13 \
-        files); `dup-0595` (`apply_def_json` / `apply_ref_fresh`-shaped \
-        fold-application helpers, 5 files); `dup-0602` (`community` / `concept` / \
-        `def`-named single-field constructor helpers, 6 files); `dup-0870` \
+        `dup-0467`/`dup-0468` (`seed_run_events`, an event-seeding helper, 9-13 \
+        files); `dup-0585` (`apply_def_json` / `apply_ref_fresh`-shaped \
+        fold-application helpers, 4 files); `dup-0592` (`community` / `concept` / \
+        `def`-named single-field constructor helpers, 6 files); `dup-0825` \
         (`code_lens` / `concepts_lens` two-line accessor helpers, 4 files). Every \
         one of these 181 clusters, with its full site list and the catalog's own \
         `proposed_home`, is already machine-readable in the committed \
@@ -4310,7 +4310,7 @@ pub(crate) fn render_section_5() -> String {
     out.push_str(
         "159 test-only clusters have every site as a `#[test]` function - a \
         literal-differs-only-in-input family, spec 85's own named table-driven-test \
-        candidate class. The single largest anywhere in the suite: `dup-0850` (near, \
+        candidate class. The single largest anywhere in the suite: `dup-0809` (near, \
         42 sites, all in `tests/spec_lint.rs`, e.g. \
         `validate_spec_reports_every_c3_defect_with_its_criterion_and_field_guide_class:54-102`, \
         `validate_spec_attributes_a_prose_level_defect_to_no_criterion:120-163`, \
@@ -4319,15 +4319,14 @@ pub(crate) fn render_section_5() -> String {
         expected defect/advisory line\" bodies). Proposed table: `#[test] fn \
         validate_spec_field_guide_defects() { for (fixture, expected) in CASES { ... \
         } }` retiring all 42 named tests into one parametrized loop over a `(&str, \
-        &str)` (or richer struct) case table. Other large families: \
-        `dup-0780`/`dup-0782` (15+7 sites, `tests/reap_before_removal_audit.rs`, \
-        \"one fixture function body, one exemption-coverage shape, assert \
-        covered/not-covered\" - retires into one table keyed by exemption shape); \
-        `dup-0816` (11 sites, `tests/simplification_audit.rs` - this \
+        &str)` (or richer struct) case table. Other large families (the \
+        `tests/reap_before_removal_audit.rs` exemption-coverage family, formerly two exact \
+        clusters, is already closed: its cases run as `rigger::test_cases!` rows over two \
+        shared case helpers): `dup-0775` (11 sites, `tests/simplification_audit.rs` - this \
         very unit's own scanner tests, a `(source, expected_tokens_or_clusters)` \
-        table candidate); `dup-0764`/`dup-0765` (11+4 sites, \
+        table candidate); `dup-0732`/`dup-0733` (11+4 sites, \
         `tests/no_os_kill_audit.rs`, one process-termination-pattern-string per test \
-        - a `(pattern, is_caught)` table); `dup-0767` (4 sites, \
+        - a `(pattern, is_caught)` table); `dup-0734` (4 sites, \
         `tests/no_os_kill_test_helper_periphery.rs`, \
         `terminate_pid_refuses_pid_zero` / `_pid_one` x `stop_pid_refuses_pid_zero` \
         / `_pid_one` - a 2x2 `(helper, pid)` table). As with 5.4, the full \
@@ -4525,18 +4524,18 @@ fn render_section_6() -> String {
     );
     out.push_str(
         "#### 2. Close the `Grounder` port gap for whole-project batch ingest (retires \
-        dup-0259 in the same motion)\n\n",
+        dup-0255 in the same motion)\n\n",
     );
     out.push_str(
         "- Scope: section 3 violation 2 (`src/ingest.rs:187-211` `walk_batches`, reaching \
         `grounder::symbols::events::project_batches_paced` and \
         `grounder::design::events::project_batches` by concrete module path) and \
-        duplication cluster `dup-0259` (three modules' own twin `project_batches` \
+        duplication cluster `dup-0255` (three modules' own twin `project_batches` \
         functions, `src/grounder/symbols/events.rs:89-91`, \
         `src/grounder/design/events.rs:90-114` and `src/grounder/workflowdef.rs:245-252` - a \
         third site joined the cluster since this item was first drafted) are one root \
         cause, not two - fix once. THREE CANDIDATES, ONE HOME (spec 85 CONSTRAINTS WALK): \
-        `dup-0259`'s own mechanical `proposed_home` suggests relocating into `tests/common`, \
+        `dup-0255`'s own mechanical `proposed_home` suggests relocating into `tests/common`, \
         but every site is production code under `src/grounder/`, not a test helper - the \
         mechanical heuristic has no \"add a port method\" category to route a production \
         duplicate to, so it mis-fires here. This plan follows section 3's own reasoned \
@@ -4546,11 +4545,11 @@ fn render_section_6() -> String {
         - Files: `src/ingest.rs`, `src/grounder/mod.rs`, `src/grounder/symbols/events.rs`, \
         `src/grounder/design/events.rs`, `src/grounder/workflowdef.rs`.\n\
         - Expected line delta: roughly neutral - one new trait method plus three thin impls, \
-        minus the three duplicate bodies `dup-0259` catalogs.\n\
+        minus the three duplicate bodies `dup-0255` catalogs.\n\
         - Risk: medium. `ingest.rs`'s own module doc calls it \"the ONE walk-and-content-key \
         authority\" - a load-bearing path; needs the existing whole-project-ingest and \
         reindex-freshening coverage to stay green, not just the three duplicate-site tests.\n\
-        - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0259` \
+        - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0255` \
         together, rather than as two separately-tracked fixes.\n\n",
     );
     out.push_str(
@@ -4735,12 +4734,12 @@ fn render_section_6() -> String {
         mechanically regardless of the Jaccard pass, per spec 85's own Design.\n\n",
     );
     out.push_str(
-        "#### 10. Consolidate the 799 `.rigger`-path string-literal sites (`dup-0070`) - the \
+        "#### 10. Consolidate the 794 `.rigger`-path string-literal sites (`dup-0070`) - the \
         single largest cluster in the entire catalog by site count\n\n",
     );
     out.push_str(
         "- Scope: one `.rigger`-relative path-composition helper (the cluster's own \
-        `proposed_home`) every one of the 799 sites routes through instead of building its \
+        `proposed_home`) every one of the 794 sites routes through instead of building its \
         own literal.\n\
         - Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, \
         `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, \
@@ -4757,7 +4756,7 @@ fn render_section_6() -> String {
         duplication catalog.\n\n",
     );
     out.push_str(
-        "#### 11. Consolidate the 442 `Command::new` call sites (`dup-0006`) behind one \
+        "#### 11. Consolidate the 440 `Command::new` call sites (`dup-0006`) behind one \
         injected process-spawn port\n\n",
     );
     out.push_str(
@@ -4770,14 +4769,14 @@ fn render_section_6() -> String {
         - Expected line delta: negative, though smaller per-site than `dup-0070` since each \
         `Command::new` call already carries real configuration (args, env, cwd) that must \
         move with it, not just a literal.\n\
-        - Risk: medium-high - several of these 442 sites sit inside `src/budget.rs`'s and \
+        - Risk: medium-high - several of these 440 sites sit inside `src/budget.rs`'s and \
         `src/conductor.rs`'s already-hardened process-lifecycle code (spec 78's no-os-kill \
         discipline); the follow-up spec must preserve every existing handle-bound-kill \
         invariant at each site it touches, and the no-os-kill gate is the acceptance bar, \
         not merely `cargo test`.\n\
-        - Unblocks: one seam instead of 442 independent constructions - the next \
+        - Unblocks: one seam instead of 440 independent constructions - the next \
         process-spawning concern added anywhere in the crate reuses it instead of adding \
-        site 443.\n\n",
+        site 441.\n\n",
     );
     out.push_str(
         "#### 12. Consolidate the 39 sqlite `Connection::open` call sites (`dup-0172`)\n\n",
@@ -4824,9 +4823,9 @@ fn render_section_6() -> String {
     );
     out.push_str("#### 14. Extract the four headline shared test fixtures into `tests/common` (section 5.2)\n\n");
     out.push_str(
-        "- Scope: `page_script` (`dup-0433`, 19 files), `node_available` (`dup-0313`, 24 \
+        "- Scope: `page_script` (`dup-0424`, 19 files), `node_available` (`dup-0308`, 24 \
         files - merged with two related availability-check helpers), `temp_project` \
-        (`dup-0469`, 28 files) and `run_stream_identity` (`dup-0475`, 27 files) - roughly 99 \
+        (`dup-0460`, 28 files) and `run_stream_identity` (`dup-0466`, 27 files) - roughly 99 \
         duplicate definitions collapsing into four shared ones, the \
         single largest mechanical simplification section 5 identifies anywhere in the test \
         suite.\n\
@@ -4857,22 +4856,23 @@ fn render_section_6() -> String {
         smaller, subcommand-scoped files.\n\n",
     );
     out.push_str(
-        "#### 16. Convert the four largest table-driven test families into parametrized \
+        "#### 16. Convert the three remaining largest table-driven test families into \
+        parametrized \
         tables (section 5.5)\n\n",
     );
     out.push_str(
-        "- Scope, largest first: `dup-0850` (42 sites, `tests/spec_lint.rs`), \
-        `dup-0780`/`dup-0782` (15+7 sites, `tests/reap_before_removal_audit.rs`), \
-        `dup-0764`/`dup-0765` (11+4 sites, `tests/no_os_kill_audit.rs`), \
-        `dup-0816` (11 sites, `tests/simplification_audit.rs` - this very \
-        generator's own scanner tests) - 90 sites across 6 clusters.\n\
-        - Files: the four files named above.\n\
+        "- Scope, largest first: `dup-0809` (42 sites, `tests/spec_lint.rs`), \
+        `dup-0732`/`dup-0733` (11+4 sites, `tests/no_os_kill_audit.rs`), \
+        `dup-0775` (11 sites, `tests/simplification_audit.rs` - this very \
+        generator's own scanner tests) - 68 sites across 4 clusters (the reap audit's \
+        exemption-coverage family is already closed).\n\
+        - Files: the three files named above.\n\
         - Expected line delta: negative - each family's near-identical test bodies collapse \
         into one parametrized loop over a table.\n\
         - Risk: low - test-only, and each family already shares one body shape (section \
         5.5's own finding).\n\
         - Unblocks: the largest reduction in raw `#[test]` count available in the suite \
-        (roughly 90 named tests retiring toward 4).\n\n",
+        (roughly 68 named tests retiring toward 3).\n\n",
     );
     out.push_str(
         "#### 17. Sweep the remaining 177 test-only helper-duplication clusters (section \
@@ -4882,7 +4882,7 @@ fn render_section_6() -> String {
         "- Scope: the 181 test-only, all-helper-function clusters section 5.4 names, minus \
         the 4 item 14 already covers - consumed directly from \
         `docs/audit/duplication-catalog.json`, not re-enumerated here (section 5.4's own \
-        stated approach). Includes the `dup-0468`/`dup-0470` `temp_project` companion and \
+        stated approach). Includes the `dup-0459`/`dup-0461` `temp_project` companion and \
         variant clusters section 5.4 itself places in this \"beyond the four\" bucket.\n\
         - Files: per-cluster, from the committed catalog.\n\
         - Expected line delta: negative, cumulative across 177 clusters.\n\
@@ -4897,7 +4897,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: the 159 test-only, all-`#[test]` clusters section 5.5 names, minus the 6 \
         cluster ids item 16 already covers - consumed directly from \
-        `docs/audit/duplication-catalog.json`. Includes `dup-0767` (4 sites, \
+        `docs/audit/duplication-catalog.json`. Includes `dup-0734` (4 sites, \
         `tests/no_os_kill_test_helper_periphery.rs`), the smallest of section 5.5's own \
         named large families, left here rather than in item 16.\n\
         - Files: per-cluster, from the committed catalog.\n\
@@ -4919,7 +4919,7 @@ fn render_section_6() -> String {
     out.push_str(
         "- Scope: of the catalog's 674 clusters, 340 are test-only (items 14 and 16-18 \
         above) and 7 are the named tier-1/tier-4 items (`dup-0006`, `dup-0070`, `dup-0172`, \
-        `dup-0193`, `dup-0194`, `dup-0259`, `dup-0035`); the remaining 327 clusters touching \
+        `dup-0193`, `dup-0194`, `dup-0255`, `dup-0035`); the remaining 327 clusters touching \
         `src/` - mostly small 2-5-site exact/near matches like the two worked examples \
         section 2 itself opens with (`dup-0001`, `dup-0002`) - are swept here, largest \
         exact-duplicate clusters first, consumed directly from \
@@ -9179,8 +9179,8 @@ mod tests {
         // Cites section 3's two boundary violations by name.
         assert!(rendered.contains("AgentDriver"));
         assert!(rendered.contains("Grounder"));
-        // The three-candidates-one-home resolution for dup-0259 (spec 85 CONSTRAINTS WALK).
-        assert!(rendered.contains("dup-0259"));
+        // The three-candidates-one-home resolution for dup-0255 (spec 85 CONSTRAINTS WALK).
+        assert!(rendered.contains("dup-0255"));
         assert!(rendered.contains("THREE CANDIDATES, ONE HOME"));
         // Cites the mandatory-sweep duplication clusters by id.
         assert!(rendered.contains("dup-0006"));
@@ -9196,7 +9196,7 @@ mod tests {
         // Cites section 5's own headline test-suite consolidation items.
         assert!(rendered.contains("tests/common"));
         assert!(rendered.contains("tests/cli.rs"));
-        assert!(rendered.contains("dup-0850"));
+        assert!(rendered.contains("dup-0809"));
         // Item 0: the dead-code deletion, and the explicit no-further-follow-up category.
         assert!(rendered.contains("Delete the dead-code set"));
         assert!(rendered.contains("no further follow-up"));

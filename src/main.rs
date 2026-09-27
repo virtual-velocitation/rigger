@@ -13643,7 +13643,7 @@ fn git_repo_at(root: &Path) -> String {
 /// (no `defaults.grounder` pinned on a `--no-default-features` build with no `symbols`
 /// feature, spec 57's own loud-refusal contract) must not take the WHOLE server down -
 /// `rigger_peers`/`rigger_graph` have nothing to do with grounding and must keep answering.
-/// A resolution failure is instead recorded via `with_grounder_unavailable`, so only
+/// A resolution failure is instead recorded via `with_grounder`'s `Err` arm, so only
 /// `rigger_ground` itself reports it, lazily, exactly as the pre-fix operator surface did.
 /// Parse `rigger mcp`'s one optional flag: `--spawn <id>` (spec 104, criterion 3) binds the
 /// server to one spawn - see [`mcpserver::Server::with_spawn`]'s doc comment for what that
@@ -13709,10 +13709,10 @@ fn cmd_mcp(args: &[String]) -> Res {
 
     let mut server =
         mcpserver::Server::new(&driver, &store, conductor::STREAM, &peers).with_graph(&graph);
-    server = match &grounder {
-        Ok(g) => server.with_grounder(g.as_ref()),
-        Err(e) => server.with_grounder_unavailable(e.to_string()),
-    };
+    server = server.with_grounder(match &grounder {
+        Ok(g) => Ok(g.as_ref()),
+        Err(e) => Err(e.to_string()),
+    });
     if let Some(ps) = &prog_store {
         server = server.with_progress(ps, &scratch_root);
     }

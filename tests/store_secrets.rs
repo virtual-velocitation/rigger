@@ -34,6 +34,9 @@ use tempfile::TempDir;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+#[path = "common/store_courier.rs"]
+mod store_courier;
+use store_courier::run_bare_result;
 
 /// A well-formed but unreachable server address CARRYING CREDENTIALS: nothing listens on this
 /// loopback port, so the eager connect (fail-fast) is refused immediately, and the userinfo
@@ -76,27 +79,6 @@ fn write_store_conn(root: &Path, conn: &str) {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .expect("lock store.conn to owner-only");
     }
-}
-
-/// Run `rigger result <id> --error <msg>` in `root` - the exact courier surface a worker's bare
-/// self-report uses. `conn` sets `KURRENTDB_CONN` (`None` removes it so the case is truly unset
-/// regardless of the ambient environment). `RIGGER_NO_DASH` keeps the dashboard from starting.
-/// `XDG_STATE_HOME` is redirected to a per-call temp dir (spec 62, "couriers count as
-/// activity"): `result` now refreshes the machine-global instance registry too, so an
-/// unredirected call here would otherwise seed a phantom, since-deleted-tempdir entry into the
-/// operator's real `~/.local/state/rigger/instances`.
-fn run_bare_result(root: &Path, conn: Option<&str>) -> Output {
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    let mut cmd = common::rigger_courier();
-    cmd.args(["result", "u/impl#0", "--error", "a self-report"])
-        .current_dir(root)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .env_remove("KURRENTDB_CONN");
-    if let Some(c) = conn {
-        cmd.env("KURRENTDB_CONN", c);
-    }
-    cmd.output().expect("spawn rigger result")
 }
 
 /// Assert the courier reached the SERVER backend (so the connection string it carries WAS surfaced

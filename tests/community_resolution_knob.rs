@@ -52,75 +52,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rigger::community::{self, Assignment, Coupling};
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{
-    Graph, Projection, KIND_COMMUNITY, REL_IN_COMMUNITY, TYPE_CODE_ENTITY_EXTRACTED,
-    TYPE_EDGE_INFERRED,
-};
-use rigger::eventstore::Event;
+use rigger::contextgraph::{Graph, Projection, KIND_COMMUNITY, REL_IN_COMMUNITY};
 
-/// Apply one event built from its raw on-log JSON at `pos` - the serialized form a rebuild replays.
-fn apply_json(p: &Projector, pos: u64, type_: &str, json: serde_json::Value) {
-    let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
-
-/// Fold one definition (spec 29a): the file node, the `<file>::<name>` entity (carrying the `name`
-/// attr that marks a real definition), and their `CONTAINS` edge.
-fn def(p: &Projector, pos: u64, file: &str, name: &str) {
-    apply_json(
-        p,
-        pos,
-        TYPE_CODE_ENTITY_EXTRACTED,
-        serde_json::json!({ "file": file, "name": name, "kind": "function", "line": pos, "lang": "rust" }),
-    );
-}
-
-/// Fold one caller-attributed reference (spec 37): a `<file>::<caller> --CALLS--> <name>` edge plus
-/// the file-level `REFERENCES` edge; a cross-file `name` lands on a BARE placeholder the pass
-/// resolves by unique name-suffix.
-fn call(p: &Projector, pos: u64, file: &str, name: &str, caller: &str) {
-    apply_json(
-        p,
-        pos,
-        TYPE_EDGE_INFERRED,
-        serde_json::json!({ "file": file, "name": name, "caller": caller, "lang": "rust" }),
-    );
-}
-
-/// Seed the canonical spec-53 TWO-SUBSYSTEM coupling graph onto `p`, each subsystem spanning two
-/// directories, joined by one weak bridge. Returns the next free position. Subsystem A spans
-/// `src/combat` and `src/net`; subsystem B spans `src/render` and `src/ui`. This is the same shape
-/// the criterion-1 periphery seeds; here it drives the GRAIN. Its coupling graph has 12 nodes (eight
-/// entities + four files), so at a high enough resolution every node isolates into its own community.
-fn seed(p: &Projector) -> u64 {
-    def(p, 1, "src/combat/hit.rs", "strike");
-    def(p, 2, "src/combat/hit.rs", "block");
-    def(p, 3, "src/net/link.rs", "send");
-    def(p, 4, "src/net/link.rs", "recv");
-    def(p, 5, "src/render/draw.rs", "paint");
-    def(p, 6, "src/render/draw.rs", "shade");
-    def(p, 7, "src/ui/hud.rs", "layout");
-    def(p, 8, "src/ui/hud.rs", "show");
-
-    // Subsystem A: dense cross-file coupling between combat and net.
-    call(p, 9, "src/combat/hit.rs", "send", "strike");
-    call(p, 10, "src/combat/hit.rs", "recv", "strike");
-    call(p, 11, "src/combat/hit.rs", "send", "block");
-    call(p, 12, "src/net/link.rs", "strike", "send");
-    call(p, 13, "src/net/link.rs", "block", "recv");
-
-    // Subsystem B: dense cross-file coupling between render and ui.
-    call(p, 14, "src/render/draw.rs", "layout", "paint");
-    call(p, 15, "src/render/draw.rs", "show", "paint");
-    call(p, 16, "src/render/draw.rs", "layout", "shade");
-    call(p, 17, "src/ui/hud.rs", "paint", "layout");
-    call(p, 18, "src/ui/hud.rs", "shade", "show");
-
-    // A single weak bridge from A to B: too thin to merge the two subsystems.
-    call(p, 19, "src/combat/hit.rs", "paint", "strike");
-    20
-}
+#[path = "common/graph_fold.rs"]
+mod graph_fold;
+use graph_fold::{live_node_ids, seed_two_subsystems};
 
 /// The coupling graph of the seeded projection (over the public `whole()` read).
 fn coupling(p: &Projector) -> Coupling {
@@ -188,23 +124,11 @@ fn live_memberships(g: &Graph) -> Vec<(String, String)> {
     v
 }
 
-/// The sorted set of live `KIND_COMMUNITY` node ids.
-fn community_nodes(g: &Graph) -> Vec<String> {
-    let mut v: Vec<String> = g
-        .nodes
-        .iter()
-        .filter(|n| n.kind == KIND_COMMUNITY)
-        .map(|n| n.id.clone())
-        .collect();
-    v.sort();
-    v
-}
-
 /// The sorted live `KIND_COMMUNITY` node ids under the `community/<grain>/` prefix ONLY (the
 /// trailing slash makes `1` NOT match `10`).
 fn grain_community_nodes(g: &Graph, grain: &str) -> Vec<String> {
     let prefix = format!("community/{grain}/");
-    community_nodes(g)
+    live_node_ids(g, KIND_COMMUNITY)
         .into_iter()
         .filter(|c| c.starts_with(&prefix))
         .collect()
@@ -251,7 +175,7 @@ fn a_higher_resolution_yields_at_least_as_many_communities() {
     // resolution argument were ignored, the count would be flat and the strict-increase and
     // full-refinement assertions below would redden - so this is non-vacuous by construction.
     let p = Projector::open(":memory:", "test").unwrap();
-    seed(&p);
+    seed_two_subsystems(&p);
     let c = coupling(&p);
     let n = c.len();
     assert!(
@@ -336,12 +260,12 @@ fn distinct_resolutions_coexist_as_distinct_live_assignment_sets() {
     // never collide, each member carrying exactly one live membership PER grain. The grain knob does
     // not destroy other grains.
     let p = Projector::open(":memory:", "test").unwrap();
-    let next = seed(&p);
+    let next = seed_two_subsystems(&p);
     let next = record_grain(&p, 1.0, next); // the default coarse grain
     record_grain(&p, 4.0, next); // a finer grain that fully refines this fixture
 
     let g = p.whole().unwrap();
-    let comms = community_nodes(&g);
+    let comms = live_node_ids(&g, KIND_COMMUNITY);
     let grain1 = grain_community_nodes(&g, "1");
     let grain4 = grain_community_nodes(&g, "4");
     assert!(
@@ -526,7 +450,7 @@ fn a_shrinking_rerun_retires_the_emptied_community_node() {
         assert!(
             !g.nodes.iter().any(|n| n.id == emptied),
             "the emptied community node {emptied} is retired, not a ghost; live nodes: {:?}",
-            community_nodes(&g)
+            live_node_ids(&g, KIND_COMMUNITY)
         );
     }
     let mut survivors: Vec<String> = g
@@ -634,7 +558,7 @@ fn an_empty_rerun_keeps_the_last_good_assignment() {
     // real SHRINK (a smaller NON-empty assignment) DOES supersede - proven by
     // `a_shrinking_rerun_retires_the_emptied_community_node`; THIS test pins the empty case.
     let p = Projector::open(":memory:", "test").unwrap();
-    let next = seed(&p);
+    let next = seed_two_subsystems(&p);
     record_grain(&p, 1.0, next); // a real, non-empty r=1 assignment.
     let before = grain_snapshot(&p.whole().unwrap(), "1");
     assert!(

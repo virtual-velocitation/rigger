@@ -22,25 +22,12 @@
 //! Every assertion is hermetic - a temp `.rigger` directory, no process environment, no git - so
 //! the committed rung's contract is regression-locked on every machine and on both feature lanes.
 
-use std::path::Path;
-
 use rigger::config::{StoreConfig, Workflow};
 use rigger::config_store::read_store_config;
-use tempfile::TempDir;
 
-/// A temp `.rigger` directory the reader is anchored at (it joins `workflow.yml` onto this). The
-/// returned `TempDir` must be kept alive by the caller or the directory is removed underneath it.
-fn rigger_dir() -> (TempDir, std::path::PathBuf) {
-    let tmp = tempfile::tempdir().expect("create temp dir");
-    let dir = tmp.path().join(".rigger");
-    std::fs::create_dir_all(&dir).expect("create .rigger");
-    (tmp, dir)
-}
-
-/// Write `<rigger_dir>/workflow.yml` with `body` - the committed project config the reader parses.
-fn write_workflow(dir: &Path, body: &str) {
-    std::fs::write(dir.join("workflow.yml"), body).expect("write workflow.yml");
-}
+#[path = "common/workflow_probe.rs"]
+mod workflow_probe;
+use workflow_probe::{assert_probe_reads, rigger_dir, write_workflow};
 
 #[test]
 fn an_absent_workflow_is_no_opinion_not_an_error() {
@@ -75,18 +62,25 @@ fn a_present_store_block_deserializes_backend_and_url() {
     );
 }
 
-#[test]
-fn a_workflow_without_a_store_key_reads_as_the_default() {
+rigger::test_cases! {
     // Back-compat: a legacy config predating the store: key still reads clean as no-opinion, so an
     // existing project is unaffected by the new rung.
-    let (_tmp, dir) = rigger_dir();
-    write_workflow(&dir, "stages: []\ngates: {}\n");
-    let cfg = read_store_config(&dir).expect("a store-less workflow must still read");
-    assert_eq!(
-        cfg,
-        StoreConfig::default(),
-        "no store: key is no-opinion (the default)"
-    );
+    a_workflow_without_a_store_key_reads_as_the_default:
+        assert_probe_reads(
+            read_store_config,
+            "stages: []\ngates: {}\n",
+            StoreConfig::default(),
+            "a store-less workflow must still read: no store: key is no-opinion (the default)",
+        );
+    // Empty / blank backend and url are "no opinion", matching the default - a project may write
+    // the key skeleton without committing to a backend, and the resolver still falls through.
+    an_empty_store_block_and_empty_values_are_no_opinion:
+        assert_probe_reads(
+            read_store_config,
+            "store:\n  backend: \"\"\n  url: \"\"\n",
+            StoreConfig::default(),
+            "empty backend and url must parse, as no-opinion (the default)",
+        );
 }
 
 #[test]
@@ -143,20 +137,6 @@ fn a_present_but_unreadable_workflow_surfaces_loudly_not_a_silent_default() {
     assert!(
         msg.contains("read store config"),
         "the failure must name itself as a store-config read error; got: {msg}"
-    );
-}
-
-#[test]
-fn an_empty_store_block_and_empty_values_are_no_opinion() {
-    // Empty / blank backend and url are "no opinion", matching the default - a project may write
-    // the key skeleton without committing to a backend, and the resolver still falls through.
-    let (_tmp, dir) = rigger_dir();
-    write_workflow(&dir, "store:\n  backend: \"\"\n  url: \"\"\n");
-    let cfg = read_store_config(&dir).expect("empty values must parse");
-    assert_eq!(
-        cfg,
-        StoreConfig::default(),
-        "empty backend and url are no-opinion (the default)"
     );
 }
 

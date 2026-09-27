@@ -16,7 +16,7 @@
 //!    test fails to COMPILE - the inside-out tests would stay green.
 //!  - THE WRITER->READER WIRE FORM. The unit tests hand-build `Event::new(TYPE_AGENT_PROGRESS,
 //!    to_vec(&ap))` directly, bypassing the REAL writer path `progress::record` -> the private
-//!    `AgentProgress::to_event` (which also stamps `META_RUN_ID`). The round-trip test drives the
+//!    `AgentProgress::to_stamped_event` (which also stamps `META_RUN_ID`). The round-trip test drives the
 //!    real writer into an in-memory store, reads the exact stored bytes back, and counts them -
 //!    proving the serialized form the writer actually emits is what the counter counts.
 //!  - THE PREFIX SINGLE-SOURCE-OF-TRUTH. `GREP_FALLBACK_PREFIX` is documented as the one
@@ -130,7 +130,7 @@ fn is_grep_fallback_is_bound_to_the_public_prefix_const_and_tolerates_leading_sp
 // --- (3) round-trip through the REAL writer path -------------------------------------------------
 
 /// ROUND-TRIP / API EDGE: drive the actual writer `progress::record` (which serializes through the
-/// crate-private `AgentProgress::to_event`, stamping `META_RUN_ID`) into an in-memory store, read
+/// crate-private `AgentProgress::to_stamped_event`, stamping `META_RUN_ID`) into an in-memory store, read
 /// the exact stored bytes back off `progress::STREAM`, and count them with the public
 /// `metrics::grep_fallbacks`. This proves the serialized wire form the writer REALLY emits - not a
 /// hand-built `Event` - is exactly what the counter counts, and that a run-id-stamped event still

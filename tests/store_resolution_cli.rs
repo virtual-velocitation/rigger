@@ -47,6 +47,9 @@ use tempfile::TempDir;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+#[path = "common/store_courier.rs"]
+mod store_courier;
+use store_courier::run_bare_result;
 
 /// A throwaway project: its own git repo (so identity resolves exactly as a real project's does)
 /// with an empty `.rigger/` and no event log yet. The `TempDir` is returned so it outlives the
@@ -65,28 +68,6 @@ fn empty_project() -> TempDir {
 /// single-authority guarantee is that a server-configured courier never fabricates this file.
 fn local_event_log(root: &Path) -> PathBuf {
     root.join(".rigger").join("events.db")
-}
-
-/// Run `rigger result <id> --error <msg>` in `root` - the exact courier surface a worker's bare
-/// self-report uses, and the one whose store the single authority must keep aligned with the
-/// run's. `conn` sets `KURRENTDB_CONN` (`Some("")` sets it empty; `None` removes it so the case
-/// is truly unset regardless of the ambient environment). `RIGGER_NO_DASH` keeps the run's
-/// dashboard from starting under test. `XDG_STATE_HOME` is redirected to a per-call temp dir
-/// (spec 62, "couriers count as activity"): `result` now refreshes the machine-global instance
-/// registry too, so an unredirected call here would otherwise seed a phantom, since-deleted-
-/// tempdir entry into the operator's real `~/.local/state/rigger/instances`.
-fn run_bare_result(root: &Path, conn: Option<&str>) -> Output {
-    let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
-    let mut cmd = common::rigger_courier();
-    cmd.args(["result", "u/impl#0", "--error", "a self-report"])
-        .current_dir(root)
-        .env("RIGGER_NO_DASH", "1")
-        .env("XDG_STATE_HOME", state.path())
-        .env_remove("KURRENTDB_CONN");
-    if let Some(c) = conn {
-        cmd.env("KURRENTDB_CONN", c);
-    }
-    cmd.output().expect("spawn rigger result")
 }
 
 #[test]
@@ -274,24 +255,21 @@ fn a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
     );
 }
 
-#[test]
-fn prime_resolves_the_configured_server_never_the_local_absent_sentinel() {
+rigger::test_cases! {
     // `rigger prime` (cmd_prime) guards `selection.is_sqlite() && !events.db exists` before its
     // `read_all`, printing "no decisions recorded yet" on the sqlite arm.
-    a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
-        &["prime"],
-        "no decisions recorded yet",
-    );
-}
-
-#[test]
-fn stats_resolves_the_configured_server_never_the_local_absent_sentinel() {
+    prime_resolves_the_configured_server_never_the_local_absent_sentinel:
+        a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
+            &["prime"],
+            "no decisions recorded yet",
+        );
     // `rigger stats` (cmd_stats -> stats_lines) guards `sel.is_sqlite() && !events.db exists`
     // before its namespace-scoped run-stream read, printing "no runs recorded yet" on the sqlite
     // arm. A second command through a distinct code path (the `stats_lines` helper, not cmd_prime's
     // inline guard) so the sentinel class is proven, not a single site.
-    a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
-        &["stats"],
-        "no runs recorded yet",
-    );
+    stats_resolves_the_configured_server_never_the_local_absent_sentinel:
+        a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
+            &["stats"],
+            "no runs recorded yet",
+        );
 }

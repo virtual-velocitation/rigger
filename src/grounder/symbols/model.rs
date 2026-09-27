@@ -198,11 +198,12 @@ impl SymbolIndex {
         self.hashes.remove(rel_path);
     }
 
-    /// Record `rel_path`'s content hash (spec 68) - the caller computes it (via
-    /// `symbols::store::content_hash`, the one hash primitive) and hands it in, so the model
-    /// itself never depends on `store`.
-    pub fn set_hash(&mut self, rel_path: String, hash: String) {
-        self.hashes.insert(rel_path, hash);
+    /// Insert (or replace) a file's symbols together with its content hash (spec 68) - the
+    /// caller computes the hash (via `symbols::store::content_hash`, the one hash primitive)
+    /// and hands it in, so the model itself never depends on `store`.
+    pub fn insert_hashed_file(&mut self, rel_path: String, fs: FileSymbols, hash: String) {
+        self.hashes.insert(rel_path.clone(), hash);
+        self.insert_file(rel_path, fs);
     }
 
     /// The content hash last recorded for `rel_path`, or `None` when never recorded (an index
@@ -566,15 +567,11 @@ mod tests {
 
     #[test]
     fn content_hash_is_recorded_and_dropped_with_its_file() {
-        // spec 68: a hash recorded via `set_hash` is readable via `hash_for`; a path never
+        // spec 68: a hash recorded via `insert_hashed_file` is readable via `hash_for`; a path never
         // recorded is `None` (unknown - never misread as "unchanged").
         let mut idx = SymbolIndex::default();
         assert_eq!(idx.hash_for("a.rs"), None);
-        idx.set_hash("a.rs".into(), "deadbeef".into());
-        assert_eq!(idx.hash_for("a.rs"), Some("deadbeef"));
-        // `remove_file` drops the recorded hash along with the symbols, so a removed file can
-        // never survive as a stale hash entry with no symbols behind it.
-        idx.insert_file(
+        idx.insert_hashed_file(
             "a.rs".into(),
             FileSymbols {
                 lang: Lang::Rust,
@@ -582,7 +579,11 @@ mod tests {
                 refs: vec![],
                 partial: false,
             },
+            "deadbeef".into(),
         );
+        assert_eq!(idx.hash_for("a.rs"), Some("deadbeef"));
+        // `remove_file` drops the recorded hash along with the symbols, so a removed file can
+        // never survive as a stale hash entry with no symbols behind it.
         idx.remove_file("a.rs");
         assert_eq!(idx.hash_for("a.rs"), None);
     }

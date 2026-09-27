@@ -28,12 +28,12 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-/// Parsed `docs/audit/core-lane-purity.json`.
-fn record() -> serde_json::Value {
-    let raw = fs::read_to_string("docs/audit/core-lane-purity.json")
-        .expect("docs/audit/core-lane-purity.json must exist and be readable");
-    serde_json::from_str(&raw).expect("docs/audit/core-lane-purity.json must be valid JSON")
-}
+#[path = "common/audit_record.rs"]
+mod audit_record;
+use audit_record::read_audit_record;
+
+/// The committed core-lane purity record this suite checks against the real tree.
+const PURITY_RECORD: &str = "docs/audit/core-lane-purity.json";
 
 /// A line, 1-indexed, from a source file.
 fn nth_line(path: &str, line: u64) -> String {
@@ -92,7 +92,7 @@ fn scan(path: &str) -> Vec<(usize, &'static str)> {
 
 #[test]
 fn purity_audit_record_has_the_shape_every_consumer_relies_on() {
-    let r = record();
+    let r = read_audit_record(PURITY_RECORD);
     let modules = r["core_modules"]
         .as_array()
         .expect("core_modules must be a JSON array");
@@ -135,7 +135,7 @@ fn purity_audit_record_has_the_shape_every_consumer_relies_on() {
 /// own `mod.rs`) that is NOT immediately preceded by the store-gate attribute.
 #[test]
 fn every_listed_core_module_is_declared_ungated_in_its_parent() {
-    let r = record();
+    let r = read_audit_record(PURITY_RECORD);
     let modules: Vec<String> = r["core_modules"]
         .as_array()
         .expect("core_modules must be a JSON array")
@@ -212,7 +212,7 @@ fn every_listed_core_module_is_declared_ungated_in_its_parent() {
 /// only at the next hand-run wasm build.
 #[test]
 fn no_core_module_imports_the_banned_set_outside_its_cited_store_gate() {
-    let r = record();
+    let r = read_audit_record(PURITY_RECORD);
     let modules: Vec<String> = r["core_modules"]
         .as_array()
         .expect("core_modules must be a JSON array")

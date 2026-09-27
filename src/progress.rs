@@ -28,6 +28,29 @@ use crate::spawn::{self, WaveItem};
 /// self-describing (and lets a consolidator read exactly the progress events).
 pub const STREAM: &str = "progress";
 
+/// A progress-store record that appends as one event of its own [`EVENT_TYPE`](Self::EVENT_TYPE),
+/// stamped with the run it belongs to - the ONE shape every record this store holds is built
+/// with ([`AgentProgress`], [`SpawnLaunched`], [`StopFailure`]).
+pub(crate) trait RunStamped: Serialize {
+    /// The event type this record serializes as.
+    const EVENT_TYPE: &'static str;
+
+    /// Build the appendable event, stamped with the run it belongs to (via [`META_RUN_ID`],
+    /// the same key the conductor stamps on run events) so unit 2's consolidator can scope
+    /// progress to the current run. An empty `run_id` (no run started yet) carries no stamp.
+    /// `pub(crate)`: the impure write path ([`crate::progress_store`]) is the only caller
+    /// outside this module.
+    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the *_store sibling under core-only
+    fn to_stamped_event(&self, run_id: &str) -> Result<Event, serde_json::Error> {
+        let ev = Event::new(Self::EVENT_TYPE, serde_json::to_vec(self)?);
+        Ok(if run_id.is_empty() {
+            ev
+        } else {
+            ev.with_meta(META_RUN_ID, run_id)
+        })
+    }
+}
+
 /// The event type an [`AgentProgress`] serializes as. It is deliberately NOT in the run
 /// store, so nothing that folds the run stream can observe it - the isolation is the file
 /// boundary, not a fold that skips this type.
@@ -61,21 +84,10 @@ impl AgentProgress {
     pub fn is_grep_fallback(&self) -> bool {
         self.activity.trim_start().starts_with(GREP_FALLBACK_PREFIX)
     }
+}
 
-    /// Build the appendable event, stamped with the run it belongs to (via [`META_RUN_ID`],
-    /// the same key the conductor stamps on run events) so unit 2's consolidator can scope
-    /// progress to the current run. An empty `run_id` (no run started yet) carries no stamp.
-    /// `pub(crate)`: the impure write path ([`crate::progress_store::record`]) is the only
-    /// caller outside this module.
-    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the *_store sibling under core-only
-    pub(crate) fn to_event(&self, run_id: &str) -> Result<Event, serde_json::Error> {
-        let ev = Event::new(TYPE_AGENT_PROGRESS, serde_json::to_vec(self)?);
-        Ok(if run_id.is_empty() {
-            ev
-        } else {
-            ev.with_meta(META_RUN_ID, run_id)
-        })
-    }
+impl RunStamped for AgentProgress {
+    const EVENT_TYPE: &'static str = TYPE_AGENT_PROGRESS;
 }
 
 /// The event type a [`SpawnLaunched`] record serializes as (spec 104 criterion 1: THE
@@ -130,20 +142,11 @@ pub struct SpawnLaunched {
     pub class: Option<String>,
 }
 
-impl SpawnLaunched {
-    /// Build the appendable event, stamped with the run it belongs to exactly like
-    /// [`AgentProgress::to_event`] - `pub(crate)` for the same reason: only the impure
-    /// write path ([`crate::progress_store::record_launch`]) calls it.
-    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))]
-    pub(crate) fn to_event(&self, run_id: &str) -> Result<Event, serde_json::Error> {
-        let ev = Event::new(TYPE_SPAWN_LAUNCHED, serde_json::to_vec(self)?);
-        Ok(if run_id.is_empty() {
-            ev
-        } else {
-            ev.with_meta(META_RUN_ID, run_id)
-        })
-    }
+impl RunStamped for SpawnLaunched {
+    const EVENT_TYPE: &'static str = TYPE_SPAWN_LAUNCHED;
+}
 
+impl SpawnLaunched {
     /// Build the CLOSING record for an already-open launch (spec 104 criteria 5/6): the
     /// progress store is append-only (spec 93), so closing is a SEPARATE event, never a
     /// mutation of the open record - this is the one place that shape is assembled, so
@@ -202,19 +205,8 @@ pub struct StopFailure {
     pub class: String,
 }
 
-impl StopFailure {
-    /// Build the appendable event, stamped with the run it belongs to exactly like
-    /// [`AgentProgress::to_event`] - `pub(crate)` for the same reason: only the impure
-    /// write path ([`crate::progress_store::record_stop_failure`]) calls it.
-    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))]
-    pub(crate) fn to_event(&self, run_id: &str) -> Result<Event, serde_json::Error> {
-        let ev = Event::new(TYPE_STOP_FAILURE, serde_json::to_vec(self)?);
-        Ok(if run_id.is_empty() {
-            ev
-        } else {
-            ev.with_meta(META_RUN_ID, run_id)
-        })
-    }
+impl RunStamped for StopFailure {
+    const EVENT_TYPE: &'static str = TYPE_STOP_FAILURE;
 }
 
 /// The latest `StopFailure` class recorded for `spawn_id` - "latest wins", the store's own
@@ -364,14 +356,14 @@ mod tests {
             id: req.id.clone(),
             activity: "grep #1".into(),
         }
-        .to_event("run-1")
+        .to_stamped_event("run-1")
         .unwrap();
         p1.recorded_at = now - Duration::from_secs(200);
         let mut p2 = AgentProgress {
             id: req.id.clone(),
             activity: "grep #12: conductor.rs".into(),
         }
-        .to_event("run-1")
+        .to_stamped_event("run-1")
         .unwrap();
         p2.recorded_at = now - Duration::from_secs(20);
         let progress_events = vec![p1, p2];
@@ -427,7 +419,7 @@ mod tests {
             ended: None,
             class: None,
         };
-        let ev = launched.to_event("run-9").unwrap();
+        let ev = launched.to_stamped_event("run-9").unwrap();
         assert_eq!(ev.type_, TYPE_SPAWN_LAUNCHED);
         assert_eq!(ev.meta.get(META_RUN_ID).map(String::as_str), Some("run-9"));
         let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
@@ -449,7 +441,7 @@ mod tests {
             ended: None,
             class: None,
         };
-        let ev = launched.to_event("").unwrap();
+        let ev = launched.to_stamped_event("").unwrap();
         let v: serde_json::Value = serde_json::from_slice(&ev.data).unwrap();
         assert!(
             v.get("resumed_from").is_none(),
@@ -480,7 +472,7 @@ mod tests {
             ended: None,
             class: None,
         };
-        let ev = launched.to_event("run-1").unwrap();
+        let ev = launched.to_stamped_event("run-1").unwrap();
         let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
         assert_eq!(back.resumed_from.as_deref(), Some("old-session"));
         assert_eq!(back.launch, 1);
@@ -509,7 +501,7 @@ mod tests {
     #[test]
     fn spawn_launched_closed_round_trips_through_json() {
         let closing = SpawnLaunched::closed("u/implementer#0", 2, "sess-9", "fault", "rate_limit");
-        let ev = closing.to_event("run-1").unwrap();
+        let ev = closing.to_stamped_event("run-1").unwrap();
         let back: SpawnLaunched = serde_json::from_slice(&ev.data).unwrap();
         assert_eq!(back, closing);
     }
@@ -522,7 +514,7 @@ mod tests {
             spawn: "u104-fail-class/implementer#0".into(),
             class: "authentication_failed".into(),
         };
-        let ev = sf.to_event("run-9").unwrap();
+        let ev = sf.to_stamped_event("run-9").unwrap();
         assert_eq!(ev.type_, TYPE_STOP_FAILURE);
         assert_eq!(ev.meta.get(META_RUN_ID).map(String::as_str), Some("run-9"));
         let back: StopFailure = serde_json::from_slice(&ev.data).unwrap();
@@ -535,7 +527,7 @@ mod tests {
             spawn: "u/implementer#0".into(),
             class: "rate_limit".into(),
         };
-        let ev = sf.to_event("").unwrap();
+        let ev = sf.to_stamped_event("").unwrap();
         assert!(
             !ev.meta.contains_key(META_RUN_ID),
             "an empty run_id carries no stamp, same as SpawnLaunched/AgentProgress"
@@ -548,7 +540,7 @@ mod tests {
             spawn: "other/implementer#0".into(),
             class: "rate_limit".into(),
         }
-        .to_event("run-1")
+        .to_stamped_event("run-1")
         .unwrap()];
         assert_eq!(latest_stop_failure_class(&events, "u/implementer#0"), None);
     }
@@ -562,19 +554,19 @@ mod tests {
                 spawn: "u/implementer#0".into(),
                 class: "rate_limit".into(),
             }
-            .to_event("run-1")
+            .to_stamped_event("run-1")
             .unwrap(),
             StopFailure {
                 spawn: "other/implementer#0".into(),
                 class: "overloaded".into(),
             }
-            .to_event("run-1")
+            .to_stamped_event("run-1")
             .unwrap(),
             StopFailure {
                 spawn: "u/implementer#0".into(),
                 class: "authentication_failed".into(),
             }
-            .to_event("run-1")
+            .to_stamped_event("run-1")
             .unwrap(),
         ];
         assert_eq!(
@@ -589,14 +581,14 @@ mod tests {
             id: "u/implementer#0".into(),
             activity: "not a stop failure".into(),
         }
-        .to_event("run-1")
+        .to_stamped_event("run-1")
         .unwrap()];
         events.push(
             StopFailure {
                 spawn: "u/implementer#0".into(),
                 class: "billing_error".into(),
             }
-            .to_event("run-1")
+            .to_stamped_event("run-1")
             .unwrap(),
         );
         assert_eq!(

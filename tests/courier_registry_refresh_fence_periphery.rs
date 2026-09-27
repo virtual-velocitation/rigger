@@ -20,7 +20,7 @@
 //! best-effort, warn-only degrade contract) is unaffected.
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Command;
 
 use rigger::gate::STORE_FENCE_ENV;
 use rigger::registry::{self, Instance};
@@ -30,6 +30,9 @@ use rigger::registry::{self, Instance};
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 use common::RestoreEnvVars;
+#[path = "common/courier_registry.rs"]
+mod courier_registry;
+use courier_registry::assert_ok;
 
 /// A throwaway project the compiled binary accepts as a courier target: its own git repo (so the
 /// store's project identity resolves normally) and an INITIALIZED event log - a courier refuses
@@ -68,15 +71,6 @@ fn registry_entries(state_home: &Path) -> Vec<(std::path::PathBuf, Instance)> {
         }
     }
     out
-}
-
-fn assert_ok(out: &Output, args: &[&str]) {
-    assert!(
-        out.status.success(),
-        "rigger {args:?} failed: {}\n{}",
-        String::from_utf8_lossy(&out.stderr),
-        String::from_utf8_lossy(&out.stdout)
-    );
 }
 
 /// THE REGRESSION: a courier invoked exactly as `gate::ExecRunner::run` invokes one of a unit-

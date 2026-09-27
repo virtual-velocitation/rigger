@@ -29,17 +29,10 @@ use rigger::contextgraph::{
     KIND_RATIONALE, REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES,
     TIER_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED,
 };
-use rigger::eventstore::Event;
 
-/// Fold an event built from its raw on-log JSON bytes at `pos` - the SERIALIZED form a rebuild
-/// replays - deliberately bypassing the in-crate payload structs so a test pins the JSON contract,
-/// not the Rust type. `apply` returns `Err` on a deserialize failure, so a successful call is itself
-/// evidence the payload satisfied the fold's contract.
-fn apply_json(p: &Projector, pos: u64, type_: &str, json: serde_json::Value) {
-    let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+#[path = "common/graph_fold.rs"]
+mod graph_fold;
+use graph_fold::apply_json;
 
 /// The kind of the node with `id` in `g`, if it folded at all.
 fn kind_of<'g>(g: &'g Graph, id: &str) -> Option<&'g str> {
@@ -295,7 +288,7 @@ fn the_public_extraction_pipeline_is_a_deterministic_reproducible_rebuild() {
 
     let first = run();
     let second = run();
-    let bytes = |es: &[Event]| {
+    let bytes = |es: &[rigger::eventstore::Event]| {
         es.iter()
             .map(|e| (e.type_.clone(), e.data.clone()))
             .collect::<Vec<_>>()

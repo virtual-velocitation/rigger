@@ -27,20 +27,13 @@ use std::collections::BTreeSet;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, KIND_COMMUNITY, REL_IN_COMMUNITY, TIER_INFERRED, TYPE_CODE_ENTITY_EXTRACTED,
+    Graph, KIND_COMMUNITY, REL_IN_COMMUNITY, TIER_INFERRED, TYPE_CODE_ENTITY_EXTRACTED,
     TYPE_COMMUNITY_ASSIGNED, TYPE_EDGE_INFERRED,
 };
-use rigger::eventstore::Event;
 
-/// Fold an event built from its raw on-log JSON bytes at `pos` - the SERIALIZED form a rebuild
-/// replays - deliberately bypassing the in-crate payload structs so a test pins the JSON contract,
-/// not the Rust type. `apply` returns `Err` on a deserialize failure, so a successful call is itself
-/// evidence the payload satisfied the fold's contract.
-fn apply_json(p: &Projector, pos: u64, type_: &str, json: serde_json::Value) {
-    let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+#[path = "common/graph_fold.rs"]
+mod graph_fold;
+use graph_fold::{apply_json, live_targets};
 
 /// Fold one `CodeEntityExtracted` (spec 29a): a definition, folding its file node, the
 /// `<file>::<name>` entity node (carrying a `name` attr - the label source), and their `CONTAINS`
@@ -63,15 +56,6 @@ fn call(p: &Projector, pos: u64, file: &str, callee: &str, caller: &str) {
         TYPE_EDGE_INFERRED,
         serde_json::json!({ "file": file, "name": callee, "caller": caller, "lang": "rust" }),
     );
-}
-
-/// The live `IN_COMMUNITY` targets of `member` in `g` (whole() returns only live edges), as a set.
-fn live_memberships(g: &Graph, member: &str) -> BTreeSet<String> {
-    g.edges
-        .iter()
-        .filter(|e| e.rel == REL_IN_COMMUNITY && e.from == member)
-        .map(|e| e.to.clone())
-        .collect()
 }
 
 /// A deterministic snapshot of the whole community layer read over the PUBLIC surface: every
@@ -252,7 +236,7 @@ fn a_community_assigned_event_without_a_fresh_key_is_a_non_boundary_and_never_su
     );
 
     let g = p.whole().unwrap();
-    let live = live_memberships(&g, "a.rs::x");
+    let live = live_targets(&g, REL_IN_COMMUNITY, "a.rs::x");
     let expected: BTreeSet<String> = ["community/1/0".to_string(), "community/1/1".to_string()]
         .into_iter()
         .collect();

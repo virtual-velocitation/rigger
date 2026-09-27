@@ -31,18 +31,21 @@ use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE,
-    REL_CONSTRAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES,
-    TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED,
-    TYPE_DOC_LINK_EXTRACTED, TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING,
+    KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_HANDBOOK_RULE, KIND_RATIONALE, REL_CONSTRAINS,
+    REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_SPECIFIES, TYPE_CODE_ENTITY_EXTRACTED,
+    TYPE_DECISION_MADE, TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_LESSON_LEARNED,
+    TYPE_REVIEW_FINDING,
 };
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::Event;
 use rigger::gate::ExecRunner;
 use rigger::grounder::{Grounder, Ref};
 use rigger::spawn::ROLE_SDET_AUTHOR;
 use serde_json::{json, Value};
 use tempfile::TempDir;
+
+#[path = "common/graph_fold.rs"]
+mod graph_fold;
+use graph_fold::apply_next_json;
 
 /// A driver that captures every prompt it is asked to spawn, then returns an empty result. It is
 /// the observation channel for the periphery boundary: the prompt a spawn actually receives.
@@ -177,15 +180,6 @@ impl Grounder for SeedGrounder {
     }
 }
 
-/// Fold one event, built from its serialized JSON payload, into the graph at `pos` - the public
-/// event API a real run folds through.
-fn fold(g: &Projector, pos: &mut u64, type_: &str, payload: Value) {
-    *pos += 1;
-    let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
-    e.position = *pos;
-    g.apply(&e).unwrap();
-}
-
 /// Drive `conductor::run` over a single stage whose grounding query is `coverage`, grounded by
 /// `grounder`, and return every prompt the driver was asked to spawn. The prompt is composed by the
 /// same `build_prompt_with_failure` path a real run uses, so the code neighborhood in it comes from
@@ -310,7 +304,7 @@ fn a_spawn_prompt_carries_the_unified_traversal_code_neighborhood_not_the_old_st
     // CODE NEIGHBORHOOD (29a): a definition the run extracted from the touched file. Its name is a
     // string that appears NOWHERE the grounder returns, so its presence in the prompt proves it was
     // sourced from the graph traversal, not stitched from the grounder's refs.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_CODE_ENTITY_EXTRACTED,
@@ -361,7 +355,7 @@ fn the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_point
     let mut pos = 0u64;
 
     // CODE NEIGHBORHOOD (stays): a definition the run extracted from the touched file.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_CODE_ENTITY_EXTRACTED,
@@ -380,19 +374,19 @@ fn the_implement_prompt_is_trimmed_to_the_intent_layer_with_a_rigger_peers_point
     // The capped dev-loop bulk the trim DROPS from the implement prompt: a decision, a lesson, and a
     // finding, all about the SAME seed file, so the one traversal reaches every one of them and their
     // absence is the trim's doing, not a mis-seeded edge.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DECISION_MADE,
         json!({ "id": "d_core", "summary": "TRIMMED_DECISION_MARKER the decision governing core", "governs": ["core.rs"] }),
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_LESSON_LEARNED,
         json!({ "id": "l_core", "summary": "TRIMMED_LESSON_MARKER the lesson about core", "about": ["core.rs"] }),
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_REVIEW_FINDING,
@@ -480,13 +474,13 @@ fn the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim()
 
     // A decision and a finding about the seed file the producer grounds to: on the FULL slice both
     // render; on the (wrong) implement slice both would be dropped for a pointer.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DECISION_MADE,
         json!({ "id": "d_core", "summary": "PRODUCER_DECISION_MARKER the decomposition decision governing core", "governs": ["core.rs"] }),
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_REVIEW_FINDING,
@@ -690,7 +684,7 @@ fn the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice() {
     let mut pos = 0u64;
 
     // CODE NEIGHBORHOOD (stays on both slices): a definition the run extracted from the touched file.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_CODE_ENTITY_EXTRACTED,
@@ -709,19 +703,19 @@ fn the_sdet_author_build_seam_spawn_receives_the_trimmed_implement_slice() {
     // The capped dev-loop bulk the implement slice DROPS: a decision, a lesson, and a finding, all
     // about the SAME seed file, so the one traversal reaches every one and their absence is the trim's
     // doing, not a mis-seeded edge.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DECISION_MADE,
         json!({ "id": "d_core", "summary": "SDET_TRIM_DECISION_MARKER the decision governing core", "governs": ["core.rs"] }),
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_LESSON_LEARNED,
         json!({ "id": "l_core", "summary": "SDET_TRIM_LESSON_MARKER the lesson about core", "about": ["core.rs"] }),
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_REVIEW_FINDING,
@@ -1029,7 +1023,7 @@ fn the_code_neighborhood_section_is_budget_capped_with_a_visible_elision_note() 
     // edges once, at the batch head); the rest accrete, exactly as a real extraction pass emits them.
     let count = 40u32;
     for i in 1..=count {
-        fold(
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_CODE_ENTITY_EXTRACTED,
@@ -1089,7 +1083,7 @@ fn the_spawn_prompt_code_neighborhood_elision_note_names_the_honest_graph_around
     // seeded file (core.rs), so the traversal reaches every definition and the note names that file.
     let count = 40u32;
     for i in 1..=count {
-        fold(
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_CODE_ENTITY_EXTRACTED,
@@ -1191,13 +1185,13 @@ fn fold_design_intent(
     rel: &str,
     to: &str,
 ) {
-    fold(
+    apply_next_json(
         g,
         pos,
         TYPE_DOC_CONCEPT_EXTRACTED,
         json!({ "kind": kind, "id": id, "title": title, "doc": id }),
     );
-    fold(
+    apply_next_json(
         g,
         pos,
         TYPE_DOC_LINK_EXTRACTED,
@@ -1284,7 +1278,7 @@ fn a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_tr
         REL_SPECIFIES,
         "other.rs",
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DOC_LINK_EXTRACTED,
@@ -1292,13 +1286,13 @@ fn a_spawn_prompt_carries_the_design_intent_that_governs_the_touched_files_by_tr
     );
     // DECOY B (relation-scope): a design-doc that only CITES `core.rs` (a `references` edge) with NO
     // code-binding SPECIFIES / GOVERNS edge. A mere citation is not intent that governs the file.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DOC_CONCEPT_EXTRACTED,
         json!({ "kind": KIND_DESIGN_DOC, "id": "docs/misc.md", "title": "a mere doc citation of core", "doc": "docs/misc.md" }),
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DOC_LINK_EXTRACTED,
@@ -1465,7 +1459,7 @@ fn a_governing_decision_never_leaks_into_the_spawn_prompt_design_intent_section(
         "core.rs",
     );
     // A DECISION that GOVERNS the SAME file through the SHARED GOVERNS relation - the leak vector.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DECISION_MADE,
@@ -1589,7 +1583,7 @@ fn a_spawn_prompt_with_no_governing_design_intent_renders_no_design_intent_heade
     // code neighborhood - but NO design-intent node (handbook rule / RA section / arch decision /
     // rationale) and NO design-intent edge bound to it, so the design-intent section has zero
     // candidates for a reason independent of the kind guard.
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_CODE_ENTITY_EXTRACTED,
@@ -1688,7 +1682,7 @@ fn the_design_intent_section_renders_every_touched_file_a_node_binds_with_a_mult
         REL_GOVERNS,
         "core.rs",
     );
-    fold(
+    apply_next_json(
         &graph,
         &mut pos,
         TYPE_DOC_LINK_EXTRACTED,
@@ -1803,7 +1797,7 @@ fn the_trimmed_implement_prompt_still_delivers_every_design_intent_binding_deter
         let mut pos = 0u64;
         // CODE NEIGHBORHOOD (the other half of the kept intent layer): a definition of the touched
         // file, so the traversal reaches a realistic neighborhood.
-        fold(
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_CODE_ENTITY_EXTRACTED,
@@ -1817,19 +1811,19 @@ fn the_trimmed_implement_prompt_still_delivers_every_design_intent_binding_deter
         // touched file - seeded so the traversal reaches a genuinely bulk-carrying neighborhood and the
         // intent layer surviving is proven where the trim is ACTIVE. This unit does NOT assert their
         // omission (criterion 1 owns the trim); they establish the trimmed context, nothing more.
-        fold(
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_DECISION_MADE,
             json!({ "id": "d_core", "summary": "a decision the trim drops from the implement prompt", "governs": ["core.rs"] }),
         );
-        fold(
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_LESSON_LEARNED,
             json!({ "id": "l_core", "summary": "a lesson the trim drops from the implement prompt", "about": ["core.rs"] }),
         );
-        fold(
+        apply_next_json(
             &graph,
             &mut pos,
             TYPE_REVIEW_FINDING,

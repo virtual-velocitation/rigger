@@ -21,25 +21,15 @@
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Projection, KIND_AGENT, KIND_DECISION, KIND_FINDING, KIND_LESSON, KIND_RATIONALE, META_ACTOR,
-    REL_ABOUT, REL_DECIDED, REL_EXPLAINS, REL_GOVERNS, REL_RAISED, TYPE_DECISION_MADE,
+    Projection, KIND_AGENT, KIND_DECISION, KIND_FINDING, KIND_LESSON, KIND_RATIONALE, REL_ABOUT,
+    REL_DECIDED, REL_EXPLAINS, REL_GOVERNS, REL_RAISED, TYPE_DECISION_MADE,
     TYPE_DOC_CONCEPT_EXTRACTED, TYPE_DOC_LINK_EXTRACTED, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT,
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
-use rigger::eventstore::Event;
 
-/// Fold one event from its raw on-log JSON at `pos`, optionally stamping the acting persona in
-/// `META_ACTOR` (the metadata the conductor puts on every real emit). Folding the raw JSON - not an
-/// in-crate payload struct - pins the contract the log actually carries. `apply` returns `Err` on a
-/// fold failure, so a successful call is itself evidence the payload folded.
-fn fold(p: &Projector, pos: u64, type_: &str, payload: serde_json::Value, actor: Option<&str>) {
-    let mut e = Event::new(type_, serde_json::to_vec(&payload).unwrap());
-    e.position = pos;
-    if let Some(a) = actor {
-        e.meta.insert(META_ACTOR.to_string(), a.to_string());
-    }
-    p.apply(&e).unwrap();
-}
+#[path = "common/graph_fold.rs"]
+mod graph_fold;
+use graph_fold::apply_json_as;
 
 #[test]
 fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attribution() {
@@ -54,21 +44,21 @@ fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attributi
     // --- Machinery events in the stream (their de-noise to graph no-ops is criterion 1's to own;
     //     they are here only so the content is proven to survive a REAL mixed run, not a sterile
     //     content-only one). ---
-    fold(
+    apply_json_as(
         &p,
         1,
         TYPE_FILE_TOUCHED,
         serde_json::json!({ "path": "src/combat.rs", "by": "rust-engineer" }),
         None,
     );
-    fold(
+    apply_json_as(
         &p,
         2,
         TYPE_UNIT_STARTED,
         serde_json::json!({ "unit": "u1", "criterion": "c2", "agent": "rust-engineer", "needs": ["u0"] }),
         None,
     );
-    fold(
+    apply_json_as(
         &p,
         3,
         TYPE_GATE_VERDICT,
@@ -79,7 +69,7 @@ fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attributi
     // --- The design memory: the content the graph IS about. ---
     // A decision that GOVERNS both a CODE file and a DESIGN/spec doc - proving the content edge lands
     // on code AND design. Stamped with its acting persona, whose attribution must NOT survive.
-    fold(
+    apply_json_as(
         &p,
         4,
         TYPE_DECISION_MADE,
@@ -94,7 +84,7 @@ fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attributi
     // A review finding ABOUT a code file, carrying its reviewer (`by`) and owning-unit token.
     // Stamped with a DIFFERENT acting persona than its `by`, so a creeping-back attribution would be
     // visible as either the actor or the `by` becoming a node.
-    fold(
+    apply_json_as(
         &p,
         5,
         TYPE_REVIEW_FINDING,
@@ -109,7 +99,7 @@ fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attributi
     );
     // A lesson ABOUT a code file - the third content kind criterion 2 names, which the machinery-drop
     // test does not co-locate. Its content node and ABOUT edge must survive intact.
-    fold(
+    apply_json_as(
         &p,
         6,
         TYPE_LESSON_LEARNED,
@@ -123,7 +113,7 @@ fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attributi
     // A design-intent rationale node and its `explains` link to the code it annotates (spec 29b): the
     // "explains edges to ... design" half of criterion 2. The de-noise never touched this arm, so its
     // survival in a mixed fold proves the design-memory overlay stands beside the machinery drop.
-    fold(
+    apply_json_as(
         &p,
         7,
         TYPE_DOC_CONCEPT_EXTRACTED,
@@ -135,7 +125,7 @@ fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attributi
         }),
         None,
     );
-    fold(
+    apply_json_as(
         &p,
         8,
         TYPE_DOC_LINK_EXTRACTED,
@@ -144,7 +134,7 @@ fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attributi
     );
     // The unit integrates - the log carries a `commit` key the de-noised fold no longer models. No
     // upheld finding is marked here, so disposition-expiry invalidates nothing and the content stands.
-    fold(
+    apply_json_as(
         &p,
         9,
         TYPE_UNIT_INTEGRATED,

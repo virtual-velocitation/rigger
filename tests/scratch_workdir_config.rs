@@ -20,23 +20,11 @@
 //!     non-`NotFound` `io::Error`) is a loud error too - only `NotFound` itself means "no
 //!     opinion", never any other I/O failure collapsed onto that same silent-default path.
 
-use std::path::Path;
-
 use rigger::config_store::read_scratch_workdir;
-use tempfile::TempDir;
 
-/// A temp `.rigger` directory the reader is anchored at (it joins `workflow.yml` onto this). The
-/// returned `TempDir` must be kept alive by the caller or the directory is removed underneath it.
-fn rigger_dir() -> (TempDir, std::path::PathBuf) {
-    let tmp = tempfile::tempdir().expect("create temp dir");
-    let dir = tmp.path().join(".rigger");
-    std::fs::create_dir_all(&dir).expect("create .rigger");
-    (tmp, dir)
-}
-
-fn write_workflow(dir: &Path, body: &str) {
-    std::fs::write(dir.join("workflow.yml"), body).expect("write workflow.yml");
-}
+#[path = "common/workflow_probe.rs"]
+mod workflow_probe;
+use workflow_probe::{assert_probe_reads, rigger_dir, write_workflow};
 
 #[test]
 fn an_absent_workflow_is_no_opinion_not_an_error() {
@@ -49,12 +37,21 @@ fn an_absent_workflow_is_no_opinion_not_an_error() {
     );
 }
 
-#[test]
-fn a_present_workdir_deserializes_exactly() {
-    let (_tmp, dir) = rigger_dir();
-    write_workflow(&dir, "defaults:\n  workdir: /custom/scratch\n");
-    let workdir = read_scratch_workdir(&dir).expect("a present defaults.workdir must parse");
-    assert_eq!(workdir, "/custom/scratch");
+rigger::test_cases! {
+    a_present_workdir_deserializes_exactly:
+        assert_probe_reads(
+            read_scratch_workdir,
+            "defaults:\n  workdir: /custom/scratch\n",
+            "/custom/scratch".to_string(),
+            "a present defaults.workdir must parse to its exact value",
+        );
+    a_workflow_with_no_defaults_block_at_all_reads_as_empty:
+        assert_probe_reads(
+            read_scratch_workdir,
+            "stages: {}\n",
+            String::new(),
+            "a workflow with no defaults: key must still parse, as empty",
+        );
 }
 
 #[test]
@@ -71,15 +68,6 @@ fn unrelated_keys_never_break_the_probe_even_when_they_would_fail_a_full_config_
     let workdir = read_scratch_workdir(&dir)
         .expect("unrelated stage/gate references a full config::load would refuse must not break this probe");
     assert_eq!(workdir, "/scratch/here");
-}
-
-#[test]
-fn a_workflow_with_no_defaults_block_at_all_reads_as_empty() {
-    let (_tmp, dir) = rigger_dir();
-    write_workflow(&dir, "stages: {}\n");
-    let workdir =
-        read_scratch_workdir(&dir).expect("a workflow with no defaults: key must still parse");
-    assert_eq!(workdir, "");
 }
 
 #[test]
