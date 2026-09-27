@@ -288,3 +288,49 @@ fn red_before_green_fails_a_source_commit_no_test_commit_precedes_naming_it() {
         "the failure must name the offending commit: {out}"
     );
 }
+
+/// The review checklist line each persona carries for the principle gates, as `(agent file,
+/// line)`: the lens names the principle, the adjudicator never trades a boundary red away, the
+/// test lens checks red before green.
+const PERSONA_CHECKLIST: &[(&str, &str)] = &[
+    (
+        "architecture-reviewer.md",
+        "Name the SOLID principle for each finding",
+    ),
+    (
+        "adjudicator.md",
+        "A red `boundary` gate is non-negotiable: reject, never balance it against other evidence.",
+    ),
+    (
+        "sdet.md",
+        "Confirm the unit's first source commit follows a test commit (red before green).",
+    ),
+];
+
+/// Every checklist line missing from the persona files under `root/.rigger/agents`.
+fn missing_checklist_lines(root: &Path) -> Vec<String> {
+    PERSONA_CHECKLIST
+        .iter()
+        .filter(|(file, line)| {
+            let text =
+                std::fs::read_to_string(root.join(".rigger/agents").join(file)).unwrap_or_default();
+            !text.contains(line)
+        })
+        .map(|(file, line)| format!("{file}: {line:?}"))
+        .collect()
+}
+
+#[test]
+fn every_persona_carries_its_principle_gate_checklist_line() {
+    let missing = missing_checklist_lines(&repo_root());
+    assert!(missing.is_empty(), ".rigger/agents: {missing:#?}");
+}
+
+#[test]
+fn a_scaffolded_persona_carries_its_principle_gate_checklist_line() {
+    let dir = temp_project();
+    let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    let missing = missing_checklist_lines(dir.path());
+    assert!(missing.is_empty(), "the scaffolded agents: {missing:#?}");
+}
