@@ -111,8 +111,7 @@ pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lan
     };
     match extract::extract(&src, entry.lang, &entry.language, entry.tags_query) {
         Ok(fs) => {
-            idx.set_hash(rel.to_string(), store::content_hash(&src));
-            idx.insert_file(rel.to_string(), fs);
+            idx.insert_hashed_file(rel.to_string(), fs, store::content_hash(&src));
         }
         Err(_) => idx.remove_file(rel),
     }
@@ -170,7 +169,7 @@ impl IndexDrift {
 /// the caller - [`staleness`] is the one production caller), and a small deterministic SAMPLE
 /// of `(rel_path, current content_hash)` pairs for paths present in both sets, report the
 /// disagreement. A sampled path the index never recorded a hash for (an index persisted before
-/// [`SymbolIndex::set_hash`] existed) is never flagged as changed - [`SymbolIndex::hash_for`]
+/// [`SymbolIndex::insert_hashed_file`] existed) is never flagged as changed - [`SymbolIndex::hash_for`]
 /// answers `None`, and there is nothing honest to compare that `None` against.
 pub fn compare_to_tree(
     index: &SymbolIndex,
@@ -277,7 +276,7 @@ mod staleness_tests {
     fn persist(root: &str, entries: &[(&str, &str)]) {
         let mut idx = SymbolIndex::default();
         for (path, hash) in entries {
-            idx.insert_file(
+            idx.insert_hashed_file(
                 (*path).to_string(),
                 FileSymbols {
                     lang: crate::grounder::symbols::model::Lang::Rust,
@@ -293,8 +292,8 @@ mod staleness_tests {
                     refs: vec![],
                     partial: false,
                 },
+                (*hash).to_string(),
             );
-            idx.set_hash((*path).to_string(), (*hash).to_string());
         }
         store::save(&idx, root).unwrap();
     }
@@ -379,7 +378,7 @@ mod staleness_tests {
                 partial: false,
             },
         );
-        // Deliberately no `set_hash` call.
+        // Deliberately `insert_file`, never `insert_hashed_file`: no hash is recorded.
         store::save(&idx, root).unwrap();
         assert_eq!(staleness(root), None);
     }

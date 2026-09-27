@@ -105,7 +105,7 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
 fn persist_index(root: &Path, entries: &[(&str, &str)]) {
     let mut idx = SymbolIndex::default();
     for (path, content) in entries {
-        idx.insert_file(
+        idx.insert_hashed_file(
             (*path).to_string(),
             FileSymbols {
                 lang: Lang::Rust,
@@ -121,8 +121,8 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
                 refs: vec![],
                 partial: false,
             },
+            symstore::content_hash(content),
         );
-        idx.set_hash((*path).to_string(), symstore::content_hash(content));
     }
     symstore::save(&idx, root.to_str().unwrap()).unwrap();
 }
@@ -226,7 +226,7 @@ fn validate_tolerates_a_real_pre_spec68_index_file_with_no_hashes_field() {
     // `SymbolIndex` gained a persisted `hashes` field (spec 68) alongside its pre-existing
     // `files` field. An index written by a binary from BEFORE this field existed has no
     // "hashes" key at all on disk. This drives the REAL persisted file (not an in-memory
-    // struct built via the current `set_hash`) through the compiled binary, proving an
+    // struct built via the current `insert_hashed_file`) through the compiled binary, proving an
     // operator's pre-upgrade index still loads without crashing and never manufactures a
     // false staleness warning from the field's mere absence - `#[serde(default)]` must let it
     // load, and every path's hash reads as "unknown", which is nothing to compare against.
