@@ -17123,38 +17123,15 @@ mod tests {
         // shape), must both survive - a `<` comparison that degenerated to `<=` would
         // wrongly let the second same-episode proposal supersede the first.
         let criterion = "the gadget module is implemented";
-        let cfg = supersede_cfg();
         let st = Store::open(":memory:").unwrap();
         let cid = criterion_stable_id(1, criterion);
         for id in ["u-sib-1", "u-sib-2"] {
-            st.append(
-                STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": id,
-                        "agent": "worker",
-                        "criterion": criterion,
-                        "criterion_id": cid,
-                        "episode": "shared-episode",
-                        "gates": ["ok"],
-                    }))
-                    .unwrap(),
-                )],
-            )
-            .unwrap();
+            let mut data = proposal_data(id, criterion, &cid);
+            data["episode"] = json!("shared-episode");
+            st.append(STREAM, ExpectedRevision::Any, &[proposal_event(data, None)])
+                .unwrap();
         }
-
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
-        let ctx = RunCtx::for_test(&cfg, &deps);
-        let mut stages = seed_refine_dag(&deps.criteria);
-        let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
-            .unwrap();
+        let stages = harvest_seeded(&st, &[criterion]);
 
         for id in ["u-sib-1", "u-sib-2"] {
             assert!(
