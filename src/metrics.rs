@@ -2240,37 +2240,39 @@ mod tests {
         assert_eq!(m.unpaired_spawns, 0);
     }
 
-    /// PRIMARY BLOCKER regression (adv-u61c9-all-mode-cross-run-id-collision-synthesizes-bogus-duration):
-    /// `spawn::spawn_id` carries no run component, and `rigger stats --all` folds the WHOLE
-    /// event stream unscoped by any `RunStarted` boundary - so a textual spawn id can be
-    /// reused across two independent runs (a re-proposed/relaunched unit is the ordinary shape
-    /// of this system, not a contrived edge case). Before the run-windowed pairing key, an
-    /// unanswered run-A request would pair with an unrelated run-B result sharing the same id
-    /// and synthesize a fabricated duration with no relation to any real spawn. Neither event
-    /// carries any run-id METADATA here - proving the window is derived from the stream's OWN
-    /// `RunStarted` boundaries, not from a stamp a real `SpawnResult` (recorded via `rigger
-    /// result`, a separate process) never carries in production.
-    #[test]
-    fn spawn_timing_never_pairs_a_cross_run_id_collision() {
-        let events = vec![
-            run_started("run-a"),
-            // run-a's request is never answered WITHIN run-a.
-            spawn_requested("u1/implementer#0", 0),
-            run_started("run-b"),
-            // run-b reuses the SAME textual spawn id for an unrelated result, far later.
-            spawn_result_at("u1/implementer#0", 1_000_010),
-        ];
-        let m = project(&events);
-        assert!(
-            m.spawn_timing.is_empty(),
+    crate::test_cases! {
+        /// PRIMARY BLOCKER regression (adv-u61c9-all-mode-cross-run-id-collision-synthesizes-bogus-duration):
+        /// `spawn::spawn_id` carries no run component, and `rigger stats --all` folds the WHOLE
+        /// event stream unscoped by any `RunStarted` boundary - so a textual spawn id can be
+        /// reused across two independent runs (a re-proposed/relaunched unit is the ordinary shape
+        /// of this system, not a contrived edge case). Before the run-windowed pairing key, an
+        /// unanswered run-A request would pair with an unrelated run-B result sharing the same id
+        /// and synthesize a fabricated duration with no relation to any real spawn. Neither event
+        /// carries any run-id METADATA here - proving the window is derived from the stream's OWN
+        /// `RunStarted` boundaries, not from a stamp a real `SpawnResult` (recorded via `rigger
+        /// result`, a separate process) never carries in production.
+        spawn_timing_never_pairs_a_cross_run_id_collision: assert_folds_one_unpaired_spawn(
+            vec![
+                run_started("run-a"),
+                // run-a's request is never answered WITHIN run-a.
+                spawn_requested("u1/implementer#0", 0),
+                run_started("run-b"),
+                // run-b reuses the SAME textual spawn id for an unrelated result, far later.
+                spawn_result_at("u1/implementer#0", 1_000_010),
+            ],
             "the unrelated run-b result must never pair with run-a's request and synthesize a \
-             bogus duration"
-        );
-        assert_eq!(
-            m.unpaired_spawns, 1,
+             bogus duration",
             "run-a's request has no SAME-WINDOW result, so it is reported unpaired - never \
-             silently dropped nor fabricated"
+             silently dropped nor fabricated",
         );
+    }
+
+    /// `events` fold no spawn pair into any per-role timing (`never_paired`) and exactly one
+    /// spawn into `unpaired_spawns` (`unpaired`).
+    fn assert_folds_one_unpaired_spawn(events: Vec<Event>, never_paired: &str, unpaired: &str) {
+        let m = project(&events);
+        assert!(m.spawn_timing.is_empty(), "{never_paired}");
+        assert_eq!(m.unpaired_spawns, 1, "{unpaired}");
     }
 
     /// A spawn id legitimately reused across two INDEPENDENT runs (the exact scenario the
@@ -2361,28 +2363,23 @@ mod tests {
         );
     }
 
-    /// SECONDARY regression (adv-u61c9-same-batch-append-yields-silent-zero-duration): a
-    /// request and its result landing in the SAME store-append batch share one stamped
-    /// `recorded_at` (the store stamps one clock per batch, `sqlite.rs`), producing an EXACT,
-    /// error-free `Duration::ZERO` for a genuinely paired same-spawn request/result. This must
-    /// be treated as SUSPECT (folded into `unpaired_spawns`), never a silently-valid zero that
-    /// enters a mean.
-    #[test]
-    fn spawn_timing_excludes_a_same_batch_zero_duration_pair_as_suspect() {
-        let events = vec![
-            spawn_requested("u1/implementer#0", 5),
-            spawn_result_at("u1/implementer#0", 5),
-        ];
-        let m = project(&events);
-        assert!(
-            m.spawn_timing.is_empty(),
-            "a same-batch zero-duration pair must not enter any per-role aggregate"
-        );
-        assert_eq!(
-            m.unpaired_spawns, 1,
-            "a suspect (non-positive) duration is folded into unpaired_spawns, not silently \
-             zeroed into a mean"
-        );
+    crate::test_cases! {
+        /// SECONDARY regression (adv-u61c9-same-batch-append-yields-silent-zero-duration): a
+        /// request and its result landing in the SAME store-append batch share one stamped
+        /// `recorded_at` (the store stamps one clock per batch, `sqlite.rs`), producing an EXACT,
+        /// error-free `Duration::ZERO` for a genuinely paired same-spawn request/result. This must
+        /// be treated as SUSPECT (folded into `unpaired_spawns`), never a silently-valid zero that
+        /// enters a mean.
+        spawn_timing_excludes_a_same_batch_zero_duration_pair_as_suspect:
+            assert_folds_one_unpaired_spawn(
+                vec![
+                    spawn_requested("u1/implementer#0", 5),
+                    spawn_result_at("u1/implementer#0", 5),
+                ],
+                "a same-batch zero-duration pair must not enter any per-role aggregate",
+                "a suspect (non-positive) duration is folded into unpaired_spawns, not silently \
+                 zeroed into a mean",
+            );
     }
 
     /// SECONDARY regression (sdet-u61c9-clockskew-duration-sentinel-untested): a `SpawnResult`
