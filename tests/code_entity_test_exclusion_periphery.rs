@@ -328,33 +328,45 @@ fn a_pre86_persisted_index_with_no_is_test_key_loads_defaulting_every_item_to_fa
     assert_eq!(file.refs[0].name, "callee");
 }
 
-#[test]
-fn a_pre_round6_persisted_index_with_no_is_out_of_line_module_key_loads_defaulting_to_false() {
-    // Simulates an index written by the round-1..5 binary: `is_test` already exists on the wire
-    // (round 1 shipped it), but `is_out_of_line_module` (round 6) does not - the narrower,
-    // more-realistic back-compat gap than the full pre-86 fixture above, which has NEITHER key.
-    let legacy = r#"{
-  "files": {
-    "legacy_mod.rs": {
+/// The one `Module` definition of a legacy `index.json` whose definition carries exactly the
+/// already-shipped keys `keys` (each `, "key": value`), loaded through the real `store::load` -
+/// the shared fixture of the per-round back-compat checks below, each of which simulates an
+/// index written before one more additive field existed. `written_by` names that binary.
+fn legacy_module_def(keys: &str, written_by: &str) -> Def {
+    let legacy = format!(
+        r#"{{
+  "files": {{
+    "legacy_mod.rs": {{
       "lang": "Rust",
       "defs": [
-        { "kind": "Module", "name": "legacy_child", "line": 1, "is_test": true }
+        {{ "kind": "Module", "name": "legacy_child", "line": 1{keys} }}
       ],
       "refs": []
-    }
-  }
-}"#;
-    let file = legacy_file(
-        legacy,
-        "legacy_mod.rs",
-        "a round-1..5 index (is_test present, is_out_of_line_module absent) must load",
+    }}
+  }}
+}}"#
     );
+    legacy_file(
+        &legacy,
+        "legacy_mod.rs",
+        &format!("an index written by the {written_by} binary must still load, not error"),
+    )
+    .defs[0]
+        .clone()
+}
+
+#[test]
+fn a_pre_round6_persisted_index_with_no_is_out_of_line_module_key_loads_defaulting_to_false() {
+    // The round-1..5 binary: `is_test` already exists on the wire (round 1 shipped it), but
+    // `is_out_of_line_module` (round 6) does not - the narrower, more-realistic back-compat gap
+    // than the full pre-86 fixture above, which has NEITHER key.
+    let def = legacy_module_def(r#", "is_test": true"#, "round-1..5");
     assert!(
-        file.defs[0].is_test,
+        def.is_test,
         "the pre-existing is_test key still loads true, unaffected by the new field's absence"
     );
     assert!(
-        !file.defs[0].is_out_of_line_module,
+        !def.is_out_of_line_module,
         "a definition persisted before is_out_of_line_module existed defaults to false, not an \
          error and not true - never manufacturing a false cross-file exclusion of old data"
     );
@@ -362,32 +374,19 @@ fn a_pre_round6_persisted_index_with_no_is_out_of_line_module_key_loads_defaulti
 
 #[test]
 fn a_pre_round7_persisted_index_with_no_path_override_key_loads_defaulting_to_none() {
-    // Simulates an index written by the round-1..6 binary: is_test and is_out_of_line_module are
-    // already on the wire, but path_override (round 7) is not - the narrower, more-realistic
-    // back-compat gap than the full pre-86 fixture above, which has none of the three keys.
-    let legacy = r#"{
-  "files": {
-    "legacy_parent.rs": {
-      "lang": "Rust",
-      "defs": [
-        { "kind": "Module", "name": "legacy_child", "line": 1, "is_test": true, "is_out_of_line_module": true }
-      ],
-      "refs": []
-    }
-  }
-}"#;
-    let file = legacy_file(
-        legacy,
-        "legacy_parent.rs",
-        "a round-1..6 index (is_test/is_out_of_line_module present, path_override absent) must load",
+    // The round-1..6 binary: is_test and is_out_of_line_module are already on the wire, but
+    // path_override (round 7) is not.
+    let def = legacy_module_def(
+        r#", "is_test": true, "is_out_of_line_module": true"#,
+        "round-1..6",
     );
     assert!(
-        file.defs[0].is_out_of_line_module,
+        def.is_out_of_line_module,
         "the pre-existing is_out_of_line_module key still loads true, unaffected by the new \
          field's absence"
     );
     assert_eq!(
-        file.defs[0].path_override, None,
+        def.path_override, None,
         "a definition persisted before path_override existed defaults to None, not an error and \
          not some stale guess - never manufacturing a false #[path] override for old data"
     );
@@ -396,35 +395,20 @@ fn a_pre_round7_persisted_index_with_no_path_override_key_loads_defaulting_to_no
 #[test]
 fn a_pre_round9_persisted_index_with_no_enclosing_inline_module_path_key_loads_defaulting_to_none()
 {
-    // Simulates an index written by the round-1..8 binary: is_test, is_out_of_line_module and
-    // path_override are already on the wire, but enclosing_inline_module_path (round 9) is not -
-    // the narrower, more-realistic back-compat gap than a full pre-86 fixture missing all four
-    // keys.
-    let legacy = r#"{
-  "files": {
-    "legacy_parent.rs": {
-      "lang": "Rust",
-      "defs": [
-        { "kind": "Module", "name": "legacy_child", "line": 1, "is_test": true, "is_out_of_line_module": true, "path_override": "custom/actual.rs" }
-      ],
-      "refs": []
-    }
-  }
-}"#;
-    let file = legacy_file(
-        legacy,
-        "legacy_parent.rs",
-        "a round-1..8 index (is_test/is_out_of_line_module/path_override present, \
-         enclosing_inline_module_path absent) must load",
+    // The round-1..8 binary: is_test, is_out_of_line_module and path_override are already on the
+    // wire, but enclosing_inline_module_path (round 9) is not.
+    let def = legacy_module_def(
+        r#", "is_test": true, "is_out_of_line_module": true, "path_override": "custom/actual.rs""#,
+        "round-1..8",
     );
     assert_eq!(
-        file.defs[0].path_override,
+        def.path_override,
         Some("custom/actual.rs".to_string()),
         "the pre-existing path_override key still loads its value, unaffected by the new \
          field's absence"
     );
     assert_eq!(
-        file.defs[0].enclosing_inline_module_path, None,
+        def.enclosing_inline_module_path, None,
         "a definition persisted before enclosing_inline_module_path existed defaults to None, \
          not an error and not some stale guess - never manufacturing a false enclosing-module \
          chain for old data"
