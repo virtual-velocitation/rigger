@@ -646,6 +646,33 @@ fn every_dup_id_citation_anywhere_in_the_report_matches_the_committed_catalog() 
     );
 }
 
+/// Every `dup-` id anywhere in the report names a cluster the committed catalog carries - a
+/// bare citation with no count beside it included, which the count check above never sees - so
+/// a stale or malformed id can never sit in the report unguarded.
+#[test]
+fn every_dup_id_anywhere_in_the_report_names_a_committed_cluster() {
+    let report = read_report();
+    let ids: std::collections::HashSet<String> =
+        load_clusters().into_iter().map(|c| c.id).collect();
+    let token = Regex::new(r"dup-[0-9A-Za-z]+").unwrap();
+    let dangling: Vec<String> = lines_with_offsets(&report)
+        .into_iter()
+        .enumerate()
+        .flat_map(|(n, (_, line))| {
+            token
+                .find_iter(line)
+                .filter(|m| !ids.contains(m.as_str()))
+                .map(move |m| format!("line {}: {}", n + 1, m.as_str()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        dangling.is_empty(),
+        "{REPORT_PATH} cites ids {CATALOG_PATH} does not carry:\n{}",
+        dangling.join("\n")
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // ROUND 7 REGRESSION: the lookback slices above are raw byte-index slices with no char-boundary
 // check - a multi-byte UTF-8 character landing inside a lookback window used to panic with
