@@ -133,5 +133,185 @@
     "id": "dup-9c8fbf2fd88a",
     "disposition": "not-a-duplicate",
     "reason": "`code_default` and `concepts_default` build two different `Lens` variants at their own default-grain constants, the expected values the selector tests compare against."
+  },
+  {
+    "id": "dup-6a2acacd5cf0",
+    "disposition": "not-a-duplicate",
+    "reason": "`render_using_rigger_skill` renders the installable skill (frontmatter plus a front-door intro) while `render_handbook_discipline` renders the handbook chapter (a chapter title plus an operator-manual intro); the body they share already lives once in `discipline_body`."
+  },
+  {
+    "id": "dup-bcc850364281",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line adapters fitting two different static documents (the planning-a-spec skill body and the planning field guide page) to the uniform `fn(&DocsContext) -> String` render signature; no logic is repeated."
+  },
+  {
+    "id": "dup-fd7990caad07",
+    "disposition": "not-a-duplicate",
+    "reason": "Four per-operation skill renders that each pass their own skill's name, description and paragraphs to the one shared `render_operation_skill` skeleton; only the content differs."
+  },
+  {
+    "id": "dup-3e586352db43",
+    "disposition": "not-a-duplicate",
+    "reason": "Two per-operation skill renders passing their own content, each interpolating a different code-derived fact (`max_retries` versus the reject-recurrence diagnose threshold), to the one shared `render_operation_skill` skeleton."
+  },
+  {
+    "id": "dup-576605ec7eeb",
+    "disposition": "not-a-duplicate",
+    "reason": "One pins per-actor finding survival (`finding_survival` raised/upheld) and the other per-tier review cost (`tier_cost` spawns/upheld): different metrics of the fold that only share the courier fixture builders."
+  },
+  {
+    "id": "dup-3de871af68c4",
+    "disposition": "not-a-duplicate",
+    "reason": "One pins the unattributed-correct-reject count over planted items and the other the control and control-false-positive counts over known-good items: different canary metrics that only share the `canary_outcome` fixture."
+  },
+  {
+    "id": "dup-21f642b8fe3c",
+    "disposition": "not-a-duplicate",
+    "reason": "Three durable integrate-row records that already share the one `record_integrate_row` authority, each passing a different row key, status token and evidence payload (the run tip; the unit and run tips; the landed sha and pre-merge tip)."
+  },
+  {
+    "id": "dup-535941bb5619",
+    "disposition": "not-a-duplicate",
+    "reason": "`RunCtx::append_and_fold_batch` stamps the run id on each event and then delegates to `ingest::append_and_fold_batch`, the one batched append-and-fold authority, rather than re-implementing it."
+  },
+  {
+    "id": "dup-0f2f14f8c3ce",
+    "disposition": "not-a-duplicate",
+    "reason": "Each ingest half's own file-batch entry point over a different source: the design pass walks the tree for concept and link events, the symbols pass parses code at the default parse width, and the workflow pass lowers `.rigger/workflow.yml` into one batch."
+  },
+  {
+    "id": "dup-fe20f68eb184",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different lowerings sharing a name: symbols lowers one file's parsed `FileSymbols` into code-entity and edge events, while workflowdef lowers the workflow definition's stages, gates and roles into concept and link events."
+  },
+  {
+    "id": "dup-c1bdf6ee7cd2",
+    "disposition": "not-a-duplicate",
+    "reason": "The symbols grounder's `changed_files` filters a file list by content fingerprint for reindexing, while `Worktree::changed_files` lists the paths `git status` reports modified in a worktree."
+  },
+  {
+    "id": "dup-a9ddd3832b37",
+    "disposition": "not-a-duplicate",
+    "reason": "`hooks::install_status_line` is the pure settings.json merge of the `statusLine` key, while `main::install_status_line` is the setup step that reads and writes `.claude/settings.json` through it and reports the install outcome."
+  },
+  {
+    "id": "dup-ca344cae18a6",
+    "disposition": "not-a-duplicate",
+    "reason": "Two light-lane no-op stubs of two different functions (the full per-file lag check and its bounded sample), each returning an empty list because no extraction pass is compiled."
+  },
+  {
+    "id": "dup-fbb2e2648317",
+    "disposition": "not-a-duplicate",
+    "reason": "`commit` and `commit_checkpoint` are the two named entry points to the one `commit_with`, differing in whether the repository's hooks run (agent commits) or are bypassed (machine bookkeeping)."
+  },
+  {
+    "id": "dup-7c339ccc6fa5",
+    "disposition": "not-a-duplicate",
+    "reason": "Four stub accessors each reading a different per-agent spawn log (prompts, dirs, system prompt, title) through the one shared `cached` lookup."
+  },
+  {
+    "id": "dup-4cd3708b516f",
+    "disposition": "not-a-duplicate",
+    "reason": "`initialized_project` and `initialized_git_project` are one-line named fixtures that pass different base projects (an unborn repo vs one with a commit) to the one shared `rigger_initialized`."
+  },
+  {
+    "id": "dup-edb646ecd5e8",
+    "disposition": "not-a-duplicate",
+    "reason": "`path_with_fake_sccache` and `stage_rigger_shim` are one-line named fixtures over two different shared helpers (a fake build wrapper on PATH vs an exec shim of the built binary)."
+  },
+  {
+    "id": "dup-84fea880d212",
+    "disposition": "not-a-duplicate",
+    "reason": "Both read the consumer docs through the shared `consumer_docs_written_by_the_binary` but assert different shipped content: the three lookup verbs and the grep-fallback line vs the MCP registration, hook event, bounce message and retired tree list."
+  },
+  {
+    "id": "dup-21b08556e493",
+    "disposition": "not-a-duplicate",
+    "reason": "`stage_failing_docs_rigger_shim` and `stage_stale_rigger_shim` pass different shim scripts (fail `docs` then exec the real binary, vs a stand-alone stale binary that never delegates) to the one shared `rigger_shim_on_path`."
+  },
+  {
+    "id": "dup-1856c00f9b89",
+    "disposition": "not-a-duplicate",
+    "reason": "The replay driver's `spawn_request` assembles the parked request from an agent definition and the conductor's spawn options, while the test fixture builds a minimal request from bare labels with every optional field empty."
+  },
+  {
+    "id": "dup-6c4197f4d7b0",
+    "disposition": "not-a-duplicate",
+    "reason": "The audit's `scan_file`/`tokenize` produce a normalized token stream and function spans over every Rust file for similarity shingling (and must run in every feature lane), while `extract` returns symbol definitions through the optional tree-sitter grammars; different outputs for different consumers."
+  },
+  {
+    "id": "dup-e84b51908c12",
+    "disposition": "not-a-duplicate",
+    "reason": "`workflowdef::project_events` lowers `.rigger/workflow.yml` into definition events, while the test fixture flattens the symbols ingest's per-file batches for a whole project: different sources and different events."
+  },
+  {
+    "id": "dup-5fa55b6ec938",
+    "disposition": "not-a-duplicate",
+    "reason": "The cli fixture writes a worker agent plus a one-stage workflow with an appended block, while the probe fixture writes a caller-given body verbatim into a bare `.rigger` dir for the lightweight readers."
+  },
+  {
+    "id": "dup-b02e5a0dd9cd",
+    "disposition": "not-a-duplicate",
+    "reason": "The CLI suite seeds a two-subsystem coupling graph into the real on-disk store through `append_and_fold_batch`, while the fold suite folds a different single-hub graph straight onto an in-memory projector."
+  },
+  {
+    "id": "dup-984a3c95ea6a",
+    "disposition": "not-a-duplicate",
+    "reason": "Two different fixture graphs for two different contracts: a hub over the render budget plus a small community for the drill and overview client contract, versus a two-file plus decision graph for the files-lens route dispatch."
+  },
+  {
+    "id": "dup-0d2a5de5b03a",
+    "disposition": "not-a-duplicate",
+    "reason": "Each site is a single call into rusqlite's own `Connection::open`, already the one opening function: the stores open their own files, and the tests open a raw connection to inspect or corrupt a store underneath it, so a wrapper would only rename the call."
+  },
+  {
+    "id": "dup-ba5c2a173aab",
+    "disposition": "not-a-duplicate",
+    "reason": "The literals name different kernel files for different questions (the socket table and per-pid fds for a port holder, the process list and cwd for reaping, stat and status fields) or are test messages and this audit's own sweep strings; the one stat parser is `reap::stat_field_after_comm`."
+  },
+  {
+    "id": "dup-a52dd4a83e64",
+    "disposition": "not-a-duplicate",
+    "reason": "No second stat parse remains: `stat_field_after_comm` is the one `/proc/<pid>/stat` parser, `read_ppid` reads the different `/status` file, `pgid_of` calls the parser (only its panic message names the path), and the rest are this audit's own sweep and fixture strings."
+  },
+  {
+    "id": "dup-c1fc122a08fb",
+    "disposition": "not-a-duplicate",
+    "reason": "`run::current_run_id` is the one resolution over an event list; the MCP server method and the test fixture only read their own event source (the served store, the on-disk run stream) and call it."
+  },
+  {
+    "id": "dup-11d42739b7f6",
+    "disposition": "not-a-duplicate",
+    "reason": "`SpawnResult::liveness_fault` is the product constructor, and the test fixture calls it and encodes the result as an event for a fold input."
+  },
+  {
+    "id": "dup-3aa9191927e8",
+    "disposition": "not-a-duplicate",
+    "reason": "Two source slicers over different sources and markers: the step-courier prompt literal in the embedded workflow driver versus the `cmd_step` function body in `src/main.rs`."
+  },
+  {
+    "id": "dup-d5b6c4cbdd70",
+    "disposition": "not-a-duplicate",
+    "reason": "One pins only `defaults.grounder` in a nameless minimal workflow, the other writes a worker agent and a gated single-stage merge workflow: different workflow content for different tests."
+  },
+  {
+    "id": "dup-20d63cdc7260",
+    "disposition": "not-a-duplicate",
+    "reason": "`Heartbeat::start` spawns a heartbeat thread while `McpSession::start` is a one-line default-arguments call to `McpSession::start_with`, the one session constructor."
+  },
+  {
+    "id": "dup-255c66ac36f2",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line fixtures over the shared `temp_project` that seed different store states (an empty `.rigger` dir via `seed_rigger_dir` vs an empty event log via `seed_store`)."
+  },
+  {
+    "id": "dup-b684ceb89441",
+    "disposition": "not-a-duplicate",
+    "reason": "Three sorted id reads over different graph parts under different predicates: nodes of one kind, one member's live community memberships, and one file's live contains targets."
+  },
+  {
+    "id": "dup-a483e9b75b5e",
+    "disposition": "not-a-duplicate",
+    "reason": "Each writes a different agent and workflow through the shared `write_agent` (a lens-only review stage vs a gated merge unit that escalates after one retry); only the helper-call shape is shared."
   }
 ]
