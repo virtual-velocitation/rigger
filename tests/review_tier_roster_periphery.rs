@@ -128,41 +128,38 @@ fn run_worker_label_for_unit_and_reviews(
     }
 }
 
-/// The adversary's action phrase inlines the routed roster the conductor stamped: "challenge
-/// the findings, assumptions, and rigor of <roster>" - the roster is the conductor's stamped
-/// `lens:<id>` tokens, joined verbatim, never re-derived or re-cased by the driver.
-#[test]
-fn the_adversarys_roster_renders_inside_its_action_phrase() {
-    let Some(label) = run_worker_label_with_reviews(
+/// The worker label rendered for spawn `id` titled `title` with review roster `reviews` is
+/// exactly `expected`; a graceful no-op when `node` is unavailable.
+fn assert_rendered_label(id: &str, title: &str, reviews: Option<&[&str]>, expected: &str) {
+    let Some(label) = run_worker_label_with_reviews(id, title, reviews) else {
+        return; // node unavailable; graceful absence.
+    };
+    assert_eq!(label, expected);
+}
+
+rigger::test_cases! { assert_rendered_label;
+    /// The adversary's action phrase inlines the routed roster the conductor stamped: "challenge
+    /// the findings, assumptions, and rigor of <roster>" - the roster is the conductor's stamped
+    /// `lens:<id>` tokens, joined verbatim, never re-derived or re-cased by the driver.
+    the_adversarys_roster_renders_inside_its_action_phrase: (
         "u1/adversary#0",
         "challenge the lenses' findings.",
         Some(&["lens:sdet", "lens:architecture-reviewer"]),
-    ) else {
-        return; // node unavailable; graceful absence.
-    };
-    assert_eq!(
-        label,
         "Adversary - challenge the findings, assumptions, and rigor of lens:sdet, \
-         lens:architecture-reviewer #0: challenge the lenses' findings."
+         lens:architecture-reviewer #0: challenge the lenses' findings.",
     );
 }
 
-/// The adjudicator's action phrase inlines lenses PLUS the adversary: "weigh <roster> and
-/// rule" - proving the roster is inserted INSIDE the phrase (between "weigh" and "and rule"),
-/// not merely appended after it.
-#[test]
-fn the_adjudicators_roster_renders_inside_its_action_phrase() {
-    let Some(label) = run_worker_label_with_reviews(
+rigger::test_cases! { assert_rendered_label;
+    /// The adjudicator's action phrase inlines lenses PLUS the adversary: "weigh <roster> and
+    /// rule" - proving the roster is inserted INSIDE the phrase (between "weigh" and "and rule"),
+    /// not merely appended after it.
+    the_adjudicators_roster_renders_inside_its_action_phrase: (
         "u1/adjudicator#1",
         "weigh the lenses and the adversary.",
         Some(&["lens:sdet", "adversary"]),
-    ) else {
-        return;
-    };
-    assert_eq!(
-        label,
         "Adjudicator - weigh lens:sdet, adversary and rule #1: weigh the lenses and the \
-         adversary."
+         adversary.",
     );
 }
 
@@ -203,41 +200,29 @@ fn an_empty_reviews_array_renders_identically_to_an_absent_one() {
     assert_eq!(label, "Adjudicator - weigh and rule #0: weigh and rule.");
 }
 
-/// A roster on a role with NO `ROSTER_VERB` entry (a lens, or any non-review-tier role) is
-/// NEVER rendered - "never a fabricated or stale roster" cuts both ways: the driver must not
-/// invent a roster clause for a role the conductor never intends one for, even if `req.reviews`
-/// happened to carry a (malformed) value.
-#[test]
-fn a_roster_on_a_role_with_no_roster_verb_entry_is_never_rendered() {
-    let Some(label) = run_worker_label_with_reviews(
+rigger::test_cases! { assert_rendered_label;
+    /// A roster on a role with NO `ROSTER_VERB` entry (a lens, or any non-review-tier role) is
+    /// NEVER rendered - "never a fabricated or stale roster" cuts both ways: the driver must not
+    /// invent a roster clause for a role the conductor never intends one for, even if `req.reviews`
+    /// happened to carry a (malformed) value.
+    a_roster_on_a_role_with_no_roster_verb_entry_is_never_rendered: (
         "u4/lens:sdet#0",
         "evaluate whether the tests are discriminating.",
         Some(&["lens:sdet"]),
-    ) else {
-        return;
-    };
-    assert_eq!(
-        label,
         "Lens:SDET - evaluate testing effectiveness #0: evaluate whether the tests are \
-         discriminating."
+         discriminating.",
     );
 }
 
-/// A single-entry roster renders with no stray separator - proving the join is exercised at
-/// both cardinalities, not merely assumed correct from the two-entry cases above.
-#[test]
-fn a_single_entry_roster_renders_with_no_stray_separator() {
-    let Some(label) = run_worker_label_with_reviews(
+rigger::test_cases! { assert_rendered_label;
+    /// A single-entry roster renders with no stray separator - proving the join is exercised at
+    /// both cardinalities, not merely assumed correct from the two-entry cases above.
+    a_single_entry_roster_renders_with_no_stray_separator: (
         "u5/adversary#2",
         "challenge the one lens.",
         Some(&["lens:sdet"]),
-    ) else {
-        return;
-    };
-    assert_eq!(
-        label,
         "Adversary - challenge the findings, assumptions, and rigor of lens:sdet #2: \
-         challenge the one lens."
+         challenge the one lens.",
     );
 }
 
