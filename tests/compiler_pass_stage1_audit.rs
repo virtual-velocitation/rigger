@@ -28,14 +28,12 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-/// Parsed just enough of `docs/audit/stage1-compiler-pass.json` to check its shape and cross-
-/// reference its claims against the real tree - never a general-purpose JSON library
-/// substitute, `serde_json::Value` already is that and is what this crate depends on anyway.
-fn stage1_record() -> serde_json::Value {
-    let raw = fs::read_to_string("docs/audit/stage1-compiler-pass.json")
-        .expect("docs/audit/stage1-compiler-pass.json must exist and be readable");
-    serde_json::from_str(&raw).expect("docs/audit/stage1-compiler-pass.json must be valid JSON")
-}
+#[path = "common/audit_record.rs"]
+mod audit_record;
+use audit_record::read_audit_record;
+
+/// The committed stage-1 compiler-pass record this suite checks against the real tree.
+const STAGE1_RECORD: &str = "docs/audit/stage1-compiler-pass.json";
 
 /// A line, 1-indexed, from a source file - the same indexing the record's own `line` fields
 /// use (matching every other file:line citation in this codebase's audit reports).
@@ -50,7 +48,7 @@ fn nth_line(path: &Path, line: usize) -> String {
 
 #[test]
 fn stage1_record_has_the_shape_every_consumer_relies_on() {
-    let record = stage1_record();
+    let record = read_audit_record(STAGE1_RECORD);
 
     // delete_compiler: an array (possibly empty), every entry naming file/line/name.
     let deletions = record["delete_compiler"]
@@ -107,7 +105,7 @@ fn stage1_record_has_the_shape_every_consumer_relies_on() {
 
 #[test]
 fn every_recorded_visibility_fix_is_genuinely_present_in_the_tree() {
-    let record = stage1_record();
+    let record = read_audit_record(STAGE1_RECORD);
     let fixes = record["strict_build"]["visibility_fixes_applied"]
         .as_array()
         .expect("strict_build.visibility_fixes_applied must be a JSON array");
@@ -165,7 +163,7 @@ fn rigger_compiler_pass_verify_rederives_a_clean_strict_build_on_both_lanes() {
         return;
     }
 
-    let record = stage1_record();
+    let record = read_audit_record(STAGE1_RECORD);
     let expected_deletions = record["delete_compiler"]
         .as_array()
         .expect("delete_compiler must be a JSON array")
