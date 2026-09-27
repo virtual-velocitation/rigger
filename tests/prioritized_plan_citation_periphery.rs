@@ -613,12 +613,13 @@ fn every_dup_id_citation_anywhere_in_the_report_matches_the_committed_catalog() 
 
     let citations = scan_citations(&report);
     assert!(
-        citations.len() > 600,
+        citations.len() > sites.len(),
         "sanity: the generic scanner found only {} citations across the whole report - expected \
-         well over 600 (674 catalog clusters plus section 5/6's own narrative citations); this \
-         smells like the scanner itself broke, not that the report suddenly has far fewer \
-         citations",
-        citations.len()
+         more than the catalog's {} clusters (each cluster is cited once, plus section 5/6's own \
+         narrative citations); this smells like the scanner itself broke, not that the report \
+         suddenly has far fewer citations",
+        citations.len(),
+        sites.len()
     );
 
     let mut mismatches = Vec::new();
