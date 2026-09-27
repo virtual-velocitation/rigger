@@ -1490,3 +1490,60 @@ fn spec_lint_self_clean_on_spec_66_itself() {
          own lint (SELF-CLEAN NARROW); got: {advisories:?}"
     );
 }
+
+/// Every `(src|crates)/<path>.rs:<line>` anchor in `text` whose path names no file under
+/// `root`. The anchor must start a path (the character before it is not itself a path
+/// character), so `examples/demo/src/x.rs:3` is never misread as the root's `src/x.rs`.
+fn dangling_anchors(root: &Path, text: &str) -> Vec<String> {
+    let anchor = regex::Regex::new(r"(?:^|[^\w./-])((?:src|crates)/[^ )`]+\.rs):\d+").unwrap();
+    anchor
+        .captures_iter(text)
+        .map(|c| c.get(1).unwrap().as_str())
+        .filter(|path| !root.join(path).is_file())
+        .map(str::to_string)
+        .collect()
+}
+
+/// THE ANCHOR-PATH TRIGGER (workspace split, step 0): every `src/...rs:N` or `crates/...rs:N`
+/// anchor in `specs/*.md` and `docs/**/*.md` names a file that exists. A move that relocates a
+/// source file (the workspace split moves every one of them) fails here, naming each document
+/// and the anchor it left dangling, instead of leaving a spec pointing at nothing.
+#[test]
+fn every_source_anchor_in_specs_and_docs_names_an_existing_file() {
+    let root = common::repo::repo_root();
+    let mut docs: Vec<std::path::PathBuf> = std::fs::read_dir(root.join("specs"))
+        .expect("read specs/")
+        .map(|e| e.expect("read specs/ entry").path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
+        .collect();
+    common::repo::collect_files_with_extension(&root.join("docs"), "md", &mut docs);
+    let dangling: Vec<String> = docs
+        .iter()
+        .flat_map(|doc| {
+            let text = std::fs::read_to_string(doc).expect("read a committed doc");
+            let rel = doc.strip_prefix(&root).unwrap().display().to_string();
+            dangling_anchors(&root, &text)
+                .into_iter()
+                .map(move |anchor| format!("{rel}: {anchor}"))
+        })
+        .collect();
+    assert!(
+        dangling.is_empty(),
+        "{} source anchor(s) name a file that does not exist; re-point each one at the file \
+         that now holds the anchored line:\n{}",
+        dangling.len(),
+        dangling.join("\n")
+    );
+}
+
+/// The trigger's detection, proven on a fixture: a dangling anchor is reported, an existing one
+/// and a nested path that merely contains `src/` are not.
+#[test]
+fn a_dangling_source_anchor_is_reported_and_a_live_one_is_not() {
+    let root = common::repo::repo_root();
+    let text = "see `src/lib.rs:1`, src/no_such_file.rs:12 and examples/demo/src/gone.rs:3";
+    assert_eq!(
+        dangling_anchors(&root, text),
+        vec!["src/no_such_file.rs".to_string()]
+    );
+}

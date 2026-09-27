@@ -319,8 +319,8 @@
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 200,
-        "end_line": 200
+        "start_line": 207,
+        "end_line": 207
       },
       {
         "file": "tests/common/served.rs",

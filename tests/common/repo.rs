@@ -100,6 +100,13 @@ pub fn table_declares_key(manifest: &str, header: &str, key: &str) -> bool {
 /// Every `.rs` file strictly under `dir`, recursively, appended to `out` in sorted (deterministic)
 /// order regardless of readdir order; an unreadable `dir` contributes nothing.
 pub fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    collect_files_with_extension(dir, "rs", out);
+}
+
+/// Every file with extension `ext` strictly under `dir`, recursively, appended to `out` in
+/// sorted (deterministic) order regardless of readdir order; an unreadable `dir` contributes
+/// nothing.
+pub fn collect_files_with_extension(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -107,8 +114,8 @@ pub fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     entries.sort();
     for path in entries {
         if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            collect_files_with_extension(&path, ext, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
             out.push(path);
         }
     }
