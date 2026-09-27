@@ -124,18 +124,16 @@ stages:
     .unwrap();
 }
 
-/// The DETERMINISTIC dir/branch `stage_worktree`'s `Worktree::create` would derive for a
-/// unit named `unit` in `root`'s default (unconfigured) scratch root - mirrors
-/// `unit_worktree_dir`/`unit_branch` in `src/conductor.rs`, which this file cannot import
-/// (they are private), so it reconstructs the same well-known convention every other
-/// fixture in this suite already asserts against via `common::default_scratch_root` (spec
-/// 89, criterion 2: SCRATCH IS OUTSIDE THE STORE TREE moved the default off the old bare
-/// `root.join(".rigger").join("tmp")` literal this helper used to hardcode - that literal
-/// stopped matching what `sweep_terminal`'s own `d.starts_with(root)` gate and the
-/// conductor's worktree adoption actually resolve, so a worktree this helper pre-seeded
-/// there silently fell outside every step-start authority's own sweep domain).
-fn unit_worktree_dir(root: &Path, unit: &str) -> std::path::PathBuf {
-    common::default_scratch_root(root).join(format!("rigger-wt-{unit}"))
+/// The DETERMINISTIC worktree dir `stage_worktree`'s `Worktree::create` derives for a unit named
+/// `unit` in `root`'s default (unconfigured) scratch root - the product's own
+/// [`rigger::conductor::unit_worktree_dir`] over `common::default_scratch_root`, so a worktree a
+/// test pre-seeds lands exactly where every step-start sweep and the conductor's adoption look.
+fn default_unit_worktree_dir(root: &Path, unit: &str) -> std::path::PathBuf {
+    let scratch = common::default_scratch_root(root);
+    std::path::PathBuf::from(rigger::conductor::unit_worktree_dir(
+        scratch.to_str().expect("a utf-8 scratch root"),
+        unit,
+    ))
 }
 
 fn unit_branch(unit: &str) -> String {
@@ -153,7 +151,7 @@ fn unit_branch(unit: &str) -> String {
 /// this no-spawn-recorded shape, independent of whether the checkpoint itself goes on to
 /// capture it. See [`seed_and_halt_a_dispatched_spawn`] for the genuine-halt shape.
 fn seed_halted_worktree(root: &Path, unit: &str, file: &str, content: &str) -> std::path::PathBuf {
-    let dir = unit_worktree_dir(root, unit);
+    let dir = default_unit_worktree_dir(root, unit);
     let branch = unit_branch(unit);
     git_ok(
         root,
@@ -203,7 +201,7 @@ fn seed_and_halt_a_dispatched_spawn(
         "the priming step must park {unit}/implementer#0 fresh, giving it a real \
          SpawnRequested to halt later; got: {prime_out:?}"
     );
-    let dir = unit_worktree_dir(root, unit);
+    let dir = default_unit_worktree_dir(root, unit);
     std::fs::write(dir.join(file), content).unwrap();
     let status = git_out(&dir, &["status", "--porcelain"]);
     assert!(
@@ -462,7 +460,7 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is
         )],
     );
     // The sibling's own liveness marker, touched right now - well inside its 3600s bound -
-    // at the EXACT path production derives (same scratch root [`unit_worktree_dir`]'s own doc
+    // at the EXACT path production derives (same scratch root [`default_unit_worktree_dir`]'s own doc
     // comment already asserts against, same run id the priming step just minted).
     let scratch = common::default_scratch_root(root);
     let run_id = current_run_id(root);
@@ -532,7 +530,7 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_r
 
     // The implementer's own real edit, then its real, non-fault result - recorded through the
     // real `rigger result` command, exactly like an ordinary successful attempt.
-    let wt_dir = unit_worktree_dir(root, "solo");
+    let wt_dir = default_unit_worktree_dir(root, "solo");
     std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
     let (_out, result_err, result_ok) =
         run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
@@ -652,7 +650,7 @@ fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempot
     // `stage_worktree`'s adopt-by-path-lookup would derive - and, critically, never `.remove()`d,
     // so the real `rigger step` below ADOPTS this exact on-disk state rather than a fresh one.
     let repo_path = root.to_str().unwrap().to_string();
-    let wt_dir = unit_worktree_dir(root, "s");
+    let wt_dir = default_unit_worktree_dir(root, "s");
     let unit_wt = rigger::worktree::Worktree::create(
         &repo_path,
         wt_dir.to_str().unwrap(),
@@ -801,7 +799,7 @@ fn an_untouched_conflict_marker_lookalike_file_never_blocks_an_unrelated_checkpo
 
     // The implementer's own real edit - a DIFFERENT file, left uncommitted for the
     // conductor's own per-attempt checkpoint commit to pick up.
-    let wt_dir = unit_worktree_dir(root, "solo");
+    let wt_dir = default_unit_worktree_dir(root, "solo");
     std::fs::write(wt_dir.join("work.rs"), "pub fn work() {}\n").unwrap();
     let (_out, err, ok) = run_rigger(root, &["result", "solo/implementer#0", "implemented"]);
     assert!(

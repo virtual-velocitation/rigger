@@ -12856,14 +12856,15 @@ pub fn unit_branch(unit_id: &str) -> String {
 /// single-threaded within one `rigger step`.) Pairs with [`unit_branch`], which derives the
 /// unit's durable branch from the same id.
 ///
-/// `pub(crate)` (spec 104 criterion 6, STOP): the supervisor start-up reconciliation in
+/// One derivation (spec 104 criterion 6, STOP): the supervisor start-up reconciliation in
 /// `driver::claude_code` derives a spawn's worktree dir the SAME way every other caller in
 /// this module already does - purely from the run's scratch root and the spawn's unit (via
 /// [`crate::spawn::unit_of`]) - rather than a second, divergent path-assembly. No event
 /// needs to carry a `dir` field: this function's own purity is what makes "the log and the
 /// progress store are the only state" (spec 104's CONSTRAINTS WALK, cold start) hold for
-/// the worktree location too.
-pub(crate) fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
+/// the worktree location too. Public so an integration fixture pre-seeds a worktree at the
+/// exact path production derives.
+pub fn unit_worktree_dir(scratch_root: &str, unit_id: &str) -> String {
     format!(
         "{scratch_root}/{}{}",
         crate::worktree::UNIT_WORKTREE_PREFIX,
@@ -14008,6 +14009,7 @@ mod tests {
     use crate::test_support::agent;
     use crate::test_support::gate_def;
     use crate::test_support::gate_def_inputs;
+    use crate::test_support::{MergeBreakDriver, MERGE_BREAK_BASE};
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -40526,75 +40528,6 @@ mod tests {
                 .is_some_and(|p| p.contains("your integrating commit was REVERTED")),
             "the re-entered unit-a is prompted with the recovered contradiction; prompts:\n{prompts:?}"
         );
-    }
-
-    /// The base `m.rs` content the merge-break fixture below starts from: six MARK-free
-    /// lines so `unit-a`'s top insert and `unit-b`'s bottom append land in NON-overlapping
-    /// hunks that git auto-merges cleanly (no conflict) into a tree carrying BOTH marks.
-    const MERGE_BREAK_BASE: &str = "l1\nl2\nl3\nl4\nl5\nl6\n";
-
-    /// A driver for the post-merge re-gate fixture (spec 12, unit 5): `unit-a` and `unit-b`
-    /// are two batch-mates with NO dependency between them (the grounder placed them in one
-    /// wave), each editing the SAME file `m.rs`. `unit-a` PREPENDS one `MARK` line, `unit-b`
-    /// APPENDS one - so each unit's OWN tree carries exactly one MARK (its gate passes in
-    /// isolation), but the textual auto-merge combines both into a two-MARK tree the gate
-    /// REJECTS. Both writes are recomputed from the fixed base each attempt (idempotent), so
-    /// a remediation re-attempt never doubles a unit's own mark. A barrier makes both
-    /// worktrees branch from the SAME base commit (neither integrates before the other's
-    /// branch exists), which is what creates the unpredicted overlap.
-    struct MergeBreakDriver {
-        repo: String,
-    }
-    impl AgentDriver for MergeBreakDriver {
-        fn spawn(
-            &self,
-            _a: &AgentDef,
-            _prompt: &str,
-            opts: &SpawnOpts,
-            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-        ) -> Result<AgentResult, Error> {
-            let unit = opts.id.split('/').next().unwrap_or_default();
-            if opts.id.contains("/implementer#") {
-                if !opts.dir.is_empty() {
-                    // Barrier: block until BOTH unit branches exist, so both worktrees were
-                    // cut from the SAME base commit (neither has integrated yet - an
-                    // implementer runs strictly before its unit's integrate). This is the
-                    // UNPREDICTED-overlap case unit 5 targets: two batch-mates that actually
-                    // edit the same region, each green alone, broken when merged.
-                    for _ in 0..400 {
-                        let n = std::process::Command::new("git")
-                            .arg("-C")
-                            .arg(&self.repo)
-                            .args(["branch", "--list", "rigger/u/*"])
-                            .output()
-                            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
-                            .unwrap_or(0);
-                        if n >= 2 {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(25));
-                    }
-                    // Idempotent per attempt: always the fixed base plus this unit's ONE mark.
-                    let content = if unit == "unit-a" {
-                        format!("MARK\n{MERGE_BREAK_BASE}")
-                    } else {
-                        format!("{MERGE_BREAK_BASE}MARK\n")
-                    };
-                    std::fs::write(Path::new(&opts.dir).join("m.rs"), content).unwrap();
-                }
-                return Ok(AgentResult::default());
-            }
-            if opts.id.contains("/adjudicator#") {
-                return Ok(AgentResult {
-                    output: r#"{"verdict":"approve"}"#.into(),
-                    resolved_model: String::new(),
-                });
-            }
-            Ok(AgentResult {
-                output: "reviewed the diff".into(),
-                resolved_model: String::new(),
-            })
-        }
     }
 
     #[test]

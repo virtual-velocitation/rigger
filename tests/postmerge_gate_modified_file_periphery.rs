@@ -34,22 +34,16 @@
 
 mod common;
 
+use common::fixtures::{MergeBreakDriver, MERGE_BREAK_BASE};
+
 use std::path::Path;
 use std::process::Command;
 
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
+use rigger::conductor::{run, Deps};
 use rigger::config::{AgentDef, Config, Gate, ReviewPanel, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger;
-use serde_json::Value;
-
-/// The base `m.rs` content the merge-break fixture starts from: six MARK-free lines so
-/// `unit-a`'s top insert and `unit-b`'s bottom append land in non-overlapping hunks that git
-/// auto-merges cleanly into a tree carrying both marks - the same shape
-/// `MergeBreakDriver`/`MERGE_BREAK_BASE` in src/conductor.rs's own `mod tests` uses, reproduced
-/// here independently since that fixture is private to the implementer's test module.
-const MERGE_BREAK_BASE: &str = "l1\nl2\nl3\nl4\nl5\nl6\n";
 
 /// The operator's tracked file's content AT THE LANDED COMMIT - what a correctly-isolated
 /// post-merge worktree must read, regardless of what `self.deps.repo`'s own working copy holds
@@ -74,63 +68,6 @@ fn git_ok(dir: &Path, args: &[&str]) {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-/// Two batch-mates (`unit-a`, `unit-b`) with no dependency between them, each editing a
-/// disjoint region of `m.rs` - the merge-break shape that forces the second integrator's
-/// post-merge re-gate to miss the content cache and run for real. Mirrors
-/// `MergeBreakDriver` (src/conductor.rs `mod tests`), authored independently since that
-/// fixture is private to the implementer's own test module.
-struct MergeBreakDriver {
-    repo: String,
-}
-
-impl AgentDriver for MergeBreakDriver {
-    fn spawn(
-        &self,
-        _agent: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        let unit = opts.id.split('/').next().unwrap_or_default();
-        if opts.id.contains("/implementer#") {
-            if !opts.dir.is_empty() {
-                // Barrier: block until both unit branches exist, so both worktrees were cut
-                // from the SAME base commit and neither has integrated yet.
-                for _ in 0..400 {
-                    let n = Command::new("git")
-                        .arg("-C")
-                        .arg(&self.repo)
-                        .args(["branch", "--list", "rigger/u/*"])
-                        .output()
-                        .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
-                        .unwrap_or(0);
-                    if n >= 2 {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                }
-                let content = if unit == "unit-a" {
-                    format!("MARK\n{MERGE_BREAK_BASE}")
-                } else {
-                    format!("{MERGE_BREAK_BASE}MARK\n")
-                };
-                std::fs::write(Path::new(&opts.dir).join("m.rs"), content).unwrap();
-            }
-            return Ok(AgentResult::default());
-        }
-        if opts.id.contains("/adjudicator#") {
-            return Ok(AgentResult {
-                output: r#"{"verdict":"approve"}"#.into(),
-                resolved_model: String::new(),
-            });
-        }
-        Ok(AgentResult {
-            output: "reviewed the diff".into(),
-            resolved_model: String::new(),
-        })
-    }
 }
 
 #[test]
