@@ -40,6 +40,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use common::fixtures::edge;
 use common::fixtures::plain;
 use common::fixtures::spoke_id;
 use common::served::served_json;
@@ -54,33 +55,6 @@ use rigger::dash::{CLUSTER_RENDER_BUDGET, GOD_NODE_DEGREE_THRESHOLD};
 const BIG: &str = "community/1/0";
 const SMALL: &str = "community/1/1";
 
-/// A currently-valid REFERENCES edge (`extracted` tier, `valid_to = None`).
-fn refs(from: &str, to: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: REL_REFERENCES.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_EXTRACTED.to_string(),
-    }
-}
-
-/// The live `IN_COMMUNITY` membership spoke a code-entity id needs to fold under `community`, at the
-/// default resolution grain the fixture's community ids ([`BIG`] / [`SMALL`]) carry.
-fn membership(id: &str, community: &str) -> Edge {
-    Edge {
-        from: id.to_string(),
-        to: community.to_string(),
-        rel: REL_IN_COMMUNITY.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_INFERRED.to_string(),
-    }
-}
-
 /// The exploration fixture. It folds into TWO communities that exercise every overview + drill field.
 /// [`BIG`] is a hub wired to `CLUSTER_RENDER_BUDGET + 1` spokes (`CLUSTER_RENDER_BUDGET + 2`
 /// members, ONE over the render budget), so a drill on it CAPS and reports `truncated`, and the
@@ -93,21 +67,31 @@ fn membership(id: &str, community: &str) -> Edge {
 fn exploration_graph() -> Graph {
     let hub = "src/big/mod.rs::hub";
     let mut nodes: Vec<Node> = vec![plain(hub, KIND_CODE_ENTITY)];
-    let mut edges: Vec<Edge> = vec![membership(hub, BIG)];
+    let mut edges: Vec<Edge> = vec![edge(hub, BIG, REL_IN_COMMUNITY, TIER_INFERRED)];
 
     // BIG: hub -> every spoke (all intra-community). One over budget so the drill caps.
     let spokes = CLUSTER_RENDER_BUDGET + 1;
     for i in 0..spokes {
         nodes.push(plain(&spoke_id("src/big/mod.rs", i), KIND_CODE_ENTITY));
-        edges.push(membership(&spoke_id("src/big/mod.rs", i), BIG));
-        edges.push(refs(hub, &spoke_id("src/big/mod.rs", i)));
+        edges.push(edge(
+            &spoke_id("src/big/mod.rs", i),
+            BIG,
+            REL_IN_COMMUNITY,
+            TIER_INFERRED,
+        ));
+        edges.push(edge(
+            hub,
+            &spoke_id("src/big/mod.rs", i),
+            REL_REFERENCES,
+            TIER_EXTRACTED,
+        ));
     }
 
     // SMALL: three members.
     for m in ["a", "b", "c"] {
         let id = format!("src/small/mod.rs::{m}");
         nodes.push(plain(&id, KIND_CODE_ENTITY));
-        edges.push(membership(&id, SMALL));
+        edges.push(edge(&id, SMALL, REL_IN_COMMUNITY, TIER_INFERRED));
     }
 
     // decision: one dev-loop node, no membership - a distinct kind that folds into no cluster at all.
@@ -116,8 +100,18 @@ fn exploration_graph() -> Graph {
     // Two cross edges BIG -> SMALL, so the ONE overview cluster edge has weight 2. They dangle out of
     // the BIG drill (their SMALL endpoint is not a BIG member) and so must be dropped from the drill
     // body, never dangled.
-    edges.push(refs(hub, "src/small/mod.rs::a"));
-    edges.push(refs(&spoke_id("src/big/mod.rs", 0), "src/small/mod.rs::b"));
+    edges.push(edge(
+        hub,
+        "src/small/mod.rs::a",
+        REL_REFERENCES,
+        TIER_EXTRACTED,
+    ));
+    edges.push(edge(
+        &spoke_id("src/big/mod.rs", 0),
+        "src/small/mod.rs::b",
+        REL_REFERENCES,
+        TIER_EXTRACTED,
+    ));
 
     Graph { nodes, edges }
 }

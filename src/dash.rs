@@ -6990,24 +6990,7 @@ mod tests {
     /// reachable edges carry two distinct tiers. `a` is a unit node; `b` a decision (its label is its
     /// summary); the rest are bare. Used by the `/api/graph` route + `neighborhood` tests.
     fn tiered_chain_graph() -> Graph {
-        let node = |id: &str, kind: &str, summary: &str| Node {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            attrs: if summary.is_empty() {
-                BTreeMap::new()
-            } else {
-                BTreeMap::from([("summary".to_string(), summary.to_string())])
-            },
-        };
-        let edge = |from: &str, to: &str, rel: &str, tier: &str| Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            rel: rel.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: tier.to_string(),
-        };
+        use crate::test_support::{edge, summarized_node as node};
         Graph {
             nodes: vec![
                 node("a", KIND_UNIT, ""),
@@ -9548,8 +9531,9 @@ mod tests {
 mod rationale_overlay_c3 {
     use super::*;
     use crate::contextgraph::{
-        Edge, KIND_CODE_ENTITY, KIND_FILE, KIND_HANDBOOK_RULE, KIND_LESSON, REL_ABOUT, REL_GOVERNS,
+        KIND_CODE_ENTITY, KIND_FILE, KIND_HANDBOOK_RULE, KIND_LESSON, REL_ABOUT, REL_GOVERNS,
     };
+    use crate::test_support::edge_valid_to;
     use crate::test_support::summarized_node as node;
 
     /// A finding content node carrying the run-machinery attribution (`by` reviewer + `unit`)
@@ -9564,18 +9548,6 @@ mod rationale_overlay_c3 {
                 ("by".to_string(), by.to_string()),
                 ("unit".to_string(), unit.to_string()),
             ]),
-        }
-    }
-
-    fn edge(from: &str, to: &str, rel: &str, valid_to: Option<i64>) -> Edge {
-        Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            rel: rel.to_string(),
-            valid_from: 0,
-            valid_to,
-            source: 0,
-            tier: TIER_INFERRED.to_string(),
         }
     }
 
@@ -9613,17 +9585,17 @@ mod rationale_overlay_c3 {
                 node("hb", KIND_HANDBOOK_RULE, "the handbook rule"),
             ],
             edges: vec![
-                edge("dz", "shared.rs", REL_GOVERNS, None),
-                edge("da", "shared.rs", REL_GOVERNS, None),
-                edge("a-find", "shared.rs", REL_ABOUT, None),
-                edge("l1", "shared.rs", REL_ABOUT, None),
+                edge_valid_to("dz", "shared.rs", REL_GOVERNS, TIER_INFERRED, None),
+                edge_valid_to("da", "shared.rs", REL_GOVERNS, TIER_INFERRED, None),
+                edge_valid_to("a-find", "shared.rs", REL_ABOUT, TIER_INFERRED, None),
+                edge_valid_to("l1", "shared.rs", REL_ABOUT, TIER_INFERRED, None),
                 // Non-leaves incident to shared.rs, one per exclusion rule.
-                edge("hb", "shared.rs", REL_GOVERNS, None), // handbook rule: wrong kind
-                edge("dgone", "shared.rs", REL_GOVERNS, Some(5)), // invalidated governing edge
+                edge_valid_to("hb", "shared.rs", REL_GOVERNS, TIER_INFERRED, None), // handbook rule: wrong kind
+                edge_valid_to("dgone", "shared.rs", REL_GOVERNS, TIER_INFERRED, Some(5)), // invalidated governing edge
                 // A superseding decision points AT dz (so dz's own rationale query sees only this).
-                edge("dnew", "dz", REL_SUPERSEDES, None),
+                edge_valid_to("dnew", "dz", REL_SUPERSEDES, TIER_INFERRED, None),
                 // shared.rs::foo carries exactly one leaf.
-                edge("da", "shared.rs::foo", REL_GOVERNS, None),
+                edge_valid_to("da", "shared.rs::foo", REL_GOVERNS, TIER_INFERRED, None),
             ],
         }
     }
@@ -9867,55 +9839,10 @@ mod rationale_overlay_c3 {
 #[cfg(test)]
 mod subject_view_c5 {
     use super::*;
-    use crate::contextgraph::{
-        Edge, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_FILE, KIND_LESSON, REL_ABOUT, REL_GOVERNS,
-        REL_REALIZES, TIER_INFERRED,
-    };
+    use crate::contextgraph::{KIND_CONCEPT, KIND_FILE, REL_REALIZES, TIER_INFERRED};
+    use crate::test_support::edge;
     use crate::test_support::node_with_attrs as node;
-
-    fn edge(from: &str, to: &str, rel: &str) -> Edge {
-        Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            rel: rel.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: TIER_INFERRED.to_string(),
-        }
-    }
-
-    /// A code entity `combat.rs::fire` carries: a governing decision `d1`, an ABOUT finding `f1`,
-    /// an ABOUT lesson `l1` (build-process memory, deliberately excluded from the rail), and its
-    /// own live `REALIZES` edge to a concept `concept/combat` (the direction a MEMBER carries
-    /// TOWARD the concept it realizes - the reverse of a concept's member-set query). A second,
-    /// unrelated file `other.rs` carries none of it, so a query on it proves the empty case.
-    fn subject_graph() -> Graph {
-        Graph {
-            nodes: vec![
-                node("combat.rs::fire", KIND_CODE_ENTITY, &[]),
-                node("other.rs", KIND_FILE, &[]),
-                node(
-                    "d1",
-                    KIND_DECISION,
-                    &[("summary", "use the shared authority")],
-                ),
-                node("f1", KIND_FINDING, &[("summary", "the finding content")]),
-                node("l1", KIND_LESSON, &[("summary", "the lesson content")]),
-                node(
-                    "concept/combat",
-                    KIND_CONCEPT,
-                    &[("label", "combat resolution")],
-                ),
-            ],
-            edges: vec![
-                edge("d1", "combat.rs::fire", REL_GOVERNS),
-                edge("f1", "combat.rs::fire", REL_ABOUT),
-                edge("l1", "combat.rs::fire", REL_ABOUT),
-                edge("combat.rs::fire", "concept/combat", REL_REALIZES),
-            ],
-        }
-    }
+    use crate::test_support::subject_graph;
 
     /// The rail lists the subject's governing decision, its ABOUT finding, and the concept it
     /// REALIZES - and EXCLUDES the lesson: a lesson is build-process memory, not the target
@@ -10011,21 +9938,46 @@ mod subject_view_c5 {
             KIND_CONCEPT,
             &[("label", "a retired concept")],
         ));
-        g.edges
-            .push(edge("combat.rs::fire", "d2", "SOME_OTHER_REL"));
-        g.edges
-            .push(edge("combat.rs::fire", "not-a-concept", REL_REALIZES));
-        g.edges
-            .push(edge("other.rs", "concept/combat", REL_REALIZES));
+        g.edges.push(edge(
+            "combat.rs::fire",
+            "d2",
+            "SOME_OTHER_REL",
+            TIER_INFERRED,
+        ));
+        g.edges.push(edge(
+            "combat.rs::fire",
+            "not-a-concept",
+            REL_REALIZES,
+            TIER_INFERRED,
+        ));
+        g.edges.push(edge(
+            "other.rs",
+            "concept/combat",
+            REL_REALIZES,
+            TIER_INFERRED,
+        ));
         // A SECOND, genuinely LIVE edge to the SAME concept `subject_graph` already realizes - the
         // dedup fixture (three from-node live REALIZES edges land on only two distinct concepts).
-        g.edges
-            .push(edge("combat.rs::fire", "concept/combat", REL_REALIZES));
-        g.edges
-            .push(edge("combat.rs::fire", "concept/unlabeled", REL_REALIZES));
+        g.edges.push(edge(
+            "combat.rs::fire",
+            "concept/combat",
+            REL_REALIZES,
+            TIER_INFERRED,
+        ));
+        g.edges.push(edge(
+            "combat.rs::fire",
+            "concept/unlabeled",
+            REL_REALIZES,
+            TIER_INFERRED,
+        ));
         // `concept/gone`'s ONLY edge from combat.rs::fire is invalidated - no live edge masks it.
         g.edges.push({
-            let mut e = edge("combat.rs::fire", "concept/gone", REL_REALIZES);
+            let mut e = edge(
+                "combat.rs::fire",
+                "concept/gone",
+                REL_REALIZES,
+                TIER_INFERRED,
+            );
             e.valid_to = Some(9);
             e
         });
@@ -10148,22 +10100,11 @@ mod subject_view_c5 {
 mod metadata_card_c2 {
     use super::*;
     use crate::contextgraph::{
-        Edge, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_ABOUT, REL_CONTAINS,
+        KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_ABOUT, REL_CONTAINS,
         REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, TIER_INFERRED,
     };
+    use crate::test_support::edge;
     use crate::test_support::node_with_attrs as node;
-
-    fn edge(from: &str, to: &str, rel: &str) -> Edge {
-        Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            rel: rel.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: TIER_INFERRED.to_string(),
-        }
-    }
 
     /// A code entity `combat.rs::fire` (line 42) carries: a live `IN_COMMUNITY` membership at the
     /// DEFAULT grain (a labelled community), a `REALIZES` edge to a concept, a governing decision,
@@ -10198,11 +10139,26 @@ mod metadata_card_c2 {
                 node("f1", KIND_FINDING, &[("summary", "the finding content")]),
             ],
             edges: vec![
-                edge("combat.rs::fire", "combat.rs::reload", "CALLS"),
-                edge("combat.rs::fire", "community/1/3", REL_IN_COMMUNITY),
-                edge("combat.rs::fire", "concept/combat", REL_REALIZES),
-                edge("d1", "combat.rs::fire", REL_GOVERNS),
-                edge("f1", "combat.rs::fire", REL_ABOUT),
+                edge(
+                    "combat.rs::fire",
+                    "combat.rs::reload",
+                    "CALLS",
+                    TIER_INFERRED,
+                ),
+                edge(
+                    "combat.rs::fire",
+                    "community/1/3",
+                    REL_IN_COMMUNITY,
+                    TIER_INFERRED,
+                ),
+                edge(
+                    "combat.rs::fire",
+                    "concept/combat",
+                    REL_REALIZES,
+                    TIER_INFERRED,
+                ),
+                edge("d1", "combat.rs::fire", REL_GOVERNS, TIER_INFERRED),
+                edge("f1", "combat.rs::fire", REL_ABOUT, TIER_INFERRED),
             ],
         }
     }
@@ -10359,10 +10315,18 @@ mod metadata_card_c2 {
     fn card_of_a_file_lists_its_contained_entities_as_top_entities() {
         let mut g = card_graph();
         g.nodes.push(node("combat.rs", KIND_FILE, &[]));
-        g.edges
-            .push(edge("combat.rs", "combat.rs::fire", REL_CONTAINS));
-        g.edges
-            .push(edge("combat.rs", "combat.rs::reload", REL_CONTAINS));
+        g.edges.push(edge(
+            "combat.rs",
+            "combat.rs::fire",
+            REL_CONTAINS,
+            TIER_INFERRED,
+        ));
+        g.edges.push(edge(
+            "combat.rs",
+            "combat.rs::reload",
+            REL_CONTAINS,
+            TIER_INFERRED,
+        ));
         let card = card(&g, "combat.rs").expect("combat.rs is a graph node");
         assert_eq!(card.kind, KIND_FILE);
         let mut ids: Vec<&str> = card.top_entities.iter().map(|e| e.id.as_str()).collect();
@@ -10422,8 +10386,12 @@ mod metadata_card_c2 {
     fn card_of_a_concept_carries_each_top_evidence_members_own_kind() {
         let mut g = card_graph();
         g.nodes.push(node("combat.rs", KIND_FILE, &[]));
-        g.edges
-            .push(edge("combat.rs", "concept/combat", REL_REALIZES));
+        g.edges.push(edge(
+            "combat.rs",
+            "concept/combat",
+            REL_REALIZES,
+            TIER_INFERRED,
+        ));
         let card = card(&g, "concept/combat").expect("concept/combat is a graph node");
         let mut evidence: Vec<(&str, &str)> = card
             .top_evidence
@@ -10450,8 +10418,12 @@ mod metadata_card_c2 {
     fn card_of_a_file_carries_each_top_entity_members_own_kind() {
         let mut g = card_graph();
         g.nodes.push(node("combat.rs", KIND_FILE, &[]));
-        g.edges
-            .push(edge("combat.rs", "combat.rs::fire", REL_CONTAINS));
+        g.edges.push(edge(
+            "combat.rs",
+            "combat.rs::fire",
+            REL_CONTAINS,
+            TIER_INFERRED,
+        ));
         let card = card(&g, "combat.rs").expect("combat.rs is a graph node");
         assert_eq!(
             card.top_entities[0].kind, KIND_CODE_ENTITY,

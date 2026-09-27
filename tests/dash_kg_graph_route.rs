@@ -29,7 +29,9 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::fixtures::chain_graph;
+use common::fixtures::edge;
 use common::fixtures::star_graph;
+use common::fixtures::summarized_node as node;
 use common::fixtures::tool_available;
 use common::served::body_of;
 use common::served::page_script;
@@ -44,24 +46,6 @@ use rigger::dash::{self, DashInputs};
 /// three; the two edges among them carry two distinct confidence tiers, so the served JSON proves
 /// tier-tagged edges cross the wire.
 fn fixture_graph() -> Graph {
-    let node = |id: &str, kind: &str, summary: &str| Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: if summary.is_empty() {
-            BTreeMap::new()
-        } else {
-            BTreeMap::from([("summary".to_string(), summary.to_string())])
-        },
-    };
-    let edge = |from: &str, to: &str, rel: &str, tier: &str| Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: tier.to_string(),
-    };
     Graph {
         nodes: vec![
             node("u1", KIND_UNIT, ""),

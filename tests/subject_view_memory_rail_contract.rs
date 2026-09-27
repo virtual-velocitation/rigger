@@ -30,55 +30,8 @@ mod common;
 
 use std::collections::HashMap;
 
-use common::fixtures::node_with_attrs as node;
-use rigger::contextgraph::{
-    Edge, Graph, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, KIND_FINDING,
-    KIND_LESSON, REL_ABOUT, REL_GOVERNS, REL_REALIZES, TIER_INFERRED,
-};
+use common::fixtures::subject_graph;
 use rigger::dash::{memory_rail, route, ConceptRef, MemoryRail, RationaleLeaf};
-
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_INFERRED.to_string(),
-    }
-}
-
-/// The same narrative fixture the implementer's inside-out tests and the client harness use
-/// (`combat.rs::fire`, `d1`/`f1`/`l1`, `concept/combat`) - built here from ONLY public `contextgraph`
-/// constructors, so a subject with a governing decision, an ABOUT finding, an ABOUT lesson
-/// (excluded from the rail), and its own live `REALIZES` edge to a concept.
-fn subject_graph() -> Graph {
-    Graph {
-        nodes: vec![
-            node("combat.rs::fire", KIND_CODE_ENTITY, &[]),
-            node("other.rs", KIND_FILE, &[]),
-            node(
-                "d1",
-                KIND_DECISION,
-                &[("summary", "use the shared authority")],
-            ),
-            node("f1", KIND_FINDING, &[("summary", "the finding content")]),
-            node("l1", KIND_LESSON, &[("summary", "the lesson content")]),
-            node(
-                "concept/combat",
-                KIND_CONCEPT,
-                &[("label", "combat resolution")],
-            ),
-        ],
-        edges: vec![
-            edge("d1", "combat.rs::fire", REL_GOVERNS),
-            edge("f1", "combat.rs::fire", REL_ABOUT),
-            edge("l1", "combat.rs::fire", REL_ABOUT),
-            edge("combat.rs::fire", "concept/combat", REL_REALIZES),
-        ],
-    }
-}
 
 /// `memory_rail`/`MemoryRail`/`ConceptRef`/`RationaleLeaf` are genuinely public: this test reads
 /// every field it asserts on through the crate's external boundary alone.

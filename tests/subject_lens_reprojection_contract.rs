@@ -24,12 +24,14 @@
 
 mod common;
 
+use common::fixtures::edge;
 use common::fixtures::labelled_node as node;
 use common::fixtures::plain;
 use common::lens::lens;
 use common::served::served_json;
+use rigger::contextgraph::TIER_EXTRACTED;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
+    Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
     REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
@@ -62,19 +64,6 @@ fn decision(id: &str, summary: &str) -> Node {
     };
     n.attrs.insert("summary".to_string(), summary.to_string());
     n
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel`.
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: "extracted".to_string(),
-    }
 }
 
 /// A code-entity file bucket (dominant kind code-entity), sized `count`, with an optional super-node
@@ -111,14 +100,34 @@ fn community_over_concepts_graph() -> Graph {
         ],
         edges: vec![
             // The community's IN_COMMUNITY membership: its four members.
-            edge("src/a/m1.rs::m1", COMMUNITY, REL_IN_COMMUNITY),
-            edge("src/a/m2.rs::m2", COMMUNITY, REL_IN_COMMUNITY),
-            edge("src/b/m3.rs::m3", COMMUNITY, REL_IN_COMMUNITY),
-            edge("src/c/m4.rs::m4", COMMUNITY, REL_IN_COMMUNITY),
+            edge(
+                "src/a/m1.rs::m1",
+                COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/a/m2.rs::m2",
+                COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/b/m3.rs::m3",
+                COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/c/m4.rs::m4",
+                COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
             // REALIZES memberships: m1/m2 -> concept A, m3 -> concept B, m4 -> none.
-            edge("src/a/m1.rs::m1", CONCEPT_A, REL_REALIZES),
-            edge("src/a/m2.rs::m2", CONCEPT_A, REL_REALIZES),
-            edge("src/b/m3.rs::m3", CONCEPT_B, REL_REALIZES),
+            edge("src/a/m1.rs::m1", CONCEPT_A, REL_REALIZES, TIER_EXTRACTED),
+            edge("src/a/m2.rs::m2", CONCEPT_A, REL_REALIZES, TIER_EXTRACTED),
+            edge("src/b/m3.rs::m3", CONCEPT_B, REL_REALIZES, TIER_EXTRACTED),
         ],
     }
 }
@@ -204,11 +213,26 @@ fn reprojection_admits_a_realizing_member_of_any_kind_under_the_concepts_lens() 
         ],
         edges: vec![
             // Both members belong to the re-projected community subject.
-            edge(NOKIND_ENTITY, NOKIND_COMMUNITY, REL_IN_COMMUNITY),
-            edge(NOKIND_DECISION, NOKIND_COMMUNITY, REL_IN_COMMUNITY),
+            edge(
+                NOKIND_ENTITY,
+                NOKIND_COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                NOKIND_DECISION,
+                NOKIND_COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
             // Both realize the SAME concept - one a code entity, one a decision.
-            edge(NOKIND_ENTITY, NOKIND_CONCEPT, REL_REALIZES),
-            edge(NOKIND_DECISION, NOKIND_CONCEPT, REL_REALIZES),
+            edge(NOKIND_ENTITY, NOKIND_CONCEPT, REL_REALIZES, TIER_EXTRACTED),
+            edge(
+                NOKIND_DECISION,
+                NOKIND_CONCEPT,
+                REL_REALIZES,
+                TIER_EXTRACTED,
+            ),
         ],
     };
 
@@ -251,8 +275,18 @@ fn reprojection_carries_empty_state_when_no_member_realizes_any_concept_under_th
         edges: vec![
             // Both members carry a genuine (non-concept) IN_COMMUNITY membership, but NEITHER
             // realizes any concept.
-            edge(BLANK_ENTITY, BLANK_COMMUNITY, REL_IN_COMMUNITY),
-            edge(BLANK_DECISION, BLANK_COMMUNITY, REL_IN_COMMUNITY),
+            edge(
+                BLANK_ENTITY,
+                BLANK_COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                BLANK_DECISION,
+                BLANK_COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
         ],
     };
 
@@ -336,13 +370,43 @@ fn file_over_code_graph() -> Graph {
         ],
         edges: vec![
             // The file's CONTAINS membership: its three entities.
-            edge(FILE_SUBJECT, "src/pkg/mod.rs::e1", REL_CONTAINS),
-            edge(FILE_SUBJECT, "src/pkg/mod.rs::e2", REL_CONTAINS),
-            edge(FILE_SUBJECT, "src/pkg/mod.rs::e3", REL_CONTAINS),
+            edge(
+                FILE_SUBJECT,
+                "src/pkg/mod.rs::e1",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                FILE_SUBJECT,
+                "src/pkg/mod.rs::e2",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                FILE_SUBJECT,
+                "src/pkg/mod.rs::e3",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
             // Community memberships: e1/e2 -> alpha, e3 -> beta.
-            edge("src/pkg/mod.rs::e1", COMM_ALPHA, REL_IN_COMMUNITY),
-            edge("src/pkg/mod.rs::e2", COMM_ALPHA, REL_IN_COMMUNITY),
-            edge("src/pkg/mod.rs::e3", COMM_BETA, REL_IN_COMMUNITY),
+            edge(
+                "src/pkg/mod.rs::e1",
+                COMM_ALPHA,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/pkg/mod.rs::e2",
+                COMM_ALPHA,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/pkg/mod.rs::e3",
+                COMM_BETA,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
         ],
     }
 }
@@ -447,10 +511,20 @@ fn reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens()
         ],
         edges: vec![
             // The concept's REALIZES members: a real code entity AND a decision.
-            edge(PURITY_ENTITY, PURITY_CONCEPT, REL_REALIZES),
-            edge(PURITY_DECISION, PURITY_CONCEPT, REL_REALIZES),
+            edge(PURITY_ENTITY, PURITY_CONCEPT, REL_REALIZES, TIER_EXTRACTED),
+            edge(
+                PURITY_DECISION,
+                PURITY_CONCEPT,
+                REL_REALIZES,
+                TIER_EXTRACTED,
+            ),
             // The code entity's own community membership, so its bucket is non-empty.
-            edge(PURITY_ENTITY, PURITY_COMMUNITY, REL_IN_COMMUNITY),
+            edge(
+                PURITY_ENTITY,
+                PURITY_COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
         ],
     };
 
@@ -497,12 +571,32 @@ fn reprojection_excludes_a_decision_member_even_when_it_carries_a_live_community
         ],
         edges: vec![
             // The concept's REALIZES members: a real code entity AND a decision.
-            edge(INFLATE_ENTITY, INFLATE_CONCEPT, REL_REALIZES),
-            edge(INFLATE_DECISION, INFLATE_CONCEPT, REL_REALIZES),
+            edge(
+                INFLATE_ENTITY,
+                INFLATE_CONCEPT,
+                REL_REALIZES,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                INFLATE_DECISION,
+                INFLATE_CONCEPT,
+                REL_REALIZES,
+                TIER_EXTRACTED,
+            ),
             // BOTH realizers join the SAME community - the decision's membership is genuine, not
             // absent, so a broken guard would fold it into the community bucket alongside the entity.
-            edge(INFLATE_ENTITY, INFLATE_COMMUNITY, REL_IN_COMMUNITY),
-            edge(INFLATE_DECISION, INFLATE_COMMUNITY, REL_IN_COMMUNITY),
+            edge(
+                INFLATE_ENTITY,
+                INFLATE_COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                INFLATE_DECISION,
+                INFLATE_COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
         ],
     };
 
@@ -543,9 +637,14 @@ fn reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded() 
         ],
         edges: vec![
             // The concept's ONLY realizer is the decision - no code entity co-realizes it.
-            edge(SOLE_DECISION, SOLE_CONCEPT, REL_REALIZES),
+            edge(SOLE_DECISION, SOLE_CONCEPT, REL_REALIZES, TIER_EXTRACTED),
             // The decision's OWN membership is genuine, not absent.
-            edge(SOLE_DECISION, SOLE_COMMUNITY, REL_IN_COMMUNITY),
+            edge(
+                SOLE_DECISION,
+                SOLE_COMMUNITY,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
         ],
     };
 
@@ -621,7 +720,12 @@ fn reprojection_clears_the_empty_state_caption_when_a_real_membership_lands_a_bu
             def(LANDED_ENTITY, "p"),
             node(LANDED_COMMUNITY, KIND_COMMUNITY, Some("delta")),
         ],
-        edges: vec![edge(LANDED_ENTITY, LANDED_COMMUNITY, REL_IN_COMMUNITY)],
+        edges: vec![edge(
+            LANDED_ENTITY,
+            LANDED_COMMUNITY,
+            REL_IN_COMMUNITY,
+            TIER_EXTRACTED,
+        )],
     };
 
     let re = reproject(&graph, LANDED_ENTITY, &lens("code"));
@@ -684,7 +788,12 @@ fn ambiguous_files_graph() -> Graph {
             def("src/p/x.rs::amb", "amb"),
             def("src/q/y.rs::amb", "amb"),
         ],
-        edges: vec![edge("src/caller.rs::amb", "concept/9/0", REL_REALIZES)],
+        edges: vec![edge(
+            "src/caller.rs::amb",
+            "concept/9/0",
+            REL_REALIZES,
+            TIER_EXTRACTED,
+        )],
     }
 }
 
@@ -828,7 +937,12 @@ fn unmatched_bare_graph() -> Graph {
             node(UNMATCHED_CONCEPT, KIND_CONCEPT, Some("the idea")),
             plain(EXTERNAL_BARE, KIND_CODE_ENTITY),
         ],
-        edges: vec![edge(EXTERNAL_BARE, UNMATCHED_CONCEPT, REL_REALIZES)],
+        edges: vec![edge(
+            EXTERNAL_BARE,
+            UNMATCHED_CONCEPT,
+            REL_REALIZES,
+            TIER_EXTRACTED,
+        )],
     }
 }
 
@@ -949,9 +1063,12 @@ fn served_explain_overlay_takes_precedence_over_the_reprojection_when_both_are_p
     graph
         .nodes
         .push(decision(RATIONALE_DECISION, "why mod.rs exists"));
-    graph
-        .edges
-        .push(edge(RATIONALE_DECISION, FILE_SUBJECT, REL_GOVERNS));
+    graph.edges.push(edge(
+        RATIONALE_DECISION,
+        FILE_SUBJECT,
+        REL_GOVERNS,
+        TIER_EXTRACTED,
+    ));
 
     // BOTH `explain=` and `seed=`+`lens=` present: the overlay arm wins. The body is a RationaleBatch
     // (a `nodes` array of per-node rationale), carrying NEITHER the re-projection's `subject` nor its

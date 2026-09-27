@@ -40,6 +40,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use common::fixtures::edge;
 use common::fixtures::plain;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE, REL_CONTAINS,
@@ -65,22 +66,9 @@ fn ce(id: &str) -> Node {
     }
 }
 
-/// A currently-valid edge (`valid_to = None`) of `rel`.
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: TIER_EXTRACTED.to_string(),
-    }
-}
-
 /// A currently-valid REFERENCES edge between two ids.
 fn refs(from: &str, to: &str) -> Edge {
-    edge(from, to, REL_REFERENCES)
+    edge(from, to, REL_REFERENCES, TIER_EXTRACTED)
 }
 
 /// The lens fixture. TWO files, each with two code entities that call each other internally (adds NO
@@ -488,8 +476,8 @@ fn a_files_contained_entities_are_still_reachable_via_neighborhood_the_cards_own
     let graph = Graph {
         nodes: vec![plain(FILE_A, KIND_FILE), ce(FOO), ce(BAR)],
         edges: vec![
-            edge(FILE_A, FOO, REL_CONTAINS),
-            edge(FILE_A, BAR, REL_CONTAINS),
+            edge(FILE_A, FOO, REL_CONTAINS, TIER_EXTRACTED),
+            edge(FILE_A, BAR, REL_CONTAINS, TIER_EXTRACTED),
         ],
     };
     let nb = neighborhood(&graph, FILE_A, 1);

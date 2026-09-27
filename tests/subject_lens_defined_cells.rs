@@ -32,11 +32,13 @@
 
 mod common;
 
+use common::fixtures::edge;
 use common::fixtures::labelled_node as node;
 use common::lens::{lens, shared_member_graph, OTHER_D, SHARED_MEMBER, SUB_C};
 use common::served::served_json;
+use rigger::contextgraph::TIER_EXTRACTED;
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_CALLS,
+    Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_CALLS,
     REL_CONTAINS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
@@ -56,19 +58,6 @@ fn def(id: &str, name: &str) -> Node {
     };
     n.attrs.insert("name".to_string(), name.to_string());
     n
-}
-
-/// A currently-valid edge (`valid_to = None`) of `rel`.
-fn edge(from: &str, to: &str, rel: &str) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: rel.to_string(),
-        valid_from: 0,
-        valid_to: None,
-        source: 0,
-        tier: "extracted".to_string(),
-    }
 }
 
 /// A code-entity kind-fallback bucket of `count` members (the membership-less fold criterion 1 ships).
@@ -101,10 +90,30 @@ fn communities_no_concepts_graph() -> Graph {
             def("src/pkg/mod.rs::e2", "e2"),
         ],
         edges: vec![
-            edge(FILE_SUBJECT, "src/pkg/mod.rs::e1", REL_CONTAINS),
-            edge(FILE_SUBJECT, "src/pkg/mod.rs::e2", REL_CONTAINS),
-            edge("src/pkg/mod.rs::e1", COMM_X, REL_IN_COMMUNITY),
-            edge("src/pkg/mod.rs::e2", COMM_Y, REL_IN_COMMUNITY),
+            edge(
+                FILE_SUBJECT,
+                "src/pkg/mod.rs::e1",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                FILE_SUBJECT,
+                "src/pkg/mod.rs::e2",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/pkg/mod.rs::e1",
+                COMM_X,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/pkg/mod.rs::e2",
+                COMM_Y,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
         ],
     }
 }
@@ -164,7 +173,12 @@ fn the_code_lens_empty_cell_and_the_files_lens_resolving_its_one_member_carry_no
             node(CONCEPT_ONLY, KIND_CONCEPT, Some("idea")),
             def("src/a.rs::only", "only"),
         ],
-        edges: vec![edge("src/a.rs::only", CONCEPT_ONLY, REL_REALIZES)],
+        edges: vec![edge(
+            "src/a.rs::only",
+            CONCEPT_ONLY,
+            REL_REALIZES,
+            TIER_EXTRACTED,
+        )],
     };
 
     // CODE lens: the member is in no community -> the code empty cell.
@@ -223,11 +237,31 @@ fn mixed_membership_graph() -> Graph {
             def("src/mix/mod.rs::e2", "e2"),
         ],
         edges: vec![
-            edge(MIXED_FILE, "src/mix/mod.rs::e1", REL_CONTAINS),
-            edge(MIXED_FILE, "src/mix/mod.rs::e2", REL_CONTAINS),
+            edge(
+                MIXED_FILE,
+                "src/mix/mod.rs::e1",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                MIXED_FILE,
+                "src/mix/mod.rs::e2",
+                REL_CONTAINS,
+                TIER_EXTRACTED,
+            ),
             // e1 folds into a derived bucket under BOTH lenses; e2 folds into neither.
-            edge("src/mix/mod.rs::e1", MIXED_COMM, REL_IN_COMMUNITY),
-            edge("src/mix/mod.rs::e1", MIXED_CONCEPT, REL_REALIZES),
+            edge(
+                "src/mix/mod.rs::e1",
+                MIXED_COMM,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+            ),
+            edge(
+                "src/mix/mod.rs::e1",
+                MIXED_CONCEPT,
+                REL_REALIZES,
+                TIER_EXTRACTED,
+            ),
         ],
     }
 }
@@ -363,16 +397,22 @@ fn wide_files_graph() -> Graph {
         // (index n-1) is the one the (count-tie, key-asc) rank drops.
         let id = format!("src/f{i:02}.rs::e{i}");
         nodes.push(def(&id, &format!("e{i}")));
-        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES));
+        edges.push(edge(&id, WIDE_CONCEPT, REL_REALIZES, TIER_EXTRACTED));
     }
     // A coupling edge from the LAST (dropped) member into the first: its super-edge must be pruned.
     edges.push(edge(
         &format!("src/f{:02}.rs::e{}", n - 1, n - 1),
         "src/f00.rs::e0",
         REL_CALLS,
+        TIER_EXTRACTED,
     ));
     // A coupling edge wholly within the kept set (f00 -> f01): its super-edge must survive.
-    edges.push(edge("src/f00.rs::e0", "src/f01.rs::e1", REL_CALLS));
+    edges.push(edge(
+        "src/f00.rs::e0",
+        "src/f01.rs::e1",
+        REL_CALLS,
+        TIER_EXTRACTED,
+    ));
     Graph { nodes, edges }
 }
 
@@ -439,7 +479,12 @@ fn a_wide_regrain_caps_to_the_render_budget_and_prunes_dangling_edges() {
                 node(WIDE_CONCEPT, KIND_CONCEPT, Some("wide")),
                 def("src/one.rs::a", "a"),
             ],
-            edges: vec![edge("src/one.rs::a", WIDE_CONCEPT, REL_REALIZES)],
+            edges: vec![edge(
+                "src/one.rs::a",
+                WIDE_CONCEPT,
+                REL_REALIZES,
+                TIER_EXTRACTED,
+            )],
         },
         WIDE_CONCEPT,
         &Lens::Files,

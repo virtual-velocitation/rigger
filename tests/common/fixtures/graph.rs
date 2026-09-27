@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 
 use rigger::contextgraph::{
-    CallEdge, Edge, Graph, Node, KIND_UNIT, REL_CALLS, REL_REFERENCES, TIER_EXTRACTED,
-    TIER_INFERRED,
+    CallEdge, Edge, Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
+    KIND_FINDING, KIND_LESSON, KIND_UNIT, REL_ABOUT, REL_CALLS, REL_GOVERNS, REL_REALIZES,
+    REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// A `kind` node with no attributes.
@@ -26,6 +27,19 @@ pub fn node_with_attrs(id: &str, kind: &str, attrs: &[(&str, &str)]) -> Node {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
     }
+}
+
+/// A `kind` node carrying the optional `title` (an ingested document) and `name` (a code entity)
+/// attributes - the two a concept label is picked from, in that preference order.
+pub fn entity_node(id: &str, kind: &str, title: Option<&str>, name: Option<&str>) -> Node {
+    let mut n = plain(id, kind);
+    if let Some(t) = title {
+        n.attrs.insert("title".to_string(), t.to_string());
+    }
+    if let Some(nm) = name {
+        n.attrs.insert("name".to_string(), nm.to_string());
+    }
+    n
 }
 
 /// A `kind` node carrying a `summary` attribute, or no attribute at all when `summary` is empty.
@@ -51,6 +65,14 @@ pub fn edge(from: &str, to: &str, rel: &str, tier: &str) -> Edge {
         valid_to: None,
         source: 0,
         tier: tier.to_string(),
+    }
+}
+
+/// An [`edge`] whose validity ends at `valid_to` (`None`: still live).
+pub fn edge_valid_to(from: &str, to: &str, rel: &str, tier: &str, valid_to: Option<i64>) -> Edge {
+    Edge {
+        valid_to,
+        ..edge(from, to, rel, tier)
     }
 }
 
@@ -150,4 +172,33 @@ pub fn governs(graph_edges: &[Edge]) -> Vec<(String, String, u64, i64)> {
         .collect();
     out.sort();
     out
+}
+
+/// A code entity `combat.rs::fire` carrying a governing decision `d1`, an ABOUT finding `f1`, an
+/// ABOUT lesson `l1` (build-process memory, which the memory rail excludes) and its own live
+/// `REALIZES` edge to the concept `concept/combat` (the direction a MEMBER carries toward the
+/// concept it realizes). A second, unrelated file `other.rs` carries none of it, for the empty
+/// case.
+pub fn subject_graph() -> Graph {
+    let rel = |from: &str, to: &str, rel: &str| edge(from, to, rel, TIER_INFERRED);
+    Graph {
+        nodes: vec![
+            plain("combat.rs::fire", KIND_CODE_ENTITY),
+            plain("other.rs", KIND_FILE),
+            summarized_node("d1", KIND_DECISION, "use the shared authority"),
+            summarized_node("f1", KIND_FINDING, "the finding content"),
+            summarized_node("l1", KIND_LESSON, "the lesson content"),
+            node_with_attrs(
+                "concept/combat",
+                KIND_CONCEPT,
+                &[("label", "combat resolution")],
+            ),
+        ],
+        edges: vec![
+            rel("d1", "combat.rs::fire", REL_GOVERNS),
+            rel("f1", "combat.rs::fire", REL_ABOUT),
+            rel("l1", "combat.rs::fire", REL_ABOUT),
+            rel("combat.rs::fire", "concept/combat", REL_REALIZES),
+        ],
+    }
 }

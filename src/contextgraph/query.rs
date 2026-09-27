@@ -2001,19 +2001,9 @@ mod graph_ops_tests {
 #[cfg(test)]
 mod path_tests {
     use super::*;
+    use crate::contextgraph::TIER_EXTRACTED;
+    use crate::test_support::edge;
     use crate::test_support::plain;
-
-    fn edge(from: &str, to: &str) -> Edge {
-        Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            rel: REL_ABOUT.to_string(),
-            valid_from: 0,
-            valid_to: None,
-            source: 0,
-            tier: "extracted".to_string(),
-        }
-    }
 
     /// `path`'s own documented contract: an EMPTY path when "either endpoint is absent" - `to`
     /// need not be UNREACHABLE, it must not even be a real NODE. The gate is
@@ -2026,7 +2016,7 @@ mod path_tests {
         let g = Graph {
             nodes: vec![plain("src/a.rs", KIND_FILE)],
             // "ghost" is never a node, only an edge endpoint.
-            edges: vec![edge("src/a.rs", "ghost")],
+            edges: vec![edge("src/a.rs", "ghost", REL_ABOUT, TIER_EXTRACTED)],
         };
         assert_eq!(
             path(&g, "src/a.rs", "ghost"),
@@ -2046,7 +2036,7 @@ mod path_tests {
     fn neither_endpoint_a_real_node_yields_no_path_even_when_they_are_equal() {
         let g = Graph {
             nodes: vec![plain("src/a.rs", KIND_FILE), plain("src/b.rs", KIND_FILE)],
-            edges: vec![edge("src/a.rs", "src/b.rs")],
+            edges: vec![edge("src/a.rs", "src/b.rs", REL_ABOUT, TIER_EXTRACTED)],
         };
         assert_eq!(
             path(&g, "ghost", "ghost"),
@@ -2060,19 +2050,9 @@ mod path_tests {
 #[cfg(test)]
 mod member_set_tests {
     use super::*;
+    use crate::contextgraph::TIER_EXTRACTED;
+    use crate::test_support::edge_valid_to;
     use crate::test_support::plain;
-
-    fn edge(from: &str, to: &str, rel: &str, valid_to: Option<i64>) -> Edge {
-        Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            rel: rel.to_string(),
-            valid_from: 0,
-            valid_to,
-            source: 0,
-            tier: "extracted".to_string(),
-        }
-    }
 
     /// `member_set` of a COMMUNITY counts ONLY a currently-valid `IN_COMMUNITY` edge whose
     /// target is EXACTLY this community - all three conjuncts load-bearing, each proven by an
@@ -2093,10 +2073,16 @@ mod member_set_tests {
                 plain("src/z.rs::z", KIND_CODE_ENTITY), // right target, wrong rel
             ],
             edges: vec![
-                edge("src/w.rs::w", com1, REL_IN_COMMUNITY, None),
-                edge("src/x.rs::x", com2, REL_IN_COMMUNITY, None),
-                edge("src/y.rs::y", com1, REL_IN_COMMUNITY, Some(9)),
-                edge("src/z.rs::z", com1, REL_ABOUT, None),
+                edge_valid_to("src/w.rs::w", com1, REL_IN_COMMUNITY, TIER_EXTRACTED, None),
+                edge_valid_to("src/x.rs::x", com2, REL_IN_COMMUNITY, TIER_EXTRACTED, None),
+                edge_valid_to(
+                    "src/y.rs::y",
+                    com1,
+                    REL_IN_COMMUNITY,
+                    TIER_EXTRACTED,
+                    Some(9),
+                ),
+                edge_valid_to("src/z.rs::z", com1, REL_ABOUT, TIER_EXTRACTED, None),
             ],
         };
         let ids: Vec<&str> = member_set(&g, com1).iter().map(|n| n.id.as_str()).collect();
@@ -2127,10 +2113,10 @@ mod member_set_tests {
                 plain("src/w.rs::z", KIND_CODE_ENTITY), // right source, wrong rel
             ],
             edges: vec![
-                edge(file1, "src/w.rs::w", REL_CONTAINS, None),
-                edge(file2, "src/x.rs::x", REL_CONTAINS, None),
-                edge(file1, "src/w.rs::y", REL_CONTAINS, Some(9)),
-                edge(file1, "src/w.rs::z", REL_ABOUT, None),
+                edge_valid_to(file1, "src/w.rs::w", REL_CONTAINS, TIER_EXTRACTED, None),
+                edge_valid_to(file2, "src/x.rs::x", REL_CONTAINS, TIER_EXTRACTED, None),
+                edge_valid_to(file1, "src/w.rs::y", REL_CONTAINS, TIER_EXTRACTED, Some(9)),
+                edge_valid_to(file1, "src/w.rs::z", REL_ABOUT, TIER_EXTRACTED, None),
             ],
         };
         let ids: Vec<&str> = member_set(&g, file1)
@@ -2191,19 +2177,9 @@ mod bucket_fold_edge_case_tests {
 #[cfg(test)]
 mod cluster_detail_budget_ranking_tests {
     use super::*;
+    use crate::contextgraph::TIER_EXTRACTED;
+    use crate::test_support::edge_valid_to;
     use crate::test_support::plain;
-
-    fn edge(from: &str, to: &str, rel: &str, valid_to: Option<i64>) -> Edge {
-        Edge {
-            from: from.to_string(),
-            to: to.to_string(),
-            rel: rel.to_string(),
-            valid_from: 0,
-            valid_to,
-            source: 0,
-            tier: "extracted".to_string(),
-        }
-    }
 
     /// `cluster_detail`'s INTRA-CLUSTER degree fold only ever shows up in the OUTPUT through
     /// WHICH members survive an over-budget cluster's truncation - under budget every member
@@ -2233,18 +2209,54 @@ mod cluster_detail_budget_ranking_tests {
         // The anchor: sends one VALID edge to the receiver (real degree for both ends) and one
         // SUPERSEDED edge to the victim (must contribute nothing to either end).
         nodes.push(plain("a0-anchor", KIND_CODE_ENTITY));
-        edges.push(edge("a0-anchor", COM, REL_IN_COMMUNITY, None));
+        edges.push(edge_valid_to(
+            "a0-anchor",
+            COM,
+            REL_IN_COMMUNITY,
+            TIER_EXTRACTED,
+            None,
+        ));
         nodes.push(plain("zzz-receiver", KIND_CODE_ENTITY));
-        edges.push(edge("zzz-receiver", COM, REL_IN_COMMUNITY, None));
-        edges.push(edge("a0-anchor", "zzz-receiver", REL_ABOUT, None));
+        edges.push(edge_valid_to(
+            "zzz-receiver",
+            COM,
+            REL_IN_COMMUNITY,
+            TIER_EXTRACTED,
+            None,
+        ));
+        edges.push(edge_valid_to(
+            "a0-anchor",
+            "zzz-receiver",
+            REL_ABOUT,
+            TIER_EXTRACTED,
+            None,
+        ));
         nodes.push(plain("zzz-victim", KIND_CODE_ENTITY));
-        edges.push(edge("zzz-victim", COM, REL_IN_COMMUNITY, None));
-        edges.push(edge("a0-anchor", "zzz-victim", REL_ABOUT, Some(1)));
+        edges.push(edge_valid_to(
+            "zzz-victim",
+            COM,
+            REL_IN_COMMUNITY,
+            TIER_EXTRACTED,
+            None,
+        ));
+        edges.push(edge_valid_to(
+            "a0-anchor",
+            "zzz-victim",
+            REL_ABOUT,
+            TIER_EXTRACTED,
+            Some(1),
+        ));
         // 59 filler members with no degree-bearing edge at all (degree 0, tied with the
         // victim); ids "f00000".."f00058" all sort before both "zzz-..." ids.
         for i in 0..59 {
             let id = format!("f{i:05}");
-            edges.push(edge(&id, COM, REL_IN_COMMUNITY, None));
+            edges.push(edge_valid_to(
+                &id,
+                COM,
+                REL_IN_COMMUNITY,
+                TIER_EXTRACTED,
+                None,
+            ));
             nodes.push(plain(&id, KIND_CODE_ENTITY));
         }
         // total members = anchor + receiver + victim + 59 fillers = 62, over the 60 budget by

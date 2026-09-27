@@ -537,22 +537,9 @@ mod tests {
     use super::*;
     use crate::contextgraph::{Edge, Node, KIND_FILE, TIER_EXTRACTED, TIER_INFERRED};
     use crate::test_support::edge;
+    use crate::test_support::entity_node;
     use crate::test_support::pair_map;
     use std::collections::BTreeMap as Map;
-
-    /// Build one graph [`Node`] of a given kind, with an optional `name` attr (present => a real
-    /// definition; absent => a bare cross-file placeholder or a file node).
-    fn node(id: &str, kind: &str, name: Option<&str>) -> Node {
-        let mut attrs = Map::new();
-        if let Some(n) = name {
-            attrs.insert("name".to_string(), n.to_string());
-        }
-        Node {
-            id: id.to_string(),
-            kind: kind.to_string(),
-            attrs,
-        }
-    }
 
     /// Build a coupling `Graph` from a list of undirected structural edges `(from, to, rel, tier)`,
     /// so a test can express a coupling topology directly without folding events. Nodes are inferred
@@ -848,10 +835,10 @@ mod tests {
         // B and A would sit in different components and never share a community.
         let g = Graph {
             nodes: vec![
-                node("src/a.rs", KIND_FILE, None),
-                node("src/a.rs::foo", KIND_CODE_ENTITY, Some("foo")),
-                node("src/b.rs", KIND_FILE, None),
-                node("src/b.rs::foo", KIND_CODE_ENTITY, None), // bare cross-file placeholder
+                entity_node("src/a.rs", KIND_FILE, None, None),
+                entity_node("src/a.rs::foo", KIND_CODE_ENTITY, None, Some("foo")),
+                entity_node("src/b.rs", KIND_FILE, None, None),
+                entity_node("src/b.rs::foo", KIND_CODE_ENTITY, None, None), // bare cross-file placeholder
             ],
             edges: vec![
                 edge("src/a.rs", "src/a.rs::foo", REL_CONTAINS, TIER_EXTRACTED),
@@ -884,10 +871,10 @@ mod tests {
         // not spuriously fuse the two candidate definitions' subsystems.
         let g = Graph {
             nodes: vec![
-                node("src/a.rs::foo", KIND_CODE_ENTITY, Some("foo")),
-                node("src/x.rs::foo", KIND_CODE_ENTITY, Some("foo")),
-                node("src/b.rs", KIND_FILE, None),
-                node("src/b.rs::foo", KIND_CODE_ENTITY, None),
+                entity_node("src/a.rs::foo", KIND_CODE_ENTITY, None, Some("foo")),
+                entity_node("src/x.rs::foo", KIND_CODE_ENTITY, None, Some("foo")),
+                entity_node("src/b.rs", KIND_FILE, None, None),
+                entity_node("src/b.rs::foo", KIND_CODE_ENTITY, None, None),
             ],
             edges: vec![edge(
                 "src/b.rs",

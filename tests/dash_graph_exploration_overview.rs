@@ -30,11 +30,13 @@
 //! `dash` and `contextgraph` compile on BOTH the default and the `--no-default-features` lane
 //! (neither is feature-gated), so this guards the overview boundary in both lanes.
 
+mod common;
+use common::fixtures::edge_valid_to;
+
 use std::collections::BTreeMap;
 
 use rigger::contextgraph::{
-    Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, REL_REFERENCES,
-    TIER_EXTRACTED,
+    Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_DESIGN_DOC, REL_REFERENCES, TIER_EXTRACTED,
 };
 use rigger::dash::{clustered_overview, Cluster, ClusterEdge, ClusterOverview, Lens};
 
@@ -54,19 +56,6 @@ fn node(id: &str, kind: &str) -> Node {
         } else {
             BTreeMap::new()
         },
-    }
-}
-
-/// A currently-valid (`valid_to = None`) or invalidated edge between two node ids.
-fn edge(from: &str, to: &str, valid_to: Option<i64>) -> Edge {
-    Edge {
-        from: from.to_string(),
-        to: to.to_string(),
-        rel: REL_REFERENCES.to_string(),
-        valid_from: 0,
-        valid_to,
-        source: 0,
-        tier: TIER_EXTRACTED.to_string(),
     }
 }
 
@@ -180,18 +169,54 @@ fn clustered_overview_weights_only_cross_file_currently_valid_edges() {
         ],
         edges: vec![
             // a <-> b in BOTH directions -> one symmetric edge of weight 2.
-            edge("a/x.rs::p", "b/y.rs::q", None),
-            edge("b/y.rs::q", "a/x.rs::p", None),
+            edge_valid_to(
+                "a/x.rs::p",
+                "b/y.rs::q",
+                REL_REFERENCES,
+                TIER_EXTRACTED,
+                None,
+            ),
+            edge_valid_to(
+                "b/y.rs::q",
+                "a/x.rs::p",
+                REL_REFERENCES,
+                TIER_EXTRACTED,
+                None,
+            ),
             // a <-> c once -> weight 1.
-            edge("a/x.rs::p", "c/z.rs::r", None),
+            edge_valid_to(
+                "a/x.rs::p",
+                "c/z.rs::r",
+                REL_REFERENCES,
+                TIER_EXTRACTED,
+                None,
+            ),
             // A self-loop is intra-file -> adds nothing.
-            edge("a/x.rs::p", "a/x.rs::p", None),
+            edge_valid_to(
+                "a/x.rs::p",
+                "a/x.rs::p",
+                REL_REFERENCES,
+                TIER_EXTRACTED,
+                None,
+            ),
             // An invalidated b <-> c edge -> counts for nothing.
-            edge("b/y.rs::q", "c/z.rs::r", Some(9)),
+            edge_valid_to(
+                "b/y.rs::q",
+                "c/z.rs::r",
+                REL_REFERENCES,
+                TIER_EXTRACTED,
+                Some(9),
+            ),
             // A dangling edge to a node ABSENT from the graph -> skipped (no cluster to weight).
-            edge("a/x.rs::p", "ghost/none.rs::x", None),
+            edge_valid_to(
+                "a/x.rs::p",
+                "ghost/none.rs::x",
+                REL_REFERENCES,
+                TIER_EXTRACTED,
+                None,
+            ),
             // An edge to the purity-excluded decision -> adds nothing (no cluster on that endpoint).
-            edge("a/x.rs::p", "d1", None),
+            edge_valid_to("a/x.rs::p", "d1", REL_REFERENCES, TIER_EXTRACTED, None),
         ],
     };
 
@@ -226,7 +251,13 @@ fn clustered_overview_serializes_to_the_wire_shape_the_kg_panel_reads() {
             node("src/a.rs::foo", KIND_CODE_ENTITY),
             node("docs/x.rs::bar", KIND_CODE_ENTITY),
         ],
-        edges: vec![edge("src/a.rs::foo", "docs/x.rs::bar", None)],
+        edges: vec![edge_valid_to(
+            "src/a.rs::foo",
+            "docs/x.rs::bar",
+            REL_REFERENCES,
+            TIER_EXTRACTED,
+            None,
+        )],
     };
     let value = serde_json::to_value(clustered_overview(&graph, &Lens::Files))
         .expect("overview serializes");
