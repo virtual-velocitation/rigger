@@ -28,6 +28,23 @@ pub fn temp_project_with_rigger_dir() -> tempfile::TempDir {
     dir
 }
 
+/// A [`temp_project`] the compiled binary accepts as a courier target: its own git repo (so the
+/// store's project identity resolves normally) and an INITIALIZED event log - a courier refuses
+/// to fabricate one from a cwd with no existing store (spec 05).
+pub fn courier_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    init_event_log(dir.path());
+    dir
+}
+
+/// Open `root`'s `.rigger/events.db`, creating the directory, so the schema the binary appends
+/// to exists.
+pub fn init_event_log(root: &Path) {
+    seed_rigger_dir(root);
+    Store::open(event_log(root).to_str().expect("a utf-8 store path"))
+        .expect("the event log initializes");
+}
+
 /// A throwaway project directory that is deliberately NOT a git repo, so the conductor drives
 /// a repo-less run (no worktrees, no run branch).
 pub fn temp_repoless_project() -> tempfile::TempDir {

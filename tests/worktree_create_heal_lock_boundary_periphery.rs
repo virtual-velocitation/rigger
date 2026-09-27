@@ -56,6 +56,7 @@
 //! predicate tests are the deterministic proof of the heal decision table itself.
 
 mod common;
+use common::fixtures::assert_concurrent_creates_succeed;
 use common::git::temp_git_project_with_commit;
 
 use rigger::worktree::Worktree;
@@ -169,32 +170,12 @@ fn create_serializes_concurrent_sibling_creates_at_the_crate_boundary() {
     let repo_path = repo.path().to_str().unwrap().to_string();
     let scratch = tempfile::tempdir().unwrap();
     let root = scratch.path().to_str().unwrap().to_string();
-
-    for round in 0..30 {
-        let dir_a = format!("{root}/wt-race-a-{round}");
-        let dir_b = format!("{root}/wt-race-b-{round}");
-        let branch_a = format!("rigger/u/race-a-{round}");
-        let branch_b = format!("rigger/u/race-b-{round}");
-
-        let (ra, rb) = std::thread::scope(|s| {
-            let ha = s.spawn(|| Worktree::create(&repo_path, &dir_a, &branch_a, ""));
-            let hb = s.spawn(|| Worktree::create(&repo_path, &dir_b, &branch_b, ""));
-            (ha.join().unwrap(), hb.join().unwrap())
-        });
-
-        assert!(
-            ra.is_ok(),
-            "round {round}: thread A's create must never lose the admin-directory race \
-             at the crate boundary: {:?}",
-            ra.err()
-        );
-        assert!(
-            rb.is_ok(),
-            "round {round}: thread B's create must never lose the admin-directory race \
-             at the crate boundary: {:?}",
-            rb.err()
-        );
-    }
+    assert_concurrent_creates_succeed(
+        &repo_path,
+        &format!("{root}/wt-"),
+        30,
+        " at the crate boundary",
+    );
 }
 
 #[test]

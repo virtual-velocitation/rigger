@@ -630,23 +630,12 @@ fn the_canary_records_nothing_it_cannot_find_afterwards() {
 /// the stream this test reads back is the stream the binary wrote to whatever the temp
 /// directory is called, and an INITIALIZED event log - the binary refuses to fabricate one.
 fn cli_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a temp project");
-    let root = dir.path();
-    let _ = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
-    let rigger_dir = root.join(".rigger");
+    let dir = temp_project();
+    let rigger_dir = dir.path().join(".rigger");
     std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
     std::fs::write(rigger_dir.join("project.id"), "u4-cli-surface").expect("pin the identity");
     // Opening the store creates the schema the binary then appends to.
-    Store::open(
-        rigger_dir
-            .join("events.db")
-            .to_str()
-            .expect("a utf-8 store path"),
-    )
-    .expect("the event log initializes");
+    init_event_log(dir.path());
     dir
 }
 
@@ -654,6 +643,7 @@ fn cli_project() -> tempfile::TempDir {
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::cli::{init_event_log, temp_project};
 
 /// Run `rigger <args...>` in `root` through the COMPILED binary, returning its stdout.
 fn run_rigger(root: &std::path::Path, args: &[&str]) -> String {

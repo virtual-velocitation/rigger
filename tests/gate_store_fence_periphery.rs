@@ -170,10 +170,10 @@ use rigger::eventstore::sqlite::Store;
 use rigger::gate::{
     Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner, STORE_FENCE_ENV, STORE_FENCE_SUFFIX,
 };
-use rigger::registry::{self, Instance};
 use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
+use common::fixtures::registry_entries;
 use common::git::temp_git_project_with_commit;
 use common::{rigger_bin, RestoreEnvVars};
 
@@ -245,30 +245,6 @@ fn emit_gate(id: &str, decision_id: &str) -> Gate {
         autonomy: Autonomy::Manual,
         history: vec![],
     }
-}
-
-/// Every registry entry under `state_home`, decoded through `registry::Instance`'s own
-/// (de)serialization - mirrors `courier_registry_refresh_fence_periphery.rs`'s own identically
-/// purposed helper (each periphery suite owns its own small fixture helpers rather than sharing
-/// test-only code across files).
-fn registry_entries(state_home: &Path) -> Vec<Instance> {
-    let dir = registry::instances_dir(state_home);
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        if let Ok(body) = std::fs::read(&path) {
-            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
-                out.push(inst);
-            }
-        }
-    }
-    out
 }
 
 #[test]

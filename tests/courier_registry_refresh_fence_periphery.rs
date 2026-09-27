@@ -19,16 +19,15 @@
 //! ambient/real registry directory completely untouched, while the courier's real work (and its
 //! best-effort, warn-only degrade contract) is unaffected.
 
-use std::path::Path;
 use std::process::Command;
 
 use rigger::gate::STORE_FENCE_ENV;
-use rigger::registry::{self, Instance};
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::fixtures::registry_entries;
 use common::RestoreEnvVars;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;
@@ -48,29 +47,6 @@ fn courier_project() -> tempfile::TempDir {
     std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
     std::fs::File::create(rigger_dir.join("events.db")).expect("seed an initialized event log");
     dir
-}
-
-/// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
-/// mirrors the read helper in the sibling periphery suites (each periphery suite owns its own
-/// small fixture helpers rather than sharing test-only code across files).
-fn registry_entries(state_home: &Path) -> Vec<(std::path::PathBuf, Instance)> {
-    let dir = registry::instances_dir(state_home);
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        if let Ok(body) = std::fs::read(&path) {
-            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
-                out.push((path, inst));
-            }
-        }
-    }
-    out
 }
 
 /// THE REGRESSION: a courier invoked exactly as `gate::ExecRunner::run` invokes one of a unit-
