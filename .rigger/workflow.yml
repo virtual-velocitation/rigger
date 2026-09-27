@@ -166,6 +166,13 @@ gates:                      # the project's verification library, referenced by 
   no-os-kill:
     run: 'base=$(git rev-parse --verify -q rigger-run || git rev-parse --verify -q origin/main || git rev-parse --verify -q HEAD); bad="Command::new\(.(kill|pkill|killall|xkill)|[^a-zA-Z_]kill(all)? -[0-9A-Za-z]|[^a-zA-Z_]pkill[^a-zA-Z_]|killpg|libc::kill\(|signal::kill\(|kill_process\(|\.arg\(.--.\)|format!\(.-\{"; if git diff "$base"...HEAD -- src tests ":(exclude)src/reap.rs" ":(exclude)tests/common/mod.rs" | grep "^+" | grep -v "^+++ " | grep -qE "$bad"; then echo "no-os-kill gate FAILED: an OS-level kill, a process-group target, or a direct signal call was introduced outside the sanctioned lifecycle helpers (src/reap.rs, tests/common/mod.rs). Lifecycle is handle-bound: Child::kill()/wait(), or the shared helper. See specs/78-no-os-level-kills.md"; exit 1; fi; if git diff "$base"...HEAD -- src/reap.rs tests/common/mod.rs | grep "^+" | grep -v "^+++ " | grep -qE "Command::new\(.(kill|pkill|killall|xkill)|\.arg\(.--.\)|format!\(.-\{"; then echo "no-os-kill gate FAILED: a sanctioned lifecycle file shelled out to kill or formatted a process-group target; use the internal guarded signal call only"; exit 1; fi'
     kind: core
+  # The boundary gate (workspace split, step 0): Clean Architecture made mechanical.
+  # `tests/boundary_audit.rs` fails when a workspace crate depends outward (the ring table in
+  # the test), when production code constructs an adapter (a store, a graph, an agent driver)
+  # outside the composition root, when a source file passes 3,000 lines, or when a denied
+  # principle lint gains an exemption. Each rule's allowlist of today's offenders only
+  # shrinks. The adjudicator treats a red boundary gate as non-negotiable.
+  boundary: { run: "cargo test --test boundary_audit", kind: core }
   # The check-in-stage mutation gate (spec 91): runs the diff-scoped `cargo mutants`
   # sweep ONCE, at the `checkin` stage below - after every implement unit has
   # integrated - rather than once per implementer round (spec 73's original per-round
@@ -372,7 +379,7 @@ stages:
     agent: rust-engineer
     strategy: fan-out
     partition: by-blast-radius
-    gates: [fmt, clippy, build, test, style, no-os-kill]
+    gates: [fmt, clippy, build, test, style, no-os-kill, boundary]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
 
@@ -389,6 +396,6 @@ stages:
     needs: [implement]
     agent: rust-engineer
     max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the sweep, one remediation round, the sweep again (1 escalated on the first miss - run c6ccaf8e)
-    gates: [fmt, clippy, build, test, style, no-os-kill, mutation]
+    gates: [fmt, clippy, build, test, style, no-os-kill, boundary, mutation]
     on_pass: merge
     coverage: "mutation efficacy of the whole spec diff"
