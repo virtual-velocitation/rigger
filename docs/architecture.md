@@ -56,6 +56,11 @@
 >   Code session it reads through the typed message stream, holds the run through an API
 >   or credential outage and resumes it by itself, and meets the operator's session
 >   through a plugin; every seam is a documented Claude Code surface.
+> - [The Owned Store](architecture-addendum-the-owned-store.md) - the storage engine under
+>   the hive's memory, written in the tree with no database engine underneath: the log is a
+>   sequence of sealed per-run segments, the graph is a memory-mapped queryable file, and a
+>   project is mounted only while it has workloads, admitted against a measured machine-wide
+>   memory budget.
 
 ---
 
