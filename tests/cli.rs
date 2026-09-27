@@ -30,6 +30,7 @@ use common::cli::temp_git_project_with_commit;
 use common::cli::temp_project;
 use common::cli::temp_repoless_project;
 use common::cli::write_reviewless_git_unit_workflow;
+use common::fixtures::assert_driver_guards_a_null_step;
 use common::fixtures::pgid_of;
 use common::rigger_bin;
 
@@ -1861,9 +1862,9 @@ fn agent_scratch_run_root(root: &Path, cache_home: &Path) -> std::path::PathBuf 
 }
 
 /// The registered spawn-scoped mutation-scratch root (`driver::replay::mutation_scratch_path`:
-/// `$XDG_CACHE_HOME/rigger-mutants/<spawn>`) under `cache_home`.
-fn mutation_scratch_root(_root: &Path, cache_home: &Path) -> std::path::PathBuf {
-    cache_home.join("rigger-mutants")
+/// `$XDG_CACHE_HOME/rigger-mutants/<spawn>`) under `cache_home`, derived by the product itself.
+fn registered_mutation_scratch_root(_root: &Path, cache_home: &Path) -> std::path::PathBuf {
+    rigger::driver::replay::mutation_scratch_root(cache_home)
 }
 
 /// For EVERY outcome ([`EVERY_REPORTED_OUTCOME`]), in a fresh live-run project: the reporting
@@ -1942,7 +1943,7 @@ rigger::test_cases! {
     a_spawns_mutation_scratch_is_reclaimed_the_moment_its_own_result_reports_for_every_outcome:
         assert_a_reported_spawns_scratch_is_reclaimed_for_every_outcome(
             "registered mutation-scratch dir",
-            mutation_scratch_root,
+            registered_mutation_scratch_root,
         );
 }
 
@@ -13983,62 +13984,13 @@ fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() 
 #[test]
 fn installed_workflow_driver_guards_a_null_step() {
     // The user-facing artifact: the native /rigger workflow the REAL `rigger setup` installs,
-    // the file the harness auto-discovers and runs.
-    let workflow = installed_rigger_workflow();
-
-    // 1. The guard EXISTS in the installed driver: it tests `!step` (agent() resolved to null)
-    //    before touching the step's fields.
-    assert!(
-        workflow.contains("if (!step)"),
-        "the installed driver must guard a null step with `if (!step)` before dereferencing it; \
-         got:\n{workflow}"
-    );
-
-    // 2. The guard PRECEDES the dereference in the installed driver. Anchor the dereference on
-    //    the code conditional `if (step.error)` (not a bare `step.error`, which also appears in
-    //    the explanatory comment): a null step reaching `if (step.error)` before the guard runs
-    //    would crash on the very read the guard exists to prevent. Both tokens are code and each
-    //    appears once, so `find` positions order them unambiguously.
-    let guard = workflow
-        .find("if (!step)")
-        .expect("the installed driver must guard a null step");
-    let deref = workflow
-        .find("if (step.error)")
-        .expect("the installed driver must read step.error after the guard");
-    assert!(
-        guard < deref,
-        "the `if (!step)` guard must precede the `if (step.error)` dereference in the installed \
-         driver, or a null step (agent() resolved to null) would still crash before the guard \
-         runs; got:\n{workflow}"
-    );
-
-    // 3. The guard stops CLEANLY and LOUDLY: it routes the null step through the throwing
-    //    `stop()`, not a silent fall-through, and that stop lives BETWEEN the guard and the
-    //    dereference.
-    assert!(
-        workflow[guard..deref].contains("stop("),
-        "the installed null-step guard must stop loudly via `stop(...)` before the dereference, \
-         not fall through; got:\n{workflow}"
-    );
-
-    // 4. The diagnostic names the LIKELY CAUSE (the courier agent died on a terminal error - an
-    //    expired login / an exhausted quota - so agent() RESOLVED TO NULL) and that the run is
-    //    RESUMABLE, the two things spec 44 requires the message to carry so the operator knows
-    //    why it stopped and that a re-run continues from this frontier.
-    assert!(
-        workflow.contains("resolved to null"),
-        "the installed null-step diagnostic must name the cause: agent() RESOLVED TO NULL rather \
-         than rejecting; got:\n{workflow}"
-    );
-    assert!(
-        workflow.contains("expired login") && workflow.contains("quota"),
-        "the installed null-step diagnostic must name the likely terminal cause (an expired \
-         login or an exhausted API quota); got:\n{workflow}"
-    );
-    assert!(
-        workflow.contains("RESUMABLE"),
-        "the installed null-step diagnostic must tell the operator the run is RESUMABLE (a \
-         re-run continues from this frontier); got:\n{workflow}"
+    // the file the harness auto-discovers and runs. The dereference is anchored on the code
+    // conditional `if (step.error)` (a bare `step.error` also appears in the explanatory
+    // comment of the unstripped file).
+    assert_driver_guards_a_null_step(
+        &installed_rigger_workflow(),
+        "if (step.error)",
+        "the installed driver",
     );
 }
 
