@@ -18088,12 +18088,17 @@ fn setup_installs_graph_hygiene_guidance_into_consumer_skill() {
     }
 }
 
-/// Write `content` to `code.txt` under `root`, stage it, and `git commit` it with `PATH` set
-/// to `path` (so the pre-commit hook finds whichever `rigger` that `PATH` stages) and no
-/// inherited `CARGO_TARGET_DIR`. Returns whether the commit succeeded and its stderr.
+/// Write `content` to `code.txt` under `root`, stage it, and [`commit_staged`] it.
 fn commit_a_code_change(root: &Path, path: &str, content: &str, message: &str) -> (bool, String) {
     std::fs::write(root.join("code.txt"), content).unwrap();
     git_ok(root, &["add", "code.txt"]);
+    commit_staged(root, path, message)
+}
+
+/// `git commit` what is staged under `root` with `PATH` set to `path` (so the pre-commit hook
+/// finds whichever `rigger` that `PATH` stages) and no inherited `CARGO_TARGET_DIR`. Returns
+/// whether the commit succeeded and its stderr.
+fn commit_staged(root: &Path, path: &str, message: &str) -> (bool, String) {
     let out = Command::new("git")
         .args(["commit", "-q", "-m", message])
         .current_dir(root)
@@ -18716,12 +18721,7 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
     let main = temp_git_project_with_commit();
     let main_root = main.path();
     setup_selfhosting_repo_with_fresh_docs(main_root);
-    let fresh_skill_before =
-        git_answer(main_root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
-    assert!(
-        fresh_skill_before.contains("name: using-rigger"),
-        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
-    );
+    let fresh_skill_before = fresh_committed_skill(main_root);
 
     let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
     let wt_path = wt_parent.path().join("rigger-wt-probeunit");
@@ -18737,26 +18737,18 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
     );
 
     let commit_path = stage_stale_rigger_shim(&wt_path);
-    std::fs::write(
-        wt_path.join("code.txt"),
-        "a rendered fact this worktree's code added\n",
-    )
-    .unwrap();
-    git_ok(&wt_path, &["add", "code.txt"]);
 
     // Round 1: no unit-derived candidate staged anywhere yet, and this worktree has no local
     // target build either - only the stale PATH shim is reachable, so this must REFUSE exactly
     // like the plain (non-worktree) fixture above, proving the hook genuinely runs here.
-    let out1 = Command::new("git")
-        .args(["commit", "-q", "-m", "add a rendered fact"])
-        .current_dir(&wt_path)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr1 = String::from_utf8_lossy(&out1.stderr);
+    let (committed1, stderr1) = commit_a_code_change(
+        &wt_path,
+        &commit_path,
+        "a rendered fact this worktree's code added\n",
+        "add a rendered fact",
+    );
     assert!(
-        !out1.status.success(),
+        !committed1,
         "with no unit-derived candidate staged, a linked worktree with only a stale PATH \
          rigger must still be REFUSED, same as the plain-project fixture; stderr:\n{stderr1}"
     );
@@ -18775,16 +18767,9 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
     // relative to `main_root`'s own `.git` (never inside the worktree) - the only thing that
     // changed between rounds is this candidate's presence.
     stage_unit_derived_binary(main_root, "probeunit");
-    let out2 = Command::new("git")
-        .args(["commit", "-q", "-m", "add a rendered fact"])
-        .current_dir(&wt_path)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    let (committed2, stderr2) = commit_staged(&wt_path, &commit_path, "add a rendered fact");
     assert!(
-        out2.status.success(),
+        committed2,
         "the unit-derived candidate must be found and PREFERRED over the stale PATH rigger \
          once staged; stderr:\n{stderr2}"
     );
@@ -18798,10 +18783,9 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
         tree.contains("code.txt"),
         "the worktree's own change must ride the commit; tree:\n{tree}"
     );
-    let committed_after =
-        git_answer(&wt_path, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert_eq!(
-        committed_after, fresh_skill_before,
+        committed_skill(&wt_path),
+        fresh_skill_before,
         "the already-fresh doc must land byte-identical - the unit-derived binary's render \
          matched what was staged"
     );

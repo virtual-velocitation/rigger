@@ -19,7 +19,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-e5c85f65647d",
+    "id": "dup-2decafdadaa4",
     "classification": "semantic",
     "sites": [
       {
@@ -181,16 +181,6 @@
         "file": "tests/cli.rs",
         "name": "Command::new",
         "content_hash": "da3ee123d4540dd7"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
-      },
-      {
-        "file": "tests/cli.rs",
-        "name": "Command::new",
-        "content_hash": "583982587bb6b9ca"
       },
       {
         "file": "tests/cli.rs",
@@ -469,7 +459,7 @@
       }
     ],
     "proposed_home": "a single injected process-spawn port every Command::new site routes through instead of constructing its own Command",
-    "note": "mandatory sweep: Command::new call sites - 89 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: Command::new call sites - 87 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {
