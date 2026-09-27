@@ -307,38 +307,43 @@ fn review_round_start_key(unit: &str, attempt: u32) -> String {
     format!("{unit}/review-round-start#{attempt}")
 }
 
-/// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
-/// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
-/// verdict instead of re-running the command (spec 04, criterion 4). Distinct attempts
-/// are distinct gate runs (a re-implementation must re-gate), so only re-reaching the
-/// SAME attempt's gate is a replay.
-fn gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
-    format!("{unit}/gate:{gate}#{attempt}")
+/// Which gate-keyed record a [`gate_key`] names - each kind keys apart from the others at the
+/// SAME `(unit, attempt, gate)` coordinate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GateKey {
+    /// A gate's verdict, keyed by the `(unit, attempt, gate)` coordinate the gate ran under -
+    /// so a step re-reaching an already-run gate REPLAYS its recorded verdict instead of
+    /// re-running the command (spec 04, criterion 4). Distinct attempts are distinct gate
+    /// runs (a re-implementation must re-gate), so only re-reaching the SAME attempt's gate
+    /// is a replay. Format `{unit}/gate:{gate}#{attempt}`.
+    Verdict,
+    /// A blast-radius SKIP verdict (spec 12, unit 3), DISTINCT from the gate-RUN key. The
+    /// skip is a logged provenance record ("the inner loop did not run this gate because its
+    /// `inputs:` miss the blast radius"), NOT a gate outcome: keying it apart means
+    /// [`cached`] over `gate_verdicts` never treats a skip as a recorded verdict, so the
+    /// exhaustive integrate pass still RUNS the skipped gate. The `gate-skip:` infix contains
+    /// no `/gate:` substring, so [`unit_of_gate_key`] never mis-parses it. Keyed so a stepwise
+    /// resume re-emits the skip exactly once.
+    Skip,
+    /// A POST-MERGE re-gate verdict (spec 12, unit 5), DISTINCT from the pre-merge gate-RUN
+    /// key at the SAME `(unit, attempt)`. Keying the post-merge re-gate apart is what lets it
+    /// re-verify the MERGED tree instead of REPLAYING the pre-merge isolation green via the
+    /// content-blind exact-key replay - the merged tree runs (or content-cache-hits) under
+    /// its own key. The `postmerge-gate:` infix carries no `/gate:` substring, so
+    /// [`unit_of_gate_key`] never mis-parses it as a pre-merge gate key (it neither pollutes
+    /// unit-4's attempt high-water scan nor seeds the cache with a unit). Keyed so a stepwise
+    /// resume re-emits the post-merge verdict exactly once.
+    PostMergeVerdict,
 }
 
-/// The replay key for a blast-radius SKIP verdict (spec 12, unit 3), DISTINCT from the
-/// gate-RUN key [`gate_verdict_key`] produces (`{unit}/gate:{gate}#{attempt}`). The skip
-/// is a logged provenance record ("the inner loop did not run this gate because its
-/// `inputs:` miss the blast radius"), NOT a gate outcome: keying it apart means
-/// [`recorded_gate_verdict`](RunCtx::recorded_gate_verdict) never treats a skip as a
-/// recorded verdict, so the exhaustive integrate pass still RUNS the skipped gate. The
-/// `gate-skip:` infix contains no `/gate:` substring, so [`unit_of_gate_key`] never
-/// mis-parses it. Keyed so a stepwise resume re-emits the skip exactly once.
-fn gate_skip_key(unit: &str, attempt: u32, gate: &str) -> String {
-    format!("{unit}/gate-skip:{gate}#{attempt}")
-}
-
-/// The replay key for a POST-MERGE re-gate verdict (spec 12, unit 5), DISTINCT from the
-/// pre-merge gate-RUN key [`gate_verdict_key`] produces (`{unit}/gate:{gate}#{attempt}`) at
-/// the SAME `(unit, attempt)`. Keying the post-merge re-gate apart is what lets it re-verify
-/// the MERGED tree instead of REPLAYING the pre-merge isolation green via the content-blind
-/// exact-key replay ([`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)) - the merged
-/// tree runs (or content-cache-hits) under its own key. The `postmerge-gate:` infix carries
-/// no `/gate:` substring, so [`unit_of_gate_key`] never mis-parses it as a pre-merge gate key
-/// (it neither pollutes unit-4's attempt high-water scan nor seeds the cache with a unit).
-/// Keyed so a stepwise resume re-emits the post-merge verdict exactly once.
-fn postmerge_gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
-    format!("{unit}/postmerge-gate:{gate}#{attempt}")
+/// The replay key for the [`GateKey`] record of `gate` run by `unit` at `attempt`.
+fn gate_key(kind: GateKey, unit: &str, attempt: u32, gate: &str) -> String {
+    let infix = match kind {
+        GateKey::Verdict => "gate",
+        GateKey::Skip => "gate-skip",
+        GateKey::PostMergeVerdict => "postmerge-gate",
+    };
+    format!("{unit}/{infix}:{gate}#{attempt}")
 }
 
 /// The replay key for a durable compensation-QUEUED mark (spec 12, unit 4), keyed by the
@@ -3751,7 +3756,7 @@ impl RunCtx<'_> {
         inputs: &[String],
         blast_radius: &[String],
     ) -> Result<(), Error> {
-        let key = gate_skip_key(unit, attempt, gid);
+        let key = gate_key(GateKey::Skip, unit, attempt, gid);
         {
             // Idempotency guard, identical to `emit_gate_verdict`: a re-step that already
             // recorded this skip re-appends nothing.
@@ -8207,15 +8212,17 @@ impl RunCtx<'_> {
             // MERGED tree under its own key instead of REPLAYING the isolation green; every
             // other selection uses the canonical gate-run key.
             let key = match selection {
-                GateSelection::PostMerge => postmerge_gate_verdict_key(&st.name, attempt, gid),
-                _ => gate_verdict_key(&st.name, attempt, gid),
+                GateSelection::PostMerge => {
+                    gate_key(GateKey::PostMergeVerdict, &st.name, attempt, gid)
+                }
+                _ => gate_key(GateKey::Verdict, &st.name, attempt, gid),
             };
             // REPLAY a recorded verdict (spec 04, criterion 4): this gate already ran in
             // a prior step, so reuse its recorded pass/evidence and re-run NOTHING - not
             // the command, not the GateVerdict emit, not the ratchet. The recorded
             // outcome is authoritative, so the unit's verified/failed decision is
             // identical to the live run's.
-            if let Some((pass, evidence)) = self.recorded_gate_verdict(&key) {
+            if let Some((pass, evidence)) = cached(&self.gate_verdicts, &key) {
                 if !pass {
                     outcome.pass = false;
                     outcome.evidence.push(format!("{gid}: {evidence}"));
@@ -14175,7 +14182,10 @@ mod tests {
                 }))
                 .unwrap(),
             )
-            .with_meta(META_REPLAY_KEY, gate_verdict_key(unit, attempt, gate))
+            .with_meta(
+                META_REPLAY_KEY,
+                gate_key(GateKey::Verdict, unit, attempt, gate),
+            )
         }
 
         // No recorded gate run yet -> None (the unit's gates have not run).
@@ -14240,7 +14250,7 @@ mod tests {
             }))
             .unwrap(),
         )
-        .with_meta(META_REPLAY_KEY, gate_skip_key("u3", 0, "test"));
+        .with_meta(META_REPLAY_KEY, gate_key(GateKey::Skip, "u3", 0, "test"));
         let artifact = Event::new(
             contextgraph::TYPE_GATE_VERDICT,
             serde_json::to_vec(&json!({ "gate": "build", "pass": true, "artifact": "src/a.rs" }))
@@ -21411,7 +21421,7 @@ mod tests {
         const UNIT: &str = "gc";
         const GATE: &str = "g@h1";
         let started_key = format!("{UNIT}/started");
-        let verdict_key = gate_verdict_key(UNIT, 0, GATE);
+        let verdict_key = gate_key(GateKey::Verdict, UNIT, 0, GATE);
 
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
@@ -34629,7 +34639,7 @@ mod tests {
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
 
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let postmerge_key = postmerge_gate_verdict_key("s", 0, "ok");
+        let postmerge_key = gate_key(GateKey::PostMergeVerdict, "s", 0, "ok");
         assert!(
             events
                 .iter()
