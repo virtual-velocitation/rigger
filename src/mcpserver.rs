@@ -25,20 +25,17 @@ struct ToolError {
     message: String,
 }
 
-impl ToolError {
-    /// An internal error (`-32603`): something went wrong server-side.
-    fn internal(message: impl Into<String>) -> Self {
-        ToolError {
-            code: -32603,
-            message: message.into(),
-        }
-    }
+/// JSON-RPC's internal-error code: something went wrong server-side.
+const INTERNAL_ERROR: i64 = -32603;
+/// JSON-RPC's invalid-params code: the caller's arguments were wrong (e.g. a stale/unknown
+/// spawn id, a missing required field).
+const INVALID_PARAMS: i64 = -32602;
 
-    /// An invalid-params error (`-32602`): the caller's arguments were wrong
-    /// (e.g. a stale/unknown spawn id, a missing required field).
-    fn invalid_params(message: impl Into<String>) -> Self {
+impl ToolError {
+    /// A tool failure reported with JSON-RPC `code` ([`INTERNAL_ERROR`] or [`INVALID_PARAMS`]).
+    fn new(code: i64, message: impl Into<String>) -> Self {
         ToolError {
-            code: -32602,
+            code,
             message: message.into(),
         }
     }
@@ -46,13 +43,13 @@ impl ToolError {
 
 impl From<String> for ToolError {
     fn from(message: String) -> Self {
-        ToolError::internal(message)
+        ToolError::new(INTERNAL_ERROR, message)
     }
 }
 
 impl From<&str> for ToolError {
     fn from(message: &str) -> Self {
-        ToolError::internal(message)
+        ToolError::new(INTERNAL_ERROR, message)
     }
 }
 
@@ -71,8 +68,8 @@ pub struct Server<'a> {
     /// the graph - the system's cross-agent memory - would never see them.
     graph: Option<&'a dyn Projection>,
     /// The operator's own read-only grounder port (spec 92, criterion 4's fix round). Wiring
-    /// one via [`with_grounder`] (or recording a resolution failure via
-    /// [`with_grounder_unavailable`]) is what MARKS this `Server` as the operator's lookup
+    /// one via [`with_grounder`] (or recording a resolution failure through its `Err`
+    /// arm) is what MARKS this `Server` as the operator's lookup
     /// surface (`rigger mcp`, registered into `.mcp.json`): [`tool_list`]/[`call_tool`] then
     /// advertise and serve exactly `rigger_peers`/`rigger_ground`/`rigger_graph` instead of the
     /// workflow-driver bridge's `rigger_next`/`rigger_result`/`rigger_emit`/`rigger_peers`/
@@ -84,7 +81,7 @@ pub struct Server<'a> {
     /// Set instead of [`grounder`](Server::grounder) when the caller's own grounder resolution
     /// FAILED (e.g. `--no-default-features` with no `defaults.grounder` pinned, spec 57's
     /// never-silently-degrade grounder-selection contract) - via
-    /// [`with_grounder_unavailable`]. Still marks the LOOKUP surface (peers/graph must keep
+    /// [`with_grounder`]'s `Err` arm. Still marks the LOOKUP surface (peers/graph must keep
     /// answering; a grounder misconfiguration is not a reason to refuse the whole server), but
     /// `rigger_ground` reports this reason as an honest tool-call error instead of silently
     /// returning empty results, exactly as the pre-fix lazy resolution did (a
@@ -184,26 +181,23 @@ impl<'a> Server<'a> {
         self
     }
 
-    /// Wire the operator's own read-only grounder port (spec 92, criterion 4's fix round):
-    /// `rigger_ground` answers through it, over the SAME `Grounder` trait `rigger ground`
-    /// resolves via `select_grounder` - so ground's ranking (spec 92 criterion 3's territory) is
-    /// inherited automatically, never re-implemented here. Wiring a grounder is also what turns
-    /// this `Server` into the operator's LOOKUP surface: see [`grounder`](Server::grounder)'s
-    /// doc comment for what that switches in [`tool_list`](Server::tool_list) and
-    /// [`call_tool`](Server::call_tool).
-    pub fn with_grounder(mut self, grounder: &'a dyn Grounder) -> Self {
-        self.grounder = Some(grounder);
-        self
-    }
-
-    /// Mark this `Server` as the operator's lookup surface even though grounder resolution
-    /// FAILED (see [`grounder_unavailable`](Server::grounder_unavailable)'s doc comment): a
-    /// caller unable to produce a working `&dyn Grounder` (e.g. `select_grounder` erred) calls
-    /// this INSTEAD of [`with_grounder`], passing the resolution failure's message, so
+    /// Wire the operator's own read-only grounder port (spec 92, criterion 4's fix round) - or
+    /// the reason resolving it FAILED. `Ok`: `rigger_ground` answers through it, over the SAME
+    /// `Grounder` trait `rigger ground` resolves via `select_grounder` - so ground's ranking
+    /// (spec 92 criterion 3's territory) is inherited automatically, never re-implemented here.
+    /// `Err` (a caller unable to produce a working `&dyn Grounder`, e.g. `select_grounder`
+    /// erred) passes the resolution failure's message instead (see
+    /// [`grounder_unavailable`](Server::grounder_unavailable)'s doc comment), so
     /// `rigger_peers`/`rigger_graph` still answer normally and only `rigger_ground` reports the
-    /// reason as its own tool-call error.
-    pub fn with_grounder_unavailable(mut self, reason: impl Into<String>) -> Self {
-        self.grounder_unavailable = Some(reason.into());
+    /// reason as its own tool-call error. Either way, wiring this is what turns this `Server`
+    /// into the operator's LOOKUP surface: see [`grounder`](Server::grounder)'s doc comment for
+    /// what that switches in [`tool_list`](Server::tool_list) and
+    /// [`call_tool`](Server::call_tool).
+    pub fn with_grounder(mut self, grounder: Result<&'a dyn Grounder, String>) -> Self {
+        match grounder {
+            Ok(g) => self.grounder = Some(g),
+            Err(reason) => self.grounder_unavailable = Some(reason),
+        }
         self
     }
 
@@ -306,8 +300,8 @@ impl<'a> Server<'a> {
     /// The two tool surfaces one `Server` answers (spec 92, criterion 4's fix round): the
     /// workflow-driver bridge the loop's shim polls, or the operator's read-only lookup surface
     /// `rigger mcp` serves - see [`grounder`](Server::grounder)'s doc comment for what marks a
-    /// `Server` instance as the latter. Either [`with_grounder`](Server::with_grounder) OR
-    /// [`with_grounder_unavailable`](Server::with_grounder_unavailable) marks it - a grounder
+    /// `Server` instance as the latter. [`with_grounder`](Server::with_grounder) marks it with
+    /// either an `Ok` grounder or an `Err` resolution failure - a grounder
     /// resolution failure still gets the lookup surface (peers/graph keep answering), it just
     /// makes `rigger_ground` itself report that failure. Kept as one small helper so
     /// [`tool_list`](Server::tool_list) and [`call_tool`](Server::call_tool) can never disagree
@@ -367,7 +361,7 @@ impl<'a> Server<'a> {
                 // `rigger_result`). Set BEFORE returning the request, since the shim runs the
                 // agent - and the agent emits - only after receiving it.
                 *self.current_spawn.lock().unwrap() = Some(req.id.clone());
-                serde_json::to_value(req).map_err(|e| ToolError::internal(e.to_string()))
+                serde_json::to_value(req).map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))
             }
             // An empty id means "no spawn right now". `done` disambiguates the two
             // cases the shim cannot otherwise tell apart: `done:true` means the
@@ -419,9 +413,10 @@ impl<'a> Server<'a> {
             }
             Ok(json!({}))
         } else {
-            Err(ToolError::invalid_params(format!(
-                "unknown spawn id {id:?}"
-            )))
+            Err(ToolError::new(
+                INVALID_PARAMS,
+                format!("unknown spawn id {id:?}"),
+            ))
         }
     }
 
@@ -433,7 +428,7 @@ impl<'a> Server<'a> {
         let args = self.stamp_current_spawn(args);
         emit_event(self.store, &self.stream, self.graph, &args)
             .map(|_| json!({}))
-            .map_err(ToolError::internal)
+            .map_err(ToolError::from)
     }
 
     /// Return `args` with its `meta.spawn` set to the id of the spawn currently being served
@@ -476,10 +471,13 @@ impl<'a> Server<'a> {
             .and_then(Value::as_str)
         {
             if named != bound {
-                return Err(ToolError::invalid_params(format!(
-                    "rigger_emit: refusing to emit on behalf of spawn {named:?}: this \
+                return Err(ToolError::new(
+                    INVALID_PARAMS,
+                    format!(
+                        "rigger_emit: refusing to emit on behalf of spawn {named:?}: this \
                      server is bound to spawn {bound:?}"
-                )));
+                    ),
+                ));
             }
         }
         let mut stamped = args.clone();
@@ -489,7 +487,7 @@ impl<'a> Server<'a> {
         Self::stamp_spawn_meta(obj, bound);
         emit_event(self.store, &self.stream, self.graph, &stamped)
             .map(|_| json!({}))
-            .map_err(ToolError::internal)
+            .map_err(ToolError::from)
     }
 
     /// Insert `meta.spawn = spawn` into an args object's `meta` field - the ONE stamping site
@@ -535,7 +533,7 @@ impl<'a> Server<'a> {
         let all = self
             .store
             .read_stream(&self.stream, 0, crate::eventstore::Direction::Forward)
-            .map_err(|e| ToolError::internal(e.to_string()))?;
+            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;
         Ok(crate::run::current_run_id(&all).unwrap_or_default())
     }
 
@@ -560,7 +558,7 @@ impl<'a> Server<'a> {
         let run_id = self.current_run_id()?;
         crate::progress_store::record(progress, &run_id, &bound, activity)
             .map(|_| json!({}))
-            .map_err(|e| ToolError::internal(e.to_string()))
+            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))
     }
 
     /// `rigger_scratch` (spec 104's spawn MCP server, addendum §4.3): the BOUND spawn's own
@@ -577,9 +575,10 @@ impl<'a> Server<'a> {
         let run_id = self.current_run_id()?;
         let path = crate::driver::replay::spawn_scratch_path(&self.scratch_root, &run_id, &bound)
             .ok_or_else(|| {
-            ToolError::internal(format!(
-                "rigger_scratch: {bound:?} does not name a usable scratch path"
-            ))
+            ToolError::new(
+                INTERNAL_ERROR,
+                format!("rigger_scratch: {bound:?} does not name a usable scratch path"),
+            )
         })?;
         Ok(json!({"path": path.display().to_string()}))
     }
@@ -694,7 +693,7 @@ impl<'a> Server<'a> {
         let all = self
             .store
             .read_stream(&self.stream, 0, crate::eventstore::Direction::Forward)
-            .map_err(|e| ToolError::internal(e.to_string()))?;
+            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;
         let run_events = crate::run::current_run(&all);
         let run_id = crate::run::current_run_id(&all).unwrap_or_default();
 
@@ -721,7 +720,7 @@ impl<'a> Server<'a> {
             std::collections::HashMap::new();
         if !self.scratch_root.is_empty() {
             let frontier = crate::spawn::step_result(run_events)
-                .map_err(|e| ToolError::internal(e.to_string()))?
+                .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?
                 .wave;
             for w in &frontier {
                 let Some(path) = crate::liveness::marker_path(&self.scratch_root, &run_id, &w.id)
@@ -738,8 +737,8 @@ impl<'a> Server<'a> {
         }
 
         let view = crate::progress::consolidate(run_events, &prog_events, &liveness_ages, now)
-            .map_err(|e| ToolError::internal(e.to_string()))?;
-        serde_json::to_value(view).map_err(|e| ToolError::internal(e.to_string()))
+            .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?;
+        serde_json::to_value(view).map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))
     }
 
     /// The tools THIS instance advertises: the spawn-bound surface (spec 104, `--spawn <id>`)
@@ -1874,7 +1873,7 @@ mod tests {
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let grounder = Nop;
-        let server = Server::new(&driver, &store, "run", &peers).with_grounder(&grounder);
+        let server = Server::new(&driver, &store, "run", &peers).with_grounder(Ok(&grounder));
 
         let names: Vec<String> = server
             .tool_list()
@@ -1898,7 +1897,7 @@ mod tests {
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let grounder = Nop;
-        let server = Server::new(&driver, &store, "run", &peers).with_grounder(&grounder);
+        let server = Server::new(&driver, &store, "run", &peers).with_grounder(Ok(&grounder));
 
         let ground_input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_ground","arguments":{"query":"anything"}}}"#;
         let mut out = Vec::new();
@@ -1951,7 +1950,7 @@ mod tests {
         }
     }
 
-    /// Reject-fix regression: `with_grounder_unavailable` (the graceful-degrade path a caller
+    /// Reject-fix regression: `with_grounder(Err(..))` (the graceful-degrade path a caller
     /// takes when its OWN grounder resolution failed) still marks the lookup surface - the tool
     /// list is unchanged, `rigger_peers` keeps answering - and `rigger_ground` alone reports the
     /// recorded reason as its own tool-call error, lazily, never a silently-empty results array.
@@ -1982,7 +1981,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let server = Server::new(&driver, &store, "run", &peers)
-            .with_grounder_unavailable("grounder \"turbovec\" was retired");
+            .with_grounder(Err("grounder \"turbovec\" was retired".to_string()));
 
         // Still the lookup surface - the exact same three tools, tool-list-wise.
         let names: Vec<String> = server
@@ -2066,7 +2065,7 @@ mod tests {
 
         let server = Server::new(&driver, &store, "run", &peers)
             .with_graph(&graph)
-            .with_grounder(&grounder);
+            .with_grounder(Ok(&grounder));
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"show":"frobnicate"}}}"#;
         let mut out = Vec::new();
@@ -2111,7 +2110,7 @@ mod tests {
 
         let server = Server::new(&driver, &store, "run", &peers)
             .with_graph(&graph)
-            .with_grounder(&grounder);
+            .with_grounder(Ok(&grounder));
 
         let input = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_graph","arguments":{"show":"shared"}}}"#;
         let mut out = Vec::new();
@@ -2161,7 +2160,7 @@ mod tests {
         let progress = Store::open(":memory:").unwrap();
         let grounder = Nop;
         let server = Server::new(&driver, &store, "run", &peers)
-            .with_grounder(&grounder)
+            .with_grounder(Ok(&grounder))
             .with_progress(&progress, "/scratch/root")
             .with_spawn("u104-spawn-mcp/implementer#0");
 
@@ -2439,7 +2438,7 @@ mod tests {
         let grounder = Nop;
         let graph = Projector::open(":memory:", "test").unwrap();
         let server = Server::new(&driver, &store, "run", &peers)
-            .with_grounder(&grounder)
+            .with_grounder(Ok(&grounder))
             .with_graph(&graph)
             .with_spawn("u/implementer#0");
 
