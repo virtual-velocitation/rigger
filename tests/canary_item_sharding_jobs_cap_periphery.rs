@@ -33,32 +33,18 @@ use serde_json::{json, Value};
 
 use common::fixtures::anchor_of;
 use common::fixtures::cfg_for;
+use common::fixtures::critical_verdict;
+use common::fixtures::emit_review_finding;
 use common::fixtures::panel_with_lenses;
+use common::fixtures::planted_item as item;
+use common::fixtures::CRITICAL_SUMMARY;
 use rigger::canary::{CanaryOutcome, STREAM, TIER_LENS};
-use rigger::canary_store::{run_canary, CanaryItem};
+use rigger::canary_store::run_canary;
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
-
-const CRITICAL_SUMMARY: &str = "CRIT defect here";
-
-fn item(id: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
-    CanaryItem {
-        id: id.into(),
-        defect_class: if planted {
-            "off-by-one".into()
-        } else {
-            "none".into()
-        },
-        planted,
-        anchor: format!("{id}.rs"),
-        expected_verdict: verdict.into(),
-        expected_tier: tier.into(),
-        review: format!("fn {id}() {{}}"),
-    }
-}
 
 /// `default_jobs()` is not merely "greater than one" (already pinned in
 /// `canary_lens_fanout_periphery.rs`) but an EXACT, reproducible formula: the crate-wide
@@ -98,12 +84,7 @@ fn run_canary_with_a_zero_jobs_budget_degrades_to_a_serial_width_without_panicki
             emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             if a.id == "adj" {
-                let reject = prompt.contains(CRITICAL_SUMMARY);
-                let verdict = if reject { "reject" } else { "approve" };
-                return Ok(AgentResult {
-                    output: format!("{{\"verdict\":\"{verdict}\"}}"),
-                    resolved_model: String::new(),
-                });
+                return Ok(critical_verdict(prompt));
             }
             // Only the lens tier catches here - the adversary stays clean, so the
             // resulting caught_by names exactly the lens tier, not both.
@@ -178,12 +159,7 @@ fn run_canary_jobs_budget_bounds_total_concurrent_spawns_through_the_public_entr
             emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             if a.id == "adj" {
-                let reject = prompt.contains(CRITICAL_SUMMARY);
-                let verdict = if reject { "reject" } else { "approve" };
-                return Ok(AgentResult {
-                    output: format!("{{\"verdict\":\"{verdict}\"}}"),
-                    resolved_model: String::new(),
-                });
+                return Ok(critical_verdict(prompt));
             }
             // Only the lens tier is sharded by this unit's `item_workers x lens_workers`
             // product; the adversary runs once per item, sequential after the lens tier -
@@ -194,16 +170,7 @@ fn run_canary_jobs_budget_bounds_total_concurrent_spawns_through_the_public_entr
             }
             let anchor = anchor_of(prompt);
             let catches = a.id == "lens-b" && anchor == "i2.rs";
-            let finding = if catches {
-                json!({"id": format!("f-{}", a.id), "by": a.id, "summary": CRITICAL_SUMMARY, "about": [anchor]})
-            } else {
-                json!({"id": format!("f-{}", a.id), "by": a.id, "summary": "minor style nit", "about": ["other.rs"]})
-            };
-            emit(TYPE_REVIEW_FINDING, finding)?;
-            Ok(AgentResult {
-                output: "reviewed".into(),
-                resolved_model: String::new(),
-            })
+            emit_review_finding(emit, &a.id, &anchor, catches)
         }
     }
 
@@ -264,27 +231,13 @@ fn run_canary_scores_identically_regardless_of_jobs_width_through_the_public_ent
             emit: &dyn Fn(&str, Value) -> Result<(), Error>,
         ) -> Result<AgentResult, Error> {
             if a.id == "adj" {
-                let reject = prompt.contains(CRITICAL_SUMMARY);
-                let verdict = if reject { "reject" } else { "approve" };
-                return Ok(AgentResult {
-                    output: format!("{{\"verdict\":\"{verdict}\"}}"),
-                    resolved_model: String::new(),
-                });
+                return Ok(critical_verdict(prompt));
             }
             let anchor = anchor_of(prompt);
             // lens-c catches i1/i4; the adversary catches i2; nobody catches i3 (control).
             let catches = (a.id == "lens-c" && (anchor == "i1.rs" || anchor == "i4.rs"))
                 || (a.id == "adv" && anchor == "i2.rs");
-            let finding = if catches {
-                json!({"id": format!("f-{}", a.id), "by": a.id, "summary": CRITICAL_SUMMARY, "about": [anchor]})
-            } else {
-                json!({"id": format!("f-{}", a.id), "by": a.id, "summary": "minor style nit", "about": ["other.rs"]})
-            };
-            emit(TYPE_REVIEW_FINDING, finding)?;
-            Ok(AgentResult {
-                output: "reviewed".into(),
-                resolved_model: String::new(),
-            })
+            emit_review_finding(emit, &a.id, &anchor, catches)
         }
     }
 

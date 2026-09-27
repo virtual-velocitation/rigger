@@ -35,23 +35,20 @@ mod common;
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
+use common::fixtures::anchor_of;
 use common::fixtures::cfg_for;
+use common::fixtures::critical_verdict;
+use common::fixtures::emit_review_finding;
 use common::fixtures::item;
 use common::fixtures::panel_with_lenses;
 use rigger::canary::{CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
 use rigger::canary_store::run_canary;
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::AgentDef;
-use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
-
-/// The finding summary text that marks a "critical" finding - the exact substring the
-/// adjudicator half of [`RecordingDriver`] looks for in its own prompt (which embeds every
-/// finding's summary), mirroring how the live adjudicator prompt actually carries findings.
-const CRITICAL_SUMMARY: &str = "CRIT defect here";
 
 /// A minimal scripted `AgentDriver`, written FROM SCRATCH for this outside-in layer (it does
 /// not, and cannot, reuse canary.rs's own `#[cfg(test)]`-private `Scripted` driver). A
@@ -76,37 +73,19 @@ impl AgentDriver for RecordingDriver {
         self.seen.lock().unwrap().push(a.id.clone());
 
         if a.id == "adj" {
-            let reject = prompt.contains(CRITICAL_SUMMARY);
-            let verdict = if reject { "reject" } else { "approve" };
-            return Ok(AgentResult {
-                output: format!("{{\"verdict\":\"{verdict}\"}}"),
-                resolved_model: String::new(),
-            });
+            return Ok(critical_verdict(prompt));
         }
 
         // The anchor `review_header` names between the FIRST pair of backticks in the
         // prompt - the same extraction canary.rs's own `mod tests` driver uses, reached
         // independently here since that code is private to canary.rs.
-        let anchor = prompt
-            .split_once('`')
-            .and_then(|(_, rest)| rest.split_once('`'))
-            .map(|(anchor, _)| anchor.to_string())
-            .unwrap_or_default();
+        let anchor = anchor_of(prompt);
 
         let catches = self
             .catches
             .iter()
             .any(|(id, anc)| *id == a.id && *anc == anchor);
-        let finding = if catches {
-            json!({"id": format!("f-{}", a.id), "by": a.id, "summary": CRITICAL_SUMMARY, "about": [anchor]})
-        } else {
-            json!({"id": format!("f-{}", a.id), "by": a.id, "summary": "minor style nit", "about": ["other.rs"]})
-        };
-        emit(TYPE_REVIEW_FINDING, finding)?;
-        Ok(AgentResult {
-            output: "reviewed".into(),
-            resolved_model: String::new(),
-        })
+        emit_review_finding(emit, &a.id, &anchor, catches)
     }
 }
 

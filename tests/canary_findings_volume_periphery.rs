@@ -33,21 +33,18 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
+use common::fixtures::anchored_item as item;
 use common::fixtures::cfg_for;
 use common::fixtures::panel_with_lenses;
+use common::fixtures::CRITICAL_SUMMARY;
 use rigger::canary::{CanaryOutcome, STREAM, TIER_ADVERSARY, TIER_LENS};
-use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
+use rigger::canary_store::{default_jobs, run_canary};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
 use rigger::ledger::TYPE_UNIT_STATUS;
-
-/// The finding summary text that marks a "critical" finding - the exact substring the
-/// scripted adjudicator below looks for in its own prompt (which embeds every finding's
-/// summary), mirroring how the live adjudicator prompt actually carries findings.
-const CRITICAL_SUMMARY: &str = "CRIT defect here";
 
 /// A minimal scripted `AgentDriver` written from scratch for this outside-in layer (it does
 /// not, and cannot, reuse canary.rs's own `#[cfg(test)]`-private `Scripted` driver). Every
@@ -106,22 +103,6 @@ impl AgentDriver for VolumeDriver {
             output: "reviewed".into(),
             resolved_model: String::new(),
         })
-    }
-}
-
-fn item(id: &str, anchor: &str, planted: bool, verdict: &str, tier: &str) -> CanaryItem {
-    CanaryItem {
-        id: id.into(),
-        defect_class: if planted {
-            "off-by-one".into()
-        } else {
-            "none".into()
-        },
-        planted,
-        anchor: anchor.into(),
-        expected_verdict: verdict.into(),
-        expected_tier: tier.into(),
-        review: format!("fn {id}() {{}}"),
     }
 }
 

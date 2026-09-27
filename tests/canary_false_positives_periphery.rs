@@ -31,8 +31,9 @@ mod common;
 
 use common::fixtures::cfg_for;
 use common::fixtures::lens_only_panel;
+use common::fixtures::marked_item as item;
 use rigger::canary::{CanaryOutcome, STREAM};
-use rigger::canary_store::{default_jobs, run_canary, CanaryItem};
+use rigger::canary_store::{default_jobs, run_canary};
 use rigger::conductor::{AgentDriver, AgentResult, Error, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::contextgraph::TYPE_REVIEW_FINDING;
@@ -122,22 +123,6 @@ impl AgentDriver for FalsePositiveDriver {
             output: "reviewed".into(),
             resolved_model: String::new(),
         })
-    }
-}
-
-fn item(id: &str, anchor: &str, planted: bool, verdict: &str, marker: &str) -> CanaryItem {
-    CanaryItem {
-        id: id.into(),
-        defect_class: if planted {
-            "off-by-one".into()
-        } else {
-            "none".into()
-        },
-        planted,
-        anchor: anchor.into(),
-        expected_verdict: verdict.into(),
-        expected_tier: String::new(),
-        review: format!("fn {id}() {{ /* {marker} */ }}"),
     }
 }
 
