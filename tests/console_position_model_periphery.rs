@@ -13,6 +13,7 @@
 
 mod common;
 
+use common::served::assert_console_body_carries;
 use common::served::{assert_served_console_page_carries, served_console_body};
 
 rigger::test_cases! {
@@ -37,18 +38,16 @@ rigger::test_cases! {
 #[test]
 fn the_served_console_page_wires_replay_and_keyboard_controls() {
     let body = served_console_body();
-    for needle in [
-        "ArrowLeft",
-        "ArrowRight",
-        "\"End\"",
-        "setInterval(",
-        "1000 / 5",
-    ] {
-        assert!(
-            body.contains(needle),
-            "missing {needle:?} in the served console page: {body}"
-        );
-    }
+    assert_console_body_carries(
+        &body,
+        &[
+            "ArrowLeft",
+            "ArrowRight",
+            "\"End\"",
+            "setInterval(",
+            "1000 / 5",
+        ],
+    );
     // Space toggles play - proven via either the printable-space key or its named code,
     // never requiring a specific one of the two equally valid DOM spellings.
     assert!(

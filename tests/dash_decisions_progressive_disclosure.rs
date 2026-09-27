@@ -23,13 +23,9 @@
 
 mod common;
 
-use std::process::Command;
-
-use common::fixtures::tool_available;
-use common::served::page_script;
+use common::served::node_harness_passes;
 use common::served::{fetch_with_retry, graph_provider_of, try_fetch_over};
 use rigger::contextgraph::Graph;
-use rigger::dash::{self};
 
 /// Drive the hand-rolled dash server over a REAL loopback socket through the public `serve_on`
 /// entrypoint and fetch `GET /` (the root page), returning the full raw HTTP response (status line
@@ -232,53 +228,18 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-render-harness.js" });
 "##;
 
-/// RUNTIME guard for spec 30 c4's charter: a decision the operator expands must stay open across the
-/// 1.5s live poll so a multi-KB reasoning body can actually be READ in the primary `rigger dash`
-/// mode. The live poll re-runs `render()`, which wholesale-replaces the decisions region's
-/// `innerHTML` (destroying + recreating the `<details>` subtree); the fix tracks expanded ids and
-/// re-applies `open` on every render so the operator's expansion survives.
-///
-/// This drives the SERVED page's real `render()` twice under a DOM shim (via node's `vm`), expands
-/// `d-alpha` between the renders, and asserts it is still open after the second render while an
-/// untouched `d-beta` stays collapsed. It is the runtime check the grep tests cannot make: reverting
-/// the render-side `open` re-application re-collapses `d-alpha` and this test goes red.
-#[test]
-fn an_operator_expanded_decision_survives_the_live_poll_re_render() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP an_operator_expanded_decision_survives_the_live_poll_re_render: no `node` runtime \
-             on PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest \
-             CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the render harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, RENDER_TWICE_HARNESS).expect("write the render harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served render() twice");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the served render() must keep an operator-expanded decision open across the live poll's \
-         re-render, but the runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK expanded-decision-survives-poll"),
-        "the render harness must confirm the expanded decision survived:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 30 c4's charter: a decision the operator expands must stay open across the
+    /// 1.5s live poll so a multi-KB reasoning body can actually be READ in the primary `rigger dash`
+    /// mode. The live poll re-runs `render()`, which wholesale-replaces the decisions region's
+    /// `innerHTML` (destroying + recreating the `<details>` subtree); the fix tracks expanded ids and
+    /// re-applies `open` on every render so the operator's expansion survives.
+    ///
+    /// This drives the SERVED page's real `render()` twice under a DOM shim (via node's `vm`), expands
+    /// `d-alpha` between the renders, and asserts it is still open after the second render while an
+    /// untouched `d-beta` stays collapsed. It is the runtime check the grep tests cannot make: reverting
+    /// the render-side `open` re-application re-collapses `d-alpha` and this test goes red.
+    an_operator_expanded_decision_survives_the_live_poll_re_render: node_harness_passes(RENDER_TWICE_HARNESS, "OK expanded-decision-survives-poll");
 }
 
 /// A DOM shim + test driver (JavaScript source) that LOADS the served page's own script and RUNS
@@ -345,48 +306,13 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-preview-harness.js" });
 "##;
 
-/// RUNTIME guard for spec 30 c4's core charter (the summary is a PREVIEW, never an inline dump):
-/// the `preview()` helper the `<summary>` line depends on must collapse a multi-line, multi-KB
-/// summary to ONE truncated line. The grep tests above only prove `preview()` CONTAINS the
-/// `.slice(`/`...` idiom - they cannot see that raising the truncation cap (so nothing is ever cut)
-/// or dropping the `/g` flag (so only the first whitespace run collapses) leaves a multi-KB summary
-/// dumped inline on the always-visible line while every grep stays green. This drives the real
-/// helper under node's `vm` and asserts its OUTPUT; reverting either behavior makes it go red.
-#[test]
-fn the_summary_preview_collapses_a_multiline_summary_to_one_truncated_line() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP the_summary_preview_collapses_a_multiline_summary_to_one_truncated_line: no \
-             `node` runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the preview harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, PREVIEW_HARNESS).expect("write the preview harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to run the served preview() helper");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "preview() must collapse a multi-line summary to one truncated line so the <summary> is \
-         never a multi-KB inline dump, but the runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK preview-collapses-and-truncates"),
-        "the preview harness must confirm the one-line truncation:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 30 c4's core charter (the summary is a PREVIEW, never an inline dump):
+    /// the `preview()` helper the `<summary>` line depends on must collapse a multi-line, multi-KB
+    /// summary to ONE truncated line. The grep tests above only prove `preview()` CONTAINS the
+    /// `.slice(`/`...` idiom - they cannot see that raising the truncation cap (so nothing is ever cut)
+    /// or dropping the `/g` flag (so only the first whitespace run collapses) leaves a multi-KB summary
+    /// dumped inline on the always-visible line while every grep stays green. This drives the real
+    /// helper under node's `vm` and asserts its OUTPUT; reverting either behavior makes it go red.
+    the_summary_preview_collapses_a_multiline_summary_to_one_truncated_line: node_harness_passes(PREVIEW_HARNESS, "OK preview-collapses-and-truncates");
 }

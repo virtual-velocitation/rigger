@@ -29,10 +29,7 @@
 
 mod common;
 
-use std::process::Command;
-
-use common::fixtures::tool_available;
-use common::served::page_script;
+use common::served::node_harness_passes;
 use rigger::dash;
 
 /// The SERVED root page SHIPS the directed-call layered render (spec 52 c5): the server-`layer`-keyed
@@ -398,50 +395,15 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-calls-render-harness.js" });
 "##;
 
-/// RUNTIME guard for spec 52 c5's directed-call render: the served page's OWN render LAYS OUT and
-/// DISPATCHES. It drives the real page script under a DOM shim (node's `vm`): a code-entity
-/// neighborhood offers the two directed queries, a `data-calls-down` click fetches the DOWN calls view
-/// and `renderKgCalls` draws the layered SVG with the arrowhead marker, a distinct back-edge arc, and a
-/// frontier badge; a frontier click expands its candidates and a chosen candidate re-seeds the
-/// same-direction walk; an UP walk draws the referenced-but-not-called sidecar; `layeredLayout`
-/// converges to finite layer-ordered positions; and an empty walk degrades to a message. This is the
-/// behavioral proof the grep test cannot make - dropping the marker, the back-edge arc, or the frontier
-/// dispatch makes it go red.
-#[test]
-fn the_directed_call_render_lays_out_and_dispatches_the_layered_dag() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP the_directed_call_render_lays_out_and_dispatches_the_layered_dag: no `node` \
-             runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the calls-render harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, CALLS_HARNESS).expect("write the calls-render harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served directed-call render");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the directed-call render must lay out and dispatch the layered DAG, but the runtime harness \
-         failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK calls-render-lays-out-and-dispatches"),
-        "the calls-render harness must confirm the layered-DAG render path:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 52 c5's directed-call render: the served page's OWN render LAYS OUT and
+    /// DISPATCHES. It drives the real page script under a DOM shim (node's `vm`): a code-entity
+    /// neighborhood offers the two directed queries, a `data-calls-down` click fetches the DOWN calls view
+    /// and `renderKgCalls` draws the layered SVG with the arrowhead marker, a distinct back-edge arc, and a
+    /// frontier badge; a frontier click expands its candidates and a chosen candidate re-seeds the
+    /// same-direction walk; an UP walk draws the referenced-but-not-called sidecar; `layeredLayout`
+    /// converges to finite layer-ordered positions; and an empty walk degrades to a message. This is the
+    /// behavioral proof the grep test cannot make - dropping the marker, the back-edge arc, or the frontier
+    /// dispatch makes it go red.
+    the_directed_call_render_lays_out_and_dispatches_the_layered_dag: node_harness_passes(CALLS_HARNESS, "OK calls-render-lays-out-and-dispatches");
 }

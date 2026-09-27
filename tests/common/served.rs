@@ -208,7 +208,11 @@ pub fn served_console_body() -> String {
 
 /// The served console page carries every one of `needles`.
 pub fn assert_served_console_page_carries(needles: &[&str]) {
-    let body = served_console_body();
+    assert_console_body_carries(&served_console_body(), needles);
+}
+
+/// The served console page `body` carries every one of `needles`.
+pub fn assert_console_body_carries(body: &str, needles: &[&str]) {
     for needle in needles {
         assert!(
             body.contains(needle),

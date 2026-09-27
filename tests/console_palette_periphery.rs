@@ -12,6 +12,7 @@
 
 mod common;
 
+use common::served::assert_console_body_carries;
 use common::served::{assert_served_console_page_carries, served_console_body};
 
 rigger::test_cases! {
@@ -72,19 +73,17 @@ rigger::test_cases! {
 #[test]
 fn the_served_console_page_resolves_every_palette_entry_kind_to_a_real_action() {
     let body = served_console_body();
-    for needle in [
-        "cmd.kind === \"view\"",
-        "cmd.kind === \"courtroom\"",
-        "cmd.kind === \"agent\"",
-        "cmd.kind === \"live\"",
-        "cmd.kind === \"replay\"",
-        "jumpToLive()",
-    ] {
-        assert!(
-            body.contains(needle),
-            "missing {needle:?} in the served console page: {body}"
-        );
-    }
+    assert_console_body_carries(
+        &body,
+        &[
+            "cmd.kind === \"view\"",
+            "cmd.kind === \"courtroom\"",
+            "cmd.kind === \"agent\"",
+            "cmd.kind === \"live\"",
+            "cmd.kind === \"replay\"",
+            "jumpToLive()",
+        ],
+    );
     // Replay from start reuses goTo/togglePlay over the earliest known position - never a
     // second, independently invented replay path.
     assert!(

@@ -48,14 +48,12 @@
 mod common;
 
 use std::collections::BTreeSet;
-use std::process::Command;
 
 use common::fixtures::edge;
 use common::fixtures::labelled_node;
 use common::fixtures::plain;
-use common::fixtures::tool_available;
 use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
-use common::served::page_script;
+use common::served::node_harness_passes;
 use common::served::served;
 use common::served::served_json;
 use rigger::contextgraph::{
@@ -672,45 +670,12 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "drill-shared-harness.js" });
 "##;
 
-/// RUNTIME proof for spec 54 c3's Honest-membership constraint: the served page's OWN concepts DRILL
-/// renders the `shared` flag the fold computes. It drives the real `renderKgDrill` under node's `vm`
-/// with a fixture in which one member is multi-concept (`shared`), and asserts the drill SVG surfaces
-/// that member with a distinguishing class, a `[shared]` label tag, and a `<title>` tooltip - while a
-/// shared-free drill renders none. This closes the gap the wire-shape tests leave open (they prove the
-/// flag is SERIALIZED, never that the drill RENDERS it): dropping renderKgDrill's shared branch reddens it.
-#[test]
-fn the_concepts_drill_renders_the_shared_marker_to_the_human() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP the_concepts_drill_renders_the_shared_marker_to_the_human: no `node` runtime on \
-             PATH (present on dev machines and on ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = rigger::dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the drill harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, DRILL_SHARED_HARNESS).expect("write the drill harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served concepts drill");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the concepts drill must render the shared marker, but the runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK concepts-drill-renders-the-shared-marker"),
-        "the drill harness must confirm the shared marker reaches the SVG:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME proof for spec 54 c3's Honest-membership constraint: the served page's OWN concepts DRILL
+    /// renders the `shared` flag the fold computes. It drives the real `renderKgDrill` under node's `vm`
+    /// with a fixture in which one member is multi-concept (`shared`), and asserts the drill SVG surfaces
+    /// that member with a distinguishing class, a `[shared]` label tag, and a `<title>` tooltip - while a
+    /// shared-free drill renders none. This closes the gap the wire-shape tests leave open (they prove the
+    /// flag is SERIALIZED, never that the drill RENDERS it): dropping renderKgDrill's shared branch reddens it.
+    the_concepts_drill_renders_the_shared_marker_to_the_human: node_harness_passes(DRILL_SHARED_HARNESS, "OK concepts-drill-renders-the-shared-marker");
 }

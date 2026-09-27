@@ -25,17 +25,15 @@ mod common;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::fixtures::chain_graph;
 use common::fixtures::edge;
 use common::fixtures::star_graph;
 use common::fixtures::summarized_node as node;
-use common::fixtures::tool_available;
 use common::served::body_of;
 use common::served::fetch_served;
-use common::served::page_script;
+use common::served::node_harness_passes;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY,
     REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
@@ -287,48 +285,13 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-kg-harness.js" });
 "##;
 
-/// RUNTIME guard for spec 30 c5's select-to-seed charter: selecting a node (a click on a `data-seed`
-/// handle) SETS the seed, fetches its `/api/graph` neighborhood, renders it tier-tagged, and the
-/// selection SURVIVES the 1.5s live poll. This drives the SERVED page's real listener + `seedGraph` +
-/// `render()` under a DOM shim (via node's `vm`); it is the runtime check the grep test cannot make -
-/// dropping the delegated listener, or letting `render()` clobber the panel, makes it go red.
-#[test]
-fn selecting_a_node_seeds_the_kg_panel_and_it_survives_the_live_poll() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP selecting_a_node_seeds_the_kg_panel_and_it_survives_the_live_poll: no `node` \
-             runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the KG harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, SELECT_TO_SEED_HARNESS).expect("write the KG harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served select-to-seed path");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "selecting a node must seed the KG panel and survive the live poll, but the runtime harness \
-         failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK select-to-seed-and-survives-poll"),
-        "the KG harness must confirm select-to-seed + poll-survival:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 30 c5's select-to-seed charter: selecting a node (a click on a `data-seed`
+    /// handle) SETS the seed, fetches its `/api/graph` neighborhood, renders it tier-tagged, and the
+    /// selection SURVIVES the 1.5s live poll. This drives the SERVED page's real listener + `seedGraph` +
+    /// `render()` under a DOM shim (via node's `vm`); it is the runtime check the grep test cannot make -
+    /// dropping the delegated listener, or letting `render()` clobber the panel, makes it go red.
+    selecting_a_node_seeds_the_kg_panel_and_it_survives_the_live_poll: node_harness_passes(SELECT_TO_SEED_HARNESS, "OK select-to-seed-and-survives-poll");
 }
 
 /// The served `/api/graph` route's DEPTH query-param edges (spec 30 c5): the panel's `depth=` is
@@ -698,48 +661,13 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-kg-c6-harness.js" });
 "##;
 
-/// RUNTIME guard for spec 30 c6's client rendering: a GOD-NODE flagged by the server renders a badge
-/// (with its degree), the returned QUERY-PATH highlights the nodes/edges on it, and a SHIFT-click on a
-/// second node fetches the `from=&to=` path and highlights it. Drives the SERVED page's real
-/// `renderGraph` + `pathTo` + delegated listener under a DOM shim (node's `vm`) - the runtime check
-/// the grep test cannot make.
-#[test]
-fn a_god_node_renders_a_badge_and_a_shift_click_traces_the_query_path() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP a_god_node_renders_a_badge_and_a_shift_click_traces_the_query_path: no `node` \
-             runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the c6 KG harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, GOD_PATH_HARNESS).expect("write the c6 KG harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served god-node + query-path rendering");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "a god-node must render a badge and a shift-click must trace the query path, but the \
-         runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK god-node-and-query-path"),
-        "the c6 KG harness must confirm the god-node badge + query-path highlight:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 30 c6's client rendering: a GOD-NODE flagged by the server renders a badge
+    /// (with its degree), the returned QUERY-PATH highlights the nodes/edges on it, and a SHIFT-click on a
+    /// second node fetches the `from=&to=` path and highlights it. Drives the SERVED page's real
+    /// `renderGraph` + `pathTo` + delegated listener under a DOM shim (node's `vm`) - the runtime check
+    /// the grep test cannot make.
+    a_god_node_renders_a_badge_and_a_shift_click_traces_the_query_path: node_harness_passes(GOD_PATH_HARNESS, "OK god-node-and-query-path");
 }
 
 /// The served `/api/graph` percent-decodes the c6 `from=`/`to=` PATH ENDPOINTS that crossed the REAL
@@ -1121,49 +1049,14 @@ vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-kg-c7-harness.js" });
 "##;
 
-/// RUNTIME guard for spec 30 c7's client rendering: the confidence-TIER FILTER is a client-side
-/// visibility toggle over the c5 tier tags (toggling a tier HIDES its edges and is reversible), and
-/// the c7 EXPLAIN provenance section renders the seed's origin - both COEXISTING with the c6 god
-/// badge + path highlight and SURVIVING the live poll. Drives the SERVED page's real `renderGraph` +
-/// the delegated tier-toggle listener under a DOM shim (node's `vm`) - the runtime check the grep
-/// test cannot make.
-#[test]
-fn toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders() {
-    if !tool_available("node", "--version") {
-        eprintln!(
-            "SKIP toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders: no \
-             `node` runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the c7 KG harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, TIER_FILTER_HARNESS).expect("write the c7 KG harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served tier-filter + explain rendering");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "toggling a tier must hide its edges and the explain provenance must render, but the \
-         runtime harness failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains("OK tier-filter-and-explain"),
-        "the c7 KG harness must confirm the tier filter + explain render:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
+rigger::test_cases! {
+    /// RUNTIME guard for spec 30 c7's client rendering: the confidence-TIER FILTER is a client-side
+    /// visibility toggle over the c5 tier tags (toggling a tier HIDES its edges and is reversible), and
+    /// the c7 EXPLAIN provenance section renders the seed's origin - both COEXISTING with the c6 god
+    /// badge + path highlight and SURVIVING the live poll. Drives the SERVED page's real `renderGraph` +
+    /// the delegated tier-toggle listener under a DOM shim (node's `vm`) - the runtime check the grep
+    /// test cannot make.
+    toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders: node_harness_passes(TIER_FILTER_HARNESS, "OK tier-filter-and-explain");
 }
 
 /// The SERVED root page ships the c7 client mechanisms: the tier-filter TOGGLES (a `data-tier`
