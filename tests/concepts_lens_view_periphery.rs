@@ -51,6 +51,7 @@ use std::collections::BTreeSet;
 use std::process::Command;
 
 use common::fixtures::edge;
+use common::fixtures::labelled_node;
 use common::fixtures::plain;
 use common::fixtures::tool_available;
 use common::lens::{assert_overview_folds, assert_underived_grain_is_the_empty_state};
@@ -58,8 +59,8 @@ use common::served::page_script;
 use common::served::served;
 use common::served::served_json;
 use rigger::contextgraph::{
-    Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS,
-    REL_REALIZES, REL_REFERENCES, TIER_INFERRED,
+    Graph, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS, REL_REALIZES,
+    REL_REFERENCES, TIER_INFERRED,
 };
 use rigger::dash::{
     cluster_detail, clustered_overview, Cluster, ClusterEdge, Lens, CONCEPTS_LENS_UNDERIVED,
@@ -78,19 +79,6 @@ const API_DOC: &str = "docs/api.md";
 const APPEND: &str = "src/store/log.rs::append";
 const INDEX: &str = "src/index/build.rs::index";
 const HELPER: &str = "src/util/misc.rs::helper";
-
-/// A derived `KIND_CONCEPT` super-node carrying its deterministic display `label` attr (the intent
-/// derivation's pick, spec 54). Under the concepts lens it is a BUCKET, not a member, so it is
-/// excluded from every count and never carries its own membership.
-fn concept(id: &str, label: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_CONCEPT.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("label".to_string(), label.to_string());
-    n
-}
 
 /// The lens fixture. TWO derived concepts, each grouping a DOC with the code it governs across
 /// directory lines: `concept/1/0` "the store" = {docs/store.md, src/store/log.rs::append,
@@ -111,8 +99,8 @@ fn lens_graph() -> Graph {
             plain(APPEND, KIND_CODE_ENTITY),
             plain(INDEX, KIND_CODE_ENTITY),
             plain(HELPER, KIND_CODE_ENTITY),
-            concept(C0, "the store"),
-            concept(C1, "the api"),
+            labelled_node(C0, KIND_CONCEPT, Some("the store")),
+            labelled_node(C1, KIND_CONCEPT, Some("the api")),
             plain("d1", KIND_DECISION),
         ],
         edges: vec![
@@ -287,8 +275,8 @@ fn a_shared_member_of_two_equal_size_concepts_folds_to_the_lexicographically_sma
             plain("docs/alpha.md", KIND_DESIGN_DOC),
             plain("docs/beta.md", KIND_DESIGN_DOC),
             plain("src/x.rs::shared_fn", KIND_CODE_ENTITY),
-            concept(C0, "alpha"),
-            concept(C1, "beta"),
+            labelled_node(C0, KIND_CONCEPT, Some("alpha")),
+            labelled_node(C1, KIND_CONCEPT, Some("beta")),
         ],
         edges: vec![
             // concept/1/0 = {docs/alpha.md, shared_fn} (size 2).
@@ -371,7 +359,7 @@ fn concepts_lens_admits_a_realizing_member_of_any_kind_not_only_code_and_docs() 
         nodes: vec![
             plain("src/only.rs::fn_a", KIND_CODE_ENTITY),
             plain("decision-realizes", KIND_DECISION),
-            concept(C0, "the idea"),
+            labelled_node(C0, KIND_CONCEPT, Some("the idea")),
         ],
         edges: vec![
             edge("src/only.rs::fn_a", C0, REL_REALIZES, TIER_INFERRED),

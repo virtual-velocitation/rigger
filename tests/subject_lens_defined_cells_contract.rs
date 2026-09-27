@@ -21,14 +21,14 @@
 
 mod common;
 
+use common::fixtures::def_node as def;
 use common::fixtures::edge;
 use common::fixtures::labelled_node as node;
 use common::lens::{lens, shared_member_graph, SHARED_MEMBER, SUB_C};
 use common::served::served_json;
 use rigger::contextgraph::TIER_EXTRACTED;
 use rigger::contextgraph::{
-    Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
-    REL_REALIZES,
+    Graph, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
     reproject, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
@@ -36,18 +36,6 @@ use rigger::dash::{
 };
 
 // --- fixture helpers ----------------------------------------------------------------------------
-
-/// A code-entity DEFINITION node (its `name` attr marks it a real definition, so a files re-grain
-/// folds it under its OWN file and a derived lens reads its memberships).
-fn def(id: &str, name: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("name".to_string(), name.to_string());
-    n
-}
 
 /// The bucket keys a re-projection rendered, in order.
 fn keys(re: &rigger::dash::Reprojection) -> Vec<&str> {

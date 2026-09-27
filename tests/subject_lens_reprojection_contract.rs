@@ -24,15 +24,17 @@
 
 mod common;
 
+use common::fixtures::def_node as def;
 use common::fixtures::edge;
 use common::fixtures::labelled_node as node;
 use common::fixtures::plain;
+use common::fixtures::summarized_node;
 use common::lens::lens;
 use common::served::served_json;
 use rigger::contextgraph::TIER_EXTRACTED;
 use rigger::contextgraph::{
-    Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
-    REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
+    Graph, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE, REL_CONTAINS,
+    REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
     reproject, Cluster, Lens, UnresolvedMember, REPROJECT_FILES_UNRESOLVED, REPROJECT_NO_COMMUNITY,
@@ -40,31 +42,6 @@ use rigger::dash::{
 };
 
 // --- fixture helpers ----------------------------------------------------------------------------
-
-/// A code-entity DEFINITION node: carries the `name` attr that marks it a real definition, exactly as
-/// the extraction fold records. Under the files re-grain a `name`-bearing node folds under its OWN
-/// file rather than resolving by name-suffix.
-fn def(id: &str, name: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("name".to_string(), name.to_string());
-    n
-}
-
-/// A decision node carrying the `summary` attr the rationale fold reads (the CONTENT the overlay
-/// echoes), so a `GOVERNS`/`ABOUT` edge from it into a node makes that node carry a rationale leaf.
-fn decision(id: &str, summary: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_DECISION.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("summary".to_string(), summary.to_string());
-    n
-}
 
 /// A code-entity file bucket (dominant kind code-entity), sized `count`, with an optional super-node
 /// `label`.
@@ -209,7 +186,7 @@ fn reprojection_admits_a_realizing_member_of_any_kind_under_the_concepts_lens() 
             node(NOKIND_COMMUNITY, KIND_COMMUNITY, Some("the subsystem")),
             node(NOKIND_CONCEPT, KIND_CONCEPT, Some("the idea")),
             def(NOKIND_ENTITY, "m5"),
-            decision(NOKIND_DECISION, "why this matters"),
+            summarized_node(NOKIND_DECISION, KIND_DECISION, "why this matters"),
         ],
         edges: vec![
             // Both members belong to the re-projected community subject.
@@ -270,7 +247,7 @@ fn reprojection_carries_empty_state_when_no_member_realizes_any_concept_under_th
         nodes: vec![
             node(BLANK_COMMUNITY, KIND_COMMUNITY, Some("the subsystem")),
             def(BLANK_ENTITY, "m6"),
-            decision(BLANK_DECISION, "unrelated to any concept"),
+            summarized_node(BLANK_DECISION, KIND_DECISION, "unrelated to any concept"),
         ],
         edges: vec![
             // Both members carry a genuine (non-concept) IN_COMMUNITY membership, but NEITHER
@@ -506,7 +483,7 @@ fn reprojection_excludes_a_non_code_entity_member_entirely_under_the_code_lens()
         nodes: vec![
             node(PURITY_CONCEPT, KIND_CONCEPT, Some("the idea")),
             node(PURITY_COMMUNITY, KIND_COMMUNITY, Some("alpha")),
-            decision(PURITY_DECISION, "why this matters"),
+            summarized_node(PURITY_DECISION, KIND_DECISION, "why this matters"),
             def(PURITY_ENTITY, "m"),
         ],
         edges: vec![
@@ -566,7 +543,7 @@ fn reprojection_excludes_a_decision_member_even_when_it_carries_a_live_community
         nodes: vec![
             node(INFLATE_CONCEPT, KIND_CONCEPT, Some("the idea")),
             node(INFLATE_COMMUNITY, KIND_COMMUNITY, Some("beta")),
-            decision(INFLATE_DECISION, "why this also matters"),
+            summarized_node(INFLATE_DECISION, KIND_DECISION, "why this also matters"),
             def(INFLATE_ENTITY, "n"),
         ],
         edges: vec![
@@ -633,7 +610,7 @@ fn reprojection_carries_empty_state_when_the_sole_realizer_is_purity_excluded() 
         nodes: vec![
             node(SOLE_CONCEPT, KIND_CONCEPT, Some("the idea")),
             node(SOLE_COMMUNITY, KIND_COMMUNITY, Some("gamma")),
-            decision(SOLE_DECISION, "why this also matters"),
+            summarized_node(SOLE_DECISION, KIND_DECISION, "why this also matters"),
         ],
         edges: vec![
             // The concept's ONLY realizer is the decision - no code entity co-realizes it.
@@ -1060,9 +1037,11 @@ fn served_explain_overlay_takes_precedence_over_the_reprojection_when_both_are_p
     // The file-over-code fixture (whose file subject re-projects to two communities) PLUS a decision
     // that GOVERNS the file subject, so `explain=<file>` has a non-empty rationale to return.
     let mut graph = file_over_code_graph();
-    graph
-        .nodes
-        .push(decision(RATIONALE_DECISION, "why mod.rs exists"));
+    graph.nodes.push(summarized_node(
+        RATIONALE_DECISION,
+        KIND_DECISION,
+        "why mod.rs exists",
+    ));
     graph.edges.push(edge(
         RATIONALE_DECISION,
         FILE_SUBJECT,

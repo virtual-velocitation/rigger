@@ -28,12 +28,14 @@
 
 mod common;
 
+use common::fixtures::def_node as def;
 use common::fixtures::edge;
+use common::fixtures::labelled_node;
 use common::fixtures::plain;
 use common::lens::lens;
 use common::served::served_json;
 use rigger::contextgraph::{
-    Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
+    Graph, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
     REL_REALIZES, TIER_EXTRACTED, TIER_INFERRED,
 };
 use rigger::dash::{reproject, Cluster, ClusterEdge, Lens, UnresolvedMember};
@@ -60,30 +62,6 @@ const HELPER_DEF: &str = "src/delta/d.rs::helper";
 const RUN_DEF_ONE: &str = "src/one/x.rs::run";
 const RUN_DEF_TWO: &str = "src/two/y.rs::run";
 
-/// A code-entity DEFINITION node: carries the `name` attr that marks it a real definition (not a bare
-/// cross-file placeholder), exactly as the extraction fold records.
-fn def(id: &str, name: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("name".to_string(), name.to_string());
-    n
-}
-
-/// A derived super-node (`KIND_CONCEPT` / `KIND_COMMUNITY`) carrying its deterministic display
-/// `label`. It is a BUCKET, never a member, so it is excluded from every count.
-fn super_node(id: &str, kind: &str, label: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: kind.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("label".to_string(), label.to_string());
-    n
-}
-
 /// The re-projection fixture. The concept `concept/1/0` REALIZES five members: three definitions
 /// (foo/bar/baz) across three files and two communities, plus two BARE placeholders (helper, run) in
 /// a.rs's namespace. helper's name has ONE definition (d.rs::helper), run's name has TWO (x.rs::run,
@@ -93,9 +71,9 @@ fn super_node(id: &str, kind: &str, label: &str) -> Node {
 fn reproj_graph() -> Graph {
     Graph {
         nodes: vec![
-            super_node(CONCEPT, KIND_CONCEPT, "the pipeline"),
-            super_node(C0, KIND_COMMUNITY, "foo"),
-            super_node(C1, KIND_COMMUNITY, "baz"),
+            labelled_node(CONCEPT, KIND_CONCEPT, Some("the pipeline")),
+            labelled_node(C0, KIND_COMMUNITY, Some("foo")),
+            labelled_node(C1, KIND_COMMUNITY, Some("baz")),
             def(FOO, "foo"),
             def(BAR, "bar"),
             def(BAZ, "baz"),

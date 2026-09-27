@@ -32,14 +32,15 @@
 
 mod common;
 
+use common::fixtures::def_node as def;
 use common::fixtures::edge;
 use common::fixtures::labelled_node as node;
 use common::lens::{lens, shared_member_graph, OTHER_D, SHARED_MEMBER, SUB_C};
 use common::served::served_json;
 use rigger::contextgraph::TIER_EXTRACTED;
 use rigger::contextgraph::{
-    Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_CALLS,
-    REL_CONTAINS, REL_IN_COMMUNITY, REL_REALIZES,
+    Graph, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_CALLS, REL_CONTAINS,
+    REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
     reproject, Cluster, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
@@ -47,18 +48,6 @@ use rigger::dash::{
 };
 
 // --- fixture helpers ----------------------------------------------------------------------------
-
-/// A code-entity DEFINITION node (a `name` attr marks it a real definition, so a files re-grain folds
-/// it under its OWN file and a derived lens reads its memberships).
-fn def(id: &str, name: &str) -> Node {
-    let mut n = Node {
-        id: id.to_string(),
-        kind: KIND_CODE_ENTITY.to_string(),
-        attrs: Default::default(),
-    };
-    n.attrs.insert("name".to_string(), name.to_string());
-    n
-}
 
 /// A code-entity kind-fallback bucket of `count` members (the membership-less fold criterion 1 ships).
 fn kind_bucket(count: usize) -> Cluster {

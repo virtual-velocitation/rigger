@@ -202,3 +202,9 @@ pub fn subject_graph() -> Graph {
         ],
     }
 }
+
+/// A code-entity DEFINITION node: its `name` attr marks it a real definition (not a bare
+/// cross-file placeholder), exactly as the extraction fold records.
+pub fn def_node(id: &str, name: &str) -> Node {
+    entity_node(id, KIND_CODE_ENTITY, None, Some(name))
+}
