@@ -1124,7 +1124,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-9a6465ca98ed",
+    "id": "dup-b855a30b879f",
     "classification": "semantic",
     "sites": [
       {
@@ -3560,7 +3560,7 @@
       {
         "file": "tests/simplification_audit.rs",
         "name": "\"fn a() {\\n    let _ = \\\".rigger/tmp\\\";\\n}\\n\"",
-        "content_hash": "e24c26c0d9d4cbdb"
+        "content_hash": "9b2536a241d75c28"
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -4626,7 +4626,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-ba5c2a173aab",
+    "id": "dup-7e2622206b71",
     "classification": "semantic",
     "sites": [
       {
@@ -4842,7 +4842,7 @@
       {
         "file": "tests/simplification_audit.rs",
         "name": "\"fn a() {\\n    let _ = std::fs::read_to_string(\\\"/proc/1/stat\\\");\\n    let _ = \\\"hello\\\";\\n}\\n\"",
-        "content_hash": "e24c26c0d9d4cbdb"
+        "content_hash": "7f4a94053b0af79e"
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -6294,7 +6294,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-dafed4449a6d",
+    "id": "dup-34547f1c1293",
     "classification": "semantic",
     "sites": [
       {
@@ -6340,7 +6340,7 @@
       {
         "file": "tests/simplification_audit.rs",
         "name": "proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one",
-        "content_hash": "f473661c2d4a1369"
+        "content_hash": "0e0d9924452d6280"
       }
     ],
     "proposed_home": "src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning whichever field each caller needs, so dash.rs::process_state and reap.rs::pid_starttime/read_ppid stop each re-deriving the pid(comm)state... split",

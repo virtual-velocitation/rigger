@@ -8238,11 +8238,14 @@ mod tests {
 
     #[test]
     fn scan_tree_finds_functions_under_both_src_and_tests_but_not_elsewhere() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/a.rs", "fn one() {}\n");
-        write_fixture(dir.path(), "tests/b.rs", "fn two() {}\n");
-        write_fixture(dir.path(), "docs/c.rs", "fn three() {}\n");
-        let files = scan_tree(dir.path());
+        let files = on_fixture(
+            scan_tree,
+            &[
+                ("src/a.rs", "fn one() {}\n"),
+                ("tests/b.rs", "fn two() {}\n"),
+                ("docs/c.rs", "fn three() {}\n"),
+            ],
+        );
         let names: Vec<&str> = files
             .iter()
             .flat_map(|f| f.fns.iter().map(|s| s.name.as_str()))
@@ -8269,13 +8272,13 @@ mod tests {
         // A nested fn closes (and so is emitted by scan_file) BEFORE its enclosing one - this
         // fixture's outer() encloses inner(), so scan_file's own push order is [inner, outer],
         // the exact case all_fn_refs's explicit sort exists to correct.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/nested.rs",
-            "fn outer() {\n    fn inner() {}\n    inner();\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[(
+                "src/nested.rs",
+                "fn outer() {\n    fn inner() {}\n    inner();\n}\n",
+            )],
         );
-        let files = scan_tree(dir.path());
         let refs = all_fn_refs(&files);
         let names: Vec<&str> = refs
             .iter()
@@ -8290,14 +8293,16 @@ mod tests {
     /// why this one file is singled out.
     #[test]
     fn adversarial_sample_population_excludes_only_the_citation_guard_periphery_file() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/a.rs", "fn included_one() {}\n");
-        write_fixture(
-            dir.path(),
-            ADVERSARIAL_SAMPLE_EXCLUDED_FILE,
-            "fn excluded_one() {}\nfn excluded_two() {}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[
+                ("src/a.rs", "fn included_one() {}\n"),
+                (
+                    ADVERSARIAL_SAMPLE_EXCLUDED_FILE,
+                    "fn excluded_one() {}\nfn excluded_two() {}\n",
+                ),
+            ],
         );
-        let files = scan_tree(dir.path());
 
         let all = all_fn_refs(&files);
         assert_eq!(
@@ -8330,18 +8335,13 @@ mod tests {
 
     #[test]
     fn two_renamed_identical_functions_form_one_exact_cluster() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[
+                ("src/a.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"),
+                ("src/b.rs", "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n"),
+            ],
         );
-        write_fixture(
-            dir.path(),
-            "src/b.rs",
-            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
-        );
-        let files = scan_tree(dir.path());
         let clusters = clusters_for(&files);
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].classification, "exact");
@@ -8352,18 +8352,7 @@ mod tests {
 
     #[test]
     fn two_unrelated_functions_form_no_cluster() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn read_config(path: &str) -> String {\n    std::fs::read_to_string(path).unwrap()\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/b.rs",
-            "fn sum_all(xs: &[i64]) -> i64 {\n    xs.iter().sum()\n}\n",
-        );
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[("src/a.rs", "fn read_config(path: &str) -> String {\n    std::fs::read_to_string(path).unwrap()\n}\n"), ("src/b.rs", "fn sum_all(xs: &[i64]) -> i64 {\n    xs.iter().sum()\n}\n")]);
         assert!(clusters_for(&files).is_empty());
     }
 
@@ -8487,9 +8476,10 @@ mod tests {
 
     #[test]
     fn command_new_sweep_ignores_an_unrelated_call() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/a.rs", "fn run() {\n    Other::new();\n}\n");
-        let files = scan_tree(dir.path());
+        let files = on_fixture(
+            scan_tree,
+            &[("src/a.rs", "fn run() {\n    Other::new();\n}\n")],
+        );
         assert!(find_ident_path_call_sites(&files, "Command", &["new"]).is_empty());
     }
 
@@ -8530,26 +8520,14 @@ mod tests {
 
     #[test]
     fn sqlite_open_sweep_matches_either_tail() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn a() {\n    Connection::open(p)?;\n}\nfn b() {\n    Connection::open_with_flags(p, f)?;\n}\n",
-        );
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[("src/a.rs", "fn a() {\n    Connection::open(p)?;\n}\nfn b() {\n    Connection::open_with_flags(p, f)?;\n}\n")]);
         let hits = find_ident_path_call_sites(&files, "Connection", &["open", "open_with_flags"]);
         assert_eq!(hits.len(), 2);
     }
 
     #[test]
     fn proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn a() {\n    let _ = std::fs::read_to_string(\"/proc/1/stat\");\n    let _ = \"hello\";\n}\n",
-        );
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[("src/a.rs", "fn a() {\n    let _ = std::fs::read_to_string(\"/proc/1/stat\");\n    let _ = \"hello\";\n}\n")]);
         let hits = find_literal_containing(&files, "/proc");
         assert_eq!(hits.len(), 1);
         assert!(hits[0].name.contains("/proc"));
@@ -8557,13 +8535,10 @@ mod tests {
 
     #[test]
     fn rigger_path_literal_sweep_finds_a_rigger_relative_string() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn a() {\n    let _ = \".rigger/tmp\";\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[("src/a.rs", "fn a() {\n    let _ = \".rigger/tmp\";\n}\n")],
         );
-        let files = scan_tree(dir.path());
         assert_eq!(find_literal_containing(&files, ".rigger").len(), 1);
     }
 
@@ -8591,9 +8566,7 @@ mod tests {
 
     #[test]
     fn build_sweep_clusters_always_returns_exactly_five_named_clusters() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/a.rs", "fn a() {}\n");
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[("src/a.rs", "fn a() {}\n")]);
         let refs = all_fn_refs(&files);
         let clusters = build_sweep_clusters(&files, &refs);
         assert_eq!(clusters.len(), 5);
@@ -8686,13 +8659,7 @@ mod tests {
 
     #[test]
     fn parallel_constructor_sweep_groups_two_constructors_for_one_type_but_not_a_lone_one() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "impl Widget {\n    fn ok(a: u32) -> Self {\n        Self { a, b: 0 }\n    }\n    fn zeroed() -> Self {\n        Self { a: 0, b: 0 }\n    }\n}\nimpl Gadget {\n    fn only() -> Self {\n        Self { x: 1 }\n    }\n}\n",
-        );
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[("src/a.rs", "impl Widget {\n    fn ok(a: u32) -> Self {\n        Self { a, b: 0 }\n    }\n    fn zeroed() -> Self {\n        Self { a: 0, b: 0 }\n    }\n}\nimpl Gadget {\n    fn only() -> Self {\n        Self { x: 1 }\n    }\n}\n")]);
         let refs = all_fn_refs(&files);
         let clusters = find_parallel_constructor_clusters(&files, &refs);
         assert_eq!(clusters.len(), 1);
@@ -8744,18 +8711,19 @@ mod tests {
     #[test]
     fn same_named_helper_sweep_groups_across_files_but_not_within_one_file_or_below_the_length_floor(
     ) {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "tests/a.rs",
-            "fn exploration_graph() -> u32 {\n    1\n}\nfn new() -> u32 {\n    2\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[
+                (
+                    "tests/a.rs",
+                    "fn exploration_graph() -> u32 {\n    1\n}\nfn new() -> u32 {\n    2\n}\n",
+                ),
+                (
+                    "tests/b.rs",
+                    "fn exploration_graph() -> u32 {\n    3\n}\nfn new() -> u32 {\n    4\n}\n",
+                ),
+            ],
         );
-        write_fixture(
-            dir.path(),
-            "tests/b.rs",
-            "fn exploration_graph() -> u32 {\n    3\n}\nfn new() -> u32 {\n    4\n}\n",
-        );
-        let files = scan_tree(dir.path());
         let refs = all_fn_refs(&files);
         let clusters = find_same_named_helper_functions(&files, &refs);
         // Only `exploration_graph` (>= SAME_NAME_MIN_LEN) qualifies; `new` (a coincidental
@@ -9162,18 +9130,13 @@ mod tests {
 
     #[test]
     fn render_section_2_names_every_mandatory_sweep_and_every_cluster_id() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[
+                ("src/a.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"),
+                ("src/z.rs", "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n"),
+            ],
         );
-        write_fixture(
-            dir.path(),
-            "src/z.rs",
-            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
-        );
-        let files = scan_tree(dir.path());
         let clusters = build_catalog(&files);
         let lines: Vec<DupClusterLines> = clusters.iter().map(dup_cluster_lines).collect();
         let rendered = render_section_2(&files, &clusters, &lines);

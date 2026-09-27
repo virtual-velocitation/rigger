@@ -1808,9 +1808,9 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1741 func
 ### Mandatory sweeps
 
 - **Command::new call sites**: 94 site(s) - `dup-3ec3c3ef6145`
-- **/proc-path string literals**: 48 site(s) - `dup-ba5c2a173aab`
+- **/proc-path string literals**: 48 site(s) - `dup-7e2622206b71`
 - **sqlite Connection::open call sites**: 36 site(s) - `dup-b99d84bff6a4`
-- **.rigger-path string literals**: 538 site(s) - `dup-9a6465ca98ed`
+- **.rigger-path string literals**: 538 site(s) - `dup-b855a30b879f`
 - **error-shaping helper functions**: 10 site(s) - `dup-ff68607e5532`
 
 ### Clusters (33 exact, 125 near, 24 semantic)
@@ -2149,7 +2149,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/conductor.rs:15509-15515` `spawned`
 - `src/eventstore/mod.rs:384-386` `covers`
 
-#### `dup-9a6465ca98ed` (semantic, 538 sites)
+#### `dup-b855a30b879f` (semantic, 538 sites)
 
 Proposed home: `one .rigger-relative path-composition helper`
 
@@ -3231,8 +3231,8 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
         full-suite green run, not hand-editing {rigger_n} sites.\n\
         - Unblocks: the biggest single site-count reduction available anywhere in the \
         duplication catalog.\n\n"`
-- `tests/simplification_audit.rs:8564-8564` `"fn a() {\n    let _ = \".rigger/tmp\";\n}\n"`
-- `tests/simplification_audit.rs:8567-8567` `".rigger"`
+- `tests/simplification_audit.rs:8540-8540` `"fn a() {\n    let _ = \".rigger/tmp\";\n}\n"`
+- `tests/simplification_audit.rs:8542-8542` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:59-59` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:222-222` `".rigger"`
 - `tests/spawn_scratch_reap_authorized_root_periphery.rs:233-233` `".rigger"`
@@ -3367,7 +3367,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 - `src/config_store.rs:739-772` `literal_is_emit_payload_binds_only_an_abutting_payload_or_emit_word`
 - `src/main.rs:17772-17778` `is_uuid8_accepts_exactly_eight_hex_digits`
-- `tests/simplification_audit.rs:8571-8579` `looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring`
+- `tests/simplification_audit.rs:8546-8554` `looks_error_shaping_matches_error_and_underscore_bounded_err_but_not_an_incidental_substring`
 
 #### `dup-7da4ecc76203` (near, 2 sites)
 
@@ -3601,7 +3601,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/contextgraph/sqlite.rs:7856-7887` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
 - `src/contextgraph/sqlite.rs:8132-8163` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
 
-#### `dup-ba5c2a173aab` (semantic, 48 sites)
+#### `dup-7e2622206b71` (semantic, 48 sites)
 
 Proposed home: `src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)`
 
@@ -3762,15 +3762,15 @@ mandatory sweep: /proc-path string literals - 48 site(s), collected mechanically
         - Unblocks: retires the last copies of the \"duplicate implementation reconciled \
         after the fact\" pattern the operator's strict-DRY rule targets - the concrete \
         precedent spec 85's own Goal cites.\n\n"`
-- `tests/simplification_audit.rs:8378-8378` `"fn state_of(pid: u32) -> Option<char> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\n}\n"`
-- `tests/simplification_audit.rs:8382-8382` `"fn starttime_of(pid: u32) -> Option<u64> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\n}\n"`
-- `tests/simplification_audit.rs:8386-8386` `"fn ppid_of(pid: u32) -> Option<u32> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\n}\n"`
-- `tests/simplification_audit.rs:8550-8550` `"fn a() {\n    let _ = std::fs::read_to_string(\"/proc/1/stat\");\n    let _ = \"hello\";\n}\n"`
-- `tests/simplification_audit.rs:8553-8553` `"/proc"`
-- `tests/simplification_audit.rs:8555-8555` `"/proc"`
-- `tests/simplification_audit.rs:8625-8625` `"fn state_of(pid: u32) -> Option<char> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    s.chars().next()\n}\nfn ppid_of(pid: u32) -> Option<u32> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/status\")).ok()?;\n    s.parse().ok()\n}\nfn unrelated() -> u32 {\n    1\n}\n"`
-- `tests/simplification_audit.rs:8647-8647` `"the /proc reader sweep is catalogued"`
-- `tests/simplification_audit.rs:8653-8653` `"the /proc reader sweep {:?} must carry the one stat parser and neither former \
+- `tests/simplification_audit.rs:8367-8367` `"fn state_of(pid: u32) -> Option<char> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().next()?.chars().next()\n}\n"`
+- `tests/simplification_audit.rs:8371-8371` `"fn starttime_of(pid: u32) -> Option<u64> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()\n}\n"`
+- `tests/simplification_audit.rs:8375-8375` `"fn ppid_of(pid: u32) -> Option<u32> {\n    let stat = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()\n}\n"`
+- `tests/simplification_audit.rs:8530-8530` `"fn a() {\n    let _ = std::fs::read_to_string(\"/proc/1/stat\");\n    let _ = \"hello\";\n}\n"`
+- `tests/simplification_audit.rs:8531-8531` `"/proc"`
+- `tests/simplification_audit.rs:8533-8533` `"/proc"`
+- `tests/simplification_audit.rs:8598-8598` `"fn state_of(pid: u32) -> Option<char> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/stat\")).ok()?;\n    s.chars().next()\n}\nfn ppid_of(pid: u32) -> Option<u32> {\n    let s = std::fs::read_to_string(format!(\"/proc/{pid}/status\")).ok()?;\n    s.parse().ok()\n}\nfn unrelated() -> u32 {\n    1\n}\n"`
+- `tests/simplification_audit.rs:8620-8620` `"the /proc reader sweep is catalogued"`
+- `tests/simplification_audit.rs:8626-8626` `"the /proc reader sweep {:?} must carry the one stat parser and neither former \
              re-deriver, found: {names:?}"`
 
 #### `dup-4ccd568cae24` (near, 3 sites)
@@ -4400,7 +4400,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/progress_store.rs:39-53` `record_launch`
 - `src/progress_store.rs:59-70` `record_stop_failure`
 
-#### `dup-dafed4449a6d` (semantic, 9 sites)
+#### `dup-34547f1c1293` (semantic, 9 sites)
 
 Proposed home: `src/reap.rs as the one /proc/<pid>/stat and /proc/<pid>/status parser, returning whichever field each caller needs, so dash.rs::process_state and reap.rs::pid_starttime/read_ppid stop each re-deriving the pid(comm)state... split`
 
@@ -4413,8 +4413,8 @@ mandatory sweep: /proc/<pid>/stat or /proc/<pid>/status field-extraction functio
 - `tests/simplification_audit.rs:3280-3301` `build_extra_semantic_clusters`
 - `tests/simplification_audit.rs:3631-3721` `render_adversarial_sample`
 - `tests/simplification_audit.rs:5072-5640` `render_section_6`
-- `tests/simplification_audit.rs:8371-8394` `three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home`
-- `tests/simplification_audit.rs:8545-8556` `proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one`
+- `tests/simplification_audit.rs:8360-8383` `three_near_but_not_identical_functions_cluster_as_near_with_every_site_and_one_home`
+- `tests/simplification_audit.rs:8529-8534` `proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one`
 
 #### `dup-3439bf494b88` (near, 2 sites)
 
@@ -4943,7 +4943,7 @@ Proposed home: `a new shared module (sites span 2 files: tests/no_os_kill_audit.
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
 - `tests/no_os_kill_audit.rs:374-377` `never_flagged`
-- `tests/simplification_audit.rs:8797-8803` `assert_no_same_named_helper_cluster`
+- `tests/simplification_audit.rs:8765-8771` `assert_no_same_named_helper_cluster`
 
 #### `dup-b39b9c66964a` (semantic, 2 sites)
 
@@ -5276,10 +5276,10 @@ Within a tier, entries are ordered largest-first by the site or line count each 
 - Risk: medium. `ingest.rs`'s own module doc calls it "the ONE walk-and-content-key authority" - a load-bearing path; needs the existing whole-project-ingest and reindex-freshening coverage to stay green, not just the duplicate sites' own tests.
 - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-f8130edd50f7` together, rather than as two separately-tracked fixes.
 
-#### 3. Retire the duplicate `/proc`-reading authority (`dup-ba5c2a173aab` + `dup-dafed4449a6d`)
+#### 3. Retire the duplicate `/proc`-reading authority (`dup-7e2622206b71` + `dup-34547f1c1293`)
 
-- Scope: the production half is done - `src/dash.rs::process_state` and `src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through `src/reap.rs::stat_field_after_comm`, the one parser of the kernel's `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What remains is the test-only readers (`dup-dafed4449a6d`, 9 sites across `src/reap.rs`, `tests/common/fixtures/host.rs`, `tests/simplification_audit.rs`, such as the shared `tests/common/fixtures/host.rs::pgid_of` fixture) and 48 raw `/proc`-path string literals across 7 files (`dup-ba5c2a173aab`), most of them assertion messages and this audit's own sweep names rather than reads.
-- Files: the test-only readers `dup-dafed4449a6d` names.
+- Scope: the production half is done - `src/dash.rs::process_state` and `src/reap.rs::pid_starttime` both read their `/proc/<pid>/stat` field through `src/reap.rs::stat_field_after_comm`, the one parser of the kernel's `pid (comm) state ...` layout (`read_ppid` reads `/status`, a different file). What remains is the test-only readers (`dup-34547f1c1293`, 9 sites across `src/reap.rs`, `tests/common/fixtures/host.rs`, `tests/simplification_audit.rs`, such as the shared `tests/common/fixtures/host.rs::pgid_of` fixture) and 48 raw `/proc`-path string literals across 7 files (`dup-7e2622206b71`), most of them assertion messages and this audit's own sweep names rather than reads.
+- Files: the test-only readers `dup-34547f1c1293` names.
 - Expected line delta: small and negative - a test fixture reads its field through one shared helper instead of re-splitting the stat line.
 - Risk: low - test-only; nothing this touches can signal or end a process, so it carries none of the no-os-kill gate's own risk surface.
 - Unblocks: retires the last copies of the "duplicate implementation reconciled after the fact" pattern the operator's strict-DRY rule targets - the concrete precedent spec 85's own Goal cites.
@@ -5345,10 +5345,10 @@ Each entry below applies section 1's own proposed module tree to a god file's pr
 
 Each entry is one of section 2's five named mandatory sweeps - collected mechanically regardless of the Jaccard pass, per spec 85's own Design.
 
-#### 10. Consolidate the 538 `.rigger`-path string-literal sites (`dup-9a6465ca98ed`) - the single largest cluster in the entire catalog by site count
+#### 10. Consolidate the 538 `.rigger`-path string-literal sites (`dup-b855a30b879f`) - the single largest cluster in the entire catalog by site count
 
 - Scope: one `.rigger`-relative path-composition helper (the cluster's own `proposed_home`) every one of the 538 sites routes through instead of building its own literal.
-- Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `src/reap.rs`, `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-9a6465ca98ed` for the follow-up spec to consume directly, not re-enumerated here.
+- Files: spans dozens of files including `src/conductor.rs`, `src/config_store.rs`, `src/dash.rs`, `src/docs.rs`, `src/gate.rs`, `src/grounder/mod.rs`, `src/grounder/symbols/store.rs`, `src/ingest.rs`, `src/main.rs`, `src/reap.rs`, `src/registry.rs`, `src/worktree.rs` plus many `tests/` files - the full site list is in the committed `docs/audit/duplication-catalog.json` under `dup-b855a30b879f` for the follow-up spec to consume directly, not re-enumerated here.
 - Expected line delta: negative - 538 literal compositions collapse toward one helper's call sites; the helper itself is small.
 - Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 538 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
@@ -5428,7 +5428,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 19. Sweep the remaining 121 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 182 clusters, 54 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-3ec3c3ef6145`, `dup-9a6465ca98ed`, `dup-b99d84bff6a4`, `dup-ba5c2a173aab`, `dup-dafed4449a6d`, `dup-f8130edd50f7`, `dup-ff68607e5532`); the remaining 121 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-7dfa0dd1a6a8`, `dup-3ec3c3ef6145`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 182 clusters, 54 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-3ec3c3ef6145`, `dup-b855a30b879f`, `dup-b99d84bff6a4`, `dup-7e2622206b71`, `dup-34547f1c1293`, `dup-f8130edd50f7`, `dup-ff68607e5532`); the remaining 121 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-7dfa0dd1a6a8`, `dup-3ec3c3ef6145`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.
