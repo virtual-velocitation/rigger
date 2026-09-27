@@ -319,8 +319,8 @@
       },
       {
         "file": "tests/common/repo.rs",
-        "start_line": 207,
-        "end_line": 207
+        "start_line": 210,
+        "end_line": 210
       },
       {
         "file": "tests/common/served.rs",
@@ -7029,23 +7029,23 @@
     "sites": [
       {
         "file": "tests/reap_before_removal_audit.rs",
-        "start_line": 850,
-        "end_line": 863
+        "start_line": 727,
+        "end_line": 740
       },
       {
         "file": "tests/reap_before_removal_audit.rs",
-        "start_line": 866,
-        "end_line": 882
+        "start_line": 743,
+        "end_line": 759
       },
       {
         "file": "tests/reap_before_removal_audit.rs",
-        "start_line": 1214,
-        "end_line": 1228
+        "start_line": 1091,
+        "end_line": 1105
       },
       {
         "file": "tests/reap_before_removal_audit.rs",
-        "start_line": 1343,
-        "end_line": 1370
+        "start_line": 1220,
+        "end_line": 1247
       }
     ]
   },

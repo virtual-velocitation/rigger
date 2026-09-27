@@ -1884,7 +1884,7 @@ mandatory sweep: Command::new call sites - 94 site(s), collected mechanically re
 - `tests/common/fixtures/host.rs:54-54` `Command::new`
 - `tests/common/layer_cli.rs:71-71` `Command::new`
 - `tests/common/mod.rs:143-143` `Command::new`
-- `tests/common/repo.rs:207-207` `Command::new`
+- `tests/common/repo.rs:210-210` `Command::new`
 - `tests/common/served.rs:295-295` `Command::new`
 - `tests/compiler_pass_stage1_audit.rs:193-193` `Command::new`
 - `tests/compiler_pass_stage1_audit.rs:211-211` `Command::new`
@@ -4960,10 +4960,10 @@ Proposed home: `reap_before_removal_audit::support (consolidate these 4 sites in
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `tests/reap_before_removal_audit.rs:850-863` `bare_remove_dir_all_with_no_coverage_is_caught`
-- `tests/reap_before_removal_audit.rs:866-882` `bare_git_worktree_remove_with_no_coverage_is_caught`
-- `tests/reap_before_removal_audit.rs:1214-1228` `a_finding_names_its_exact_file_and_line_number`
-- `tests/reap_before_removal_audit.rs:1343-1370` `a_worktree_remove_args_array_wrapped_across_multiple_lines_by_rustfmt_is_still_caught`
+- `tests/reap_before_removal_audit.rs:727-740` `bare_remove_dir_all_with_no_coverage_is_caught`
+- `tests/reap_before_removal_audit.rs:743-759` `bare_git_worktree_remove_with_no_coverage_is_caught`
+- `tests/reap_before_removal_audit.rs:1091-1105` `a_finding_names_its_exact_file_and_line_number`
+- `tests/reap_before_removal_audit.rs:1220-1247` `a_worktree_remove_args_array_wrapped_across_multiple_lines_by_rustfmt_is_still_caught`
 
 #### `dup-cb850da85ff9` (near, 2 sites)
 
@@ -5074,38 +5074,38 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 
 ### Adversarial sample
 
-Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6786 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
+Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (seed `85072026`, `sample_indices` over all 6804 functions scanned in `src/` and `tests/`, excluding `tests/prioritized_plan_citation_periphery.rs` - criterion 4's own citation-guard periphery test, whose function count grows as its citation-drift-guard mechanism hardens round over round; excluding it keeps that unrelated growth from ever reshuffling this already-verified draw), each read by hand - together with its host file's surrounding context, since a duplicate can live anywhere in the file or a sibling file - to judge whether a duplicate exists that the mechanical pass and the five sweeps above did not already catch.
 
-- `src/conductor.rs:372-374` `adoption_provenance_key` - caught: `dup-e6404599f437`
-- `src/conductor.rs:4664-4679` `review_round_start_sha` - no duplicate found by reading
-- `src/conductor.rs:17789-17843` `assert_supersedes_criterion_a_once` - no duplicate found by reading
-- `src/eventstore/mod.rs:462-473` `new` - no duplicate found by reading
-- `src/eventstore/sqlite.rs:896-912` `read_stream` - no duplicate found by reading
-- `src/grounder/symbols/grounder.rs:1489-1539` `ground_ranked_gives_ambiguous_definitions_zero_degree_and_pools_the_real_count_on_the_standalone_row` - no duplicate found by reading
-- `src/main.rs:11939-11988` `write_gitignore_entries` - no duplicate found by reading
-- `src/main.rs:19135-19140` `parse_result_with_no_output_defers_to_stdin` - no duplicate found by reading
-- `src/main.rs:19304-19353` `reclaim_run_scratch_removes_the_run_level_areas_and_spares_per_unit_scratch` - no duplicate found by reading
-- `src/main.rs:24141-24171` `stats_discloses_unfed_numerator_when_verdict_recorded_but_findings_unattributed` - no duplicate found by reading
-- `src/reap.rs:1159-1178` `reap_is_a_logged_no_op_for_a_base_refused_by_is_reapable_base` - no duplicate found by reading
-- `src/spec.rs:121-135` `checkbox_text` - no duplicate found by reading
-- `src/worktree.rs:5278-5317` `spawn_fence_tracks_only_the_units_latest_spawn_across_roles_and_attempts` - no duplicate found by reading
-- `tests/build_budget_slots_periphery.rs:270-275` `drop` - no duplicate found by reading
-- `tests/cli.rs:5549-5692` `step_integrates_after_the_exhaustive_gate_deletes_the_worktree_post_approval` - no duplicate found by reading
-- `tests/cli.rs:19461-19572` `the_real_spec_flag_persists_on_a_real_step_and_reaches_the_status_pr_head` - no duplicate found by reading
-- `tests/cli.rs:19733-19756` `release_ready_names_the_runs_persisted_base_on_status_over_a_re_resolution` - no duplicate found by reading
-- `tests/cli.rs:19833-19839` `read_dash_marker` - no duplicate found by reading
-- `tests/common/fixtures/graph.rs:45-55` `summarized_node` - no duplicate found by reading
-- `tests/common/source_audit.rs:33-39` `write_file` - no duplicate found by reading
-- `tests/escalation_resume_periphery.rs:340-363` `resume_unit_refuses_when_the_recorded_branch_was_never_created` - caught: `dup-71aadfa4568e`
-- `tests/product_binary_location.rs:63-69` `an_executable_outside_a_deps_dir_yields_no_derivation` - no duplicate found by reading
-- `tests/regate_landed_on_resume_periphery.rs:73-75` `unit_branch` - caught: `dup-2f724ff9616c`
-- `tests/scaffold_grounder_resolves.rs:90-115` `rigger_init_scaffolds_a_live_grounder_default` - no duplicate found by reading
-- `tests/simplification_audit.rs:2210-2316` `tokenize` - caught: `dup-6c4197f4d7b0`
-- `tests/simplification_audit.rs:4131-4143` `render_dead_code_distribution_table` - no duplicate found by reading
-- `tests/simplification_audit.rs:9219-9227` `assert_draws_match_iff_seeds_do` - no duplicate found by reading
-- `tests/stop_failure_hook_periphery.rs:165-181` `hook_stop_failure_requires_spawn_and_class` - no duplicate found by reading
-- `tests/store_flag_precedence.rs:96-102` `assert_bare_conn_selects_the_server` - no duplicate found by reading
-- `tests/ungated_fanout_template_wiring_periphery.rs:63-151` `a_real_ungated_fanout_template_decomposes_and_every_baseline_unit_still_integrates` - no duplicate found by reading
+- `src/blast_radius_eval.rs:326-370` `build_adversarial_corpus` - no duplicate found by reading
+- `src/conductor.rs:21452-21506` `replay_trajectory_keeps_only_the_world_inputs_and_restrips_the_run_id` - no duplicate found by reading
+- `src/conductor.rs:21606-21635` `resume_reuses_a_units_branch_instead_of_reimplementing` - no duplicate found by reading
+- `src/config.rs:953-958` `dash_enabled` - no duplicate found by reading
+- `src/config_store.rs:1762-1777` `assert_stages_invalid` - no duplicate found by reading
+- `src/console/map.rs:1983-1997` `place_label_reserves_its_chosen_box_so_a_second_call_at_the_same_spot_dodges_it` - no duplicate found by reading
+- `src/console/mod.rs:754-768` `scrub_track_marks_an_integration_accent_and_tall` - no duplicate found by reading
+- `src/dash.rs:513-515` `displayable_pid` - no duplicate found by reading
+- `src/eventstore/contract.rs:248-256` `subscription_replays_then_goes_live` - no duplicate found by reading
+- `src/grounder/symbols/store.rs:68-86` `with_write_lock` - no duplicate found by reading
+- `src/liveness.rs:593-603` `read_hung_cursor` - no duplicate found by reading
+- `src/liveness.rs:864-873` `is_stale_is_elapsed_past_the_bound` - no duplicate found by reading
+- `src/main.rs:6699-6702` `dash_ensure_port_from` - no duplicate found by reading
+- `src/mcpserver.rs:51-53` `from` - no duplicate found by reading
+- `src/reap.rs:248-258` `ancestor_pids` - no duplicate found by reading
+- `src/spawn.rs:69-77` `unit_sibling` - no duplicate found by reading
+- `src/watch.rs:849-861` `assert_heartbeat_suppresses_the_dead_driver_alert` - no duplicate found by reading
+- `tests/cli.rs:11526-11564` `validate_warns_when_the_installed_workflow_drifts_from_the_embedded_copy` - no duplicate found by reading
+- `tests/concepts_shared_assembly.rs:86-103` `from_edges_is_direction_canonical_so_the_pass_hash_is_orientation_independent` - no duplicate found by reading
+- `tests/criteria_delivery_periphery.rs:45-55` `real_spec_62_criterion_one` - no duplicate found by reading
+- `tests/handbook_grounder_accuracy.rs:34-36` `read` - no duplicate found by reading
+- `tests/metadata_card_periphery.rs:49-100` `fixture_graph` - caught: `dup-20e69e434836`
+- `tests/migration_is_deliberate_periphery.rs:434-455` `seed_a_retired_entity` - no duplicate found by reading
+- `tests/phase_of_role_mapping_periphery.rs:45-76` `run_phase_of` - no duplicate found by reading
+- `tests/reset_derived_compaction_periphery.rs:3660-3709` `a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten` - no duplicate found by reading
+- `tests/simplification_audit.rs:8530-8540` `sqlite_open_sweep_matches_either_tail` - no duplicate found by reading
+- `tests/step_attention_periphery.rs:395-483` `hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_signals` - no duplicate found by reading
+- `tests/step_root_resolution_periphery.rs:252-310` `step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_even_though_cwd_matches_repo` - no duplicate found by reading
+- `tests/subject_lens_reprojection_contract.rs:979-1053` `served_explain_overlay_takes_precedence_over_the_reprojection_when_both_are_present` - no duplicate found by reading
+- `tests/watchdog_cli_periphery.rs:67-76` `spawn_streaming_watch` - no duplicate found by reading
 
 Two real recall gaps surfaced this way and were closed by widening the mechanical sweep with a new generalizable detector each - not a one-off citation - so the fix catches every present and future instance of its class, each pinned by a real-tree regression test: `find_proc_stat_or_status_readers` (decision `u85c2-proc-stat-worked-example`) groups every function reading a `/proc/<pid>/stat` or `/proc/<pid>/status` literal, closing the spec's own named worked example - `src/dash.rs:617-619` `process_state` next to `src/reap.rs:224-229` `pid_starttime`, the same job on the same file with a different field/shape, upheld at spec 62's capstone; `find_parallel_constructor_clusters` (decision `u85c2-parallel-constructor-sweep`) groups 2+ non-test functions per `(file, Self type)` that build a `Self { .. }` / `TypeName { .. }` literal, closing `src/spawn.rs`'s `SpawnResult::liveness_fault` reading MISSING from its own `ok`/`failed` cluster even though all three are parallel constructors for one struct. A third worked example, `exploration_graph` (independently defined test-fixture builders in `tests/dash_exploration_route_client_contract.rs` and `tests/dash_kg_graph_route.rs`), was already caught correctly by the plain Jaccard pass with no sweep needed - confirming the mechanical pass itself has real recall, not only the two widened sweeps. Two further real defects, found on review rather than in this draw, were closed the same way: a RECALL gap the architecture lens routed to this criterion by name across two prior review rounds - this file's own bespoke source-text lexer (`scan_file`/`tokenize`) duplicating the codebase's ONE canonical tree-sitter extractor, `src/grounder/symbols/extract.rs::extract` (its own module doc's claim, architecture 5.5.3) - closed by `find_bespoke_lexer_vs_canonical_extractor` (decision `u85c2-bespoke-lexer-sweep`), a fourth generalizable sweep; and a PRECISION defect the adversary found by reading every `same-named helper` cluster against `ScannedFn::enclosing_impl` - `find_same_named_helper_functions` was misclassifying REQUIRED trait-impl methods as coincidental duplication (`subscribe_all`/`subscribe_stream` across the `EventStore` trait's three backend adapters plus a test double, `blast_radius` across the `Grounder` trait's own default method, its override, and a test double) - closed by excluding members whose extracted Self type differs across the group when at least one comes from an actual `" for "` trait impl (decision `u85c2-same-named-helper-trait-impl-precision-fix`), mirroring `find_parallel_constructor_clusters`'s own `(file, Self type)` keying one function away. Round 7 (decision `u85c4-r7-exclude-periphery-file-from-adversarial-population`) excluded this criterion's own citation-guard periphery file from the draw's population (see this subsection's opening paragraph); that exclusion still applies unchanged.
 
