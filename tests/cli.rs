@@ -24204,48 +24204,285 @@ fn prime_given_a_spec_path_names_the_spec_lint_after_real_decision_content() {
 // compiled binary through both, proving the reminder reaches an actual production invocation
 // rather than only a hand-typed `rigger prime <spec>`.
 
-/// `rigger run <spec>` names the spec lint even when the run goes on to refuse for an
-/// unrelated reason (no reachable base) - the reminder is printed before any of that
-/// downstream machinery runs, so it survives every failure path, not only a successful run.
-#[test]
-fn run_given_a_spec_path_names_the_spec_lint_as_a_next_step() {
-    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch
-    // from, so `--base origin/does-not-exist` deterministically refuses fast (spec 38,
-    // criterion 2) with no agent ever spawned. A real spec file with one Done-when checkbox
-    // is required so `load_criteria` succeeds and the run actually reaches that base check.
+/// A spec-path launch surface: how it is invoked around the spec path, always against the
+/// unreachable `--base origin/does-not-exist`.
+#[derive(Clone, Copy)]
+enum SpecLaunch {
+    /// `rigger run <spec>` (the cli driver), which prints the spec-lint reminder on stdout.
+    Run,
+    /// `rigger step --spec <spec>`, which prints it on stderr: its stdout carries exactly one
+    /// line of `{wave,done}` JSON a driver parses.
+    Step,
+    /// `rigger run --driver workflow <spec>`, which prints it on stderr: its stdout is the live
+    /// MCP stdio transport a stray human-readable line would corrupt.
+    Workflow,
+}
+
+impl SpecLaunch {
+    fn args(self, spec: &str) -> Vec<&str> {
+        let head: &[&str] = match self {
+            SpecLaunch::Run => &["run", spec],
+            SpecLaunch::Step => &["step", "--spec", spec],
+            SpecLaunch::Workflow => &["run", "--driver", "workflow", spec],
+        };
+        [head, &["--base", "origin/does-not-exist"]].concat()
+    }
+
+    /// The stream (stdout or stderr) this surface prints the spec-lint reminder on.
+    fn reminder_stream<'a>(self, out: &'a str, err: &'a str) -> &'a str {
+        match self {
+            SpecLaunch::Run => out,
+            SpecLaunch::Step | SpecLaunch::Workflow => err,
+        }
+    }
+}
+
+/// What the pid-scoped `RIGGER_SPEC_LINT_REMINDER_PID` dedup sentinel names for a launch.
+#[derive(Clone, Copy)]
+enum ReminderPid {
+    /// No sentinel at all.
+    Absent,
+    /// A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
+    /// `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN fresh pid
+    /// namespace, so `"1"` would genuinely equal the spawned rigger subprocess's real parent id
+    /// here and wrongly suppress the reminder.
+    Foreign,
+    /// This test process's own pid: it spawns the binary as its direct OS child, so this is the
+    /// real nested-invocation shape.
+    OwnParent,
+}
+
+/// A `temp_project()` - a `git init` with NO commit: an unborn HEAD, nothing to branch from,
+/// so `--base origin/does-not-exist` deterministically refuses fast (spec 38, criterion 2)
+/// with no agent ever spawned - holding the two-stage workflow and `specs/{name}` with `body`.
+fn unborn_project_with_spec(name: &str, body: &str) -> tempfile::TempDir {
     let dir = temp_project();
     let root = dir.path();
     write_two_stage_workflow(root);
     std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(
-        root.join("specs/42-widgets.md"),
-        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("specs").join(name), body).unwrap();
+    dir
+}
 
-    let (out, err, ok) = run_rigger(
-        root,
-        &[
-            "run",
-            "specs/42-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-    );
+/// Launch `specs/{name}` through `launch` under `pid`'s sentinel: the no-reachable-base
+/// refusal must still fire, whatever printed before it. Returns (stdout, stderr).
+fn refused_spec_launch(
+    root: &Path,
+    launch: SpecLaunch,
+    name: &str,
+    pid: ReminderPid,
+) -> (String, String) {
+    let spec = format!("specs/{name}");
+    let own_pid = std::process::id().to_string();
+    let envs: &[(&str, &str)] = match pid {
+        ReminderPid::Absent => &[],
+        ReminderPid::Foreign => &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
+        ReminderPid::OwnParent => &[("RIGGER_SPEC_LINT_REMINDER_PID", own_pid.as_str())],
+    };
+    let (out, err, ok) = run_rigger_envs(root, &launch.args(&spec), envs);
     assert!(
         !ok,
-        "the no-reachable-base refusal must still fire after the reminder prints; stdout: \
-         {out:?} stderr: {err:?}"
+        "the no-reachable-base refusal must still fire after anything printed before it; \
+         stdout:\n{out}\nstderr:\n{err}"
     );
     assert!(
         err.contains("no reachable base"),
         "sanity: this must be the same no-reachable-base refusal the base test pins; got: {err:?}"
     );
-    assert!(
-        out.contains("rigger validate specs/42-widgets.md"),
-        "`rigger run <spec>` must name `rigger validate <spec>` as a next step, proving the \
-         reminder reaches this real pre-launch entry (not only `rigger prime`); got stdout:\n{out}"
+    (out, err)
+}
+
+/// A one-criterion spec (so `load_criteria` succeeds and the launch reaches its base check).
+const ONE_CRITERION_SPEC: &str =
+    "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n";
+
+/// The spec-lint reminder every pre-launch surface prints (one shared `spec_lint_next_step`).
+const SPEC_LINT_REMINDER: &str = "next: `rigger validate specs/42-widgets.md`";
+
+/// `launch` over a spec path under `pid`'s sentinel: the reminder naming `rigger validate
+/// <spec>` as a next step prints on the surface's own stream when `printed` - before the
+/// launch refuses for an unrelated downstream reason, so it survives every failure path, and
+/// ambient env naming a foreign pid never suppresses it - and is otherwise absent from BOTH
+/// streams (dropped for a genuinely nested launch, not merely relocated). Returns (stdout,
+/// stderr).
+fn assert_the_spec_lint_reminder(
+    launch: SpecLaunch,
+    pid: ReminderPid,
+    printed: bool,
+) -> (String, String) {
+    let dir = unborn_project_with_spec("42-widgets.md", ONE_CRITERION_SPEC);
+    let (out, err) = refused_spec_launch(dir.path(), launch, "42-widgets.md", pid);
+    if printed {
+        assert!(
+            launch
+                .reminder_stream(&out, &err)
+                .contains(SPEC_LINT_REMINDER),
+            "the launch must name `rigger validate <spec>` as a next step; \
+             stdout:\n{out}\nstderr:\n{err}"
+        );
+    } else {
+        assert!(
+            !out.contains("rigger validate") && !err.contains("rigger validate"),
+            "a launch genuinely nested under this test process must stay silent when the \
+             sentinel names our real pid; stdout:\n{out}\nstderr:\n{err}"
+        );
+    }
+    (out, err)
+}
+
+rigger::test_cases! {
+    /// `rigger run <spec>` names the spec lint even when the run goes on to refuse for an
+    /// unrelated reason (no reachable base) - the reminder is printed before any of that
+    /// downstream machinery runs, so it survives every failure path, not only a successful run.
+    run_given_a_spec_path_names_the_spec_lint_as_a_next_step:
+        assert_the_spec_lint_reminder(SpecLaunch::Run, ReminderPid::Absent, true);
+    /// `cmd_step`'s own doc comment and its inline placement comment both claim the reminder is
+    /// "printed FIRST... so the reminder survives every downstream refusal or failure path -
+    /// mirroring `run_cli`'s and `cmd_workflow`'s placement." `run_cli`'s analogous claim has a
+    /// dedicated test (`run_given_a_spec_path_names_the_spec_lint_as_a_next_step`, spec 66 round
+    /// 2) that proves the reminder survives a downstream no-reachable-base refusal; `cmd_step`'s
+    /// round-4 tests above only cover the success path and the no-`--spec` path, leaving that
+    /// specific "survives a downstream refusal" claim unverified for this third call site. This
+    /// closes that gap the same way: an unborn-HEAD repo with an unresolvable `--base` makes
+    /// `rigger step` fail loudly on the no-reachable-base gate (spec 38, criterion 2), which
+    /// fires strictly AFTER the reminder is printed - so a passing reminder assertion here proves
+    /// the print-before-refuse ordering the doc comment claims, not merely that the reminder
+    /// exists somewhere in the binary's output.
+    step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base:
+        assert_the_spec_lint_reminder(SpecLaunch::Step, ReminderPid::Absent, true);
+    /// Ambient env pollution from an unrelated process tree - the sentinel is present but names
+    /// some OTHER pid, not this test's own real direct parent id - must never suppress.
+    step_reminder_prints_despite_env_naming_a_foreign_pid:
+        assert_the_spec_lint_reminder(SpecLaunch::Step, ReminderPid::Foreign, true);
+    /// Ambient env pollution naming a foreign pid must never suppress `rigger run <spec>`'s
+    /// reminder.
+    run_reminder_prints_despite_env_naming_a_foreign_pid:
+        assert_the_spec_lint_reminder(SpecLaunch::Run, ReminderPid::Foreign, true);
+    /// A genuinely nested `rigger step` - its real direct OS parent (this test process) already
+    /// printed and passed its own pid down - stays silent on both stdout and stderr.
+    step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid:
+        assert_the_spec_lint_reminder(SpecLaunch::Step, ReminderPid::OwnParent, false);
+    /// A genuinely nested `rigger run <spec>` stays silent when the sentinel names our real pid.
+    run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid:
+        assert_the_spec_lint_reminder(SpecLaunch::Run, ReminderPid::OwnParent, false);
+}
+
+/// `rigger run --driver workflow <spec>` in every pid-sentinel direction: the reminder prints
+/// with no sentinel or a foreign one and is suppressed by the genuine parent's - and, with
+/// `off_stdout`, it never reaches stdout in any direction.
+fn assert_the_workflow_reminder_in_every_pid_direction(off_stdout: bool) {
+    for (pid, printed) in [
+        (ReminderPid::Absent, true),
+        (ReminderPid::Foreign, true),
+        (ReminderPid::OwnParent, false),
+    ] {
+        let (out, _err) = assert_the_spec_lint_reminder(SpecLaunch::Workflow, pid, printed);
+        if off_stdout {
+            assert!(
+                !out.contains("rigger validate"),
+                "run_workflow's reminder must never reach stdout - that stream is the live MCP \
+                 stdio transport a stray human-readable line would corrupt; stdout:\n{out}"
+            );
+        }
+    }
+}
+
+rigger::test_cases! {
+    /// The escalation remedy's own regression guard (adj-u66c5-rebuild-verdict-reject-dead-
+    /// consumer, sdet-u66c5-no-regression-test-guards-run-workflow-reminder-silence):
+    /// `run_workflow` - the surface the /rigger workflow itself launches through - prints
+    /// criterion 5's reminder when a spec path is in play, and the pid-scoped REMINDER DEDUP
+    /// contract holds on this surface in both directions: a foreign/ambient sentinel value
+    /// still prints, and a value naming this process's real direct parent (the test process,
+    /// which spawns the binary as its direct OS child) suppresses.
+    run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup:
+        assert_the_workflow_reminder_in_every_pid_direction(false);
+    /// Companion to `run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup`,
+    /// pinning the half that test's `(_out, ..)` destructuring never inspects: `run_workflow`'s own
+    /// doc comment names stdout as "the shim-captured stdout protocol stream" the reminder must
+    /// never touch, so an `eprintln!` -> `println!` typo on this call site - the exact class this
+    /// unit has shipped twice before, `fresh_run_if_requested`'s `--fresh` stdout leak and the
+    /// workflow-chain double-print regression (`arch-u66c5r8-workflow-chain-double-prints-the-
+    /// reminder`) - would ship silently through the sibling test alone. Checked across all three
+    /// pid-sentinel directions: printing (bare and foreign-sentinel) must land on stderr only, and
+    /// a suppressed reminder must be absent from both streams, not merely relocated to stdout.
+    run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction:
+        assert_the_workflow_reminder_in_every_pid_direction(true);
+}
+
+/// `launch` over a multi-behavior spec surfaces - on stderr, alongside each of `labels` - the
+/// SAME spec-lint advisory, with the SAME recommendation wording, that `rigger validate <spec>`
+/// emits pre-launch, proving the in-run call site shares the one implementation rather than a
+/// parallel parser (the recommendation wording is what only a FIRED advisory carries - the
+/// generic reminder names the lint categories but never it); and a clean, single-behavior
+/// spec yields no spec-lint advisory at all, though the launch still refuses for the unrelated
+/// no-reachable-base reason.
+fn assert_the_in_run_spec_lint_advisory(launch: SpecLaunch, labels: &[&str]) {
+    let dir = unborn_project_with_spec(
+        "42-widgets.md",
+        "# 42 widgets\n\n## Done when\n\n\
+         - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
+         nightly\n",
     );
+    let root = dir.path();
+    let (_out, err) = refused_spec_launch(root, launch, "42-widgets.md", ReminderPid::Absent);
+    for label in labels {
+        assert!(
+            err.contains(label),
+            "the in-run advisory must carry {label:?}; stderr:\n{err}"
+        );
+    }
+    assert!(
+        err.contains("one observable behavior per criterion"),
+        "the in-run advisory must carry the SAME recommendation wording as the pre-launch \
+         one; stderr:\n{err}"
+    );
+
+    std::fs::write(
+        root.join("specs/43-widgets.md"),
+        "# 43 widgets\n\n## Done when\n\n- [ ] the store passes the contract suite\n",
+    )
+    .unwrap();
+    let (_out, err) = refused_spec_launch(root, launch, "43-widgets.md", ReminderPid::Absent);
+    assert!(
+        !err.contains("warning: spec "),
+        "a clean single-behavior spec must yield no spec-lint advisory on the in-run call \
+         site either; stderr:\n{err}"
+    );
+}
+
+rigger::test_cases! {
+    /// `rigger run <spec>` surfaces the SAME `multi-behavior` advisory (with the same
+    /// recommendation wording) that `rigger validate <spec>` prints pre-launch - proving the
+    /// in-run call site shares `cmd_validate`'s implementation rather than re-deriving it -
+    /// and stays silent on a clean spec, exactly like the pre-launch surface.
+    run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site:
+        assert_the_in_run_spec_lint_advisory(SpecLaunch::Run, &["multi-behavior"]);
+    /// `rigger step --spec <path>` - the ONE command the documented primary native `/rigger
+    /// <spec>` workflow ever actually invokes - reaches the same in-run call site as `rigger
+    /// run`, since both route through the shared `load_criteria`. Proves the wiring reaches
+    /// the real primary path, not only the standalone CLI's `rigger run`, and that the
+    /// advisory lands ALONGSIDE (not instead of) criterion 5's own "go run rigger validate"
+    /// reminder already pinned above.
+    step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site:
+        assert_the_in_run_spec_lint_advisory(SpecLaunch::Step, &[]);
+    /// `rigger run --driver workflow <spec>` (and, identically, `rigger serve <spec>` - both
+    /// dispatch straight into the SAME `run_workflow`) is `load_criteria`'s third real call
+    /// site (main.rs:3119), alongside `run_cli` and `cmd_step` above - `load_criteria`'s own
+    /// doc comment names it as a covered production entry, but neither of the two tests above
+    /// drives this call site: `run_workflow_refuses_when_there_is_no_reachable_base` (this same
+    /// file) omits the spec positional entirely, so `load_criteria` never reaches the lint
+    /// branch there. This closes that gap: drives the compiled binary through the direct
+    /// (no-Node-shim) workflow dispatch with a spec path in play, proving the SAME advisory
+    /// `rigger validate <spec>` prints pre-launch also surfaces here, from the identical
+    /// `spec::spec_lint_advisories` implementation - not a fourth, parallel parser - and stays
+    /// silent on a clean spec. `run_workflow` now ALSO prints criterion 5's generic reminder
+    /// (the escalation remedy for adj-u66c5-rebuild-verdict-reject-dead-consumer), whose text
+    /// itself contains "multi-behavior" - so the in-run-lint assertion below matches on the
+    /// advisory's own class label ("F2 bundling"), which the reminder never carries, keeping
+    /// the assertion discriminating.
+    run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site:
+        assert_the_in_run_spec_lint_advisory(SpecLaunch::Workflow, &["rigger workflow", "F2 bundling"]);
 }
 
 /// Bare `rigger run` (no spec positional) must never mention the spec lint - mirroring
@@ -24358,64 +24595,6 @@ fn step_with_no_spec_path_never_mentions_the_spec_lint() {
     );
 }
 
-/// `cmd_step`'s own doc comment and its inline placement comment both claim the reminder is
-/// "printed FIRST... so the reminder survives every downstream refusal or failure path -
-/// mirroring `run_cli`'s and `cmd_workflow`'s placement." `run_cli`'s analogous claim has a
-/// dedicated test (`run_given_a_spec_path_names_the_spec_lint_as_a_next_step`, spec 66 round
-/// 2) that proves the reminder survives a downstream no-reachable-base refusal; `cmd_step`'s
-/// round-4 tests above only cover the success path and the no-`--spec` path, leaving that
-/// specific "survives a downstream refusal" claim unverified for this third call site. This
-/// closes that gap the same way: an unborn-HEAD repo with an unresolvable `--base` makes
-/// `rigger step` fail loudly on the no-reachable-base gate (spec 38, criterion 2), which
-/// fires strictly AFTER the reminder is printed - so a passing reminder assertion here proves
-/// the print-before-refuse ordering the doc comment claims, not merely that the reminder
-/// exists somewhere in the binary's output.
-#[test]
-fn step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_for_no_reachable_base(
-) {
-    // `temp_project()` is a `git init` with NO commit: an unborn HEAD, nothing to branch
-    // from, so `--base origin/does-not-exist` deterministically refuses fast (spec 38,
-    // criterion 2), mirroring `run_given_a_spec_path_names_the_spec_lint_as_a_next_step`
-    // above and `step_refuses_when_there_is_no_reachable_base` elsewhere in this file.
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(
-        root.join("specs/42-widgets.md"),
-        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
-    )
-    .unwrap();
-
-    let (out, err, ok) = run_rigger(
-        root,
-        &[
-            "step",
-            "--spec",
-            "specs/42-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-    );
-    assert!(
-        !ok,
-        "the no-reachable-base refusal must still fire after the reminder prints; stdout: \
-         {out:?} stderr: {err:?}"
-    );
-    assert!(
-        err.contains("no reachable base"),
-        "sanity: this must be the same no-reachable-base refusal `step_refuses_when_there_is_no_reachable_base` \
-         pins; got: {err:?}"
-    );
-    assert!(
-        err.contains("rigger validate specs/42-widgets.md"),
-        "`rigger step --spec <path>` must name `rigger validate <path>` on stderr even when the \
-         step goes on to refuse for an unrelated downstream reason (proving the reminder is \
-         printed first and survives every failure path, not only a successful step); got \
-         stderr:\n{err}"
-    );
-}
-
 // --- Spec 66, criterion 4: ONE LINT AUTHORITY - the in-run call site ---
 //
 // Criterion 3 wired the spec-lint into `cmd_validate` (the standalone, PRE-LAUNCH `rigger
@@ -24428,206 +24607,6 @@ fn step_given_a_spec_path_names_the_spec_lint_even_when_the_step_then_refuses_fo
 // but ONLY after `load_criteria` has already run and printed its advisories, so the
 // refusal proves nothing about the lint firing FIRST while still keeping the test fast
 // and hermetic.
-
-/// `rigger run <spec>` surfaces the SAME `multi-behavior` advisory (with the same
-/// recommendation wording) that `rigger validate <spec>` prints pre-launch - proving the
-/// in-run call site shares `cmd_validate`'s implementation rather than re-deriving it -
-/// and stays silent on a clean spec, exactly like the pre-launch surface.
-#[test]
-fn run_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-
-    let bad_spec = "# 42 widgets\n\n## Done when\n\n\
-         - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
-         nightly\n";
-    std::fs::write(root.join("specs/42-widgets.md"), bad_spec).unwrap();
-
-    let (_out, err, ok) = run_rigger(
-        root,
-        &[
-            "run",
-            "specs/42-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-    );
-    assert!(
-        !ok,
-        "the no-reachable-base refusal must still fire after the in-run lint prints; \
-         stderr:\n{err}"
-    );
-    assert!(
-        err.contains("no reachable base"),
-        "sanity: this must be the same no-reachable-base refusal the base test pins; got: {err:?}"
-    );
-    assert!(
-        err.contains("multi-behavior"),
-        "`rigger run <spec>` must surface the SAME `multi-behavior` spec-lint advisory \
-         `rigger validate <spec>` emits pre-launch, proving the in-run call site shares the \
-         one implementation, not a second parallel parser; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("one observable behavior per criterion"),
-        "the in-run advisory must carry the SAME recommendation wording as the pre-launch \
-         one; stderr:\n{err}"
-    );
-
-    // A clean, single-behavior spec: no spec-lint advisory at all, even though the run
-    // still refuses for the unrelated no-reachable-base reason.
-    let clean_spec = "# 43 widgets\n\n## Done when\n\n- [ ] the store passes the contract suite\n";
-    std::fs::write(root.join("specs/43-widgets.md"), clean_spec).unwrap();
-    let (_out, err, ok) = run_rigger(
-        root,
-        &[
-            "run",
-            "specs/43-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-    );
-    assert!(!ok, "clean-spec run must still refuse on no-reachable-base");
-    assert!(
-        !err.contains("warning: spec "),
-        "a clean single-behavior spec must yield no spec-lint advisory on the in-run call \
-         site either; stderr:\n{err}"
-    );
-}
-
-/// `rigger step --spec <path>` - the ONE command the documented primary native `/rigger
-/// <spec>` workflow ever actually invokes - reaches the same in-run call site as `rigger
-/// run`, since both route through the shared `load_criteria`. Proves the wiring reaches
-/// the real primary path, not only the standalone CLI's `rigger run`, and that the
-/// advisory lands ALONGSIDE (not instead of) criterion 5's own "go run rigger validate"
-/// reminder already pinned above.
-#[test]
-fn step_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-
-    let bad_spec = "# 42 widgets\n\n## Done when\n\n\
-         - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
-         nightly\n";
-    std::fs::write(root.join("specs/42-widgets.md"), bad_spec).unwrap();
-
-    let (_out, err, ok) = run_rigger(
-        root,
-        &[
-            "step",
-            "--spec",
-            "specs/42-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-    );
-    assert!(
-        !ok,
-        "the no-reachable-base refusal must still fire after the in-run lint prints; \
-         stderr:\n{err}"
-    );
-    // `cmd_step` already prints a generic reminder line (criterion 5) that itself names
-    // "multi-behavior" as a lint CATEGORY, so asserting on that substring alone would pass
-    // even if the in-run advisory below were never wired - a tautology, not a proof. The
-    // recommendation wording is what only a FIRED advisory carries; it is absent from the
-    // generic reminder, so this is the discriminating check (mirrors the `rigger run`
-    // sibling test's own second assertion above).
-    assert!(
-        err.contains("one observable behavior per criterion"),
-        "`rigger step --spec <path>` - the primary native-workflow entry - must surface the \
-         SAME multi-behavior spec-lint advisory (with its recommendation wording, not just \
-         the generic reminder's category name) that `rigger validate` emits pre-launch; \
-         stderr:\n{err}"
-    );
-}
-
-/// `rigger run --driver workflow <spec>` (and, identically, `rigger serve <spec>` - both
-/// dispatch straight into the SAME `run_workflow`) is `load_criteria`'s third real call
-/// site (main.rs:3119), alongside `run_cli` and `cmd_step` above - `load_criteria`'s own
-/// doc comment names it as a covered production entry, but neither of the two tests above
-/// drives this call site: `run_workflow_refuses_when_there_is_no_reachable_base` (this same
-/// file) omits the spec positional entirely, so `load_criteria` never reaches the lint
-/// branch there. This closes that gap: drives the compiled binary through the direct
-/// (no-Node-shim) workflow dispatch with a spec path in play, proving the SAME advisory
-/// `rigger validate <spec>` prints pre-launch also surfaces here, from the identical
-/// `spec::spec_lint_advisories` implementation - not a fourth, parallel parser - and stays
-/// silent on a clean spec. `run_workflow` now ALSO prints criterion 5's generic reminder
-/// (the escalation remedy for adj-u66c5-rebuild-verdict-reject-dead-consumer), whose text
-/// itself contains "multi-behavior" - so the in-run-lint assertion below matches on the
-/// advisory's own class label ("F2 bundling"), which the reminder never carries, keeping
-/// the assertion discriminating.
-#[test]
-fn run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_run_call_site() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-
-    let bad_spec = "# 42 widgets\n\n## Done when\n\n\
-         - [ ] the daemon starts on boot, and it writes a pidfile, and it rotates the log \
-         nightly\n";
-    std::fs::write(root.join("specs/42-widgets.md"), bad_spec).unwrap();
-
-    let (_out, err, ok) = run_rigger(
-        root,
-        &[
-            "run",
-            "--driver",
-            "workflow",
-            "specs/42-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-    );
-    assert!(
-        !ok,
-        "the no-reachable-base refusal must still fire after the in-run lint prints; \
-         stderr:\n{err}"
-    );
-    assert!(
-        err.contains("rigger workflow") && err.contains("no reachable base"),
-        "sanity: this must be the same `rigger workflow`-labelled no-reachable-base refusal \
-         `run_workflow_refuses_when_there_is_no_reachable_base` pins; got: {err:?}"
-    );
-    assert!(
-        err.contains("F2 bundling"),
-        "`rigger run --driver workflow <spec>` must surface the SAME `F2 bundling` \
-         spec-lint advisory `rigger validate <spec>` emits pre-launch, proving `run_workflow` \
-         - the third `load_criteria` call site, and the one `rigger serve <spec>` shares - \
-         reaches the same shared implementation, not a fourth parallel parser (asserted on \
-         the class label, which criterion 5's reminder text never carries); stderr:\n{err}"
-    );
-    assert!(
-        err.contains("one observable behavior per criterion"),
-        "the in-run advisory must carry the SAME recommendation wording as the pre-launch \
-         one; stderr:\n{err}"
-    );
-
-    // A clean, single-behavior spec: no spec-lint advisory at all, even though the run
-    // still refuses for the unrelated no-reachable-base reason.
-    let clean_spec = "# 43 widgets\n\n## Done when\n\n- [ ] the store passes the contract suite\n";
-    std::fs::write(root.join("specs/43-widgets.md"), clean_spec).unwrap();
-    let (_out, err, ok) = run_rigger(
-        root,
-        &[
-            "run",
-            "--driver",
-            "workflow",
-            "specs/43-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-    );
-    assert!(!ok, "clean-spec run must still refuse on no-reachable-base");
-    assert!(
-        !err.contains("warning: spec "),
-        "a clean single-behavior spec must yield no spec-lint advisory on the `run_workflow` \
-         in-run call site either; stderr:\n{err}"
-    );
-}
 
 // --- Spec 66, criterion 5: REMINDER DEDUP - the pid-scoped parent-to-child contract ---
 //
@@ -24643,165 +24622,6 @@ fn run_driver_workflow_surfaces_the_same_spec_lint_advisory_as_validate_the_in_r
 // pid) still prints - a bare presence check would wrongly suppress the second case, which is
 // exactly the class two earlier rounds tried and a reviewer rejected (see this repo's spec 66
 // Design section).
-
-/// A genuinely nested `rigger step` - its real direct OS parent (this test process) already
-/// printed and passed its own pid down - stays silent on both stdout and stderr.
-#[test]
-fn step_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(
-        root.join("specs/42-widgets.md"),
-        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
-    )
-    .unwrap();
-
-    let own_pid = std::process::id().to_string();
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &[
-            "step",
-            "--spec",
-            "specs/42-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", own_pid.as_str())],
-    );
-    assert!(
-        !ok,
-        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        err.contains("no reachable base"),
-        "sanity: same no-reachable-base refusal the base test pins; got: {err:?}"
-    );
-    assert!(
-        !out.contains("rigger validate") && !err.contains("rigger validate"),
-        "a `step` genuinely nested under this test process must stay silent when the sentinel \
-         names our real pid; got stdout:\n{out}\nstderr:\n{err}"
-    );
-}
-
-/// Ambient env pollution from an unrelated process tree - the sentinel is present but names
-/// some OTHER pid, not this test's own real direct parent id - must never suppress.
-#[test]
-fn step_reminder_prints_despite_env_naming_a_foreign_pid() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(
-        root.join("specs/42-widgets.md"),
-        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
-    )
-    .unwrap();
-
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &[
-            "step",
-            "--spec",
-            "specs/42-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
-        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
-        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
-        // subprocess's real parent id here and wrongly suppress the reminder.
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
-    );
-    assert!(
-        !ok,
-        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        err.contains("rigger validate specs/42-widgets.md"),
-        "ambient env pollution naming a foreign pid must never suppress the reminder; got \
-         stderr:\n{err}"
-    );
-}
-
-/// A genuinely nested `rigger run <spec>` stays silent when the sentinel names our real pid.
-#[test]
-fn run_reminder_is_suppressed_when_env_names_the_real_direct_parent_pid() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(
-        root.join("specs/42-widgets.md"),
-        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
-    )
-    .unwrap();
-
-    let own_pid = std::process::id().to_string();
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &[
-            "run",
-            "specs/42-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", own_pid.as_str())],
-    );
-    assert!(
-        !ok,
-        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        err.contains("no reachable base"),
-        "sanity: same no-reachable-base refusal the base test pins; got: {err:?}"
-    );
-    assert!(
-        !out.contains("rigger validate"),
-        "a `run` genuinely nested under this test process must stay silent when the sentinel \
-         names our real pid; got stdout:\n{out}"
-    );
-}
-
-/// Ambient env pollution naming a foreign pid must never suppress `rigger run <spec>`'s
-/// reminder.
-#[test]
-fn run_reminder_prints_despite_env_naming_a_foreign_pid() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(
-        root.join("specs/42-widgets.md"),
-        "# 42 widgets\n\n## Done when\n\n- [ ] a test proves widgets work\n",
-    )
-    .unwrap();
-
-    let (out, err, ok) = run_rigger_envs(
-        root,
-        &[
-            "run",
-            "specs/42-widgets.md",
-            "--base",
-            "origin/does-not-exist",
-        ],
-        // A large, arbitrary sentinel - never this binary's real direct parent. NOT `"1"`:
-        // `.cargo/pidns-runner.sh` (spec 78) runs every test binary as pid 1 of its OWN
-        // fresh pid namespace, so `"1"` would genuinely equal the spawned rigger
-        // subprocess's real parent id here and wrongly suppress the reminder.
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")],
-    );
-    assert!(
-        !ok,
-        "the no-reachable-base refusal must still fire; stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        out.contains("rigger validate specs/42-widgets.md"),
-        "ambient env pollution naming a foreign pid must never suppress the reminder; got \
-         stdout:\n{out}"
-    );
-}
 
 /// A genuinely nested `rigger workflow <spec>` stays silent when the sentinel names our real
 /// pid - `cmd_workflow` prints (or stays silent) before `locate_shim`, so no shim need be
@@ -24857,188 +24677,12 @@ fn workflow_reminder_prints_despite_env_naming_a_foreign_pid() {
     );
 }
 
-/// The escalation remedy's own regression guard (adj-u66c5-rebuild-verdict-reject-dead-
-/// consumer, sdet-u66c5-no-regression-test-guards-run-workflow-reminder-silence):
-/// `run_workflow` - the surface the /rigger workflow itself launches through - prints
-/// criterion 5's reminder when a spec path is in play, and the pid-scoped REMINDER DEDUP
-/// contract holds on this surface in both directions: a foreign/ambient sentinel value
-/// still prints, and a value naming this process's real direct parent (the test process,
-/// which spawns the binary as its direct OS child) suppresses.
-#[test]
-fn run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(
-        root.join("specs/42-widgets.md"),
-        "# 42 widgets\n\n## Done when\n\n- [ ] the daemon starts on boot\n",
-    )
-    .unwrap();
-    let args = [
-        "run",
-        "--driver",
-        "workflow",
-        "specs/42-widgets.md",
-        "--base",
-        "origin/does-not-exist",
-    ];
-
-    // No sentinel: the reminder prints (on stderr, keeping the shim's stdout clean).
-    let (_out, err, _ok) = run_rigger(root, &args);
-    assert!(
-        err.contains("next: `rigger validate specs/42-widgets.md`"),
-        "run_workflow must print criterion 5's reminder when a spec path is in play - the \
-         omission this unit was rejected for twice; stderr:\n{err}"
-    );
-
-    // Foreign sentinel (a pid that is not this binary's direct parent): still prints.
-    let (_out, err, _ok) =
-        run_rigger_envs(root, &args, &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")]);
-    assert!(
-        err.contains("next: `rigger validate specs/42-widgets.md`"),
-        "an ambient/foreign sentinel value must not suppress run_workflow's reminder; \
-         stderr:\n{err}"
-    );
-
-    // Genuine parent sentinel: this test process spawns the binary as its direct OS
-    // child, so naming our own pid is the real nested-invocation shape - suppressed.
-    let parent = std::process::id().to_string();
-    let (_out, err, _ok) = run_rigger_envs(
-        root,
-        &args,
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", parent.as_str())],
-    );
-    assert!(
-        !err.contains("next: `rigger validate"),
-        "a sentinel naming the binary's real direct parent must suppress the reminder on \
-         this surface exactly as on the other three; stderr:\n{err}"
-    );
-}
-
-/// Companion to `run_driver_workflow_prints_the_spec_lint_reminder_and_honors_the_pid_scoped_dedup`,
-/// pinning the half that test's `(_out, ..)` destructuring never inspects: `run_workflow`'s own
-/// doc comment names stdout as "the shim-captured stdout protocol stream" the reminder must
-/// never touch, so an `eprintln!` -> `println!` typo on this call site - the exact class this
-/// unit has shipped twice before, `fresh_run_if_requested`'s `--fresh` stdout leak and the
-/// workflow-chain double-print regression (`arch-u66c5r8-workflow-chain-double-prints-the-
-/// reminder`) - would ship silently through the sibling test alone. Checked across all three
-/// pid-sentinel directions: printing (bare and foreign-sentinel) must land on stderr only, and
-/// a suppressed reminder must be absent from both streams, not merely relocated to stdout.
-#[test]
-fn run_driver_workflow_reminder_never_reaches_stdout_in_any_pid_sentinel_direction() {
-    let dir = temp_project();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    std::fs::create_dir_all(root.join("specs")).unwrap();
-    std::fs::write(
-        root.join("specs/42-widgets.md"),
-        "# 42 widgets\n\n## Done when\n\n- [ ] the daemon starts on boot\n",
-    )
-    .unwrap();
-    let args = [
-        "run",
-        "--driver",
-        "workflow",
-        "specs/42-widgets.md",
-        "--base",
-        "origin/does-not-exist",
-    ];
-
-    // No sentinel: the reminder prints, but must never appear on stdout.
-    let (out, err, _ok) = run_rigger(root, &args);
-    assert!(
-        err.contains("next: `rigger validate specs/42-widgets.md`"),
-        "sanity: the reminder must still print on stderr; stderr:\n{err}"
-    );
-    assert!(
-        !out.contains("rigger validate"),
-        "run_workflow's reminder must never reach stdout - that stream is the live MCP \
-         stdio transport a stray human-readable line would corrupt; stdout:\n{out}"
-    );
-
-    // Foreign sentinel: still prints, still must stay off stdout.
-    let (out, err, _ok) =
-        run_rigger_envs(root, &args, &[("RIGGER_SPEC_LINT_REMINDER_PID", "999999")]);
-    assert!(
-        err.contains("next: `rigger validate specs/42-widgets.md`"),
-        "sanity: an ambient/foreign sentinel must not suppress the reminder; stderr:\n{err}"
-    );
-    assert!(
-        !out.contains("rigger validate"),
-        "a foreign sentinel must not push the reminder onto stdout either; stdout:\n{out}"
-    );
-
-    // Genuine parent sentinel: suppressed entirely - confirm it is absent from BOTH streams,
-    // not merely relocated to stdout instead of dropped.
-    let parent = std::process::id().to_string();
-    let (out, err, _ok) = run_rigger_envs(
-        root,
-        &args,
-        &[("RIGGER_SPEC_LINT_REMINDER_PID", parent.as_str())],
-    );
-    assert!(
-        !out.contains("rigger validate") && !err.contains("rigger validate"),
-        "a suppressed reminder must be absent from both streams; stdout:\n{out}\nstderr:\n{err}"
-    );
-}
-
-/// The adjudicator's escalation-remedy verdict (adj-u66c5-escalation-remedy-verdict-reject-
-/// adjacent-fresh-leak, UPHOLDING adv-u66c5-escalation-remedy-fresh-println-still-leaks-
-/// stdout): `fresh_run_if_requested`'s own `--fresh` notice was STILL an unconditional
-/// `println!` even after `run_workflow` learned to keep its reminder off stdout three lines
-/// above it - the same MCP-stdio-corruption invariant this unit's own doc comments assert,
-/// violated by the one line the sibling test above never inspects. Reproduced here through
-/// the real compiled binary exactly as the adjudicator did: `rigger run --driver workflow
-/// --base HEAD --fresh` with a genuinely reachable base (so the run gets PAST the refuse
-/// checks and actually reaches `fresh_run_if_requested`) and a deliberately-unknown grounder
-/// name (so `select_grounder`, called immediately after, fails fast and deterministically -
-/// no reliance on the MCP loop's stdin-EOF timing to end the process). No spec positional is
-/// passed, so the DISCOVERABILITY reminder itself never fires and cannot be confused with the
-/// `--fresh` notice under test.
-#[test]
-fn run_driver_workflow_fresh_notice_never_reaches_stdout() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_two_stage_workflow(root);
-    // Swap the working grounder for one `select_grounder` rejects, so the run fails fast and
-    // deterministically right after `fresh_run_if_requested` returns - never entering the
-    // MCP-serving loop at all, so this test can never hang on stdin.
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        "name: steptest\ndefaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
-    )
-    .unwrap();
-
-    let (out, err, ok) = run_rigger(
-        root,
-        &["run", "--driver", "workflow", "--base", "HEAD", "--fresh"],
-    );
-    assert!(
-        !ok,
-        "the bogus grounder makes the served run fail right after the --fresh notice \
-         (expected); stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        err.contains("began a new run"),
-        "sanity: the --fresh notice must still fire (on stderr) even though the run then \
-         fails at grounder selection; stderr:\n{err}"
-    );
-    assert!(
-        !out.contains("began a new run"),
-        "run_workflow's own --fresh notice must never reach stdout - that stream is the live \
-         MCP stdio transport this unit's own doc comments say a stray human-readable line \
-         would corrupt, exactly as already enforced for the reminder three lines above it; \
-         stdout:\n{out}"
-    );
-}
-
-/// Sibling of [`run_driver_workflow_fresh_notice_never_reaches_stdout`], pinning the OTHER
-/// half so the fix does not overcorrect: `rigger run --driver cli --fresh` is the normal
-/// human-facing standalone path, so its `--fresh` notice must keep printing on stdout exactly
-/// as before this fix - never regressed to stderr just because the sibling driver moved.
-#[test]
-fn run_driver_cli_fresh_notice_still_prints_on_stdout() {
+/// `rigger run --driver <driver> --base HEAD --fresh` over a workflow whose grounder
+/// `select_grounder` rejects, so the run fails fast and deterministically right after
+/// `fresh_run_if_requested` returns - never entering the MCP-serving loop at all, so it can
+/// never hang on stdin. The --fresh notice fires regardless, on stdout when `on_stdout` and
+/// otherwise on stderr and NEVER on stdout.
+fn assert_the_fresh_notice_prints(driver: &str, on_stdout: bool) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_two_stage_workflow(root);
@@ -25050,18 +24694,53 @@ fn run_driver_cli_fresh_notice_still_prints_on_stdout() {
 
     let (out, err, ok) = run_rigger(
         root,
-        &["run", "--driver", "cli", "--base", "HEAD", "--fresh"],
+        &["run", "--driver", driver, "--base", "HEAD", "--fresh"],
     );
     assert!(
         !ok,
         "the bogus grounder makes the run fail right after the --fresh notice (expected); \
          stdout:\n{out}\nstderr:\n{err}"
     );
+    let (shown, hidden) = if on_stdout {
+        (&out, None)
+    } else {
+        (&err, Some(&out))
+    };
     assert!(
-        out.contains("began a new run"),
-        "`rigger run --driver cli --fresh`'s notice is normal human-facing output and must \
-         keep printing on stdout, unchanged by the workflow-driver stdout fix; stdout:\n{out}"
+        shown.contains("began a new run"),
+        "the --fresh notice must fire on its own stream; stdout:\n{out}\nstderr:\n{err}"
     );
+    if let Some(stdout) = hidden {
+        assert!(
+            !stdout.contains("began a new run"),
+            "run_workflow's --fresh notice must never reach stdout - the live MCP stdio \
+             transport a stray human-readable line would corrupt; stdout:\n{stdout}"
+        );
+    }
+}
+
+rigger::test_cases! {
+    /// The adjudicator's escalation-remedy verdict (adj-u66c5-escalation-remedy-verdict-reject-
+    /// adjacent-fresh-leak, UPHOLDING adv-u66c5-escalation-remedy-fresh-println-still-leaks-
+    /// stdout): `fresh_run_if_requested`'s own `--fresh` notice was STILL an unconditional
+    /// `println!` even after `run_workflow` learned to keep its reminder off stdout three lines
+    /// above it - the same MCP-stdio-corruption invariant this unit's own doc comments assert,
+    /// violated by the one line the sibling test above never inspects. Reproduced here through
+    /// the real compiled binary exactly as the adjudicator did: `rigger run --driver workflow
+    /// --base HEAD --fresh` with a genuinely reachable base (so the run gets PAST the refuse
+    /// checks and actually reaches `fresh_run_if_requested`) and a deliberately-unknown grounder
+    /// name (so `select_grounder`, called immediately after, fails fast and deterministically -
+    /// no reliance on the MCP loop's stdin-EOF timing to end the process). No spec positional is
+    /// passed, so the DISCOVERABILITY reminder itself never fires and cannot be confused with the
+    /// `--fresh` notice under test.
+    run_driver_workflow_fresh_notice_never_reaches_stdout:
+        assert_the_fresh_notice_prints("workflow", false);
+    /// Sibling of [`run_driver_workflow_fresh_notice_never_reaches_stdout`], pinning the OTHER
+    /// half so the fix does not overcorrect: `rigger run --driver cli --fresh` is the normal
+    /// human-facing standalone path, so its `--fresh` notice must keep printing on stdout exactly
+    /// as before this fix - never regressed to stderr just because the sibling driver moved.
+    run_driver_cli_fresh_notice_still_prints_on_stdout:
+        assert_the_fresh_notice_prints("cli", true);
 }
 
 // --- Spec 62, criterion 3: HELD-PORT DIAGNOSIS ---
