@@ -11,14 +11,14 @@ use std::time::{Duration, SystemTime};
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
+use crate::sqlite::open_connection;
+
 use super::{
     from_nanos, to_nanos, Appended, ContentIdentity, Direction, Error, Event, EventStore,
     ExpectedRevision, Filter, Position, Revision, Subscription, NO_STREAM,
 };
 
 const SCHEMA: &str = "
-PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS events (
   position    INTEGER PRIMARY KEY AUTOINCREMENT,
   stream      TEXT NOT NULL,
@@ -45,7 +45,7 @@ pub struct Store {
 impl Store {
     /// Open (creating if needed) the store at path. Use ":memory:" in tests.
     pub fn open(path: &str) -> Result<Self, Error> {
-        let conn = Connection::open(path).map_err(be)?;
+        let conn = open_connection(path).map_err(be)?;
         conn.execute_batch(SCHEMA).map_err(be)?;
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
@@ -338,7 +338,7 @@ impl Store {
             // so this transaction cannot fail the deferred lock upgrade a read-then-write
             // transaction attempts half way through - that failure mode is closed. It does NOT
             // make a concurrent appender safe: the lock is held for the WHOLE delete, which on a
-            // large log runs for longer than `busy_timeout` (5000ms, set in `SCHEMA` above -
+            // large log runs for longer than `busy_timeout` (5000ms, set by `crate::sqlite::open_connection` -
             // measured at roughly 8s of held lock on a 165MB log), and an appender that waits out
             // its timeout gets `database is locked` and does NOT retry. So a prune over a big log
             // can cost a concurrent writer its append. That is why this is maintenance run BETWEEN

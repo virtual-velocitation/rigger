@@ -23,10 +23,9 @@ use super::{
 };
 use crate::eventstore::{to_nanos, Event, Position};
 use crate::spawn::{SpawnEvent, SpawnResult, TYPE_SPAWN_RESULT};
+use crate::sqlite::open_connection;
 
 const SCHEMA: &str = "
-PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS nodes (
   id TEXT NOT NULL, kind TEXT NOT NULL, attrs TEXT,
   project TEXT NOT NULL DEFAULT '',
@@ -91,7 +90,7 @@ impl Projector {
     /// column) is migrated in place, backfilling its existing rows with this identity, so a
     /// single-project deployment behaves exactly as before.
     pub fn open(path: &str, project: &str) -> Result<Self, Error> {
-        let conn = Connection::open(path).map_err(be)?;
+        let conn = open_connection(path).map_err(be)?;
         conn.execute_batch(SCHEMA).map_err(be)?;
         migrate_project_scope(&conn, project)?;
         migrate_edge_tier(&conn)?;

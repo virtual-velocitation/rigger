@@ -104,6 +104,9 @@ pub mod spawn;
 pub mod spawn_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod spec;
+/// The one opener every SQLite store connection goes through: see that module's own doc.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod sqlite;
 /// The driver-independent watchdog (spec 69, criterion 2): `rigger watch`'s pure
 /// domain core - the five `rigger-watch-a-run` signals plus a store-integrity check,
 /// folded from already-gathered inputs into one line per anomaly, with in-process
