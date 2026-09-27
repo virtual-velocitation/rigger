@@ -1099,7 +1099,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c9324c409aa1",
+    "id": "dup-1cb04081ace8",
     "classification": "semantic",
     "sites": [
       {
@@ -3253,26 +3253,6 @@
         "content_hash": "6381403cc55e857d"
       },
       {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "fab45089dfff5214"
-      },
-      {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "6381403cc55e857d"
-      },
-      {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "fab45089dfff5214"
-      },
-      {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "name": "\".rigger\"",
-        "content_hash": "6381403cc55e857d"
-      },
-      {
         "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
         "name": "\".rigger\"",
         "content_hash": "b4f6780144fa9e9f"
@@ -3789,7 +3769,7 @@
       }
     ],
     "proposed_home": "one .rigger-relative path-composition helper",
-    "note": "mandatory sweep: .rigger-path string literals - 537 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
+    "note": "mandatory sweep: .rigger-path string literals - 533 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)",
     "disposition": "not-a-duplicate"
   },
   {

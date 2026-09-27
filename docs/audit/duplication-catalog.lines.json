@@ -1015,7 +1015,7 @@
     ]
   },
   {
-    "id": "dup-c9324c409aa1",
+    "id": "dup-1cb04081ace8",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -3159,33 +3159,13 @@
       },
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "start_line": 354,
-        "end_line": 354
+        "start_line": 232,
+        "end_line": 232
       },
       {
         "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "start_line": 365,
-        "end_line": 365
-      },
-      {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "start_line": 450,
-        "end_line": 450
-      },
-      {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "start_line": 461,
-        "end_line": 461
-      },
-      {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "start_line": 533,
-        "end_line": 533
-      },
-      {
-        "file": "tests/heartbeat_write_read_agree_periphery.rs",
-        "start_line": 543,
-        "end_line": 543
+        "start_line": 237,
+        "end_line": 237
       },
       {
         "file": "tests/init_setup_unknown_key_agent_fleet_periphery.rs",
