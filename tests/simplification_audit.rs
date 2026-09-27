@@ -2100,6 +2100,15 @@ const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
 /// reads it back (see [`ledger_json`]).
 const CATALOG_LINES_PATH: &str = "docs/audit/duplication-catalog.lines.json";
 
+/// The committed sidecar of human judgements on catalogued clusters: a list of
+/// [`Disposition`]s, each naming a cluster by its content-derived id. The catalog writer copies
+/// each one onto its cluster's entry ([`apply_dispositions`]).
+const DISPOSITIONS_PATH: &str = "docs/audit/duplication-dispositions.json";
+
+/// The one disposition the audit records today: the detector matched two sites by their
+/// normalized token shape, but reading them shows different meaning, not one logic twice.
+const NOT_A_DUPLICATE: &str = "not-a-duplicate";
+
 /// The fixed seed for [`sample_indices`]'s adversarial draw - arbitrary but permanently fixed
 /// (spec 85 THOROUGHNESS: "The report states the sample seed so the check is reproducible").
 const ADVERSARIAL_SEED: u64 = 85_072_026;
@@ -2667,6 +2676,8 @@ struct DupCluster {
     sites: Vec<DupSite>,
     proposed_home: String,
     note: String,
+    /// A recorded human judgement on this cluster ([`DISPOSITIONS_PATH`]), `None` while open.
+    disposition: Option<String>,
 }
 
 fn dup_site(f: &ScannedFn, file_tokens: &[RawTok]) -> DupSite {
@@ -2811,6 +2822,7 @@ fn build_mechanical_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupClust
                 "mechanical: normalized-token Jaccard similarity ({SHINGLE_SIZE}-token \
                  shingles, threshold {SIMILARITY_THRESHOLD})"
             ),
+            disposition: None,
         });
     }
     clusters.sort_by(|a, b| {
@@ -2949,6 +2961,7 @@ fn sweep_cluster(sweep_name: &str, mut sites: Vec<DupSite>, proposed_home: &str)
         sites,
         proposed_home: proposed_home.to_string(),
         note,
+        disposition: None,
     }
 }
 
@@ -3259,6 +3272,41 @@ fn cluster_sort_key(c: &DupCluster) -> (String, usize) {
     }
 }
 
+/// One [`DISPOSITIONS_PATH`] entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Disposition {
+    id: String,
+    disposition: String,
+    reason: String,
+}
+
+/// The committed [`DISPOSITIONS_PATH`] under `root` - the ONE reader of that sidecar.
+fn load_dispositions(root: &Path) -> Vec<Disposition> {
+    let path = root.join(DISPOSITIONS_PATH);
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("{DISPOSITIONS_PATH} is missing or unreadable ({e})"));
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("{DISPOSITIONS_PATH} is not a disposition list: {e}"))
+}
+
+/// Copies each disposition onto the cluster its id names. A disposition naming no cluster is
+/// stale - its cluster was closed or its content changed - and is refused rather than kept.
+fn apply_dispositions(
+    clusters: &mut [DupCluster],
+    dispositions: &[Disposition],
+) -> Result<(), String> {
+    for d in dispositions {
+        let cluster = clusters.iter_mut().find(|c| c.id == d.id).ok_or_else(|| {
+            format!(
+                "{DISPOSITIONS_PATH} records {} for {}, which names no catalogued cluster",
+                d.disposition, d.id
+            )
+        })?;
+        cluster.disposition = Some(d.disposition.clone());
+    }
+    Ok(())
+}
+
 /// A cluster's id, derived from its OWN content - its classification, its proposed home and
 /// its sorted `file#content_hash` site keys, hashed and rendered `dup-<12 hex>` - never from its
 /// position in the catalog, so closing one cluster never renumbers another and a citation of
@@ -3315,11 +3363,16 @@ fn real_files() -> &'static [FileScan] {
     CACHE.get_or_init(|| scan_tree(&repo_root()))
 }
 
-/// The real checked-out tree's [`build_catalog`], memoized alongside [`real_files`] for the
-/// same reason.
+/// The real checked-out tree's [`build_catalog`] with its committed dispositions applied,
+/// memoized alongside [`real_files`] for the same reason.
 fn real_catalog() -> &'static [DupCluster] {
     static CACHE: std::sync::OnceLock<Vec<DupCluster>> = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| build_catalog(real_files()))
+    CACHE.get_or_init(|| {
+        let mut clusters = build_catalog(real_files());
+        apply_dispositions(&mut clusters, &load_dispositions(&repo_root()))
+            .unwrap_or_else(|e| panic!("{e}"));
+        clusters
+    })
 }
 
 // -----------------------------------------------------------------------------------------
@@ -3343,6 +3396,8 @@ struct DupClusterWire {
     sites: Vec<DupSiteWire>,
     proposed_home: String,
     note: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    disposition: Option<String>,
 }
 
 /// [`CATALOG_LINES_PATH`]'s shape: one cluster's sites' line spans only, in the SAME
@@ -3376,6 +3431,7 @@ fn dup_cluster_wire(c: &DupCluster) -> DupClusterWire {
             .collect(),
         proposed_home: c.proposed_home.clone(),
         note: c.note.clone(),
+        disposition: c.disposition.clone(),
     }
 }
 
@@ -8170,6 +8226,99 @@ mod tests {
         assert_eq!(mech.sites[0].file, "src/a.rs");
     }
 
+    fn one_site_cluster(id: &str, file: &str) -> DupCluster {
+        DupCluster {
+            id: id.to_string(),
+            classification: "exact".to_string(),
+            sites: vec![DupSite {
+                file: file.to_string(),
+                start_line: 1,
+                end_line: 3,
+                name: "a".to_string(),
+                content_hash: "deadbeefcafef00d".to_string(),
+            }],
+            proposed_home: "a::support".to_string(),
+            note: "n".to_string(),
+            disposition: None,
+        }
+    }
+
+    /// A recorded disposition marks exactly the cluster it names, and the catalog then carries
+    /// it as that entry's `disposition`; an undispositioned entry carries no such key.
+    #[test]
+    fn a_recorded_disposition_marks_only_the_cluster_it_names() {
+        let mut clusters = vec![
+            one_site_cluster("dup-aaaaaaaaaaaa", "src/a.rs"),
+            one_site_cluster("dup-bbbbbbbbbbbb", "src/b.rs"),
+        ];
+        let dispositions = vec![Disposition {
+            id: "dup-bbbbbbbbbbbb".to_string(),
+            disposition: NOT_A_DUPLICATE.to_string(),
+            reason: "same token shape, different meaning".to_string(),
+        }];
+        apply_dispositions(&mut clusters, &dispositions).expect("the id names a cluster");
+        assert_eq!(clusters[0].disposition, None);
+        assert_eq!(clusters[1].disposition.as_deref(), Some(NOT_A_DUPLICATE));
+        let json = ledger_json(&clusters, dup_cluster_wire);
+        assert_eq!(
+            json.matches("\"disposition\": \"not-a-duplicate\"").count(),
+            1
+        );
+    }
+
+    /// A disposition naming no catalogued cluster is stale (its cluster was closed or changed)
+    /// and is refused, naming the id, rather than silently kept.
+    #[test]
+    fn a_disposition_naming_no_cluster_is_refused() {
+        let mut clusters = vec![one_site_cluster("dup-aaaaaaaaaaaa", "src/a.rs")];
+        let dispositions = vec![Disposition {
+            id: "dup-cccccccccccc".to_string(),
+            disposition: NOT_A_DUPLICATE.to_string(),
+            reason: "r".to_string(),
+        }];
+        let err = apply_dispositions(&mut clusters, &dispositions).unwrap_err();
+        assert!(err.contains("dup-cccccccccccc"), "{err}");
+    }
+
+    /// THE EXACT-CLUSTER GATE: every exact cluster still open on the real tree carries a
+    /// recorded disposition - or, for this interim integration only, belongs to a group of the
+    /// still-running `src-a` cleanup lane (matched by site file+name, since ids move with
+    /// content), read from that lane's group file.
+    #[test]
+    fn every_open_exact_cluster_is_dispositioned_or_awaits_the_src_a_lane() {
+        // TODO(src-a merge): once the src-a lane is merged, delete the group-file allowance
+        // below so ONLY dispositioned exact clusters may remain.
+        let group_path = PathBuf::from(std::env::var("HOME").expect("HOME is set"))
+            .join(".cache/rigger/drafts/cleanup/groups/src-a.json");
+        let raw = fs::read_to_string(&group_path)
+            .unwrap_or_else(|e| panic!("{} is unreadable ({e})", group_path.display()));
+        let groups: Vec<DupClusterWire> =
+            serde_json::from_str(&raw).expect("the src-a group file is a cluster list");
+        let site_names =
+            |sites: &mut dyn Iterator<Item = (&str, &str)>| -> BTreeSet<(String, String)> {
+                sites.map(|(f, n)| (f.to_string(), n.to_string())).collect()
+            };
+        let group_sets: Vec<BTreeSet<(String, String)>> = groups
+            .iter()
+            .map(|g| site_names(&mut g.sites.iter().map(|s| (s.file.as_str(), s.name.as_str()))))
+            .collect();
+        let unaccounted: Vec<&str> = real_catalog()
+            .iter()
+            .filter(|c| c.classification == "exact" && c.disposition.is_none())
+            .filter(|c| {
+                let set =
+                    site_names(&mut c.sites.iter().map(|s| (s.file.as_str(), s.name.as_str())));
+                !group_sets.iter().any(|g| set.is_subset(g))
+            })
+            .map(|c| c.id.as_str())
+            .collect();
+        assert!(
+            unaccounted.is_empty(),
+            "open exact clusters with neither a disposition in {DISPOSITIONS_PATH} nor a src-a \
+             group: {unaccounted:?}"
+        );
+    }
+
     /// A one-cluster catalog written through `to_wire` ends in a newline, round-trips back to
     /// exactly `to_wire` of that cluster, and never carries any of the `absent` keys.
     fn assert_catalog_ledger_round_trips<W>(to_wire: fn(&DupCluster) -> W, absent: [&str; 2])
@@ -8188,6 +8337,7 @@ mod tests {
             }],
             proposed_home: "a::support".to_string(),
             note: "n".to_string(),
+            disposition: None,
         }];
         let json = ledger_json(&clusters, to_wire);
         assert!(json.ends_with('\n'));
@@ -8667,6 +8817,7 @@ mod tests {
             }],
             proposed_home: "a::support".to_string(),
             note: "n".to_string(),
+            disposition: None,
         };
         let lines = DupClusterLines {
             id: "dup-0001".to_string(),

@@ -13015,7 +13015,8 @@
       }
     ],
     "proposed_home": "main::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-e110574b66dc",
@@ -13665,7 +13666,8 @@
       }
     ],
     "proposed_home": "main::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-4065bd38c76d",
@@ -13793,7 +13795,8 @@
       }
     ],
     "proposed_home": "main::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-8208a30a91e2",
@@ -14120,7 +14123,8 @@
       }
     ],
     "proposed_home": "metrics::support (consolidate these 7 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-9cfc1b9df362",
@@ -14197,7 +14201,8 @@
       }
     ],
     "proposed_home": "metrics::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-17538867af44",
@@ -14283,24 +14288,6 @@
         "file": "src/metrics.rs",
         "name": "courier_finding",
         "content_hash": "85700b6ac473315a"
-      }
-    ],
-    "proposed_home": "metrics::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-d04c0e512a77",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/metrics.rs",
-        "name": "spawn_timing_never_pairs_a_cross_run_id_collision",
-        "content_hash": "a7c1df808f0b15dc"
-      },
-      {
-        "file": "src/metrics.rs",
-        "name": "spawn_timing_excludes_a_same_batch_zero_duration_pair_as_suspect",
-        "content_hash": "ffc6118ee556f3b4"
       }
     ],
     "proposed_home": "metrics::support (consolidate these 2 sites into one function in this file)",
@@ -15138,7 +15125,8 @@
       }
     ],
     "proposed_home": "worktree::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-cda9c1a42625",
@@ -15156,7 +15144,8 @@
       }
     ],
     "proposed_home": "worktree::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-8a40ee6f30d4",
@@ -23937,8 +23926,8 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-51ecdac1e9c5",
-    "classification": "near",
+    "id": "dup-5d444b26662b",
+    "classification": "exact",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
@@ -23947,26 +23936,22 @@
       },
       {
         "file": "tests/simplification_audit.rs",
-        "name": "real_catalog",
-        "content_hash": "76e81ea33f261a6d"
-      },
-      {
-        "file": "tests/simplification_audit.rs",
         "name": "real_workspace_files",
         "content_hash": "fcd06bf2471db90e"
       }
     ],
-    "proposed_home": "simplification_audit::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+    "proposed_home": "simplification_audit::support (consolidate these 2 sites into one function in this file)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-c2f78f917d22",
+    "id": "dup-23cb89af01e7",
     "classification": "near",
     "sites": [
       {
         "file": "tests/simplification_audit.rs",
         "name": "dup_cluster_wire",
-        "content_hash": "c799d76adb1dd44c"
+        "content_hash": "a6a9ab09211799a5"
       },
       {
         "file": "tests/simplification_audit.rs",

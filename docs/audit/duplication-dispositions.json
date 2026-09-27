@@ -1,0 +1,42 @@
+[
+  {
+    "id": "dup-4841cf90306e",
+    "disposition": "not-a-duplicate",
+    "reason": "`usage` prints the CLI usage text to stderr while `print_scaffold_pointer` prints the post-setup starter-fleet pointer to stdout: one print call each, with different text and a different stream."
+  },
+  {
+    "id": "dup-8aae77675253",
+    "disposition": "not-a-duplicate",
+    "reason": "Two unit tests asserting substrings of two different constants (the workflow step schema and the no-runs message); only the assert shape is shared."
+  },
+  {
+    "id": "dup-b3f279a36f39",
+    "disposition": "not-a-duplicate",
+    "reason": "Two one-line unit tests over two different functions (`order_signature_advisories` staying silent on an empty list, `parse_guard_write_roots` refusing one)."
+  },
+  {
+    "id": "dup-fb8e130faaf9",
+    "disposition": "not-a-duplicate",
+    "reason": "Seven metric accessors, each naming a different ratio over different fields through the one shared `ratio` helper, so the shared logic already lives once."
+  },
+  {
+    "id": "dup-0a954d1e88d1",
+    "disposition": "not-a-duplicate",
+    "reason": "Three test fixtures building three different event types with different payloads through the one shared `ev` helper."
+  },
+  {
+    "id": "dup-17993613795d",
+    "disposition": "not-a-duplicate",
+    "reason": "`scratch_root` creates and sweeps the scratch root while `scratch_root_path` only resolves it: thin env-injecting entry points to two different resolvers."
+  },
+  {
+    "id": "dup-cda9c1a42625",
+    "disposition": "not-a-duplicate",
+    "reason": "The `*_from_env` pair feeds the `RIGGER_TMPDIR` override to two different resolvers (create versus locate-only); only the call shape is shared."
+  },
+  {
+    "id": "dup-5d444b26662b",
+    "disposition": "not-a-duplicate",
+    "reason": "`real_files` and `real_workspace_files` memoize two different scans of the tree; the only shared shape is the standard `OnceLock` memoization idiom."
+  }
+]

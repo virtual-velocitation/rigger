@@ -78,6 +78,9 @@ struct ConsumedDupCluster {
     sites: Vec<ConsumedDupSite>,
     proposed_home: String,
     note: String,
+    /// Present only on a cluster carrying a recorded disposition (e.g. `not-a-duplicate`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    disposition: Option<String>,
 }
 
 const CATALOG_PATH: &str = "docs/audit/duplication-catalog.json";
