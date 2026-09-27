@@ -1089,8 +1089,8 @@ mod tests {
         assert!(anomalies[0].line().contains("rigger-restore-the-dash"));
     }
 
-    #[test]
-    fn no_dash_ever_recorded_is_not_an_anomaly() {
+    /// An otherwise quiet run whose dash probe reads `dash` draws no anomaly.
+    fn assert_dash_probe_is_not_an_anomaly(dash: DashProbe) {
         let inputs = WatchInputs {
             run_events: &[],
             full_events: &[],
@@ -1098,7 +1098,7 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             wave_liveness_ages: &BTreeMap::new(),
-            dash: DashProbe::NotRecorded,
+            dash,
             run_started_at: None,
             dash_breadcrumb_written_at: None,
             dash_attempted_this_run: false,
@@ -1106,21 +1106,9 @@ mod tests {
         assert!(detect(&inputs).is_empty());
     }
 
-    #[test]
-    fn a_serving_dash_is_not_an_anomaly() {
-        let inputs = WatchInputs {
-            run_events: &[],
-            full_events: &[],
-            now: SystemTime::now(),
-            last_event_at: None,
-            step_lock_free: true,
-            wave_liveness_ages: &BTreeMap::new(),
-            dash: DashProbe::Serving,
-            run_started_at: None,
-            dash_breadcrumb_written_at: None,
-            dash_attempted_this_run: false,
-        };
-        assert!(detect(&inputs).is_empty());
+    crate::test_cases! { assert_dash_probe_is_not_an_anomaly;
+        no_dash_ever_recorded_is_not_an_anomaly: (DashProbe::NotRecorded);
+        a_serving_dash_is_not_an_anomaly: (DashProbe::Serving);
     }
 
     /// Round-6 fix (round-5 reject cause adv2-u69c1-r5-uphold-sdet-second-run-stale-marker):

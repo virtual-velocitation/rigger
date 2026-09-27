@@ -2573,7 +2573,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e3e6bad525bed635"
+    "content_hash": "8f20443cc2e5a53d"
   },
   {
     "file": "src/conductor.rs",
@@ -4765,7 +4765,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "dbc03ba5ca1feec3"
+    "content_hash": "3b6246f2d492bf0f"
   },
   {
     "file": "src/conductor.rs",
@@ -4773,7 +4773,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b251574768408018"
+    "content_hash": "c8b818dfa4ac5e9c"
   },
   {
     "file": "src/conductor.rs",
@@ -4781,7 +4781,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6ae1590e138fd958"
+    "content_hash": "a1d14378e4689848"
   },
   {
     "file": "src/conductor.rs",
@@ -4789,7 +4789,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ae69ab2151e63a62"
+    "content_hash": "e4e4eb82ff783c22"
   },
   {
     "file": "src/conductor.rs",
@@ -4797,7 +4797,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5c63762a77b1a47f"
+    "content_hash": "e5ce27ef2202890a"
   },
   {
     "file": "src/conductor.rs",
@@ -4813,7 +4813,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "05f74b53cf9fe837"
+    "content_hash": "32a1024e6674613a"
   },
   {
     "file": "src/conductor.rs",
@@ -4821,7 +4821,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "15fa91f654f7c502"
+    "content_hash": "3dabf35ee0395f6e"
   },
   {
     "file": "src/conductor.rs",
@@ -4893,7 +4893,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "af3d028df973eaed"
+    "content_hash": "6aa2a06b1201b6f6"
   },
   {
     "file": "src/conductor.rs",
@@ -4941,7 +4941,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "39dc8007214d0425"
+    "content_hash": "bf839c77a1c6942c"
   },
   {
     "file": "src/conductor.rs",
@@ -4949,7 +4949,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "6c82b1d2f8ea64d0"
+    "content_hash": "19d13d023e1db70f"
   },
   {
     "file": "src/conductor.rs",
@@ -5257,19 +5257,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "materializing",
+    "name": "with_side_effect",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "4009a911c8b2a848"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "deleting_worktree",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "dfaaa31f5d49ed51"
+    "content_hash": "3bb4a34212bf99ec"
   },
   {
     "file": "src/conductor.rs",
@@ -13857,19 +13849,11 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "ids",
+    "name": "leaf_fields",
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "ffa5fb9b59b832d1"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "kinds",
-    "is_test": true,
-    "proposed_module": "dash::tests::rationale_overlay_c3",
-    "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "56ad4a06b1dc48e3"
+    "content_hash": "51ffe8dcbbe610a3"
   },
   {
     "file": "src/dash.rs",
@@ -13877,7 +13861,7 @@
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "d73240ae1d983d7e"
+    "content_hash": "d58f9de199e0279e"
   },
   {
     "file": "src/dash.rs",
@@ -13917,7 +13901,7 @@
     "is_test": true,
     "proposed_module": "dash::tests::rationale_overlay_c3",
     "reason": "defined inside `rationale_overlay_c3`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
-    "content_hash": "14b3c36697342164"
+    "content_hash": "742c4aa629f8c492"
   },
   {
     "file": "src/dash.rs",
