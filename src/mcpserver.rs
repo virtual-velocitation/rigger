@@ -1016,6 +1016,7 @@ mod tests {
     use super::*;
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Filter};
+    use crate::spawn::SpawnEvent;
     use std::io::Cursor;
 
     #[test]

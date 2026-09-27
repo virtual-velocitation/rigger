@@ -22,6 +22,7 @@ use super::{
     TYPE_LESSON_LEARNED, TYPE_REVIEW_FINDING, TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
 use crate::eventstore::{Event, Position};
+use crate::spawn::SpawnEvent;
 use crate::spawn::{SpawnResult, TYPE_SPAWN_RESULT};
 
 const SCHEMA: &str = "
@@ -507,7 +508,7 @@ impl Projector {
         tier_floor: &str,
     ) -> Result<CallGraph, Error> {
         let conn = self.conn.lock().unwrap();
-        let floor = tier_floor_rank(tier_floor);
+        let floor = tier_rank(tier_floor, UNRECOGNIZED_FLOOR_RANK);
 
         // `layer_of` records each REACHED node's min hop distance from the seed (its final layer);
         // it also serves as the visited set, so a node is expanded at most once - recursion and
@@ -540,7 +541,7 @@ impl Projector {
                 continue; // depth clamp: do not expand a node at the bound
             }
             for (raw_to, tier, valid_from, source) in calls_out(&conn, &cur, &self.project)? {
-                if tier_rank(&tier) < floor {
+                if tier_rank(&tier, UNRECOGNIZED_EDGE_RANK) < floor {
                     continue; // below the confidence floor: not a followed edge
                 }
                 // Resolve the callee: a same-file definition lands directly; a bare cross-file
@@ -653,7 +654,7 @@ impl Projector {
     ///   nothing calls, yields an empty / seed-only view - never an error.
     fn calls_up(&self, seed: &[String], depth: i64, tier_floor: &str) -> Result<CallGraph, Error> {
         let conn = self.conn.lock().unwrap();
-        let floor = tier_floor_rank(tier_floor);
+        let floor = tier_rank(tier_floor, UNRECOGNIZED_FLOOR_RANK);
 
         // `layer_of` records each REACHED node's min hop distance from the seed and doubles as the
         // visited set (a node is expanded at most once - recursion and mutual calls dedup into a
@@ -688,7 +689,7 @@ impl Projector {
             for (caller, tier, valid_from, source, frontier) in
                 callers_of(&conn, &cur, &self.project)?
             {
-                if tier_rank(&tier) < floor {
+                if tier_rank(&tier, UNRECOGNIZED_EDGE_RANK) < floor {
                     continue; // below the confidence floor: not a followed edge
                 }
                 let newly = !layer_of.contains_key(&caller);
@@ -1951,28 +1952,28 @@ fn one_hop_degree(conn: &Connection, id: &str, project: &str) -> Result<usize, E
     Ok(n as usize)
 }
 
-/// The confidence rank of an EDGE tier (spec 52 / 29a addendum 6.2): `extracted` (2, the precise
-/// seed) > `inferred` (1, a derived cross-file link) > `ambiguous` (0, grep-visible-only). A
-/// directed walk follows an edge only when its rank is at or above the floor.
-fn tier_rank(tier: &str) -> u8 {
+/// The confidence rank of a tier (spec 52 / 29a addendum 6.2): `extracted` (2, the precise
+/// seed) > `inferred` (1, a derived cross-file link) > `ambiguous` (0, grep-visible-only); any
+/// other value ranks `unrecognized`. A directed walk follows an edge only when its rank is at or
+/// above the floor's.
+fn tier_rank(tier: &str, unrecognized: u8) -> u8 {
     match tier {
         TIER_EXTRACTED => 2,
         TIER_INFERRED => 1,
-        _ => 0,
+        TIER_AMBIGUOUS => 0,
+        _ => unrecognized,
     }
 }
 
-/// The confidence rank of a requested tier FLOOR (spec 52). Unlike [`tier_rank`], an empty or
-/// unrecognized value defaults to the resolvable floor (rank 1 = `inferred`): a directed walk
-/// defaults to `extracted` + `inferred` and EXCLUDES the unresolved `ambiguous` tier, and a caller
-/// opts the ambiguous tier in per-request by passing [`TIER_AMBIGUOUS`].
-fn tier_floor_rank(tier: &str) -> u8 {
-    match tier {
-        TIER_EXTRACTED => 2,
-        TIER_AMBIGUOUS => 0,
-        _ => 1,
-    }
-}
+/// [`tier_rank`]'s fallback for an EDGE's tier: an unrecognized edge tier ranks with
+/// `ambiguous`, the lowest.
+const UNRECOGNIZED_EDGE_RANK: u8 = 0;
+
+/// [`tier_rank`]'s fallback for a requested tier FLOOR (spec 52): an empty or unrecognized
+/// value defaults to the resolvable floor (rank 1 = `inferred`), so a directed walk defaults to
+/// `extracted` + `inferred` and EXCLUDES the unresolved `ambiguous` tier, and a caller opts the
+/// ambiguous tier in per-request by passing [`TIER_AMBIGUOUS`].
+const UNRECOGNIZED_FLOOR_RANK: u8 = 1;
 
 /// Fetch a node's `(id, kind, attrs)` scoped to `project`, or `None` when it does not exist there
 /// (spec 52). Read isolation matches [`Projection::subgraph`]: a same-id row in another project is

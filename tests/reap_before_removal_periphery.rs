@@ -31,7 +31,7 @@ use rigger::gate::STORE_FENCE_SUFFIX;
 use rigger::reap::processes_rooted_under;
 use rigger::worktree::{
     reclaim_worktree_on_branch, review_fence_sibling, scratch_root, sweep_terminal,
-    unit_cache_sibling, unit_mutants_sibling, Worktree, UNIT_WORKTREE_PREFIX,
+    unit_cache_sibling, unit_sibling, Worktree, UNIT_MUTANTS_PREFIX, UNIT_WORKTREE_PREFIX,
 };
 
 /// Spawn a long-lived process rooted at `dir` that IGNORES SIGTERM, so only a SIGKILL
@@ -169,7 +169,7 @@ fn worktree_remove_reaps_a_process_rooted_in_its_sibling_mutants_root_before_rec
     )
     .expect("create the unit worktree");
 
-    let mutants_dir = unit_mutants_sibling(wt_dir.to_str().unwrap())
+    let mutants_dir = unit_sibling(wt_dir.to_str().unwrap(), UNIT_MUTANTS_PREFIX)
         .expect("a rigger-wt-* worktree dir has a mutants-root sibling");
     std::fs::create_dir_all(&mutants_dir).unwrap();
     let mutants_path = Path::new(&mutants_dir).to_path_buf();

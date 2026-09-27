@@ -60,12 +60,15 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
+use rigger::conductor::{run, Deps, STREAM};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::contextgraph::TYPE_GATE_VERDICT;
-use rigger::driver::cli;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore};
+
+#[path = "common/real_driver_spy.rs"]
+mod real_driver_spy;
+use real_driver_spy::RealDriverSpy;
 
 /// Serializes every test in this file that touches the real ambient `RIGGER_RUN_BASE` process
 /// env (only the "unset" test below removes it) against a concurrent thread that might
@@ -106,43 +109,6 @@ fn write_agent_fixture(dir: &Path) -> std::path::PathBuf {
             .expect("chmod agent fixture");
     }
     path
-}
-
-/// Delegates every spawn to the REAL `driver::cli::Driver`, recording only its stdout - the
-/// identical observation-point pattern `tests/build_env_authority_periphery.rs`'s own
-/// `RealDriverSpy` uses: an OBSERVATION point, not a substitute implementation.
-struct RealDriverSpy {
-    inner: cli::Driver,
-    outputs: Mutex<Vec<String>>,
-}
-
-impl RealDriverSpy {
-    fn new(bin: &Path) -> Self {
-        RealDriverSpy {
-            inner: cli::Driver {
-                bin: bin.to_string_lossy().into_owned(),
-            },
-            outputs: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn outputs(&self) -> Vec<String> {
-        self.outputs.lock().unwrap().clone()
-    }
-}
-
-impl AgentDriver for RealDriverSpy {
-    fn spawn(
-        &self,
-        agent: &AgentDef,
-        prompt: &str,
-        opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        let result = self.inner.spawn(agent, prompt, opts, emit)?;
-        self.outputs.lock().unwrap().push(result.output.clone());
-        Ok(result)
-    }
 }
 
 /// Drive one full `conductor::run` against `store` (so a caller can pre-seed its `RunStarted`

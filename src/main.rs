@@ -44,6 +44,7 @@ use rigger::metrics::{self, Metrics};
 use rigger::run as runscope;
 use rigger::run_store as runscope_store;
 use rigger::sidecar::{PeerDecision, Sidecar};
+use rigger::spawn::SpawnEvent;
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, watch};
 
@@ -4114,7 +4115,7 @@ fn locate_shim(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
         }
         return Err(format!("workflow: RIGGER_SHIM={explicit} does not exist").into());
     }
-    let provisioned = shim_dir(root).join("shim.mjs");
+    let provisioned = rigger_path(root, SHIM_DIR).join("shim.mjs");
     if provisioned.exists() {
         return Ok(provisioned.to_string_lossy().into_owned());
     }
@@ -12147,13 +12148,15 @@ fn cmd_init() -> Res {
     Ok(())
 }
 
-/// The directory the per-project JS driver is provisioned into, relative to the
-/// project root: `<root>/.rigger/shim/`. `rigger setup` writes the embedded runtime
-/// files here and installs their npm deps; `rigger workflow` runs `shim.mjs` from
-/// here.
-fn shim_dir(root: &Path) -> std::path::PathBuf {
-    root.join(RIGGER_DIR).join("shim")
+/// `entry` under the project's `.rigger/` directory: `<root>/.rigger/<entry>`.
+fn rigger_path(root: &Path, entry: &str) -> std::path::PathBuf {
+    root.join(RIGGER_DIR).join(entry)
 }
+
+/// The [`rigger_path`] entry the per-project JS driver is provisioned into:
+/// `<root>/.rigger/shim/`. `rigger setup` writes the embedded runtime files here and
+/// installs their npm deps; `rigger workflow` runs `shim.mjs` from here.
+const SHIM_DIR: &str = "shim";
 
 /// What an install step did to a file it manages under the project root (the `/rigger`
 /// workflow or the `using-rigger` skill), so `rigger setup` can REPORT a refresh but stay
@@ -12248,18 +12251,16 @@ fn skill_install_path(root: &Path, name: &str) -> std::path::PathBuf {
         .join("SKILL.md")
 }
 
-/// Where a repo declares its skill-registry project overlay, relative to the project root:
+/// The [`rigger_path`] entry where a repo declares its skill-registry project overlay:
 /// `<root>/.rigger/docs-overlay.yml`. Optional - an absent file means every installed skill
 /// carries only the shared defaults.
-fn docs_overlay_path(root: &Path) -> std::path::PathBuf {
-    root.join(RIGGER_DIR).join("docs-overlay.yml")
-}
+const DOCS_OVERLAY_FILE: &str = "docs-overlay.yml";
 
 /// A per-repo overlay that adds THIS repository's specifics to every INSTALLED registry
 /// skill WITHOUT editing the shared discipline source (overlay honored per entry - spec
 /// 68, criterion 1). The two drift-prone facts a downstream project may differ on - the
 /// base branch a run anchors on and where the repo keeps its specs - are read from
-/// [`docs_overlay_path`] and merged onto the code-derived [`docs_context`] before each
+/// [`DOCS_OVERLAY_FILE`] and merged onto the code-derived [`docs_context`] before each
 /// skill is rendered and installed. Both fields are OPTIONAL:
 /// an absent overlay file, or an absent field, leaves the shared default in place, so the
 /// overlay only ever ADDS repo specifics and never restates the shared discipline. Unknown
@@ -12289,13 +12290,13 @@ impl DocsOverlay {
     }
 }
 
-/// Read the project's [`DocsOverlay`] from [`docs_overlay_path`]. An ABSENT file is the
+/// Read the project's [`DocsOverlay`] from [`DOCS_OVERLAY_FILE`]. An ABSENT file is the
 /// common case and yields an empty overlay (no overrides), so a repo that wants only the
 /// shared discipline writes no overlay. A PRESENT but malformed overlay is a LOUD error
 /// naming the file, never a silent skip that would install a skill missing the repo
 /// specifics the author asked for.
 fn read_docs_overlay(root: &Path) -> Result<DocsOverlay, Box<dyn std::error::Error>> {
-    let path = docs_overlay_path(root);
+    let path = rigger_path(root, DOCS_OVERLAY_FILE);
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DocsOverlay::default()),
@@ -12707,7 +12708,7 @@ fn install_precommit_hook(root: &Path) -> Result<InstallOutcome, Box<dyn std::er
 /// it would have installed in), never a silent skip - the user must know the driver is
 /// not ready. Returns whether it actually (re)provisioned.
 fn provision_shim(root: &Path) -> Result<bool, Box<dyn std::error::Error>> {
-    let dir = shim_dir(root);
+    let dir = rigger_path(root, SHIM_DIR);
     if shim_is_current(&dir) {
         return Ok(false);
     }
@@ -12743,7 +12744,7 @@ fn shim_is_current(dir: &Path) -> bool {
 /// returning that directory. Split out from [`provision_shim`] (which also runs npm
 /// install) so the file-provisioning step is testable without invoking npm.
 fn write_shim_files(root: &Path) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    let dir = shim_dir(root);
+    let dir = rigger_path(root, SHIM_DIR);
     std::fs::create_dir_all(&dir)?;
     for (name, contents) in SHIM_FILES {
         std::fs::write(dir.join(name), contents)?;
@@ -16110,23 +16111,15 @@ mod tests {
     #[test]
     fn superseded_edge_boundary_is_the_active_runs_start_or_none_without_a_run() {
         use std::time::{Duration, UNIX_EPOCH};
-        fn run_started_at(run: &str, secs: u64) -> Event {
-            Event::new(
-                runscope::TYPE_RUN_STARTED,
-                format!(r#"{{"run":"{run}","criteria":["crit"]}}"#).into_bytes(),
-            )
-            .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
+        fn event_at(type_: &str, data: &str, secs: u64) -> Event {
+            Event::new(type_, data.as_bytes().to_vec())
+                .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
         }
-        fn decision(id: &str, secs: u64) -> Event {
-            Event::new(
-                contextgraph::TYPE_DECISION_MADE,
-                format!(r#"{{"id":"{id}"}}"#).into_bytes(),
-            )
-            .with_valid_from(UNIX_EPOCH + Duration::from_secs(secs))
-        }
+        let run_started = runscope::TYPE_RUN_STARTED;
+        let decision = contextgraph::TYPE_DECISION_MADE;
 
         // No RunStarted at all (a legacy store): no boundary, so the reclamation is skipped entirely.
-        let legacy = vec![decision("d0", 50)];
+        let legacy = vec![event_at(decision, r#"{"id":"d0"}"#, 50)];
         assert_eq!(
             superseded_edge_boundary(&legacy),
             None,
@@ -16136,10 +16129,10 @@ mod tests {
         // Two runs: the cutoff is the LATEST (active) run's start (300s), NOT the prior run's (100s),
         // so an edge superseded during run r1 (before 300s) is reclaimable and r2's own is retained.
         let events = vec![
-            run_started_at("r1", 100),
-            decision("r1-d", 150),
-            run_started_at("r2", 300),
-            decision("r2-d", 350),
+            event_at(run_started, r#"{"run":"r1","criteria":["crit"]}"#, 100),
+            event_at(decision, r#"{"id":"r1-d"}"#, 150),
+            event_at(run_started, r#"{"run":"r2","criteria":["crit"]}"#, 300),
+            event_at(decision, r#"{"id":"r2-d"}"#, 350),
         ];
         assert_eq!(
             superseded_edge_boundary(&events),
@@ -18898,15 +18891,21 @@ mod tests {
         assert!(advisories[0].contains("rigger reset --build-cache"));
     }
 
-    #[test]
-    fn footprint_advisories_is_silent_below_the_threshold() {
+    /// One unit-scoped category `name` of `total_bytes`, `dead_bytes` of them dead, draws no
+    /// footprint advisory.
+    fn assert_hinted_category_is_silent(name: &'static str, total_bytes: u64, dead_bytes: u64) {
         let categories = vec![FootprintCategory {
-            name: "per-unit caches",
-            total_bytes: 1000,
-            dead_bytes: 100, // 10% dead, below FOOTPRINT_DEAD_SHARE_THRESHOLD_PCT (50)
+            name,
+            total_bytes,
+            dead_bytes,
             reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED),
         }];
         assert!(footprint_advisories(&categories).is_empty());
+    }
+
+    rigger::test_cases! {
+        /// 10% dead, below FOOTPRINT_DEAD_SHARE_THRESHOLD_PCT (50).
+        footprint_advisories_is_silent_below_the_threshold: assert_hinted_category_is_silent("per-unit caches", 1000, 100);
     }
 
     #[test]
@@ -18942,15 +18941,8 @@ mod tests {
         assert!(footprint_advisories(&categories).is_empty());
     }
 
-    #[test]
-    fn footprint_advisories_is_silent_on_an_empty_category() {
-        let categories = vec![FootprintCategory {
-            name: "worktrees",
-            total_bytes: 0,
-            dead_bytes: 0,
-            reclaim_hint: Some(FOOTPRINT_RECLAIM_HINT_UNIT_SCOPED),
-        }];
-        assert!(footprint_advisories(&categories).is_empty());
+    rigger::test_cases! {
+        footprint_advisories_is_silent_on_an_empty_category: assert_hinted_category_is_silent("worktrees", 0, 0);
     }
 
     #[test]
@@ -21635,7 +21627,7 @@ mod tests {
     fn setup_provisions_the_shim_runtime_files() {
         let dir = tempfile::tempdir().unwrap();
         let shim = write_shim_files(dir.path()).expect("provisioning writes the shim files");
-        assert_eq!(shim, shim_dir(dir.path()));
+        assert_eq!(shim, rigger_path(dir.path(), SHIM_DIR));
 
         for (name, embedded) in SHIM_FILES {
             let path = shim.join(name);
@@ -21952,7 +21944,7 @@ mod tests {
         let root = dir.path();
         std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
         std::fs::write(
-            docs_overlay_path(root),
+            rigger_path(root, DOCS_OVERLAY_FILE),
             "base_ref: work/trunk\nspecs_location: requirements/\n",
         )
         .unwrap();
@@ -21993,7 +21985,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
-        std::fs::write(docs_overlay_path(root), "base_ref: only-base\n").unwrap();
+        std::fs::write(
+            rigger_path(root, DOCS_OVERLAY_FILE),
+            "base_ref: only-base\n",
+        )
+        .unwrap();
 
         let mut ctx = docs_context();
         read_docs_overlay(root)
@@ -22024,7 +22020,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
-        std::fs::write(docs_overlay_path(root), "base_ref: [not, a, string]\n").unwrap();
+        std::fs::write(
+            rigger_path(root, DOCS_OVERLAY_FILE),
+            "base_ref: [not, a, string]\n",
+        )
+        .unwrap();
         let err = read_docs_overlay(root).expect_err("a malformed overlay must fail loudly");
         assert!(
             err.to_string().contains("docs-overlay.yml"),
@@ -27259,16 +27259,20 @@ mod tests {
         }
     }
 
-    /// The SAME fused shapes with `--literal` added must still pass through (with the marker
-    /// stripped), proving the escape hatch survives the tokenizer rather than becoming
-    /// unreachable once fusion is detected.
-    #[test]
-    fn grep_guard_decision_literal_survives_a_shell_metacharacter_fused_grep() {
-        let decision = grep_guard_decision(
-            "Bash",
-            &serde_json::json!({"command": "true;grep --literal pattern src/main.rs"}),
+    /// `command` - a grep carrying the `--literal` escape hatch - passes the guard with the
+    /// marker stripped.
+    fn assert_literal_grep_passes(command: &str) {
+        let decision = grep_guard_decision("Bash", &serde_json::json!({ "command": command }));
+        assert_allows_with_literal_stripped(decision, command);
+    }
+
+    rigger::test_cases! {
+        /// The SAME fused shapes with `--literal` added must still pass through (with the marker
+        /// stripped), proving the escape hatch survives the tokenizer rather than becoming
+        /// unreachable once fusion is detected.
+        grep_guard_decision_literal_survives_a_shell_metacharacter_fused_grep: assert_literal_grep_passes(
+            "true;grep --literal pattern src/main.rs",
         );
-        assert_allows_with_literal_stripped(decision, "true;grep --literal pattern src/main.rs");
     }
 
     /// Reject-fix (sdet-u92c4r5-redirect-metachar-fuses-guarded-path-first-segment): `<` and
@@ -27366,14 +27370,11 @@ mod tests {
         );
     }
 
-    /// The same line-continuation shape with `--literal` added must still pass through.
-    #[test]
-    fn grep_guard_decision_literal_survives_a_line_continuation_split_grep() {
-        let decision = grep_guard_decision(
-            "Bash",
-            &serde_json::json!({"command": "gr\\\nep --literal pattern src/main.rs"}),
+    rigger::test_cases! {
+        /// The same line-continuation shape with `--literal` added must still pass through.
+        grep_guard_decision_literal_survives_a_line_continuation_split_grep: assert_literal_grep_passes(
+            "gr\\\nep --literal pattern src/main.rs",
         );
-        assert_allows_with_literal_stripped(decision, "gr\\\nep --literal pattern src/main.rs");
     }
 
     /// Reject-fix (adv-u92c4-r4-path-qualified-grep-bypasses-command-check): a path-qualified
@@ -27615,26 +27616,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn resolve_write_target_joins_a_relative_path_onto_cwd() {
+    /// `raw`, resolved against a real tempdir cwd, lands on `expected` under that cwd.
+    fn assert_resolves_under_cwd(raw: &str, expected: &str) {
         let dir = tempfile::tempdir().unwrap();
         let real = std::fs::canonicalize(dir.path()).unwrap();
         let cwd = real.to_str().unwrap();
-        assert_eq!(
-            resolve_write_target(cwd, "sub/f.txt"),
-            real.join("sub/f.txt")
-        );
+        assert_eq!(resolve_write_target(cwd, raw), real.join(expected));
     }
 
-    #[test]
-    fn resolve_write_target_normalizes_dot_and_dot_dot() {
-        let dir = tempfile::tempdir().unwrap();
-        let real = std::fs::canonicalize(dir.path()).unwrap();
-        let cwd = real.to_str().unwrap();
-        assert_eq!(
-            resolve_write_target(cwd, "./a/../b.txt"),
-            real.join("b.txt")
-        );
+    rigger::test_cases! {
+        resolve_write_target_joins_a_relative_path_onto_cwd: assert_resolves_under_cwd("sub/f.txt", "sub/f.txt");
+        resolve_write_target_normalizes_dot_and_dot_dot: assert_resolves_under_cwd("./a/../b.txt", "b.txt");
     }
 
     #[test]

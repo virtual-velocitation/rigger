@@ -144,40 +144,36 @@ fn assert_selected_server(out: &Output, root: &Path, why: &str) {
     );
 }
 
-#[test]
-fn run_bare_conn_flag_selects_the_server_never_dropped_to_sqlite() {
-    // Rung 1, the reshaped flag arm: a bare `--conn <url>` (no `--eventstore`) with NOTHING beneath
-    // it configured - no env, no secret file, a store-less committed config - must SELECT the server
-    // it addresses. Before the fix a bare `--conn` fell through the flag arm to the lower rungs and,
-    // with none set, resolved the LOCAL sqlite default - the store-fracture footgun where
-    // `rigger run --conn kurrentdb://prod <spec>` silently ran against a local log. This pins that a
-    // non-empty `--conn` is a first-class highest-precedence source, wired straight through the
-    // shipped binary.
+/// A bare `--conn <url>` (no `--eventstore`) over a committed project whose workflow carries
+/// `store_block` selects the server it addresses through the shipped binary, never dropping to
+/// the local sqlite default; `why` is the assertion's reason.
+fn assert_bare_conn_selects_the_server(store_block: &str, why: &str) {
     let project = committed_project();
     let root = project.path();
-    write_workflow(root, "");
+    write_workflow(root, store_block);
     let out = run_with_flags(root, &["--conn", UNREACHABLE]);
-    assert_selected_server(
-        &out,
-        root,
-        "a bare --conn selects the server, never dropping to the local sqlite default",
-    );
+    assert_selected_server(&out, root, why);
 }
 
-#[test]
-fn run_conn_flag_beats_a_committed_sqlite_store_config() {
-    // Rung 1 beats rung 4, the footgun with an ACTIVE lower rung: the committed config explicitly
-    // pins `store: sqlite`, yet a bare `--conn <url>` alongside it must still select the server -
-    // the flag is never dropped to the sqlite the config names. Before the fix the bare `--conn`
-    // fell through to the config rung and resolved that sqlite; the operator's explicit `--conn`
-    // was silently discarded. This pins the flag outranking the committed config through the binary.
-    let project = committed_project();
-    let root = project.path();
-    write_workflow(root, "store:\n  backend: sqlite\n");
-    let out = run_with_flags(root, &["--conn", UNREACHABLE]);
-    assert_selected_server(
-        &out,
-        root,
+rigger::test_cases! {
+    /// Rung 1, the reshaped flag arm: a bare `--conn <url>` (no `--eventstore`) with NOTHING beneath
+    /// it configured - no env, no secret file, a store-less committed config - must SELECT the server
+    /// it addresses. Before the fix a bare `--conn` fell through the flag arm to the lower rungs and,
+    /// with none set, resolved the LOCAL sqlite default - the store-fracture footgun where
+    /// `rigger run --conn kurrentdb://prod <spec>` silently ran against a local log. This pins that a
+    /// non-empty `--conn` is a first-class highest-precedence source, wired straight through the
+    /// shipped binary.
+    run_bare_conn_flag_selects_the_server_never_dropped_to_sqlite: assert_bare_conn_selects_the_server(
+        "",
+        "a bare --conn selects the server, never dropping to the local sqlite default",
+    );
+    /// Rung 1 beats rung 4, the footgun with an ACTIVE lower rung: the committed config explicitly
+    /// pins `store: sqlite`, yet a bare `--conn <url>` alongside it must still select the server -
+    /// the flag is never dropped to the sqlite the config names. Before the fix the bare `--conn`
+    /// fell through to the config rung and resolved that sqlite; the operator's explicit `--conn`
+    /// was silently discarded. This pins the flag outranking the committed config through the binary.
+    run_conn_flag_beats_a_committed_sqlite_store_config: assert_bare_conn_selects_the_server(
+        "store:\n  backend: sqlite\n",
         "a bare --conn outranks a committed store: sqlite config, never dropping to it",
     );
 }

@@ -27,6 +27,7 @@ use rigger::contextgraph::{
     TYPE_DECISION_MADE, TYPE_FILE_TOUCHED, TYPE_GATE_VERDICT, TYPE_REVIEW_FINDING,
     TYPE_UNIT_INTEGRATED, TYPE_UNIT_STARTED,
 };
+use rigger::spawn::SpawnEvent;
 
 #[path = "common/graph_fold.rs"]
 mod graph_fold;

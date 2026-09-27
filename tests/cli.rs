@@ -5,6 +5,7 @@
 //! same composition path (`Store::open(.rigger/events.db)` namespaced, the
 //! `graph.db` projector, `conductor::STREAM`) the `serve` path uses.
 
+use rigger::spawn::SpawnEvent;
 use std::path::Path;
 use std::process::Command;
 
@@ -1233,30 +1234,35 @@ fn emit_refuses_to_fabricate_a_store_when_none_exists() {
     );
 }
 
-/// `rigger prompt` is a WORKER-INVOKED store-opening courier (a unit fetches its own slim
-/// spawn manifest from the log), so run from a storeless cwd it must REFUSE like `emit`/
-/// `result`/`reported`, never fabricate a fresh empty `.rigger/events.db` and then report
-/// "no spawn request recorded" for every id, stranding the worker. Guards the routing of
-/// `cmd_prompt` through [`require_store_dir`] against regressing to a cwd-relative
-/// `Store::open`.
-#[test]
-fn prompt_refuses_to_fabricate_a_store_when_none_exists() {
+/// `rigger <command> u/implementer#0` from a storeless project REFUSES - explaining that no
+/// rigger store was found - and never fabricates a fresh `.rigger/events.db`.
+fn assert_refuses_to_fabricate_a_store(command: &str) {
     let dir = temp_project();
     let root = dir.path();
 
-    let (_out, err, ok) = run_rigger(root, &["prompt", "u/implementer#0"]);
+    let (_out, err, ok) = run_rigger(root, &[command, "u/implementer#0"]);
     assert!(
         !ok,
-        "prompt must refuse when there is no existing store; stderr: {err}"
+        "{command} must refuse when there is no existing store; stderr: {err}"
     );
     assert!(
         err.contains("no rigger store found") && err.contains("refusing to fabricate"),
-        "prompt must explain the refusal; got: {err:?}"
+        "{command} must explain the refusal; got: {err:?}"
     );
     assert!(
         !root.join(".rigger").join("events.db").exists(),
-        "prompt must NOT fabricate a store when it refuses"
+        "{command} must NOT fabricate a store when it refuses"
     );
+}
+
+rigger::test_cases! {
+    /// `rigger prompt` is a WORKER-INVOKED store-opening courier (a unit fetches its own slim
+    /// spawn manifest from the log), so run from a storeless cwd it must REFUSE like `emit`/
+    /// `result`/`reported`, never fabricate a fresh empty `.rigger/events.db` and then report
+    /// "no spawn request recorded" for every id, stranding the worker. Guards the routing of
+    /// `cmd_prompt` through [`require_store_dir`] against regressing to a cwd-relative
+    /// `Store::open`.
+    prompt_refuses_to_fabricate_a_store_when_none_exists: assert_refuses_to_fabricate_a_store("prompt");
 }
 
 /// Spec 77, criterion 2 (AGENT SCRATCH IS SPAWN-OWNED): `rigger scratch <spawn>` prints
@@ -1424,28 +1430,12 @@ fn scratch_falls_back_to_the_repo_nested_default_when_genuinely_homeless_end_to_
     );
 }
 
-/// `rigger scratch` is a WORKER-INVOKED store-opening courier exactly like `rigger prompt`
-/// (it must read the live run's `RunStarted` to resolve `run_id`), so from a storeless cwd
-/// it must REFUSE - never fabricate a fresh empty `.rigger/events.db` and then print a
-/// bogus run-less path, stranding the worker's scratch under the wrong root.
-#[test]
-fn scratch_refuses_to_fabricate_a_store_when_none_exists() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (_out, err, ok) = run_rigger(root, &["scratch", "u/implementer#0"]);
-    assert!(
-        !ok,
-        "scratch must refuse when there is no existing store; stderr: {err}"
-    );
-    assert!(
-        err.contains("no rigger store found") && err.contains("refusing to fabricate"),
-        "scratch must explain the refusal; got: {err:?}"
-    );
-    assert!(
-        !root.join(".rigger").join("events.db").exists(),
-        "scratch must NOT fabricate a store when it refuses"
-    );
+rigger::test_cases! {
+    /// `rigger scratch` is a WORKER-INVOKED store-opening courier exactly like `rigger prompt`
+    /// (it must read the live run's `RunStarted` to resolve `run_id`), so from a storeless cwd
+    /// it must REFUSE - never fabricate a fresh empty `.rigger/events.db` and then print a
+    /// bogus run-less path, stranding the worker's scratch under the wrong root.
+    scratch_refuses_to_fabricate_a_store_when_none_exists: assert_refuses_to_fabricate_a_store("scratch");
 }
 
 /// `rigger scratch` with the wrong argument count is a usage error, not a panic or a
@@ -12722,14 +12712,17 @@ fn replay_re_drives_the_trajectory_and_diffs_stats_without_touching_the_real_str
     );
 }
 
+/// Write `yaml` as the project's `.rigger/workflow.yml` - a candidate config a replay
+/// re-drives the recorded baseline trajectory under.
+fn write_candidate_workflow(root: &Path, yaml: &str) {
+    std::fs::write(root.join(".rigger").join("workflow.yml"), yaml).unwrap();
+}
+
 /// A candidate variant of `write_gated_reviewed_workflow` with the review panel REMOVED:
 /// the `solo` unit still gates but no adjudicator reviews it. Re-driving the baseline
 /// trajectory (which recorded a review approve) under THIS config must drop `review
 /// approved` from 1 to 0 - the signal that a config edit changes the re-driven metrics.
-fn write_gated_workflow_no_review(root: &Path) {
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        r#"name: statstest
+const NO_REVIEW_WORKFLOW: &str = r#"name: statstest
 defaults:
   grounder: nop
   budget: 60
@@ -12740,10 +12733,7 @@ stages:
     agent: worker
     gates: [check]
     on_pass: none
-"#,
-    )
-    .unwrap();
-}
+"#;
 
 /// spec 13, unit 2: the candidate COLUMN reacts to the config - a config edit measurably
 /// changes the re-driven metrics, which is the whole point of the eval ("did that change
@@ -12764,7 +12754,7 @@ fn replay_candidate_column_reacts_to_a_changed_config() {
     git_ok(root, &["config", "user.name", "t"]);
     git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
     git_ok(root, &["commit", "-q", "-m", "reviewed config"]);
-    write_gated_workflow_no_review(root);
+    write_candidate_workflow(root, NO_REVIEW_WORKFLOW);
     git_ok(root, &["add", ".rigger/workflow.yml"]);
     git_ok(root, &["commit", "-q", "-m", "review removed"]);
 
@@ -12795,10 +12785,7 @@ fn replay_candidate_column_reacts_to_a_changed_config() {
 /// recorded one passing gate verdict) under THIS config must drop `gate runs` from 1 to 0 -
 /// the re-drive's `run_gates` never iterates a gate the stage no longer lists, so its seeded
 /// verdict is not reached.
-fn write_reviewed_workflow_no_gate(root: &Path) {
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        r#"name: statstest
+const NO_GATE_WORKFLOW: &str = r#"name: statstest
 defaults:
   grounder: nop
   budget: 60
@@ -12809,10 +12796,7 @@ stages:
     agent: worker
     gates: []
     on_pass: none
-"#,
-    )
-    .unwrap();
-}
+"#;
 
 /// spec 13, unit 2 (adj u13 remediation #1): the candidate "gate runs" column must reflect the
 /// CANDIDATE config, not echo the seeded baseline. Re-driving a trajectory that recorded ONE
@@ -12833,7 +12817,7 @@ fn replay_removing_a_gate_lowers_the_candidate_gate_runs() {
     git_ok(root, &["config", "user.name", "t"]);
     git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
     git_ok(root, &["commit", "-q", "-m", "gated config"]);
-    write_reviewed_workflow_no_gate(root);
+    write_candidate_workflow(root, NO_GATE_WORKFLOW);
     git_ok(root, &["add", ".rigger/workflow.yml"]);
     git_ok(root, &["commit", "-q", "-m", "gate removed"]);
 
@@ -12867,10 +12851,7 @@ fn replay_removing_a_gate_lowers_the_candidate_gate_runs() {
 /// the recorded `check`. The re-drive replays `check` from its seeded verdict but has NO
 /// recorded verdict for `extra`, so `ReplayRunner` answers it FAIL-SAFE (never a fabricated
 /// pass) - the `solo` unit's gates fail and it cannot integrate first-pass.
-fn write_reviewed_workflow_added_gate(root: &Path) {
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        r#"name: statstest
+const ADDED_GATE_WORKFLOW: &str = r#"name: statstest
 defaults:
   grounder: nop
   budget: 60
@@ -12884,10 +12865,7 @@ stages:
     agent: worker
     gates: [check, extra]
     on_pass: none
-"#,
-    )
-    .unwrap();
-}
+"#;
 
 /// spec 13, unit 2 (sdet-u13r-replayrunner-failsafe): a candidate config that ADDS a gate the
 /// baseline trajectory never recorded must FAIL SAFE - `ReplayRunner` never fabricates a pass
@@ -12910,7 +12888,7 @@ fn replay_an_added_gate_fails_safe_and_never_fabricates_a_pass() {
     git_ok(root, &["config", "user.name", "t"]);
     git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
     git_ok(root, &["commit", "-q", "-m", "gated config"]);
-    write_reviewed_workflow_added_gate(root);
+    write_candidate_workflow(root, ADDED_GATE_WORKFLOW);
     git_ok(root, &["add", ".rigger/workflow.yml"]);
     git_ok(root, &["commit", "-q", "-m", "gate added"]);
 
@@ -12943,10 +12921,7 @@ fn replay_an_added_gate_fails_safe_and_never_fabricates_a_pass() {
 /// A candidate variant that adds a SECOND, independent stage (`probe`) whose implementer spawn
 /// the baseline trajectory never recorded. The re-drive replays `solo` fully but PARKS `probe`
 /// (no recorded result to answer it), so the candidate column is partial and honest.
-fn write_reviewed_workflow_extra_stage(root: &Path) {
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        r#"name: statstest
+const EXTRA_STAGE_WORKFLOW: &str = r#"name: statstest
 defaults:
   grounder: nop
   budget: 60
@@ -12962,10 +12937,7 @@ stages:
   probe:
     agent: worker
     on_pass: none
-"#,
-    )
-    .unwrap();
-}
+"#;
 
 /// spec 13, unit 2 (sdet-u13r-incomplete-drive-honest-park): a candidate config that introduces
 /// a spawn the trajectory never recorded PARKS honestly rather than fabricating a result - the
@@ -12985,7 +12957,7 @@ fn replay_an_uncovered_candidate_spawn_parks_and_still_prints_a_partial_column()
     git_ok(root, &["config", "user.name", "t"]);
     git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
     git_ok(root, &["commit", "-q", "-m", "single-stage config"]);
-    write_reviewed_workflow_extra_stage(root);
+    write_candidate_workflow(root, EXTRA_STAGE_WORKFLOW);
     git_ok(root, &["add", ".rigger/workflow.yml"]);
     git_ok(root, &["commit", "-q", "-m", "extra stage added"]);
 
@@ -13539,18 +13511,18 @@ fn uncreatable_cache_dir(root: &Path) -> std::path::PathBuf {
     blocker.join("nested").join("cache")
 }
 
-/// A NAMED (non-auto) `build.wrapper` present on PATH but whose `build.cache_dir` cannot be
-/// created is also a configured-explicit failure (specs/65:26-28 decides both failure
-/// directions in the SAME Design sentence as the absent-binary case above) - `rigger
-/// validate` must fail at run start naming the dir and the `build.cache_dir` config key,
-/// never silently proceed with a cache that never actually writes anything.
-#[test]
-fn validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created() {
+/// `rigger validate` over a NAMED (non-auto) `build.wrapper` present on PATH whose
+/// `build.cache_dir` is `cache_dir(root)` - described as `what` - fails at run start, naming
+/// both the dir and the `build.cache_dir` config key.
+fn assert_named_wrapper_cache_dir_fails_validate(
+    cache_dir: fn(&Path) -> std::path::PathBuf,
+    what: &str,
+) {
     let dir = temp_project();
     let root = dir.path();
     let (_out, err, ok) = run_rigger(root, &["init"]);
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let cache_dir = uncreatable_cache_dir(root);
+    let cache_dir = cache_dir(root);
     append_build_block(
         root,
         &format!(
@@ -13563,7 +13535,7 @@ fn validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
     assert!(
         !ok,
-        "a named wrapper's uncreatable cache dir must fail validate (run start); \
+        "a named wrapper's {what} cache dir must fail validate (run start); \
          stdout:\n{out}\nstderr:\n{err}"
     );
     assert!(
@@ -13574,6 +13546,15 @@ fn validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created
         err.contains("build.cache_dir"),
         "the failure must name the config key; stderr:\n{err}"
     );
+}
+
+rigger::test_cases! {
+    /// A NAMED (non-auto) `build.wrapper` present on PATH but whose `build.cache_dir` cannot be
+    /// created is also a configured-explicit failure (specs/65:26-28 decides both failure
+    /// directions in the SAME Design sentence as the absent-binary case above) - `rigger
+    /// validate` must fail at run start naming the dir and the `build.cache_dir` config key,
+    /// never silently proceed with a cache that never actually writes anything.
+    validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created: assert_named_wrapper_cache_dir_fails_validate(uncreatable_cache_dir, "uncreatable");
 }
 
 /// `build.wrapper: auto` finding a known wrapper on PATH but whose cache dir cannot be
@@ -13627,46 +13608,21 @@ fn preexisting_unwritable_cache_dir(root: &Path) -> std::path::PathBuf {
     dir
 }
 
-/// A NAMED (non-auto) `build.wrapper` present on PATH whose `build.cache_dir` ALREADY
-/// EXISTS but is not WRITABLE is also a configured-explicit failure (spec 65 unit 2, NO
-/// SILENT DEGRADE) - mirrors
-/// `validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created` above for
-/// the writability rather than creatability failure mode: a pre-existing dir makes
-/// `create_dir_all` alone a no-op success regardless of permission, so only a real write
-/// probe catches this, and nothing before this test proved that probe's failure reaches the
-/// real compiled binary's exit code. `rigger validate` must fail at run start naming the
-/// dir and the `build.cache_dir` config key, never silently proceed with a cache that turns
-/// out to never actually write anything.
-#[cfg(unix)]
-#[test]
-fn validate_fails_at_run_start_when_a_named_wrappers_cache_dir_is_preexisting_but_unwritable() {
-    let dir = temp_project();
-    let root = dir.path();
-    let (_out, err, ok) = run_rigger(root, &["init"]);
-    assert!(ok, "rigger init must succeed; stderr:\n{err}");
-    let cache_dir = preexisting_unwritable_cache_dir(root);
-    append_build_block(
-        root,
-        &format!(
-            "build:\n  wrapper: sccache\n  cache_dir: {}\n",
-            cache_dir.display()
-        ),
-    );
-
-    let path = path_with_fake_wrapper(root, "sccache");
-    let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("PATH", &path)]);
-    assert!(
-        !ok,
-        "a named wrapper's pre-existing-but-unwritable cache dir must fail validate (run \
-         start); stdout:\n{out}\nstderr:\n{err}"
-    );
-    assert!(
-        err.contains(&cache_dir.to_string_lossy().into_owned()),
-        "the failure must name the cache dir; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("build.cache_dir"),
-        "the failure must name the config key; stderr:\n{err}"
+rigger::test_cases! {
+    /// A NAMED (non-auto) `build.wrapper` present on PATH whose `build.cache_dir` ALREADY
+    /// EXISTS but is not WRITABLE is also a configured-explicit failure (spec 65 unit 2, NO
+    /// SILENT DEGRADE) - mirrors
+    /// `validate_fails_at_run_start_when_a_named_wrappers_cache_dir_cannot_be_created` above for
+    /// the writability rather than creatability failure mode: a pre-existing dir makes
+    /// `create_dir_all` alone a no-op success regardless of permission, so only a real write
+    /// probe catches this, and nothing before this test proved that probe's failure reaches the
+    /// real compiled binary's exit code. `rigger validate` must fail at run start naming the
+    /// dir and the `build.cache_dir` config key, never silently proceed with a cache that turns
+    /// out to never actually write anything.
+    #[cfg(unix)]
+    validate_fails_at_run_start_when_a_named_wrappers_cache_dir_is_preexisting_but_unwritable: assert_named_wrapper_cache_dir_fails_validate(
+        preexisting_unwritable_cache_dir,
+        "pre-existing-but-unwritable",
     );
 }
 
@@ -19702,19 +19658,11 @@ fn validate_docs_drift_gate_covers_each_per_operation_skill() {
     }
 }
 
-/// Spec 68, criterion 2 (the INSTALL seam reaches all FIVE new entries, end to end): `rigger
-/// setup` installs every per-operation skill into the consumer project at its own
-/// `.claude/skills/<name>/SKILL.md` path, carrying the operator-binary prohibition, and
-/// reports installing it; a no-op rerun leaves every one of them untouched (no report line, no
-/// moved mtime). The sibling `setup_installs_every_registry_skill_into_the_consumer_project`
-/// test proved the install seam (`install_skills` looping over `skill_registry()`) reaches a
-/// second entry; install is its own function with its own loop, independent from the
-/// docs/render and validate/drift seams the two tests above cover, so a bug specific to that
-/// loop (skipping an entry, or reusing one `InstallOutcome`/one rendered body across several
-/// entries) would pass every other test in this file and only show up by checking each
-/// installed file's own name and content here.
-#[test]
-fn setup_installs_every_per_operation_skill_into_the_consumer_project() {
+/// `rigger setup` installs every skill in `names` into the consumer project at its own
+/// `.claude/skills/<name>/SKILL.md` path, loadable and carrying the operator-binary
+/// prohibition, and reports installing it; a no-op rerun leaves every one of them untouched
+/// (no install/refresh report line, not even a moved mtime).
+fn assert_setup_installs_each_skill(names: &[&str]) {
     let proj = temp_project();
     let root = proj.path();
 
@@ -19722,7 +19670,7 @@ fn setup_installs_every_per_operation_skill_into_the_consumer_project() {
     assert!(ok, "rigger setup must succeed; stderr:\n{err}");
 
     let mut installed_before = Vec::new();
-    for name in PER_OPERATION_SKILL_NAMES {
+    for &name in names {
         let installed_path = root.join(format!(".claude/skills/{name}/SKILL.md"));
         assert!(
             installed_path.exists(),
@@ -19754,7 +19702,7 @@ fn setup_installs_every_per_operation_skill_into_the_consumer_project() {
         installed_before.push((name, installed_path, mtime));
     }
 
-    // A no-op rerun leaves every one of the five untouched: no install/refresh report line,
+    // A no-op rerun leaves every one of them untouched: no install/refresh report line,
     // and not even a moved mtime.
     std::thread::sleep(std::time::Duration::from_millis(20));
     let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
@@ -19775,6 +19723,21 @@ fn setup_installs_every_per_operation_skill_into_the_consumer_project() {
             "an up-to-date {name} must not even move its mtime"
         );
     }
+}
+
+rigger::test_cases! {
+    /// Spec 68, criterion 2 (the INSTALL seam reaches all FIVE new entries, end to end): `rigger
+    /// setup` installs every per-operation skill into the consumer project at its own
+    /// `.claude/skills/<name>/SKILL.md` path, carrying the operator-binary prohibition, and
+    /// reports installing it; a no-op rerun leaves every one of them untouched (no report line, no
+    /// moved mtime). The sibling `setup_installs_every_registry_skill_into_the_consumer_project`
+    /// test proved the install seam (`install_skills` looping over `skill_registry()`) reaches a
+    /// second entry; install is its own function with its own loop, independent from the
+    /// docs/render and validate/drift seams the two tests above cover, so a bug specific to that
+    /// loop (skipping an entry, or reusing one `InstallOutcome`/one rendered body across several
+    /// entries) would pass every other test in this file and only show up by checking each
+    /// installed file's own name and content here.
+    setup_installs_every_per_operation_skill_into_the_consumer_project: assert_setup_installs_each_skill(&PER_OPERATION_SKILL_NAMES);
 }
 
 /// The three watch-discipline skill names spec 69, criterion 1 adds to the registry
@@ -19985,79 +19948,19 @@ fn validate_docs_drift_gate_covers_each_watching_discipline_skill() {
     }
 }
 
-/// Spec 69, criterion 1 (the INSTALL seam reaches all THREE new entries, end to end, through
-/// the compiled binary): `rigger setup` installs every watch-discipline skill into the
-/// consumer project at its own `.claude/skills/<name>/SKILL.md` path, carrying the
-/// operator-binary prohibition, and reports installing it; a no-op rerun leaves every one of
-/// them untouched (no report line, no moved mtime). Mirrors the sibling
-/// `setup_installs_every_per_operation_skill_into_the_consumer_project` test's rationale:
-/// install is its own function with its own loop (`install_skills`), independent from the
-/// docs/render and validate/drift seams the two tests above cover, so a bug specific to that
-/// loop (skipping an entry, or reusing one `InstallOutcome`/one rendered body across several
-/// entries) would pass every other test in this file and only show up by checking each
-/// installed file's own name and content here.
-#[test]
-fn setup_installs_every_watching_discipline_skill_into_the_consumer_project() {
-    let proj = temp_project();
-    let root = proj.path();
-
-    let (out, err, ok) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok, "rigger setup must succeed; stderr:\n{err}");
-
-    let mut installed_before = Vec::new();
-    for name in WATCHING_DISCIPLINE_SKILL_NAMES {
-        let installed_path = root.join(format!(".claude/skills/{name}/SKILL.md"));
-        assert!(
-            installed_path.exists(),
-            "setup must install {name} at .claude/skills/{name}/SKILL.md"
-        );
-        assert!(
-            out.contains(&format!("installed the {name} skill"))
-                && out.contains(&format!(".claude/skills/{name}/SKILL.md")),
-            "setup must report installing {name}; got:\n{out}"
-        );
-
-        let installed = std::fs::read_to_string(&installed_path)
-            .unwrap_or_else(|e| panic!("{name} was installed: {e}"));
-        assert!(
-            installed.starts_with(&format!("---\nname: {name}\n")),
-            "the installed {name} skill must be loadable; got: {}",
-            &installed[..installed.len().min(60)]
-        );
-        assert!(
-            installed.contains("## Operator binary boundary"),
-            "the installed {name} skill must carry the operator-binary prohibition too; \
-             got:\n{installed}"
-        );
-
-        let mtime = std::fs::metadata(&installed_path)
-            .unwrap()
-            .modified()
-            .unwrap();
-        installed_before.push((name, installed_path, mtime));
-    }
-
-    // A no-op rerun leaves every one of the three untouched: no install/refresh report line,
-    // and not even a moved mtime.
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    let (out2, err2, ok2) = run_rigger_envs(root, &["setup"], &[("RIGGER_NPM", "true")]);
-    assert!(ok2, "a no-op setup rerun must succeed; stderr:\n{err2}");
-    for (name, installed_path, before) in installed_before {
-        assert!(
-            !out2.contains(&format!("installed the {name} skill"))
-                && !out2.contains(&format!("refreshed the drifted {name} skill")),
-            "an already-current {name} must not be reported as installed/refreshed; \
-             got:\n{out2}"
-        );
-        let after = std::fs::metadata(&installed_path)
-            .unwrap()
-            .modified()
-            .unwrap();
-        assert_eq!(
-            before, after,
-            "an up-to-date {name} must not even move its mtime"
-        );
-    }
+rigger::test_cases! {
+    /// Spec 69, criterion 1 (the INSTALL seam reaches all THREE new entries, end to end, through
+    /// the compiled binary): `rigger setup` installs every watch-discipline skill into the
+    /// consumer project at its own `.claude/skills/<name>/SKILL.md` path, carrying the
+    /// operator-binary prohibition, and reports installing it; a no-op rerun leaves every one of
+    /// them untouched (no report line, no moved mtime). Mirrors the sibling
+    /// `setup_installs_every_per_operation_skill_into_the_consumer_project` test's rationale:
+    /// install is its own function with its own loop (`install_skills`), independent from the
+    /// docs/render and validate/drift seams the two tests above cover, so a bug specific to that
+    /// loop (skipping an entry, or reusing one `InstallOutcome`/one rendered body across several
+    /// entries) would pass every other test in this file and only show up by checking each
+    /// installed file's own name and content here.
+    setup_installs_every_watching_discipline_skill_into_the_consumer_project: assert_setup_installs_each_skill(&WATCHING_DISCIPLINE_SKILL_NAMES);
 }
 
 /// Spec 69, criterion 1 (WATCH SKILLS RENDER TRUE, proven against the ACTUAL compiled
@@ -30049,25 +29952,26 @@ fn grep_guard_denies_every_grep_tool_path_end_to_end() {
     }
 }
 
-/// The false-positive EXEMPTION `command_invokes_grep` states in its own doc comment,
-/// proven only at the pure-function unit level (main.rs's own tests) before this - never at
-/// the boundary `rigger grep-guard` actually reads and writes JSON over: `zgrep` (the literal
-/// word "grep" only as a substring of a longer tool name) must never be bounced, whatever it
-/// targets.
-#[test]
-fn grep_guard_never_bounces_a_substring_grep_command_end_to_end() {
+/// `rigger grep-guard` fed `payload` end to end answers `{}` - it lets the command through
+/// untouched; `why` names the command's reason for passing.
+fn assert_grep_guard_lets_through(payload: &str, why: &str) {
     let dir = temp_project();
     let root = dir.path();
     std::fs::create_dir_all(root.join(".rigger")).unwrap();
 
-    let zgrep = run_grep_guard(
-        root,
+    let out = run_grep_guard(root, payload);
+    assert_eq!(out, serde_json::json!({}), "{why}; got:\n{out}");
+}
+
+rigger::test_cases! {
+    /// The false-positive EXEMPTION `command_invokes_grep` states in its own doc comment,
+    /// proven only at the pure-function unit level (main.rs's own tests) before this - never at
+    /// the boundary `rigger grep-guard` actually reads and writes JSON over: `zgrep` (the literal
+    /// word "grep" only as a substring of a longer tool name) must never be bounced, whatever it
+    /// targets.
+    grep_guard_never_bounces_a_substring_grep_command_end_to_end: assert_grep_guard_lets_through(
         r#"{"tool_name":"Bash","tool_input":{"command":"zgrep TODO src/a.gz"}}"#,
-    );
-    assert_eq!(
-        zgrep,
-        serde_json::json!({}),
-        "zgrep is a different tool than the literal `grep` this hook names; got:\n{zgrep}"
+        "zgrep is a different tool than the literal `grep` this hook names",
     );
 }
 
@@ -30372,22 +30276,12 @@ fn grep_guard_still_allows_literal_on_a_path_qualified_grep_end_to_end() {
     }
 }
 
-/// The basename comparison must not become a substring match: a path-qualified spelling of a
-/// DIFFERENT command (`/usr/bin/zgrep`, not `grep`) must still be allowed end to end.
-#[test]
-fn grep_guard_never_bounces_a_path_qualified_non_grep_command_end_to_end() {
-    let dir = temp_project();
-    let root = dir.path();
-    std::fs::create_dir_all(root.join(".rigger")).unwrap();
-
-    let out = run_grep_guard(
-        root,
+rigger::test_cases! {
+    /// The basename comparison must not become a substring match: a path-qualified spelling of a
+    /// DIFFERENT command (`/usr/bin/zgrep`, not `grep`) must still be allowed end to end.
+    grep_guard_never_bounces_a_path_qualified_non_grep_command_end_to_end: assert_grep_guard_lets_through(
         r#"{"tool_name":"Bash","tool_input":{"command":"/usr/bin/zgrep pattern src/main.rs"}}"#,
-    );
-    assert_eq!(
-        out,
-        serde_json::json!({}),
-        "a path-qualified different command must not be treated as grep end to end; got:\n{out}"
+        "a path-qualified different command must not be treated as grep end to end",
     );
 }
 

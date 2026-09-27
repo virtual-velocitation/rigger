@@ -579,7 +579,7 @@ fn gate_key_attempt(key: &str) -> Option<u32> {
 
 /// The content address of a gate run (spec 12, unit 1): a stable digest over the gate
 /// `command` and the git `tree_sha` of its inputs (the whole committed tree by default -
-/// [`worktree::tree_sha_of`]). The verbatim tree-SHA is kept in the digest so two DIFFERENT
+/// [`worktree::HEAD_TREE`]). The verbatim tree-SHA is kept in the digest so two DIFFERENT
 /// trees are always distinct addresses - the tree is what determines the gate outcome, so
 /// it must never collide - while the command is folded to a compact FNV-1a hash (the same
 /// fixed-seed stable hash the rest of the crate uses for content oracles: identical bytes ->
@@ -8117,11 +8117,11 @@ impl RunCtx<'_> {
         // worktree-less run), mirroring `target`'s own empty case; harmless for every OTHER
         // gate, whose command never reads `$MUTANTS`. Shares `postmerge_unit_dir`'s fallback
         // with `target` immediately above for the post-merge re-gate.
-        let mutants = crate::worktree::unit_mutants_sibling(dir)
+        let mutants = crate::worktree::unit_sibling(dir, crate::worktree::UNIT_MUTANTS_PREFIX)
             .or_else(|| {
-                postmerge_unit_dir
-                    .as_deref()
-                    .and_then(crate::worktree::unit_mutants_sibling)
+                postmerge_unit_dir.as_deref().and_then(|d| {
+                    crate::worktree::unit_sibling(d, crate::worktree::UNIT_MUTANTS_PREFIX)
+                })
             })
             .unwrap_or_default();
         // The shared gate build cache's guard path (spec 77 criterion 5, BOUNDED SHARED
@@ -8178,7 +8178,7 @@ impl RunCtx<'_> {
         // committed tree, and each gate folds its own command over it in `input_digest`.
         // Empty when there is no worktree tree (a repo-less / `isolation: none` run), which
         // simply disables content-addressing for this attempt's gates.
-        let tree_sha = crate::worktree::tree_sha_of(dir);
+        let tree_sha = crate::worktree::rev_sha_of(dir, crate::worktree::HEAD_TREE);
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -9873,7 +9873,8 @@ impl RunCtx<'_> {
     /// event store.
     fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
-        let mutants = crate::worktree::unit_mutants_sibling(dir).unwrap_or_default();
+        let mutants = crate::worktree::unit_sibling(dir, crate::worktree::UNIT_MUTANTS_PREFIX)
+            .unwrap_or_default();
         let (build_cache_dir, build_cache_guard) = if target.is_empty() {
             self.shared_build_cache_paths()
         } else {
@@ -14031,6 +14032,7 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{ExpectedRevision, Filter};
     use crate::gate::ExecRunner;
+    use crate::spawn::SpawnEvent;
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -15837,7 +15839,7 @@ mod tests {
                 }
             }
             // A REVIEWER's own side effect destroying the worktree mid-review (spec 64
-            // criterion 3, round 4), mirroring `RecordingRunner::deleting_worktree`'s
+            // criterion 3, round 4), mirroring `GateSideEffect::DeleteWorktree`'s
             // gate-side deletion but at this review-tier spawn boundary: the SAME
             // machinery `run_reviewer`'s ensure-on-park re-assert must self-heal before
             // the NEXT tier's spawn, or before a stamp that reads the tree right after
@@ -32038,8 +32040,11 @@ mod tests {
 
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
         for name in ["alpha", "beta"] {
-            let want =
-                crate::worktree::unit_mutants_sibling(&unit_worktree_dir(&scratch, name)).unwrap();
+            let want = crate::worktree::unit_sibling(
+                &unit_worktree_dir(&scratch, name),
+                crate::worktree::UNIT_MUTANTS_PREFIX,
+            )
+            .unwrap();
             assert!(
                 mutants_dirs.contains(&want),
                 "unit {name} must get mutants root {want}, got {mutants_dirs:?}"
@@ -32053,7 +32058,7 @@ mod tests {
         // list never includes `mutation` - only the `checkin` stage (spec 91 criterion 2)
         // does - so its real gate commands never run `rm -rf "$MUTANTS" && mkdir -p
         // "$MUTANTS"` (the `mutation` gate's OWN command, the only place that ever
-        // materializes it - see `worktree::unit_mutants_sibling`'s own doc comment: "this
+        // materializes it - see `worktree::unit_sibling`'s own doc comment: "this
         // crate never creates it"). Proven with a REAL `ExecRunner` (never `RecordingRunner`,
         // which only records the env VALUE `two_units_gate_environments_never_share_a_
         // mutants_root` above proves is non-empty, and could never distinguish "set" from
@@ -32341,7 +32346,7 @@ mod tests {
             write_file: Some("work.rs".into()),
             ..Stub::new()
         };
-        let runner = RecordingRunner::materializing();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -32405,7 +32410,7 @@ mod tests {
             ]),
             ..Stub::new()
         };
-        let runner = RecordingRunner::materializing();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -32482,7 +32487,7 @@ mod tests {
         let deps = Deps {
             store: &store,
             driver: &driver,
-            gates: &RecordingRunner::materializing(),
+            gates: &RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache),
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -32555,7 +32560,7 @@ mod tests {
                 .collect(),
             ..Stub::new()
         };
-        let runner = RecordingRunner::materializing();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -32630,7 +32635,7 @@ mod tests {
         // historical fault this whole spec closes: an agent finding its assigned worktree
         // gone at spawn) must self-heal in the binary, not in the reviewer's opening
         // minutes. This proves it with a gate whose OWN side effect is exactly that
-        // deletion (`RecordingRunner::deleting_worktree`), so by the time the parked
+        // deletion (`GateSideEffect::DeleteWorktree`), so by the time the parked
         // adjudicator's spawn is inspected below, the gate has ALREADY destroyed the
         // worktree once - `review_unit` must have put it back before handing it out.
         let repo = init_repo();
@@ -32662,7 +32667,7 @@ mod tests {
                 .collect(),
             ..Stub::new()
         };
-        let runner = RecordingRunner::deleting_worktree();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -32863,7 +32868,7 @@ mod tests {
                 .collect(),
             ..Stub::new()
         };
-        let runner = RecordingRunner::deleting_worktree();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -32931,7 +32936,7 @@ mod tests {
         // adjudicator) is its own real, wall-clock-blocking spawn, all funneled through
         // the SAME shared authority `run_reviewer` - so a tier's OWN side effect deleting
         // the worktree (the identical shape a gate's own side effect already proves via
-        // `RecordingRunner::deleting_worktree`) left the NEXT tier's spawn a gone dir,
+        // `GateSideEffect::DeleteWorktree`) left the NEXT tier's spawn a gone dir,
         // with nothing between tiers to restore it. This drives the LENS to delete the
         // worktree as its side effect, then proves the ADVERSARY - the very next tier
         // `run_reviewer` reaches - finds it RESTORED at spawn entry, not gone.
@@ -34172,7 +34177,7 @@ mod tests {
         );
 
         let driver = Stub::new();
-        let runner = RecordingRunner::deleting_worktree();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             store: &st,
             driver: &driver,
@@ -34880,7 +34885,7 @@ mod tests {
             )]),
             ..Stub::new()
         };
-        let runner = RecordingRunner::deleting_worktree();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -34962,7 +34967,7 @@ mod tests {
             output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
         };
-        let runner = RecordingRunner::deleting_worktree();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -37705,6 +37710,17 @@ mod tests {
         /// returns.
         delete_worktree_dir: bool,
     }
+    /// What a [`RecordingRunner`]'s gate does beyond recording its call.
+    enum GateSideEffect {
+        /// Create each non-empty `target_dir` on disk - a stand-in for a real cargo build
+        /// populating the per-unit cache (Gap 19).
+        MaterializeCache,
+        /// Delete the worktree dir the gate ran in, simulating an out-of-band deletion that
+        /// lands between this gate's return and the review tier's next spawn (spec 64
+        /// criterion 3).
+        DeleteWorktree,
+    }
+
     impl RecordingRunner {
         fn new(fail: &[&str]) -> Self {
             RecordingRunner {
@@ -37720,20 +37736,11 @@ mod tests {
                 delete_worktree_dir: false,
             }
         }
-        /// Like [`Self::new`] but the runner also creates each non-empty `target_dir` on disk -
-        /// a stand-in for a real cargo build populating the per-unit cache (Gap 19).
-        fn materializing() -> Self {
+        /// Like [`Self::new`], but every gate run also carries out `effect`.
+        fn with_side_effect(effect: GateSideEffect) -> Self {
             RecordingRunner {
-                materialize_cache: true,
-                ..RecordingRunner::new(&[])
-            }
-        }
-        /// A runner whose gate DELETES the worktree dir it ran in, simulating an out-of-band
-        /// deletion that lands between this gate's return and the review tier's next spawn
-        /// (spec 64 criterion 3).
-        fn deleting_worktree() -> Self {
-            RecordingRunner {
-                delete_worktree_dir: true,
+                materialize_cache: matches!(effect, GateSideEffect::MaterializeCache),
+                delete_worktree_dir: matches!(effect, GateSideEffect::DeleteWorktree),
                 ..RecordingRunner::new(&[])
             }
         }
@@ -41068,7 +41075,11 @@ mod tests {
         let mutants_roots: HashSet<String> = ["unit-a", "unit-b"]
             .iter()
             .map(|u| {
-                crate::worktree::unit_mutants_sibling(&unit_worktree_dir(&scratch, u)).unwrap()
+                crate::worktree::unit_sibling(
+                    &unit_worktree_dir(&scratch, u),
+                    crate::worktree::UNIT_MUTANTS_PREFIX,
+                )
+                .unwrap()
             })
             .collect();
         let cache_roots: HashSet<String> = ["unit-a", "unit-b"]

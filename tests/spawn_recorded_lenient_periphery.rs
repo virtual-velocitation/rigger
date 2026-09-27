@@ -22,6 +22,7 @@
 mod common;
 
 use rigger::eventstore::Event;
+use rigger::spawn::SpawnEvent;
 use rigger::spawn::{self, SpawnRequest, ROLE_IMPLEMENTER};
 
 fn spawn_requested_at(req: &SpawnRequest, position: u64) -> Event {

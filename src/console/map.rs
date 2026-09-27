@@ -1665,32 +1665,43 @@ mod tests {
 
     // ---- frame: the labelled-map invariant, budget, monotonic zoom ---------------------------
 
-    /// Pins `base_fit_scale`'s own arithmetic in the scenario where the WIDTH ratio is the
-    /// smaller (selected) one, so a change to `world_w`'s formula or the width division actually
-    /// reaches the output - `viewport_h` is set huge enough that the height ratio never wins.
-    #[test]
-    fn base_fit_scale_selects_the_width_ratio_when_it_is_the_tighter_fit() {
-        // world_w = 12.0 - 2.0 = 10.0, ratio_w = 50.0 / 10.0 = 5.0 (selected).
-        // world_h = 14.0 - 4.0 = 10.0, ratio_h = 1000.0 / 10.0 = 100.0 (not selected).
-        let got = base_fit_scale((2.0, 4.0, 12.0, 14.0), 50.0, 1000.0);
-        let expected = 5.0_f64 * FIT_MARGIN;
+    /// `base_fit_scale(bounds, viewport_w, viewport_h)` is exactly the selected (smaller)
+    /// ratio times [`FIT_MARGIN`].
+    fn assert_base_fit_scale(
+        bounds: (f64, f64, f64, f64),
+        viewport_w: f64,
+        viewport_h: f64,
+        selected_ratio: f64,
+    ) {
+        let got = base_fit_scale(bounds, viewport_w, viewport_h);
+        let expected = selected_ratio * FIT_MARGIN;
         assert!(
             (got - expected).abs() < 1e-9,
             "expected {expected}, got {got}"
         );
     }
 
-    /// Symmetric to the above: the HEIGHT ratio is the smaller (selected) one here, so a change
-    /// to `world_h`'s formula or the height division reaches the output instead.
-    #[test]
-    fn base_fit_scale_selects_the_height_ratio_when_it_is_the_tighter_fit() {
-        // world_w = 6.0 - 0.0 = 6.0, ratio_w = 600.0 / 6.0 = 100.0 (not selected).
-        // world_h = 14.0 - 4.0 = 10.0, ratio_h = 40.0 / 10.0 = 4.0 (selected).
-        let got = base_fit_scale((0.0, 4.0, 6.0, 14.0), 600.0, 40.0);
-        let expected = 4.0_f64 * FIT_MARGIN;
-        assert!(
-            (got - expected).abs() < 1e-9,
-            "expected {expected}, got {got}"
+    crate::test_cases! {
+        /// Pins `base_fit_scale`'s own arithmetic in the scenario where the WIDTH ratio is the
+        /// smaller (selected) one, so a change to `world_w`'s formula or the width division actually
+        /// reaches the output - `viewport_h` is set huge enough that the height ratio never wins.
+        /// world_w = 12.0 - 2.0 = 10.0, ratio_w = 50.0 / 10.0 = 5.0 (selected).
+        /// world_h = 14.0 - 4.0 = 10.0, ratio_h = 1000.0 / 10.0 = 100.0 (not selected).
+        base_fit_scale_selects_the_width_ratio_when_it_is_the_tighter_fit: assert_base_fit_scale(
+            (2.0, 4.0, 12.0, 14.0),
+            50.0,
+            1000.0,
+            5.0,
+        );
+        /// Symmetric to the above: the HEIGHT ratio is the smaller (selected) one here, so a change
+        /// to `world_h`'s formula or the height division reaches the output instead.
+        /// world_w = 6.0 - 0.0 = 6.0, ratio_w = 600.0 / 6.0 = 100.0 (not selected).
+        /// world_h = 14.0 - 4.0 = 10.0, ratio_h = 40.0 / 10.0 = 4.0 (selected).
+        base_fit_scale_selects_the_height_ratio_when_it_is_the_tighter_fit: assert_base_fit_scale(
+            (0.0, 4.0, 6.0, 14.0),
+            600.0,
+            40.0,
+            4.0,
         );
     }
 
@@ -2625,10 +2636,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fit_district_of_an_unknown_purpose_is_none() {
+    /// Fitting the camera to `key` - a name `fit` does not know - over the populous model
+    /// yields no camera at all.
+    fn assert_fit_of_an_unknown_key_is_none(
+        fit: fn(&MapModel, f64, f64, &str) -> Option<Camera>,
+        key: &str,
+    ) {
         let model = build(&populous_graph(2, 1, 4));
-        assert_eq!(fit_district(&model, 900.0, 700.0, "no-such-district"), None);
+        assert_eq!(fit(&model, 900.0, 700.0, key), None);
+    }
+
+    crate::test_cases! {
+        fit_district_of_an_unknown_purpose_is_none: assert_fit_of_an_unknown_key_is_none(fit_district, "no-such-district");
     }
 
     /// adv-u84c2-fit-district-cannot-zoom-out-past-full-extent's own repro, now a permanent
@@ -2724,10 +2743,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn fit_entity_of_an_unknown_id_is_none() {
-        let model = build(&populous_graph(2, 1, 4));
-        assert_eq!(fit_entity(&model, 900.0, 700.0, "no-such-entity"), None);
+    crate::test_cases! {
+        fit_entity_of_an_unknown_id_is_none: assert_fit_of_an_unknown_key_is_none(fit_entity, "no-such-entity");
     }
 
     // ---- legend / kind_colour (criterion 3) ---------------------------------------------------

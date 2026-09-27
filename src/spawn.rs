@@ -57,13 +57,23 @@ pub const UNIT_CACHE_PREFIX: &str = "cargo-target-";
 /// worktree is removed. Pure path arithmetic (see [`UNIT_WORKTREE_PREFIX`]'s doc for why it
 /// is defined here, not in `worktree`).
 pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
+    unit_sibling(worktree_dir, UNIT_CACHE_PREFIX)
+}
+
+/// The dir named `<prefix><slug>` that is a SIBLING of the unit worktree at `worktree_dir`
+/// (`<root>/rigger-wt-<slug>` -> `<root>/<prefix><slug>`), or `None` for any dir that is
+/// not a unit worktree. The ONE derivation behind [`unit_cache_sibling`] and the per-unit
+/// mutants root (`unit_sibling(dir, UNIT_MUTANTS_PREFIX)`, spec 91: exported to the
+/// `checkin` stage's `mutation` gate command as `$MUTANTS`, mirroring how the cache sibling
+/// is exported as `CARGO_TARGET_DIR`). Pure path arithmetic.
+pub fn unit_sibling(worktree_dir: &str, prefix: &str) -> Option<String> {
     let path = std::path::Path::new(worktree_dir);
     let slug = path
         .file_name()?
         .to_str()?
         .strip_prefix(UNIT_WORKTREE_PREFIX)?;
     let parent = path.parent()?.to_str()?;
-    Some(format!("{parent}/{UNIT_CACHE_PREFIX}{slug}"))
+    Some(format!("{parent}/{prefix}{slug}"))
 }
 
 /// Filesystem prefix of a unit's per-unit mutants-root dir (`cargo-mutants-<slug>`), a
@@ -71,22 +81,6 @@ pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
 /// exact same sibling shape as [`UNIT_CACHE_PREFIX`]'s `cargo-target-<slug>`. See
 /// [`UNIT_WORKTREE_PREFIX`]'s doc for why this lives here rather than in `worktree`.
 pub const UNIT_MUTANTS_PREFIX: &str = "cargo-mutants-";
-
-/// The per-unit mutants-root dir that is a SIBLING of the unit worktree at `worktree_dir`
-/// (spec 91): `<root>/rigger-wt-<slug>` -> `<root>/cargo-mutants-<slug>`, exported to the
-/// `checkin` stage's `mutation` gate command as `$MUTANTS` (mirroring how
-/// [`unit_cache_sibling`] is exported as `CARGO_TARGET_DIR`). Returns `None` for any dir
-/// that is not a unit worktree - the identical shape and identical `None` cases as
-/// [`unit_cache_sibling`], just a different sibling name.
-pub fn unit_mutants_sibling(worktree_dir: &str) -> Option<String> {
-    let path = std::path::Path::new(worktree_dir);
-    let slug = path
-        .file_name()?
-        .to_str()?
-        .strip_prefix(UNIT_WORKTREE_PREFIX)?;
-    let parent = path.parent()?.to_str()?;
-    Some(format!("{parent}/{UNIT_MUTANTS_PREFIX}{slug}"))
-}
 
 /// The event type a parked spawn request is persisted as - the "spawn-request" half
 /// of the spawn-request/result pair the spec permits as the only new vocabulary the
@@ -375,17 +369,36 @@ pub struct SpawnRequest {
     pub reviews: Vec<String>,
 }
 
-impl SpawnRequest {
-    /// Serialize this request as its [`TYPE_SPAWN_REQUESTED`] event, ready to append
-    /// to the run stream.
-    pub fn to_event(&self) -> Result<Event, serde_json::Error> {
-        Ok(Event::new(TYPE_SPAWN_REQUESTED, serde_json::to_vec(self)?))
+/// A spawn-protocol record that travels as the whole JSON body of ONE event type:
+/// [`SpawnRequest`] as [`TYPE_SPAWN_REQUESTED`], [`SpawnResult`] as [`TYPE_SPAWN_RESULT`].
+/// Implementing it is all a record needs to get its [`SpawnEvent`] conversions.
+pub trait SpawnEventBody: Serialize + serde::de::DeserializeOwned {
+    /// The event type this record is appended to the run stream as.
+    const EVENT_TYPE: &'static str;
+}
+
+/// A [`SpawnEventBody`] record's conversions to and from its event, defined ONCE for every
+/// such record by the blanket impl below.
+pub trait SpawnEvent: Sized {
+    /// Serialize this record as its event, ready to append to the run stream.
+    fn to_event(&self) -> Result<Event, serde_json::Error>;
+
+    /// Recover a record from its event body.
+    fn from_event(e: &Event) -> Result<Self, serde_json::Error>;
+}
+
+impl<T: SpawnEventBody> SpawnEvent for T {
+    fn to_event(&self) -> Result<Event, serde_json::Error> {
+        Ok(Event::new(T::EVENT_TYPE, serde_json::to_vec(self)?))
     }
 
-    /// Recover a request from a [`TYPE_SPAWN_REQUESTED`] event body.
-    pub fn from_event(e: &Event) -> Result<SpawnRequest, serde_json::Error> {
+    fn from_event(e: &Event) -> Result<T, serde_json::Error> {
         serde_json::from_slice(&e.data)
     }
+}
+
+impl SpawnEventBody for SpawnRequest {
+    const EVENT_TYPE: &'static str = TYPE_SPAWN_REQUESTED;
 }
 
 /// A minimal request for the crate's unit tests: the deterministic id derived from `unit` +
@@ -647,16 +660,10 @@ impl SpawnResult {
         }
         None
     }
+}
 
-    /// Serialize this result as its [`TYPE_SPAWN_RESULT`] event, ready to append.
-    pub fn to_event(&self) -> Result<Event, serde_json::Error> {
-        Ok(Event::new(TYPE_SPAWN_RESULT, serde_json::to_vec(self)?))
-    }
-
-    /// Recover a result from a [`TYPE_SPAWN_RESULT`] event body.
-    pub fn from_event(e: &Event) -> Result<SpawnResult, serde_json::Error> {
-        serde_json::from_slice(&e.data)
-    }
+impl SpawnEventBody for SpawnResult {
+    const EVENT_TYPE: &'static str = TYPE_SPAWN_RESULT;
 }
 
 /// The LATEST recorded result for `id`, or `None` if the spawn has no result yet (it is

@@ -28,6 +28,7 @@ use crate::blocker::{self, Blocker};
 use crate::eventstore::{Event, Position};
 use crate::ledger::{self, AttentionEntry, RunState, Status};
 use crate::spawn;
+use crate::spawn::SpawnEvent;
 
 /// One unit's status word, as the console renders it: the projected
 /// [`Status`]'s wire string, keyed by unit id. [`RunState::units`] is already

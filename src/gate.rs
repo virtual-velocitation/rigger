@@ -192,7 +192,7 @@ pub enum Action {
 /// itself creates/wipes/repopulates each run (`rm -rf "$MUTANTS" && mkdir -p "$MUTANTS"`) and
 /// [`crate::worktree::reclaim_cache_sibling`] reaps at unit terminus, on the SAME coordinate
 /// as `target_dir`'s own `cargo-target-<slug>` sibling. The CALLER (`conductor::run_gates`)
-/// computes it via `worktree::unit_mutants_sibling(dir)` and threads it in, exactly like
+/// computes it via `worktree::unit_sibling(dir, UNIT_MUTANTS_PREFIX)` and threads it in, exactly like
 /// `target_dir` itself, so this module still never depends on `worktree`. Empty for anything
 /// that owns no unit-keyed `target_dir` either (mirrors its `None` cases); harmless for a
 /// gate whose command never reads `$MUTANTS`.

@@ -112,8 +112,8 @@ use crate::ledger::{
 };
 use crate::run::META_RUN_ID;
 use crate::spawn::{
-    spawn_role, SpawnRequest, SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY, TYPE_SPAWN_REQUESTED,
-    TYPE_SPAWN_RESULT,
+    spawn_role, SpawnEvent, SpawnRequest, SpawnResult, ROLE_ADJUDICATOR, ROLE_ADVERSARY,
+    TYPE_SPAWN_REQUESTED, TYPE_SPAWN_RESULT,
 };
 
 // The following consts and the two partition functions below moved here from

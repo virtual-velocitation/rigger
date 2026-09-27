@@ -30,6 +30,7 @@
 
 mod common;
 
+use rigger::spawn::SpawnEvent;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};

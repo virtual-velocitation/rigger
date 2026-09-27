@@ -95,18 +95,12 @@ struct FakeStore {
     liveness: Arc<Mutex<HashMap<String, u64>>>,
 }
 
-impl FakeStore {
-    fn push_event(&self, mut e: Event) {
-        let mut events = self.events.lock().unwrap();
-        e.position = events.len() as u64 + 1;
-        events.push(e);
-    }
-
-    fn push_progress(&self, mut e: Event) {
-        let mut progress = self.progress.lock().unwrap();
-        e.position = progress.len() as u64 + 1;
-        progress.push(e);
-    }
+/// Append `e` to one of a [`FakeStore`]'s logs at the next position (1-based, like a real
+/// store's).
+fn append_at_next_position(log: &Mutex<Vec<Event>>, mut e: Event) {
+    let mut log = log.lock().unwrap();
+    e.position = log.len() as u64 + 1;
+    log.push(e);
 }
 
 fn ev(type_: &str, json: &str) -> Event {
@@ -300,14 +294,20 @@ fn a_newly_appended_console_event_arrives_as_an_event_frame_and_a_graph_type_nev
     let mut stream = open_stream(addr, 0);
 
     let appended_at = Instant::now();
-    store.push_event(ev("UnitIntegrated", r#"{"id":"u1","commit":"abc123"}"#));
+    append_at_next_position(
+        &store.events,
+        ev("UnitIntegrated", r#"{"id":"u1","commit":"abc123"}"#),
+    );
     // A graph-extraction type sharing the same stream: must NEVER surface as an `event`
     // frame (it would otherwise arrive as frame #2, right behind the console event above).
-    store.push_event(ev("CodeEntityExtracted", r#"{"id":"src/dash.rs::route"}"#));
+    append_at_next_position(
+        &store.events,
+        ev("CodeEntityExtracted", r#"{"id":"src/dash.rs::route"}"#),
+    );
     // A THIRD console event, so if the graph-extraction type were (wrongly) emitted, this
     // frame would be #3, not #2 - proving the filter rather than merely proving SOMETHING
     // arrived.
-    store.push_event(ev("UnitEscalated", r#"{"id":"u1"}"#));
+    append_at_next_position(&store.events, ev("UnitEscalated", r#"{"id":"u1"}"#));
 
     let frame = read_frame(&mut stream).expect("a frame must arrive");
     let elapsed = appended_at.elapsed();
@@ -351,7 +351,7 @@ fn a_console_event_frame_carries_recorded_at_as_unix_seconds_over_the_real_strea
 
     let mut e = ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#);
     e.recorded_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    store.push_event(e);
+    append_at_next_position(&store.events, e);
 
     let frame = read_frame(&mut stream).expect("a frame must arrive");
     assert_eq!(frame.event, "event");
@@ -371,13 +371,19 @@ fn a_console_event_frame_carries_recorded_at_as_unix_seconds_over_the_real_strea
 fn since_resumes_with_no_gap_and_no_replay() {
     let store = FakeStore::default();
     // Two events already on the store BEFORE any client connects.
-    store.push_event(ev("UnitStarted", r#"{"id":"u1"}"#));
-    store.push_event(ev("UnitStatus", r#"{"id":"u1","status":"green"}"#));
+    append_at_next_position(&store.events, ev("UnitStarted", r#"{"id":"u1"}"#));
+    append_at_next_position(
+        &store.events,
+        ev("UnitStatus", r#"{"id":"u1","status":"green"}"#),
+    );
     let addr = serve_test_dash(store.clone());
 
     // Connects naming the second event's own position: only what comes strictly after it.
     let mut stream = open_stream(addr, 2);
-    store.push_event(ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#));
+    append_at_next_position(
+        &store.events,
+        ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+    );
 
     let frame = read_frame(&mut stream).expect("a frame must arrive");
     let data: serde_json::Value = serde_json::from_str(&frame.data).unwrap();
@@ -400,7 +406,7 @@ fn an_event_frame_carries_an_id_line_matching_its_position() {
     let addr = serve_test_dash(store.clone());
     let mut stream = open_stream(addr, 0);
 
-    store.push_event(ev("UnitStarted", r#"{"id":"u1"}"#));
+    append_at_next_position(&store.events, ev("UnitStarted", r#"{"id":"u1"}"#));
 
     let frame = read_frame(&mut stream).expect("a frame must arrive");
     assert_eq!(frame.event, "event");
@@ -427,7 +433,7 @@ fn an_event_frame_carries_an_id_line_matching_its_position() {
 #[serial(dash_console_stream_periphery)]
 fn a_reconnect_with_last_event_id_resumes_past_it_even_though_since_in_the_url_is_stale() {
     let store = FakeStore::default();
-    store.push_event(ev("UnitStarted", r#"{"id":"u1"}"#));
+    append_at_next_position(&store.events, ev("UnitStarted", r#"{"id":"u1"}"#));
     let addr = serve_test_dash(store.clone());
 
     // First connection: `since=0`, this tab's first ever connect.
@@ -436,7 +442,10 @@ fn a_reconnect_with_last_event_id_resumes_past_it_even_though_since_in_the_url_i
     assert_eq!(frame.id.as_deref(), Some("1"), "{frame:?}");
     drop(first); // the dropped connection: gone with no clean close.
 
-    store.push_event(ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#));
+    append_at_next_position(
+        &store.events,
+        ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+    );
 
     // The reconnect: the SAME stale `since=0` the URL still carries, but with
     // `Last-Event-ID: 1` - what a real browser's own native retry sends.
@@ -464,10 +473,13 @@ fn a_new_progress_line_arrives_as_a_progress_frame() {
     let addr = serve_test_dash(store.clone());
     let mut stream = open_stream(addr, 0);
 
-    store.push_progress(ev(
-        "AgentProgress",
-        r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
-    ));
+    append_at_next_position(
+        &store.progress,
+        ev(
+            "AgentProgress",
+            r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
+        ),
+    );
 
     let frame = read_frame(&mut stream).expect("a progress frame must arrive");
     assert_eq!(frame.event, "progress");
@@ -504,17 +516,23 @@ fn progress_since_resumes_a_line_recorded_before_the_stream_ever_polled() {
     let store = FakeStore::default();
     // Line A (position 1): what the client's OWN snapshot fetch already returned as
     // `progress_head`.
-    store.push_progress(ev(
-        "AgentProgress",
-        r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
-    ));
+    append_at_next_position(
+        &store.progress,
+        ev(
+            "AgentProgress",
+            r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
+        ),
+    );
     // Line B (position 2): recorded in the gap between that snapshot fetch and the stream
     // connecting - already on the store by the time the stream's first poll runs, exactly
     // the window that swallowed a line under the old first-poll-max floor.
-    store.push_progress(ev(
-        "AgentProgress",
-        r#"{"id":"u1/implementer#0","activity":"writing code"}"#,
-    ));
+    append_at_next_position(
+        &store.progress,
+        ev(
+            "AgentProgress",
+            r#"{"id":"u1/implementer#0","activity":"writing code"}"#,
+        ),
+    );
     let addr = serve_test_dash(store.clone());
 
     // Connects naming line A's own position as `progress_since`, exactly what the
@@ -552,7 +570,10 @@ fn two_concurrent_streams_both_observe_the_same_append_without_blocking_each_oth
         "opening a second console stream must not wait on the first"
     );
 
-    store.push_event(ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#));
+    append_at_next_position(
+        &store.events,
+        ev("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+    );
 
     for (name, stream) in [("first", &mut first), ("second", &mut second)] {
         let frame = read_frame(stream)
@@ -601,7 +622,10 @@ fn an_open_stream_never_blocks_an_ordinary_request_on_another_connection() {
 fn the_stream_threads_its_instance_selector_to_the_matching_stores_events() {
     let default_store = FakeStore::default();
     let inst_a_store = FakeStore::default();
-    inst_a_store.push_event(ev("UnitIntegrated", r#"{"id":"only-in-inst-a"}"#));
+    append_at_next_position(
+        &inst_a_store.events,
+        ev("UnitIntegrated", r#"{"id":"only-in-inst-a"}"#),
+    );
     let addr = serve_multi_instance_dash(default_store.clone(), &[("inst-a", inst_a_store)]);
 
     let mut stream = open_stream_with_query(addr, "since=0&progress_since=0&instance=inst-a");
@@ -665,7 +689,8 @@ fn get_json(addr: std::net::SocketAddr, path: &str) -> (u16, Option<String>, ser
 #[serial(dash_console_stream_periphery)]
 fn console_snapshot_is_served_over_a_real_socket_with_the_filtered_feed_and_definition() {
     let store = FakeStore::default();
-    store.push_event(
+    append_at_next_position(
+        &store.events,
         ev(
             "RunStarted",
             r#"{"run":"r1","spec":"specs/94-the-console-shell-and-the-live-data-plane.md"}"#,
@@ -674,20 +699,32 @@ fn console_snapshot_is_served_over_a_real_socket_with_the_filtered_feed_and_defi
         // RunStarted and like `src/dash.rs`'s own pure-function unit test for this same body.
         .with_meta(META_RUN_ID, "r1"),
     );
-    store.push_event(ev(
-        "SpawnRequested",
-        r#"{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"}"#,
-    ));
-    store.push_event(ev("GateVerdict", r#"{"gate":"cargo test","pass":true}"#));
+    append_at_next_position(
+        &store.events,
+        ev(
+            "SpawnRequested",
+            r#"{"id":"u1/implementer#0","unit":"u1","stage":"implement","prompt":"do it"}"#,
+        ),
+    );
+    append_at_next_position(
+        &store.events,
+        ev("GateVerdict", r#"{"gate":"cargo test","pass":true}"#),
+    );
     // A graph-extraction type sharing the same stream: must be excluded from `events`.
-    store.push_event(ev(
-        "CodeEntityExtracted",
-        r#"{"id":"src/dash.rs::route","kind":"function"}"#,
-    ));
-    store.push_progress(ev(
-        "AgentProgress",
-        r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
-    ));
+    append_at_next_position(
+        &store.events,
+        ev(
+            "CodeEntityExtracted",
+            r#"{"id":"src/dash.rs::route","kind":"function"}"#,
+        ),
+    );
+    append_at_next_position(
+        &store.progress,
+        ev(
+            "AgentProgress",
+            r#"{"id":"u1/implementer#0","activity":"reading spec"}"#,
+        ),
+    );
     store
         .liveness
         .lock()
@@ -745,7 +782,10 @@ fn console_snapshot_base_prefers_the_runs_persisted_base_over_the_served_default
     // No META_BASE recorded: falls back to the default `serve_test_dash` starts with
     // ("origin/main").
     let unstamped = FakeStore::default();
-    unstamped.push_event(ev("RunStarted", r#"{"run":"r1","spec":"s"}"#));
+    append_at_next_position(
+        &unstamped.events,
+        ev("RunStarted", r#"{"run":"r1","spec":"s"}"#),
+    );
     let addr = serve_test_dash(unstamped);
     let (_, _, v) = get_json(addr, "/api/console/snapshot");
     assert_eq!(
@@ -755,7 +795,8 @@ fn console_snapshot_base_prefers_the_runs_persisted_base_over_the_served_default
 
     // A persisted base wins over that same served default.
     let stamped = FakeStore::default();
-    stamped.push_event(
+    append_at_next_position(
+        &stamped.events,
         ev("RunStarted", r#"{"run":"r1","spec":"s"}"#).with_meta(META_BASE, "origin/release-9.9"),
     );
     let addr2 = serve_test_dash(stamped);
