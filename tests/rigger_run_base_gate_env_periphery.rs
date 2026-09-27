@@ -59,18 +59,16 @@ mod common;
 
 use std::path::Path;
 
-use serde_json::Value;
-
 use common::env_test_lock;
-use rigger::conductor::{run, Deps, STREAM};
-use rigger::config::{AgentDef, Config, Gate, Stage};
-use rigger::contextgraph::TYPE_GATE_VERDICT;
+use rigger::config::BuildConfig;
 use rigger::eventstore::sqlite::Store;
-use rigger::eventstore::{Direction, Event, EventStore};
+use rigger::eventstore::Event;
 
 #[path = "common/real_driver_spy.rs"]
 mod real_driver_spy;
-use real_driver_spy::RealDriverSpy;
+#[path = "common/real_gate_run.rs"]
+mod real_gate_run;
+use real_gate_run::run_real_gate_and_agent;
 
 // `env_test_lock()` serializes every test in this file that touches the real ambient `RIGGER_RUN_BASE` process
 // env (only the "unset" test below removes it) against a concurrent thread that might
@@ -81,8 +79,6 @@ use real_driver_spy::RealDriverSpy;
 // wins over whatever the parent process's own environment holds, so only the one test that
 // relies on ambient absence needs the lock.
 
-const UNIT: &str = "a";
-const GATE: &str = "envgate";
 const GATE_CMD: &str = "echo RIGGER_RUN_BASE=$RIGGER_RUN_BASE";
 
 /// A fixture "agent" that echoes `RIGGER_RUN_BASE` - never configured by production code for an
@@ -114,56 +110,7 @@ fn write_agent_fixture(dir: &Path) -> std::path::PathBuf {
 /// gate, and a `RealDriverSpy` wrapping the real `cli::Driver`. Returns the gate's recorded
 /// evidence and every real agent-subprocess stdout the run produced.
 fn run_once(store: &Store, kind: &str, agent_bin: &Path) -> (String, Vec<String>) {
-    let mut cfg = Config::default();
-    cfg.agents.insert(
-        "worker".into(),
-        AgentDef {
-            id: "worker".into(),
-            ..Default::default()
-        },
-    );
-    cfg.workflow.gates.insert(
-        GATE.into(),
-        Gate {
-            run: GATE_CMD.into(),
-            kind: kind.into(),
-            inputs: Vec::new(),
-        },
-    );
-    cfg.workflow.stages.insert(
-        UNIT.into(),
-        Stage {
-            name: UNIT.into(),
-            agent: "worker".into(),
-            gates: vec![GATE.into()],
-            on_pass: "none".into(),
-            ..Default::default()
-        },
-    );
-
-    let driver = RealDriverSpy::new(agent_bin);
-    let deps = Deps {
-        store,
-        driver: &driver,
-        gates: &rigger::gate::ExecRunner,
-        repo: String::new(),
-        grounder: None,
-        graph: None,
-        criteria: Vec::new(),
-    };
-    run(&cfg, &deps).expect("the run must complete: a real agent and a real gate");
-
-    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-    let gate_evidence = events
-        .iter()
-        .find(|e| e.type_ == TYPE_GATE_VERDICT)
-        .map(|e| {
-            let v: Value = serde_json::from_slice(&e.data).unwrap();
-            v["evidence"].as_str().unwrap().to_string()
-        })
-        .expect("the real ExecRunner gate must have run and recorded a GateVerdict");
-
-    (gate_evidence, driver.outputs())
+    run_real_gate_and_agent(store, BuildConfig::default(), kind, GATE_CMD, agent_bin)
 }
 
 #[test]
