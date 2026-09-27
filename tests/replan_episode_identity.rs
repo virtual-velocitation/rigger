@@ -110,23 +110,25 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 
 /// Drives the plan-critique reject-then-replan cycle with a planner that proposes a
-/// DIFFERENT unit id for the SAME criterion on each of its two spawns: the initial wave
-/// spawn is one planning EPISODE, the critique-driven re-plan is a SECOND, LATER episode
-/// over the exact same criterion. The emitted `UnitProposed` JSON carries NO `episode`
-/// field at all - exactly the PLAN_PROTOCOL shape a real planner emits, which never
-/// asks for one - so the episode identity can ONLY reach `harvest_proposed` through the
-/// `emit` callback THIS test receives (the real `RunCtx`-owned closure `run_single_stage`
-/// / `re_plan` builds, unchanged from what a live run wires), never through a
-/// hand-authored data field. This is what makes these tests prove the REAL write path
-/// (round-2 REJECT fix for f-c1-episode-writeside-unwired /
-/// sdet-c1-episode-writeside-unwired-test-blindspot): before that fix, both spawns'
-/// proposals deserialize `episode` as the empty string and the supersede rule can never
-/// fire, exactly the production defect.
-struct TwoEpisodeDriver {
+/// DIFFERENT unit id for the SAME criterion on each of its spawns: the initial wave spawn is
+/// one planning EPISODE, and each critique-driven re-plan is a LATER episode over the exact
+/// same criterion - `rejects` rejections mint `rejects + 1` episodes. The emitted
+/// `UnitProposed` JSON carries NO `episode` field at all - exactly the PLAN_PROTOCOL shape a
+/// real planner emits, which never asks for one - so the episode identity can ONLY reach
+/// `harvest_proposed` through the `emit` callback THIS test receives (the real `RunCtx`-owned
+/// closure `run_single_stage` / `re_plan` builds, unchanged from what a live run wires), never
+/// through a hand-authored data field. This is what makes these tests prove the REAL write
+/// path (round-2 REJECT fix for f-c1-episode-writeside-unwired /
+/// sdet-c1-episode-writeside-unwired-test-blindspot): before that fix, both spawns' proposals
+/// deserialize `episode` as the empty string and the supersede rule can never fire, exactly
+/// the production defect.
+struct ReplanDriver {
     planner: String,
     adjudicator: String,
     worker: String,
     criterion: String,
+    /// How many DAGs the adjudicator rejects before approving the next revision.
+    rejects: usize,
     calls: Mutex<Vec<String>>,
     /// The planner's own deterministic spawn id on each of its spawns, in spawn order:
     /// the first is the initial wave spawn, each later one is a critique-driven re-plan.
@@ -137,13 +139,14 @@ struct TwoEpisodeDriver {
     proposed_ids: Mutex<Vec<String>>,
 }
 
-impl TwoEpisodeDriver {
-    fn new(criterion: &str) -> Self {
-        TwoEpisodeDriver {
+impl ReplanDriver {
+    fn new(criterion: &str, rejects: usize) -> Self {
+        ReplanDriver {
             planner: "planner".into(),
             adjudicator: "judge".into(),
             worker: "worker".into(),
             criterion: criterion.to_string(),
+            rejects,
             calls: Mutex::new(Vec::new()),
             planner_spawns: Mutex::new(Vec::new()),
             proposed_ids: Mutex::new(Vec::new()),
@@ -172,7 +175,7 @@ fn unit_id_for_spawn(spawn_id: &str) -> String {
     )
 }
 
-impl AgentDriver for TwoEpisodeDriver {
+impl AgentDriver for ReplanDriver {
     fn spawn(
         &self,
         a: &AgentDef,
@@ -203,18 +206,18 @@ impl AgentDriver for TwoEpisodeDriver {
             });
         }
         if a.id == self.adjudicator {
-            // Reject the FIRST DAG (drawing the re-plan that mints the second episode),
-            // then approve the revision - a JUDGMENT, modelled directly, independent of
-            // any blast-radius mechanics (there are none here: `grounder: None`).
-            let already_rejected = self
+            // Reject the first `rejects` DAGs (each drawing a re-plan that mints the next
+            // episode), then approve the revision - a JUDGMENT, modelled directly,
+            // independent of any blast-radius mechanics (there are none here: `grounder:
+            // None`). `self.calls` already includes THIS call.
+            let adjudicator_calls = self
                 .calls
                 .lock()
                 .unwrap()
                 .iter()
                 .filter(|c| c.as_str() == self.adjudicator)
-                .count()
-                > 1;
-            let verdict = if already_rejected {
+                .count();
+            let verdict = if adjudicator_calls > self.rejects {
                 "approve"
             } else {
                 "reject"
@@ -307,7 +310,7 @@ fn a_replan_after_a_critique_reject_supersedes_the_initial_episodes_unit() {
     let criterion = "the periphery widget is implemented";
     let cfg = two_episode_cfg();
     let store = Store::open(":memory:").unwrap();
-    let driver = TwoEpisodeDriver::new(criterion);
+    let driver = ReplanDriver::new(criterion, 1);
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -384,93 +387,6 @@ fn a_replan_after_a_critique_reject_supersedes_the_initial_episodes_unit() {
     );
 }
 
-/// Drives a plan-critique REJECT twice (not once) before approving, so ONE run mints
-/// THREE distinct planning episodes over the same criterion instead of the minimal two
-/// `TwoEpisodeDriver` above exercises. Otherwise identical shape (same-id sanitizing,
-/// same worker/config conventions) - only the reject count differs.
-struct ThreeEpisodeDriver {
-    planner: String,
-    adjudicator: String,
-    worker: String,
-    criterion: String,
-    calls: Mutex<Vec<String>>,
-    /// The planner's deterministic spawn id on each of its spawns, in spawn order: the
-    /// initial wave spawn, then each critique-driven re-plan.
-    planner_spawns: Mutex<Vec<String>>,
-    /// The unit id proposed on each spawn, index-for-index with `planner_spawns`.
-    proposed_ids: Mutex<Vec<String>>,
-}
-
-impl ThreeEpisodeDriver {
-    fn new(criterion: &str) -> Self {
-        ThreeEpisodeDriver {
-            planner: "planner".into(),
-            adjudicator: "judge".into(),
-            worker: "worker".into(),
-            criterion: criterion.to_string(),
-            calls: Mutex::new(Vec::new()),
-            planner_spawns: Mutex::new(Vec::new()),
-            proposed_ids: Mutex::new(Vec::new()),
-        }
-    }
-}
-
-impl AgentDriver for ThreeEpisodeDriver {
-    fn spawn(
-        &self,
-        a: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        self.calls.lock().unwrap().push(a.id.clone());
-        if a.id == self.planner {
-            self.planner_spawns.lock().unwrap().push(opts.id.clone());
-            let unit_id = unit_id_for_spawn(&opts.id);
-            self.proposed_ids.lock().unwrap().push(unit_id.clone());
-            // No `episode` key here either - see `TwoEpisodeDriver::spawn`'s matching
-            // comment: the identity must come from `emit`'s own META_SPAWN stamp.
-            emit(
-                TYPE_UNIT_PROPOSED,
-                json!({
-                    "id": unit_id,
-                    "agent": self.worker,
-                    "criterion": self.criterion,
-                    "gates": ["ok"],
-                }),
-            )?;
-            return Ok(AgentResult {
-                output: "proposed the DAG".into(),
-                resolved_model: String::new(),
-            });
-        }
-        if a.id == self.adjudicator {
-            // Reject the first TWO DAGs (minting a second AND a third episode), then
-            // approve the third revision. `self.calls` already includes THIS call.
-            let adjudicator_calls = self
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|c| c.as_str() == self.adjudicator)
-                .count();
-            let verdict = if adjudicator_calls > 2 {
-                "approve"
-            } else {
-                "reject"
-            };
-            return Ok(AgentResult {
-                output: format!("{{\"verdict\":\"{verdict}\"}}"),
-                resolved_model: String::new(),
-            });
-        }
-        Ok(AgentResult {
-            output: format!("{} ok", a.id),
-            resolved_model: String::new(),
-        })
-    }
-}
-
 /// Spec 72 criterion 1 (cross-episode supersede), the CHAINED case: the single-reject
 /// test above proves the minimal two-episode shape; this proves the SUPERSEDE RULE
 /// holds transitively across a chain longer than the minimum - two rejects mint THREE
@@ -486,7 +402,7 @@ fn a_second_replan_supersedes_both_earlier_episodes_units() {
     let criterion = "the trinket module is implemented";
     let cfg = two_episode_cfg();
     let store = Store::open(":memory:").unwrap();
-    let driver = ThreeEpisodeDriver::new(criterion);
+    let driver = ReplanDriver::new(criterion, 2);
     let deps = Deps {
         store: &store,
         driver: &driver,
@@ -569,9 +485,8 @@ fn a_second_replan_supersedes_both_earlier_episodes_units() {
 /// introduced mid-replan, spec 31's guarantee). This is the shape round-2's REJECT fix
 /// (sdet-c1-refine-branch-never-restamps-episode / adv-u72c1-refine-staleness-order-
 /// independent-confirmed) closes: without restamping the refined stage's episode, its own
-/// episode's sibling wrongly reaps it. Neither `TwoEpisodeDriver` nor `ThreeEpisodeDriver`
-/// above ever re-proposes an id under a later episode - both always mint a fresh one on
-/// every spawn - so this driver is the only one in this file that reaches the same-id
+/// episode's sibling wrongly reaps it. `ReplanDriver` above never re-proposes an id under
+/// a later episode - it always mints a fresh one on every spawn - so this driver is the only one in this file that reaches the same-id
 /// fold branch through the real re-plan write path at all.
 struct RefineWithSiblingDriver {
     planner: String,
@@ -1091,7 +1006,7 @@ fn resume_seam_cfg() -> Config {
 }
 
 /// A single planning episode's driver: the planner's ONE spawn proposes ONE new unit for
-/// the given criterion, exactly like `TwoEpisodeDriver`'s spawn (no `episode` key in the
+/// the given criterion, exactly like `ReplanDriver`'s spawn (no `episode` key in the
 /// JSON `data` at all - PLAN_PROTOCOL never asks for one; the identity must come from
 /// `emit`'s own `META_SPAWN` stamp, which only a REAL spawn through `run` provides).
 struct SinglePlannerDriver {
