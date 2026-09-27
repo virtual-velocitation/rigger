@@ -60,7 +60,7 @@
     ]
   },
   {
-    "id": "dup-cffb3f7498f9",
+    "id": "dup-50c4d0b858f8",
     "sites": [
       {
         "file": "src/budget.rs",
@@ -473,39 +473,39 @@
         "end_line": 25698
       },
       {
-        "file": "src/process.rs",
+        "file": "src/subprocess.rs",
         "start_line": 18,
         "end_line": 18
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3440,
-        "end_line": 3440
+        "start_line": 3439,
+        "end_line": 3439
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4278,
-        "end_line": 4278
+        "start_line": 4277,
+        "end_line": 4277
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5749,
-        "end_line": 5749
+        "start_line": 5748,
+        "end_line": 5748
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6082,
-        "end_line": 6082
+        "start_line": 6081,
+        "end_line": 6081
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6878,
-        "end_line": 6878
+        "start_line": 6877,
+        "end_line": 6877
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6884,
-        "end_line": 6884
+        "start_line": 6883,
+        "end_line": 6883
       },
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -2294,8 +2294,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1784,
-        "end_line": 1786
+        "start_line": 1783,
+        "end_line": 1785
       },
       {
         "file": "tests/canary_model_drift_periphery.rs",
@@ -2424,13 +2424,13 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3140,
-        "end_line": 3167
+        "start_line": 3139,
+        "end_line": 3166
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4588,
-        "end_line": 4642
+        "start_line": 4587,
+        "end_line": 4641
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -3794,8 +3794,13 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1696,
-        "end_line": 1696
+        "start_line": 1695,
+        "end_line": 1695
+      },
+      {
+        "file": "src/worktree.rs",
+        "start_line": 4952,
+        "end_line": 4952
       },
       {
         "file": "src/worktree.rs",
@@ -3804,8 +3809,13 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4954,
-        "end_line": 4954
+        "start_line": 4956,
+        "end_line": 4956
+      },
+      {
+        "file": "src/worktree.rs",
+        "start_line": 4956,
+        "end_line": 4956
       },
       {
         "file": "src/worktree.rs",
@@ -3814,18 +3824,13 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4957,
-        "end_line": 4957
+        "start_line": 4976,
+        "end_line": 4976
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4958,
-        "end_line": 4958
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 4977,
-        "end_line": 4977
+        "start_line": 5000,
+        "end_line": 5000
       },
       {
         "file": "src/worktree.rs",
@@ -3834,18 +3839,13 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5002,
-        "end_line": 5002
+        "start_line": 6815,
+        "end_line": 6815
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6816,
-        "end_line": 6816
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 6865,
-        "end_line": 6865
+        "start_line": 6864,
+        "end_line": 6864
       },
       {
         "file": "tests/architecture_current_surface.rs",
@@ -8855,7 +8855,7 @@
     ]
   },
   {
-    "id": "dup-2066c47bf52e",
+    "id": "dup-6f592e6f36fa",
     "sites": [
       {
         "file": "src/dash.rs",
@@ -9056,11 +9056,6 @@
         "file": "tests/simplification_audit.rs",
         "start_line": 2849,
         "end_line": 2849
-      },
-      {
-        "file": "tests/simplification_audit.rs",
-        "start_line": 2981,
-        "end_line": 2981
       },
       {
         "file": "tests/simplification_audit.rs",
@@ -9614,13 +9609,13 @@
     "sites": [
       {
         "file": "src/driver/cli.rs",
-        "start_line": 399,
-        "end_line": 426
+        "start_line": 398,
+        "end_line": 425
       },
       {
         "file": "src/driver/cli.rs",
-        "start_line": 429,
-        "end_line": 440
+        "start_line": 428,
+        "end_line": 439
       }
     ]
   },
@@ -10274,8 +10269,8 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 610,
-        "end_line": 613
+        "start_line": 609,
+        "end_line": 612
       }
     ]
   },
@@ -12124,13 +12119,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 634,
-        "end_line": 636
+        "start_line": 633,
+        "end_line": 635
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 652,
-        "end_line": 654
+        "start_line": 651,
+        "end_line": 653
       }
     ]
   },
@@ -12139,8 +12134,8 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1436,
-        "end_line": 1438
+        "start_line": 1435,
+        "end_line": 1437
       },
       {
         "file": "tests/postmerge_gate_error_cleanup_periphery.rs",
@@ -12159,8 +12154,8 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1559,
-        "end_line": 1564
+        "start_line": 1558,
+        "end_line": 1563
       },
       {
         "file": "tests/step_root_resolution_periphery.rs",
@@ -12174,13 +12169,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1573,
-        "end_line": 1581
+        "start_line": 1572,
+        "end_line": 1580
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1672,
-        "end_line": 1680
+        "start_line": 1671,
+        "end_line": 1679
       }
     ]
   },
@@ -12189,13 +12184,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 1742,
-        "end_line": 1745
+        "start_line": 1741,
+        "end_line": 1744
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 1749,
-        "end_line": 1752
+        "start_line": 1748,
+        "end_line": 1751
       }
     ]
   },
@@ -12204,13 +12199,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 3056,
-        "end_line": 3100
+        "start_line": 3055,
+        "end_line": 3099
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3103,
-        "end_line": 3137
+        "start_line": 3102,
+        "end_line": 3136
       }
     ]
   },
@@ -12219,13 +12214,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 3824,
-        "end_line": 3924
+        "start_line": 3823,
+        "end_line": 3923
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3927,
-        "end_line": 4036
+        "start_line": 3926,
+        "end_line": 4035
       }
     ]
   },
@@ -12234,13 +12229,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 4842,
-        "end_line": 4869
+        "start_line": 4841,
+        "end_line": 4868
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6841,
-        "end_line": 6853
+        "start_line": 6840,
+        "end_line": 6852
       }
     ]
   },
@@ -12249,13 +12244,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 5077,
-        "end_line": 5115
+        "start_line": 5076,
+        "end_line": 5114
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5682,
-        "end_line": 5730
+        "start_line": 5681,
+        "end_line": 5729
       }
     ]
   },
@@ -12264,13 +12259,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 5386,
-        "end_line": 5390
+        "start_line": 5385,
+        "end_line": 5389
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5394,
-        "end_line": 5398
+        "start_line": 5393,
+        "end_line": 5397
       }
     ]
   },
@@ -12279,23 +12274,23 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 5401,
-        "end_line": 5434
+        "start_line": 5400,
+        "end_line": 5433
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5437,
-        "end_line": 5463
+        "start_line": 5436,
+        "end_line": 5462
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5466,
-        "end_line": 5490
+        "start_line": 5465,
+        "end_line": 5489
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5493,
-        "end_line": 5516
+        "start_line": 5492,
+        "end_line": 5515
       }
     ]
   },
@@ -12304,13 +12299,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 5602,
-        "end_line": 5642
+        "start_line": 5601,
+        "end_line": 5641
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5645,
-        "end_line": 5679
+        "start_line": 5644,
+        "end_line": 5678
       }
     ]
   },
@@ -12319,23 +12314,23 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 5803,
-        "end_line": 5844
+        "start_line": 5802,
+        "end_line": 5843
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5847,
-        "end_line": 5889
+        "start_line": 5846,
+        "end_line": 5888
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5892,
-        "end_line": 5927
+        "start_line": 5891,
+        "end_line": 5926
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5947,
-        "end_line": 5976
+        "start_line": 5946,
+        "end_line": 5975
       }
     ]
   },
@@ -12344,13 +12339,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 5930,
-        "end_line": 5944
+        "start_line": 5929,
+        "end_line": 5943
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6258,
-        "end_line": 6271
+        "start_line": 6257,
+        "end_line": 6270
       }
     ]
   },
@@ -12359,13 +12354,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 5987,
-        "end_line": 6048
+        "start_line": 5986,
+        "end_line": 6047
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6205,
-        "end_line": 6255
+        "start_line": 6204,
+        "end_line": 6254
       }
     ]
   },
@@ -12374,18 +12369,18 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 6942,
-        "end_line": 7022
+        "start_line": 6941,
+        "end_line": 7021
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 7025,
-        "end_line": 7099
+        "start_line": 7024,
+        "end_line": 7098
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 7102,
-        "end_line": 7168
+        "start_line": 7101,
+        "end_line": 7167
       }
     ]
   },
@@ -12394,13 +12389,13 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 7171,
-        "end_line": 7207
+        "start_line": 7170,
+        "end_line": 7206
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 7210,
-        "end_line": 7235
+        "start_line": 7209,
+        "end_line": 7234
       }
     ]
   },
@@ -12409,8 +12404,8 @@
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 7238,
-        "end_line": 7275
+        "start_line": 7237,
+        "end_line": 7274
       },
       {
         "file": "tests/worktree_create_heal_lock_boundary_periphery.rs",

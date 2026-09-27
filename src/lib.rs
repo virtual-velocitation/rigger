@@ -80,8 +80,6 @@ pub mod metrics;
 pub mod parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod playbooks;
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod process;
 pub mod progress;
 /// The write half of [`progress`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -110,6 +108,8 @@ pub mod spec;
 /// domain core - the five `rigger-watch-a-run` signals plus a store-integrity check,
 /// folded from already-gathered inputs into one line per anomaly, with in-process
 /// streaming dedup. Never touches the driver.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod subprocess;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod watch;
 #[cfg(any(feature = "store", not(feature = "core")))]

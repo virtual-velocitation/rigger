@@ -40,7 +40,7 @@ impl AgentDriver for Driver {
         } else {
             &self.bin
         };
-        let mut cmd = crate::process::command_in(bin, &opts.dir);
+        let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
         // Live progress (spec 14): frame the same per-step progress instruction the workflow
         // drivers give, so a worker on this path also reports what it is doing between
         // milestones. (This synchronous, non-parking path has no parked frontier entry, so the

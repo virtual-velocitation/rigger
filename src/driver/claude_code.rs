@@ -199,7 +199,7 @@ impl Driver<'_> {
         )?;
 
         let bin = bin_or_path_default(&self.bin, "claude");
-        let mut cmd = crate::process::command_in(bin, &opts.dir);
+        let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
         cmd.args(&args);
         // The ONE build-environment authority's injection site for this driver (spec 65),
         // exactly like the cli driver applies it: every var the resolver derived, on top

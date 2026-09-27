@@ -1762,12 +1762,12 @@ Every function in `src/conductor.rs`, `src/main.rs` and `src/dash.rs` (1702 func
 
 ## 2. Duplication Catalog
 
-600 clusters (3206 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
+600 clusters (3205 total sites) across `src/` and `tests/`, found by `tests/simplification_audit.rs`'s deterministic normalized-token-shingle Jaccard pass (8-token shingles, threshold 0.72) plus five mandatory mechanical sweeps. Strict definition (spec 85 Goal): any logic present in more than one place anywhere in the codebase is a violation, with no "small enough to duplicate" exemption.
 
 ### Mandatory sweeps
 
-- **Command::new call sites**: 368 site(s) - `dup-cffb3f7498f9`
-- **/proc-path string literals**: 57 site(s) - `dup-2066c47bf52e`
+- **Command::new call sites**: 368 site(s) - `dup-50c4d0b858f8`
+- **/proc-path string literals**: 56 site(s) - `dup-6f592e6f36fa`
 - **sqlite Connection::open call sites**: 39 site(s) - `dup-e4cc0ac793e5`
 - **.rigger-path string literals**: 759 site(s) - `dup-61beee8c3f8a`
 - **error-shaping helper functions**: 12 site(s) - `dup-83a6d4922163`
@@ -1804,7 +1804,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/blocker.rs:413-429` `reject_recurrence_line_carries_the_recorded_cause`
 - `src/blocker.rs:432-452` `reject_recurrence_line_carries_the_latest_of_several_causes`
 
-#### `dup-cffb3f7498f9` (semantic, 368 sites)
+#### `dup-50c4d0b858f8` (semantic, 368 sites)
 
 Proposed home: `a single injected process-spawn port every Command::new site routes through instead of constructing its own Command`
 
@@ -1892,13 +1892,13 @@ mandatory sweep: Command::new call sites - 368 site(s), collected mechanically r
 - `src/main.rs:23167-23167` `Command::new`
 - `src/main.rs:25664-25664` `Command::new`
 - `src/main.rs:25698-25698` `Command::new`
-- `src/process.rs:18-18` `Command::new`
-- `src/worktree.rs:3440-3440` `Command::new`
-- `src/worktree.rs:4278-4278` `Command::new`
-- `src/worktree.rs:5749-5749` `Command::new`
-- `src/worktree.rs:6082-6082` `Command::new`
-- `src/worktree.rs:6878-6878` `Command::new`
-- `src/worktree.rs:6884-6884` `Command::new`
+- `src/subprocess.rs:18-18` `Command::new`
+- `src/worktree.rs:3439-3439` `Command::new`
+- `src/worktree.rs:4277-4277` `Command::new`
+- `src/worktree.rs:5748-5748` `Command::new`
+- `src/worktree.rs:6081-6081` `Command::new`
+- `src/worktree.rs:6877-6877` `Command::new`
+- `src/worktree.rs:6883-6883` `Command::new`
 - `tests/adaptive_labels_periphery.rs:87-87` `Command::new`
 - `tests/adoption_keys_on_criterion_periphery.rs:177-177` `Command::new`
 - `tests/adoption_keys_on_criterion_periphery.rs:1572-1572` `Command::new`
@@ -2340,7 +2340,7 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/main.rs:13386-13392` `spec_lint_next_step`
 - `src/spawn.rs:115-117` `lens_role`
 - `src/spawn.rs:193-195` `speculation_group_id`
-- `src/worktree.rs:1784-1786` `shared_build_cache_guard_path`
+- `src/worktree.rs:1783-1785` `shared_build_cache_guard_path`
 - `tests/canary_model_drift_periphery.rs:123-125` `prose_claiming`
 - `tests/halted_spawn_wip_recovery_periphery.rs:150-152` `unit_branch`
 - `tests/regate_landed_on_resume_periphery.rs:108-110` `unit_branch`
@@ -2396,8 +2396,8 @@ mandatory sweep: error-shaping helper functions - 12 site(s), collected mechanic
 - `src/conductor.rs:5066-5084` `guard_review_round_tree_on_tier_err`
 - `src/conductor.rs:28627-28685` `integrate_plan_commits_wraps_any_hard_error_with_the_plan_landing_marker`
 - `src/grounder/mod.rs:259-265` `retired_grounder_error`
-- `src/worktree.rs:3140-3167` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
-- `src/worktree.rs:4588-4642` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
+- `src/worktree.rs:3139-3166` `land_reports_a_generic_error_for_a_refusal_that_is_neither_tip_moved_nor_blocked`
+- `src/worktree.rs:4587-4641` `revert_on_base_aborts_and_errors_on_a_conflicting_revert`
 - `tests/adoption_keys_on_criterion_periphery.rs:2403-2575` `a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh`
 - `tests/batched_fold_cadence.rs:174-252` `append_and_fold_batch_is_best_effort_on_fold_error_and_a_no_op_on_an_empty_batch`
 - `tests/canary_item_sharding_jobs_cap_periphery.rs:323-411` `run_canary_runs_every_item_to_completion_even_when_one_items_spawn_errors`
@@ -3301,17 +3301,17 @@ coverage: \"mutation efficacy of the whole spec diff\"\n"`
 - `src/registry.rs:433-433` `"/home/dev/proj-b/.rigger/events.db"`
 - `src/registry.rs:453-453` `"/a/.rigger/events.db"`
 - `src/registry.rs:454-454` `"/b/.rigger/events.db"`
-- `src/worktree.rs:1696-1696` `"{}/.rigger/tmp"`
-- `src/worktree.rs:4953-4953` `"{repo_path}/.rigger/tmp"`
-- `src/worktree.rs:4954-4954` `"the default must no longer nest inside the repo's own .rigger: {dflt:?}"`
-- `src/worktree.rs:4957-4957` `"/.rigger/"`
-- `src/worktree.rs:4957-4957` `"/.rigger"`
-- `src/worktree.rs:4958-4958` `"the default must never live under any .rigger: {dflt:?}"`
-- `src/worktree.rs:4977-4977` `"{repo_path}/.rigger/tmp"`
-- `src/worktree.rs:5001-5001` `"~/.rigger-scratch-test"`
-- `src/worktree.rs:5002-5002` `"{home}/.rigger-scratch-test"`
-- `src/worktree.rs:6816-6816` `"{base}..rigger-run"`
-- `src/worktree.rs:6865-6865` `".rigger"`
+- `src/worktree.rs:1695-1695` `"{}/.rigger/tmp"`
+- `src/worktree.rs:4952-4952` `"{repo_path}/.rigger/tmp"`
+- `src/worktree.rs:4953-4953` `"the default must no longer nest inside the repo's own .rigger: {dflt:?}"`
+- `src/worktree.rs:4956-4956` `"/.rigger/"`
+- `src/worktree.rs:4956-4956` `"/.rigger"`
+- `src/worktree.rs:4957-4957` `"the default must never live under any .rigger: {dflt:?}"`
+- `src/worktree.rs:4976-4976` `"{repo_path}/.rigger/tmp"`
+- `src/worktree.rs:5000-5000` `"~/.rigger-scratch-test"`
+- `src/worktree.rs:5001-5001` `"{home}/.rigger-scratch-test"`
+- `src/worktree.rs:6815-6815` `"{base}..rigger-run"`
+- `src/worktree.rs:6864-6864` `".rigger"`
 - `tests/architecture_current_surface.rs:92-92` `".rigger/store.conn"`
 - `tests/architecture_current_surface.rs:148-148` `"docs/architecture.md must describe the system that exists today (spec 56, \
          criterion 1): it must name the store-resolution and configuration surface (the \
@@ -5004,11 +5004,11 @@ mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.7
 - `src/contextgraph/sqlite.rs:8164-8195` `an_unresolvable_test_reference_is_staged_and_reconciled_once_its_definition_later_folds`
 - `src/contextgraph/sqlite.rs:8440-8471` `the_empty_boundary_sentinel_never_resolves_records_or_stages_anything_for_its_empty_name`
 
-#### `dup-2066c47bf52e` (semantic, 57 sites)
+#### `dup-6f592e6f36fa` (semantic, 56 sites)
 
 Proposed home: `src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - see the report's worked example)`
 
-mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
+mandatory sweep: /proc-path string literals - 56 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/dash.rs:557-557` `"/proc/net/tcp"`
 - `src/dash.rs:588-588` `"/proc"`
@@ -5053,7 +5053,6 @@ mandatory sweep: /proc-path string literals - 57 site(s), collected mechanically
 - `tests/mutation_runner_pdeathsig_periphery.rs:75-75` `"/proc/{pid}/stat"`
 - `tests/simplification_audit.rs:2843-2843` `"/proc/<pid>/stat or /proc/<pid>/status field-extraction functions"`
 - `tests/simplification_audit.rs:2849-2849` `"/proc-path string literals"`
-- `tests/simplification_audit.rs:2981-2981` `"src/process.rs"`
 - `tests/simplification_audit.rs:3016-3016` `"/proc"`
 - `tests/simplification_audit.rs:3017-3017` `"src/reap.rs as the one /proc-reading module (dash.rs's own /proc readers already \
              duplicate reap.rs's field-after-the-comm's-closing-paren /proc/<pid>/stat parse - \
@@ -5426,8 +5425,8 @@ Proposed home: `cli::support (consolidate these 2 sites into one function in thi
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/driver/cli.rs:399-426` `persona_is_the_system_prompt_task_is_the_prompt`
-- `src/driver/cli.rs:429-440` `recurse_false_drops_the_agent_tool_from_allowed_tools`
+- `src/driver/cli.rs:398-425` `persona_is_the_system_prompt_task_is_the_prompt`
+- `src/driver/cli.rs:428-439` `recurse_false_drops_the_agent_tool_from_allowed_tools`
 
 #### `dup-1856c00f9b89` (semantic, 2 sites)
 
@@ -5768,7 +5767,7 @@ Proposed home: `one shared `changed_files` helper (e.g. relocated into `tests/co
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
 - `src/grounder/symbols/grounder.rs:75-98` `changed_files`
-- `src/worktree.rs:610-613` `changed_files`
+- `src/worktree.rs:609-612` `changed_files`
 
 #### `dup-2aabb2b82325` (near, 2 sites)
 
@@ -6750,8 +6749,8 @@ Proposed home: `worktree::worktree`
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:634-636` `commit`
-- `src/worktree.rs:652-654` `commit_checkpoint`
+- `src/worktree.rs:633-635` `commit`
+- `src/worktree.rs:651-653` `commit_checkpoint`
 
 #### `dup-a29a6c1a667b` (semantic, 3 sites)
 
@@ -6759,7 +6758,7 @@ Proposed home: `one shared `branch_exists` helper (e.g. relocated into `tests/co
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `src/worktree.rs:1436-1438` `branch_exists`
+- `src/worktree.rs:1435-1437` `branch_exists`
 - `tests/postmerge_gate_error_cleanup_periphery.rs:74-82` `branch_exists`
 - `tests/step_root_resolution_periphery.rs:212-219` `branch_exists`
 
@@ -6769,7 +6768,7 @@ Proposed home: `one shared `current_branch` helper (e.g. relocated into `tests/c
 
 mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)
 
-- `src/worktree.rs:1559-1564` `current_branch`
+- `src/worktree.rs:1558-1563` `current_branch`
 - `tests/step_root_resolution_periphery.rs:199-210` `current_branch`
 
 #### `dup-17993613795d` (exact, 2 sites)
@@ -6778,8 +6777,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:1573-1581` `scratch_root`
-- `src/worktree.rs:1672-1680` `scratch_root_path`
+- `src/worktree.rs:1572-1580` `scratch_root`
+- `src/worktree.rs:1671-1679` `scratch_root_path`
 
 #### `dup-cda9c1a42625` (exact, 2 sites)
 
@@ -6787,8 +6786,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:1742-1745` `scratch_root_from_env`
-- `src/worktree.rs:1749-1752` `scratch_root_path_from_env`
+- `src/worktree.rs:1741-1744` `scratch_root_from_env`
+- `src/worktree.rs:1748-1751` `scratch_root_path_from_env`
 
 #### `dup-8a40ee6f30d4` (near, 2 sites)
 
@@ -6796,8 +6795,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:3056-3100` `land_reports_untracked_blocking_paths_and_leaves_the_repo_untouched`
-- `src/worktree.rs:3103-3137` `land_reports_locally_modified_tracked_blocking_paths`
+- `src/worktree.rs:3055-3099` `land_reports_untracked_blocking_paths_and_leaves_the_repo_untouched`
+- `src/worktree.rs:3102-3136` `land_reports_locally_modified_tracked_blocking_paths`
 
 #### `dup-c8b104ef8278` (near, 2 sites)
 
@@ -6805,8 +6804,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:3824-3924` `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_from_a_crash_mid_skip_loop`
-- `src/worktree.rs:3927-4036` `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained_empty_commits`
+- `src/worktree.rs:3823-3923` `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_from_a_crash_mid_skip_loop`
+- `src/worktree.rs:3926-4035` `cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained_empty_commits`
 
 #### `dup-ab80a443a0c5` (near, 2 sites)
 
@@ -6814,8 +6813,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:4842-4869` `changed_files_reports_only_the_rename_destination`
-- `src/worktree.rs:6841-6853` `changed_files_unquotes_paths_with_spaces`
+- `src/worktree.rs:4841-4868` `changed_files_reports_only_the_rename_destination`
+- `src/worktree.rs:6840-6852` `changed_files_unquotes_paths_with_spaces`
 
 #### `dup-952c99c5929f` (near, 2 sites)
 
@@ -6823,8 +6822,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:5077-5115` `sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones`
-- `src/worktree.rs:5682-5730` `sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache`
+- `src/worktree.rs:5076-5114` `sweep_terminal_removes_merged_worktrees_and_keeps_inflight_ones`
+- `src/worktree.rs:5681-5729` `sweep_terminal_reclaims_a_crash_left_terminal_units_per_unit_build_cache`
 
 #### `dup-541e6f1b21c3` (near, 2 sites)
 
@@ -6832,8 +6831,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:5386-5390` `requested_and_answered`
-- `src/worktree.rs:5394-5398` `requested_and_hung`
+- `src/worktree.rs:5385-5389` `requested_and_answered`
+- `src/worktree.rs:5393-5397` `requested_and_hung`
 
 #### `dup-20eb2c3a9787` (near, 4 sites)
 
@@ -6841,10 +6840,10 @@ Proposed home: `worktree::support (consolidate these 4 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:5401-5434` `sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight`
-- `src/worktree.rs:5437-5463` `sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result`
-- `src/worktree.rs:5466-5490` `sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung`
-- `src/worktree.rs:5493-5516` `sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged`
+- `src/worktree.rs:5400-5433` `sweep_terminal_spares_a_merged_branch_whose_units_latest_spawn_is_still_in_flight`
+- `src/worktree.rs:5436-5462` `sweep_terminal_reclaims_a_merged_branch_once_its_latest_spawn_has_a_real_result`
+- `src/worktree.rs:5465-5489` `sweep_terminal_reclaims_a_merged_branch_whose_latest_spawn_is_hung`
+- `src/worktree.rs:5492-5515` `sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_unchanged`
 
 #### `dup-068178008d84` (near, 2 sites)
 
@@ -6852,8 +6851,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:5602-5642` `sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one`
-- `src/worktree.rs:5645-5679` `sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision`
+- `src/worktree.rs:5601-5641` `sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one`
+- `src/worktree.rs:5644-5678` `sweep_terminal_prints_evidence_for_a_removed_terminal_spawn_decision`
 
 #### `dup-2d7ee9df221d` (near, 4 sites)
 
@@ -6861,10 +6860,10 @@ Proposed home: `worktree::support (consolidate these 4 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:5803-5844` `worktree_remove_reclaims_the_sibling_per_unit_cache`
-- `src/worktree.rs:5847-5889` `worktree_remove_also_reclaims_the_sibling_mutants_root`
-- `src/worktree.rs:5892-5927` `worktree_remove_also_reclaims_the_store_fence_sibling`
-- `src/worktree.rs:5947-5976` `worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling`
+- `src/worktree.rs:5802-5843` `worktree_remove_reclaims_the_sibling_per_unit_cache`
+- `src/worktree.rs:5846-5888` `worktree_remove_also_reclaims_the_sibling_mutants_root`
+- `src/worktree.rs:5891-5926` `worktree_remove_also_reclaims_the_store_fence_sibling`
+- `src/worktree.rs:5946-5975` `worktree_remove_also_reclaims_a_review_worktrees_store_fence_sibling`
 
 #### `dup-0c5f12097509` (near, 2 sites)
 
@@ -6872,8 +6871,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:5930-5944` `review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest`
-- `src/worktree.rs:6258-6271` `unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest`
+- `src/worktree.rs:5929-5943` `review_fence_sibling_maps_a_review_worktree_to_its_fence_sibling_and_ignores_the_rest`
+- `src/worktree.rs:6257-6270` `unit_cache_sibling_maps_a_unit_worktree_to_its_cache_and_ignores_the_rest`
 
 #### `dup-d728cb89cb95` (near, 2 sites)
 
@@ -6881,8 +6880,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:5987-6048` `reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch`
-- `src/worktree.rs:6205-6255` `reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch`
+- `src/worktree.rs:5986-6047` `reclaim_worktree_on_branch_deregisters_the_lingering_worktree_reclaims_its_cache_and_frees_the_branch`
+- `src/worktree.rs:6204-6254` `reclaim_worktree_on_branch_prunes_a_stale_registration_whose_dir_was_deleted_and_frees_the_branch`
 
 #### `dup-f88bdbc9c8d0` (near, 3 sites)
 
@@ -6890,9 +6889,9 @@ Proposed home: `worktree::support (consolidate these 3 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:6942-7022` `create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones`
-- `src/worktree.rs:7025-7099` `create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested`
-- `src/worktree.rs:7102-7168` `create_heals_a_fully_missing_marker_not_just_a_truncated_one`
+- `src/worktree.rs:6941-7021` `create_self_heals_a_corrupt_worktree_admin_entry_and_spares_healthy_ones`
+- `src/worktree.rs:7024-7098` `create_heals_a_zero_length_gitdir_marker_the_commondir_case_leaves_untested`
+- `src/worktree.rs:7101-7167` `create_heals_a_fully_missing_marker_not_just_a_truncated_one`
 
 #### `dup-50e826431b47` (near, 2 sites)
 
@@ -6900,8 +6899,8 @@ Proposed home: `worktree::support (consolidate these 2 sites into one function i
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:7171-7207` `heal_never_prunes_a_locked_admin_entry`
-- `src/worktree.rs:7210-7235` `heal_never_prunes_an_admin_entry_younger_than_the_grace_period`
+- `src/worktree.rs:7170-7206` `heal_never_prunes_a_locked_admin_entry`
+- `src/worktree.rs:7209-7234` `heal_never_prunes_an_admin_entry_younger_than_the_grace_period`
 
 #### `dup-27b900886bcf` (near, 2 sites)
 
@@ -6909,7 +6908,7 @@ Proposed home: `a new shared module (sites span 2 files: src/worktree.rs, tests/
 
 mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)
 
-- `src/worktree.rs:7238-7275` `concurrent_worktree_creates_in_one_repository_all_succeed_across_50_rounds`
+- `src/worktree.rs:7237-7274` `concurrent_worktree_creates_in_one_repository_all_succeed_across_50_rounds`
 - `tests/worktree_create_heal_lock_boundary_periphery.rs:178-215` `create_serializes_concurrent_sibling_creates_at_the_crate_boundary`
 
 #### `dup-55487fee1a95` (near, 3 sites)
@@ -9956,8 +9955,8 @@ Recall check (spec 85 THOROUGHNESS): 30 functions drawn by seeded random index (
 - `src/main.rs:18602-18656` `footprint_report_keys_agent_scratch_liveness_by_run_id_and_leaf_not_leaf_name_alone` - no duplicate found by reading
 - `src/main.rs:26221-26254` `store_location_repo_root_resolves_the_owning_root_not_the_process_cwd_so_a_real_marker_is_found` - no duplicate found by reading
 - `src/main.rs:27479-27484` `assert_resolves_under_cwd` - no duplicate found by reading
-- `src/run.rs:335-340` `run` - no duplicate found by reading
-- `src/spec.rs:406-419` `criterion_blocks` - no duplicate found by reading
+- `src/run.rs:455-479` `current_run_is_the_suffix_from_the_last_run_started` - no duplicate found by reading
+- `src/spec.rs:581-592` `either_or_hedge` - no duplicate found by reading
 - `tests/agent_fallback_model_config_periphery.rs:23-30` `opts` - caught: `dup-04388bdc57cf`
 - `tests/canary_model_drift_periphery.rs:196-276` `canary_and_validate_drift_reads_only_metadata_prose_can_neither_mask_nor_forge_it` - caught: `dup-d97925a56a22`
 - `tests/cause_wire_periphery.rs:117-165` `all_four_closed_vocabulary_causes_surface_on_reject_recurrence_lines_through_the_real_binary` - no duplicate found by reading
@@ -10123,9 +10122,9 @@ Within a tier, entries are ordered largest-first by the site or line count each 
 - Risk: medium. `ingest.rs`'s own module doc calls it "the ONE walk-and-content-key authority" - a load-bearing path; needs the existing whole-project-ingest and reindex-freshening coverage to stay green, not just the duplicate sites' own tests.
 - Unblocks: retires the one `Grounder` port violation section 3 found and `dup-0f2f14f8c3ce` together, rather than as two separately-tracked fixes.
 
-#### 3. Retire the duplicate `/proc`-reading authority (`dup-2066c47bf52e` + `dup-765d751ecdf2`)
+#### 3. Retire the duplicate `/proc`-reading authority (`dup-6f592e6f36fa` + `dup-765d751ecdf2`)
 
-- Scope: `src/dash.rs::process_state` independently re-derives `/proc/<pid>/stat` fields that `src/reap.rs` (`pid_starttime`/`read_ppid`) already parses - the exact "second mutation authority" example spec 85's own Goal names and spec 62's capstone previously caught (`dup-765d751ecdf2`, 15 sites across `src/dash.rs`, `src/reap.rs`, `tests/claude_code_stream_periphery.rs`, `tests/cli.rs`, `tests/common/fixtures/host.rs`, `tests/mutation_runner_pdeathsig_periphery.rs`, `tests/simplification_audit.rs`), plus 57 raw `/proc`-path string literals scattered across 9 files with no shared composer (`dup-2066c47bf52e`). Both clusters' own `proposed_home` agree: `src/reap.rs` becomes the one `/proc`-reading module; `dash.rs` calls it instead of re-parsing. `process_state` is reachable from `dash`'s own always-on production server, so it is the actual active-correctness risk this tier-1 placement is about; the cluster's test-only readers (such as the shared `tests/common/fixtures/host.rs::pgid_of` fixture) earn no tier-1 placement on their own and ride in this same item only because they share its root cause.
+- Scope: `src/dash.rs::process_state` independently re-derives `/proc/<pid>/stat` fields that `src/reap.rs` (`pid_starttime`/`read_ppid`) already parses - the exact "second mutation authority" example spec 85's own Goal names and spec 62's capstone previously caught (`dup-765d751ecdf2`, 15 sites across `src/dash.rs`, `src/reap.rs`, `tests/claude_code_stream_periphery.rs`, `tests/cli.rs`, `tests/common/fixtures/host.rs`, `tests/mutation_runner_pdeathsig_periphery.rs`, `tests/simplification_audit.rs`), plus 56 raw `/proc`-path string literals scattered across 9 files with no shared composer (`dup-6f592e6f36fa`). Both clusters' own `proposed_home` agree: `src/reap.rs` becomes the one `/proc`-reading module; `dash.rs` calls it instead of re-parsing. `process_state` is reachable from `dash`'s own always-on production server, so it is the actual active-correctness risk this tier-1 placement is about; the cluster's test-only readers (such as the shared `tests/common/fixtures/host.rs::pgid_of` fixture) earn no tier-1 placement on their own and ride in this same item only because they share its root cause.
 - Files: `src/dash.rs`, `src/reap.rs`, plus the test-only readers `dup-765d751ecdf2` names.
 - Expected line delta: negative - retires `process_state`'s own parsing body in favor of calling `reap.rs`'s existing parser.
 - Risk: low. Section 3's own disposition already establishes `process_state` as a duplicate READ-only reimplementation, never a bypassed mutation path - nothing this touches can signal or end a process, so it carries none of the no-os-kill gate's own risk surface; retiring the test-only readers is ordinary test cleanup.
@@ -10200,10 +10199,10 @@ Each entry is one of section 2's five named mandatory sweeps - collected mechani
 - Risk: medium - the largest surface-area sweep in this plan by site count, even though each individual site is trivial; needs a mechanical rewrite pass plus a full-suite green run, not hand-editing 759 sites.
 - Unblocks: the biggest single site-count reduction available anywhere in the duplication catalog.
 
-#### 11. The 368 `Command::new` call sites (`dup-cffb3f7498f9`) - production spawns already route through one process-spawn port
+#### 11. The 368 `Command::new` call sites (`dup-50c4d0b858f8`) - production spawns already route through one process-spawn port
 
-- Scope: every production spawn routes through `src/process.rs` (the cluster's own `proposed_home`), and the audit's `the_process_spawn_port_is_the_only_production_command_new_caller` gate refuses a new direct construction anywhere else in production code. The 1 site(s) in `src/process.rs` are the port itself; the other 367 are test code spawning git, shells and the product binary.
-- Files: `src/process.rs` plus test code in `src/` and `tests/` - full site list in `docs/audit/duplication-catalog.json` under `dup-cffb3f7498f9`.
+- Scope: every production spawn routes through `src/subprocess.rs` (the cluster's own `proposed_home`), and the audit's `the_process_spawn_port_is_the_only_production_command_new_caller` gate refuses a new direct construction anywhere else in production code. The 1 site(s) in `src/subprocess.rs` are the port itself; the other 367 are test code spawning git, shells and the product binary.
+- Files: `src/subprocess.rs` plus test code in `src/` and `tests/` - full site list in `docs/audit/duplication-catalog.json` under `dup-50c4d0b858f8`.
 - Expected line delta: none left in production; a test site that repeats a shared fixture's spawn routes through that fixture instead.
 - Risk: low - no production spawn is left to move, and the gate keeps it that way.
 - Unblocks: the next process-spawning concern added anywhere in the crate reuses the port instead of constructing its own `Command`.
@@ -10274,7 +10273,7 @@ Unlike tier 5, this entry's own clusters are NOT known to be test-only - each on
 
 #### 19. Sweep the remaining 310 src-touching duplication clusters (section 2, beyond tiers 1 and 4's 7 named clusters)
 
-- Scope: of the catalog's 600 clusters, 283 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-cffb3f7498f9`, `dup-61beee8c3f8a`, `dup-e4cc0ac793e5`, `dup-2066c47bf52e`, `dup-765d751ecdf2`, `dup-0f2f14f8c3ce`, `dup-83a6d4922163`); the remaining 310 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-7dfa0dd1a6a8`, `dup-097bb5af6d73`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
+- Scope: of the catalog's 600 clusters, 283 are test-only (items 14 and 16-18 above) and 7 are the named tier-1/tier-4 items (`dup-50c4d0b858f8`, `dup-61beee8c3f8a`, `dup-e4cc0ac793e5`, `dup-6f592e6f36fa`, `dup-765d751ecdf2`, `dup-0f2f14f8c3ce`, `dup-83a6d4922163`); the remaining 310 clusters touching `src/` - mostly small 2-5-site exact/near matches like the two worked examples section 2 itself opens with (`dup-7dfa0dd1a6a8`, `dup-097bb5af6d73`) - are swept here, largest exact-duplicate clusters first, consumed directly from `docs/audit/duplication-catalog.json`.
 - Files: per-cluster, from the committed catalog.
 - Expected line delta: negative, cumulative; the largest single contributor is whichever exact cluster has the most sites (read from the catalog at spec-writing time, not fixed here).
 - Risk: low-medium - unlike tier 5, some of these clusters are production code, so each merge needs its own test-coverage check, not a blanket "test-only" pass.

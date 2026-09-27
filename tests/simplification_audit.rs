@@ -2978,7 +2978,7 @@ fn sweep_cluster_named<'a>(clusters: &'a [DupCluster], name: &str) -> Option<&'a
 
 /// The process-spawn port: the ONE production module that constructs a `Command`. Every other
 /// production spawn routes through it, so the `Command::new` sweep can never reopen in `src/`.
-const PROCESS_SPAWN_PORT: &str = "src/process.rs";
+const PROCESS_SPAWN_PORT: &str = "src/subprocess.rs";
 
 /// Every `Command::new` call site in production code outside [`PROCESS_SPAWN_PORT`]: a site in a
 /// production source file, not in a wholly-test file (`whole_file_test`) and not inside a test

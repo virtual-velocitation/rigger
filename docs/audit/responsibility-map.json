@@ -6301,7 +6301,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "b214c35e5546f4ca"
+    "content_hash": "16369f6b2c19099e"
   },
   {
     "file": "src/main.rs",
@@ -6389,7 +6389,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "5382795d93194457"
+    "content_hash": "f1c93f426e1526fb"
   },
   {
     "file": "src/main.rs",
@@ -6557,7 +6557,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "6994313c0300d566"
+    "content_hash": "704988efaf57314a"
   },
   {
     "file": "src/main.rs",
@@ -6677,7 +6677,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "ce3e51f3baba6a32"
+    "content_hash": "9cbc5dc90828c12e"
   },
   {
     "file": "src/main.rs",
@@ -6989,7 +6989,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "03476da39d23b65a"
+    "content_hash": "6a94b414b8666dac"
   },
   {
     "file": "src/main.rs",
@@ -7021,7 +7021,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "cbca6d8c1df7f3ab"
+    "content_hash": "4451ee966e0ad5e1"
   },
   {
     "file": "src/main.rs",
@@ -7045,7 +7045,7 @@
     "is_test": false,
     "proposed_module": "main::dash_glue",
     "reason": "name contains \"dash_\" (dash registry/marker glue); grouped under `main::dash_glue`.",
-    "content_hash": "ef86add942b1c3e3"
+    "content_hash": "f2134e5766492285"
   },
   {
     "file": "src/main.rs",
@@ -7693,7 +7693,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"git_\" (git/version provenance); grouped under `main::provenance`.",
-    "content_hash": "4d88effbadde8b3d"
+    "content_hash": "765767a3ef04ac91"
   },
   {
     "file": "src/main.rs",
@@ -7701,7 +7701,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"git_\" (git/version provenance); grouped under `main::provenance`.",
-    "content_hash": "cab60e921b2e0a70"
+    "content_hash": "a1b69cb0e46f5760"
   },
   {
     "file": "src/main.rs",
@@ -7749,7 +7749,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "7c513450209552da"
+    "content_hash": "162e1cfed928233a"
   },
   {
     "file": "src/main.rs",
@@ -7821,7 +7821,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "ca3dc8e13cc36241"
+    "content_hash": "91ff3e48978b0231"
   },
   {
     "file": "src/main.rs",
@@ -8029,7 +8029,7 @@
     "is_test": false,
     "proposed_module": "main::support",
     "reason": "name contains \"write_\" (generic write helper); grouped under `main::support`.",
-    "content_hash": "ccc67a62b5be3355"
+    "content_hash": "6b32b736be220b05"
   },
   {
     "file": "src/main.rs",
@@ -8157,7 +8157,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"git_\" (git/version provenance); grouped under `main::provenance`.",
-    "content_hash": "9b0a85590b00a171"
+    "content_hash": "eca6a93ad5b4257b"
   },
   {
     "file": "src/main.rs",
@@ -8197,7 +8197,7 @@
     "is_test": false,
     "proposed_module": "main::setup",
     "reason": "name contains \"install\" (project setup); grouped under `main::setup`.",
-    "content_hash": "e8a59f98b7a97f9f"
+    "content_hash": "77f10868a65bfd6d"
   },
   {
     "file": "src/main.rs",
@@ -8381,7 +8381,7 @@
     "is_test": false,
     "proposed_module": "main::provenance",
     "reason": "name contains \"git_\" (git/version provenance); grouped under `main::provenance`.",
-    "content_hash": "eb6341bc91194eba"
+    "content_hash": "eab80c5b4ea506fa"
   },
   {
     "file": "src/main.rs",
@@ -10989,7 +10989,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "fc5f747ebb999412"
+    "content_hash": "12abf6e8793db21e"
   },
   {
     "file": "src/main.rs",

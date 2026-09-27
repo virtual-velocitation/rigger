@@ -717,7 +717,7 @@ impl Worktree {
         // The pathspec separator is folded into this SAME multi-flag call, never passed via
         // its own single-argument call, so the no-os-kill audit's whole-tree argv-separator
         // shape - aimed at a negative-pid kill target, not a git pathspec - never matches here.
-        let out = crate::process::git_in(&self.dir)
+        let out = crate::subprocess::git_in(&self.dir)
             .args([
                 "grep",
                 "-I",
@@ -1262,7 +1262,7 @@ impl Worktree {
     /// that only ever existed on `self.dir`'s branch, and vice versa.
     fn patch_id_of(dir: &str, sha: &str) -> Result<String, Error> {
         use std::process::Stdio;
-        let mut show = crate::process::git_in(dir)
+        let mut show = crate::subprocess::git_in(dir)
             .args(["show", "--no-color", sha])
             .stdout(Stdio::piped())
             .spawn()
@@ -1271,7 +1271,7 @@ impl Worktree {
             .stdout
             .take()
             .ok_or_else(|| Error(format!("git show {sha}: no stdout pipe")))?;
-        let patch_id = crate::process::git_in(dir)
+        let patch_id = crate::subprocess::git_in(dir)
             .args(["patch-id", "--stable"])
             .stdin(Stdio::from(show_stdout))
             .output()
@@ -1519,7 +1519,7 @@ fn parse_blocking_paths(out: &str) -> Vec<String> {
 /// conductor's land-refused lesson (spec 103 criterion 8) to find any unit branch whose tip
 /// already carries byte-identical content at a path a refused landing was blocked by.
 pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
-    let out = crate::process::git_in(repo)
+    let out = crate::subprocess::git_in(repo)
         .args(["show", &format!("{git_ref}:{path}")])
         .output()
         .ok()?;
@@ -2589,7 +2589,7 @@ pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
 }
 
 fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
-    let out = crate::process::git_in(dir)
+    let out = crate::subprocess::git_in(dir)
         .args(args)
         .output()
         .map_err(|e| e.to_string())?;

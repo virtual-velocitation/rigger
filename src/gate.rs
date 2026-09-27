@@ -746,11 +746,11 @@ impl Runner for ExecRunner {
         let guard_requested = !build_cache_guard.is_empty();
         let guarded = guard_requested && build_cache_guard_is_usable(build_cache_guard);
         let mut cmd = if guarded {
-            let mut c = crate::process::command_in("flock", dir);
+            let mut c = crate::subprocess::command_in("flock", dir);
             c.arg("-s").arg("-F").arg(build_cache_guard).arg("sh");
             c
         } else {
-            crate::process::command_in("sh", dir)
+            crate::subprocess::command_in("sh", dir)
         };
         cmd.arg("-c").arg(&g.run);
         // Per-unit build cache (Gap 19): a non-empty target_dir points cargo at a
