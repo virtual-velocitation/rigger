@@ -10,6 +10,8 @@
 //! feature-gated), so these tests run in both. No reference to any external tool or
 //! project; hyphens, never em dashes.
 
+mod common;
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
@@ -115,16 +117,22 @@ fn the_served_console_page_opens_the_palette_on_ctrl_k_and_cmd_k() {
     }
 }
 
-/// THE PALETTE's entries come from the core's own `palette_commands` op (Design: "its
-/// entries come from `palette_commands` in the core"), fetched through the SAME `callOp`
-/// loader the position model already uses - never a second, page-side command list.
-#[test]
-fn the_served_console_page_fetches_entries_from_the_core_palette_commands_op() {
+/// The shared case body: the served console page's source carries `needle` (`why` prefixes
+/// the failure's dump of the page).
+fn assert_served_console_carries(needle: &str, why: &str) {
     let body = served_console_body();
-    assert!(
-        body.contains("callOp(\"palette_commands\""),
-        "the served console page must call the core's palette_commands op: {body}"
-    );
+    assert!(body.contains(needle), "{why}: {body}");
+}
+
+test_cases! {
+    /// THE PALETTE's entries come from the core's own `palette_commands` op (Design: "its
+    /// entries come from `palette_commands` in the core"), fetched through the SAME `callOp`
+    /// loader the position model already uses - never a second, page-side command list.
+    the_served_console_page_fetches_entries_from_the_core_palette_commands_op =>
+        assert_served_console_carries(
+            "callOp(\"palette_commands\"",
+            "the served console page must call the core's palette_commands op",
+        );
 }
 
 /// THE PALETTE filters as the person types (Design: "filtered as the person types"),
@@ -188,15 +196,11 @@ fn the_served_console_page_resolves_every_palette_entry_kind_to_a_real_action() 
     );
 }
 
-/// The digits 0-6 switch views (Design §6.9, the same "THE PALETTE AND KEYS" paragraph
-/// as Ctrl-K/Cmd-K), in the tab bar's own left-to-right order.
-#[test]
-fn the_served_console_page_switches_views_on_digits_0_to_6() {
-    let body = served_console_body();
-    assert!(
-        body.contains("/^[0-6]$/"),
-        "the digit keys 0-6 must switch views: {body}"
-    );
+test_cases! {
+    /// The digits 0-6 switch views (Design §6.9, the same "THE PALETTE AND KEYS" paragraph
+    /// as Ctrl-K/Cmd-K), in the tab bar's own left-to-right order.
+    the_served_console_page_switches_views_on_digits_0_to_6 =>
+        assert_served_console_carries("/^[0-6]$/", "the digit keys 0-6 must switch views");
 }
 
 // ---------------------------------------------------------------------------------
