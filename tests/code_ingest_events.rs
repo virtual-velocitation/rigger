@@ -25,15 +25,9 @@ use rigger::contextgraph::{
 };
 use rigger::eventstore::Event;
 
-/// Fold an event built from its raw on-log JSON bytes at `pos` - the SERIALIZED form a rebuild
-/// replays - deliberately bypassing the in-crate payload structs so a test pins the JSON contract,
-/// not the Rust type. `apply` returns `Err` on a deserialize failure, so a successful call is
-/// itself evidence the payload satisfied the fold's contract.
-fn apply_json(p: &Projector, pos: u64, type_: &str, json: serde_json::Value) {
-    let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
-    e.position = pos;
-    p.apply(&e).unwrap();
-}
+#[path = "common/graph_fold.rs"]
+mod graph_fold;
+use graph_fold::apply_json;
 
 #[test]
 fn a_code_event_missing_the_optional_lang_field_still_folds_backcompat() {
