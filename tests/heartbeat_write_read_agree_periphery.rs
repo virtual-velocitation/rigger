@@ -202,17 +202,51 @@ fn real_scratch_root(owning_root: &Path, configured: &str) -> String {
     }
 }
 
-/// Write a liveness marker at the path the REAL writer computes for `owning_root` with no
-/// configured `defaults.workdir` (the default-rung case) - the same `scratch_root` +
-/// `marker_path` composition `rigger step` stamps a wave item's `marker_path` with (the wire
-/// path the thin driver frames the worker's `touch` around).
-fn write_real_marker(owning_root: &Path) -> PathBuf {
-    let scratch_root = real_scratch_root(owning_root, "");
+/// Write a liveness marker at the path the REAL writer computes for `owning_root` with the
+/// configured `defaults.workdir` `workdir` (empty: the default rung) - the same `scratch_root` +
+/// `marker_path` composition `rigger step` stamps a wave item's `marker_path` with (the wire path
+/// the thin driver frames the worker's `touch` around).
+fn write_real_marker(owning_root: &Path, workdir: &str) -> PathBuf {
+    let scratch_root = real_scratch_root(owning_root, workdir);
     let marker = rigger::liveness::marker_path(&scratch_root, RUN_ID, SPAWN_ID)
         .expect("a spawn id must always resolve a marker path");
     std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
     std::fs::write(&marker, b"heartbeat").unwrap();
     marker
+}
+
+/// The round-2 seam's shared fixture: configure a relocated, non-default `defaults.workdir` in
+/// the owning `root`'s (never committed) `workflow.yml`, guard that `root` has no
+/// `.rigger/agents/` fleet (the validate-independent axis of the fix), write the heartbeat marker
+/// under the CONFIGURED workdir, and guard that the WRONG resolution - the default rung from
+/// `wrong_from`, which a `config_store::load(".")` regression would land on - is a different
+/// scratch root, so no test built on this can pass vacuously. Returns the relocated dir (kept
+/// alive by the caller) and the wrong scratch root.
+fn marker_under_a_configured_workdir(
+    root: &Path,
+    wrong_from: &Path,
+) -> (tempfile::TempDir, String) {
+    let relocated = tempfile::tempdir().expect("create relocated workdir");
+    let workdir = relocated.path().to_str().unwrap().to_string();
+    std::fs::write(
+        root.join(".rigger").join("workflow.yml"),
+        format!("defaults:\n  workdir: \"{workdir}\"\n"),
+    )
+    .expect("write the owning root's workflow.yml with a configured workdir");
+    assert!(
+        !root.join(".rigger").join("agents").exists(),
+        "fixture bug: this test requires an agents-less owning root to exercise the \
+         validate-independent axis of the fix"
+    );
+    write_real_marker(root, &workdir);
+    let wrong_scratch_root = real_scratch_root(wrong_from, "");
+    assert_ne!(
+        wrong_scratch_root,
+        real_scratch_root(root, &workdir),
+        "fixture bug: the default-rung resolution must differ from the owning-root-configured \
+         one, else this test cannot discriminate the fix"
+    );
+    (relocated, wrong_scratch_root)
 }
 
 /// The headline boundary proof: `rigger status --json`, invoked from INSIDE a nested unit
@@ -240,7 +274,7 @@ fn status_from_a_nested_worktree_reports_the_heartbeat_written_at_the_owning_roo
          cwd-based resolution from the owning-root one"
     );
 
-    write_real_marker(root);
+    write_real_marker(root, "");
 
     // The WRONG (cwd-based) scratch root a `git_repo()` regression would resolve from inside
     // the nested worktree - proven to differ from the real one, and to hold NO marker, so a
@@ -305,7 +339,7 @@ fn status_human_output_from_a_nested_worktree_never_prints_a_dash_heartbeat_for_
     let root = project.path();
     seed_in_flight_spawn(root);
     let nested = nested_worktree(root, "rigger-wt-seam-human");
-    write_real_marker(root);
+    write_real_marker(root, "");
 
     let out = run_rigger(&nested, &["status"]);
     assert!(
@@ -349,42 +383,7 @@ fn status_resolves_a_configured_workdir_from_the_owning_root_with_no_agents_flee
     seed_in_flight_spawn(root);
     let nested = nested_worktree(root, "rigger-wt-workdir-seam");
 
-    let relocated = tempfile::tempdir().expect("create relocated workdir");
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        format!(
-            "defaults:\n  workdir: \"{}\"\n",
-            relocated.path().to_string_lossy()
-        ),
-    )
-    .expect("write the owning root's workflow.yml with a configured workdir");
-    // Fixture guard: no `.rigger/agents/` dir exists at the owning root either - confirms
-    // this test genuinely exercises the validate-independent axis of the fix, not just the
-    // cwd-vs-owning-root one.
-    assert!(
-        !root.join(".rigger").join("agents").exists(),
-        "fixture bug: this test requires an agents-less owning root to exercise the \
-         validate-independent axis of the fix"
-    );
-
-    // The REAL writer's path composition, using the configured workdir directly (mirrors
-    // `write_real_marker`, generalized to a non-default workdir).
-    let scratch_root = real_scratch_root(root, relocated.path().to_str().unwrap());
-    let marker = rigger::liveness::marker_path(&scratch_root, RUN_ID, SPAWN_ID)
-        .expect("a spawn id must always resolve a marker path");
-    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    std::fs::write(&marker, b"heartbeat").unwrap();
-
-    // The WRONG path a `config_store::load(".")`-from-nested-cwd regression would resolve: the
-    // nested worktree's own cwd has no workflow.yml at all (never committed), so it falls
-    // through to the empty-workdir default rung - a DIFFERENT scratch root than the
-    // configured one above, so this test cannot pass vacuously.
-    let wrong_scratch_root = real_scratch_root(&nested, "");
-    assert_ne!(
-        wrong_scratch_root, scratch_root,
-        "fixture bug: the cwd-based (nested, default-workdir) resolution must differ from \
-         the owning-root-configured one, else this test cannot discriminate the fix"
-    );
+    let (_relocated, _) = marker_under_a_configured_workdir(root, &nested);
 
     let out = run_rigger(&nested, &["status", "--json"]);
     assert!(
@@ -445,41 +444,7 @@ fn watch_once_suppresses_a_false_dead_driver_when_the_configured_workdir_resolve
 
     let nested = nested_worktree(root, "rigger-wt-watch-workdir-seam");
 
-    let relocated = tempfile::tempdir().expect("create relocated workdir");
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        format!(
-            "defaults:\n  workdir: \"{}\"\n",
-            relocated.path().to_string_lossy()
-        ),
-    )
-    .expect("write the owning root's workflow.yml with a configured workdir");
-    // Fixture guard: no `.rigger/agents/` dir exists at the owning root either - confirms this
-    // test genuinely exercises the validate-independent axis of the fix, not just the
-    // cwd-vs-owning-root one.
-    assert!(
-        !root.join(".rigger").join("agents").exists(),
-        "fixture bug: this test requires an agents-less owning root to exercise the \
-         validate-independent axis of the fix"
-    );
-
-    // The REAL writer's path composition, using the configured workdir directly.
-    let scratch_root = real_scratch_root(root, relocated.path().to_str().unwrap());
-    let marker = rigger::liveness::marker_path(&scratch_root, RUN_ID, SPAWN_ID)
-        .expect("a spawn id must always resolve a marker path");
-    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    std::fs::write(&marker, b"heartbeat").unwrap();
-
-    // The WRONG path a `config_store::load(".")`-from-nested-cwd regression would resolve: the
-    // nested worktree's own cwd has no workflow.yml at all (never committed), so it falls
-    // through to the empty-workdir default rung - a DIFFERENT scratch root than the configured
-    // one above, and one with NO marker, so this test cannot pass vacuously.
-    let wrong_scratch_root = real_scratch_root(&nested, "");
-    assert_ne!(
-        wrong_scratch_root, scratch_root,
-        "fixture bug: the cwd-based (nested, default-workdir) resolution must differ from the \
-         owning-root-configured one, else this test cannot discriminate the fix"
-    );
+    let (_relocated, wrong_scratch_root) = marker_under_a_configured_workdir(root, &nested);
     let wrong_marker = rigger::liveness::marker_path(&wrong_scratch_root, RUN_ID, SPAWN_ID)
         .expect("marker path must resolve");
     assert!(
@@ -528,39 +493,7 @@ fn dash_export_resolves_a_configured_workdir_from_the_owning_root_with_no_agents
     let root = project.path();
     seed_in_flight_spawn(root);
 
-    let relocated = tempfile::tempdir().expect("create relocated workdir");
-    std::fs::write(
-        root.join(".rigger").join("workflow.yml"),
-        format!(
-            "defaults:\n  workdir: \"{}\"\n",
-            relocated.path().to_string_lossy()
-        ),
-    )
-    .expect("write the owning root's workflow.yml with a configured workdir");
-    // Fixture guard: no `.rigger/agents/` dir exists at the owning root either - confirms this
-    // test genuinely exercises the validate-independent axis of the fix.
-    assert!(
-        !root.join(".rigger").join("agents").exists(),
-        "fixture bug: this test requires an agents-less owning root to exercise the \
-         validate-independent axis of the fix"
-    );
-
-    // The REAL writer's path composition, using the configured workdir directly.
-    let scratch_root = real_scratch_root(root, relocated.path().to_str().unwrap());
-    let marker = rigger::liveness::marker_path(&scratch_root, RUN_ID, SPAWN_ID)
-        .expect("a spawn id must always resolve a marker path");
-    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
-    std::fs::write(&marker, b"heartbeat").unwrap();
-
-    // The WRONG path a `config_store::load(".")` regression resolves whenever `Config::validate`
-    // fails (here: the missing agents fleet) - the empty-workdir default rung, a DIFFERENT
-    // scratch root than the configured one above, so this test cannot pass vacuously.
-    let wrong_scratch_root = real_scratch_root(root, "");
-    assert_ne!(
-        wrong_scratch_root, scratch_root,
-        "fixture bug: the default-rung resolution must differ from the owning-root-configured \
-         one, else this test cannot discriminate the fix"
-    );
+    let (_relocated, _) = marker_under_a_configured_workdir(root, root);
 
     let export_path = root.join("dash-snapshot.html");
     let out = run_rigger(root, &["dash", "--export", export_path.to_str().unwrap()]);

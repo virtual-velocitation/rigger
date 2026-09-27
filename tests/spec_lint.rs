@@ -18,6 +18,7 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::temp_project;
+use common::repo::repo_text;
 use std::path::Path;
 
 /// The line of `err` containing `needle`, or a panic naming what was searched for - so a
@@ -1482,10 +1483,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
 /// `adv-u66c3-r5-reject-selfclean-live-violation`).
 #[test]
 fn spec_lint_self_clean_on_spec_66_itself() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("specs")
-        .join("66-ship-the-planning-discipline.md");
-    let text = std::fs::read_to_string(&path).expect("read specs/66 itself");
+    let text = repo_text("specs/66-ship-the-planning-discipline.md");
     let advisories = rigger::spec::spec_lint_advisories(&text);
     assert!(
         advisories.is_empty(),

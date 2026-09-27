@@ -1426,7 +1426,7 @@ pub struct NeighborhoodNode {
     /// The SHARED-MEMBERSHIP marker (spec 54 c3): true when this node realizes MORE THAN ONE derived
     /// concept, so a [`Lens::Concepts`] drill flags it. `false` (and omitted from the JSON) for a
     /// single-concept or membership-less node and for every non-concepts view.
-    #[serde(skip_serializing_if = "crate::contextgraph::is_false", default)]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub shared: bool,
 }
 
@@ -1443,7 +1443,7 @@ pub struct NeighborhoodEdge {
     /// points at a node whose layer is NOT deeper than its source - a recursion / mutual call the
     /// walk marked rather than followed a second time. Always `false` for a neighborhood / drill
     /// edge (and omitted from the JSON), so those views are byte-identical.
-    #[serde(skip_serializing_if = "crate::contextgraph::is_false", default)]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub back: bool,
 }
 

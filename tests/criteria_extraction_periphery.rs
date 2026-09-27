@@ -27,6 +27,8 @@
 //! regression snapshot, which this unit's `checkbox_opening_lines` split was designed to
 //! leave untouched).
 
+mod common;
+use common::repo::repo_text;
 use std::path::Path;
 
 /// The exact real-world input that exposed this bug: specs/62's own criterion 1, a
@@ -38,9 +40,7 @@ use std::path::Path;
 /// passing its text straight through, no synthetic reshaping.
 #[test]
 fn extract_criteria_recovers_the_real_spec_62_owns_sentence_that_this_bug_used_to_truncate() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("specs/62-dash-marker-lifecycle.md");
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = repo_text("specs/62-dash-marker-lifecycle.md");
 
     let criteria = rigger::spec::extract_criteria(&text);
     assert!(

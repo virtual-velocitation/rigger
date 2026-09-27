@@ -1452,6 +1452,30 @@ pub fn branch_tip(repo: &str, branch: &str) -> Result<String, Error> {
         .map_err(Error)
 }
 
+/// The tip of local branch `branch` when its work is LANDED on `run_branch`: the tip is an
+/// ancestor of `run_branch` AND differs from the commit the branch was created at (the oldest
+/// entry of its reflog), so a branch that never moved - trivially an ancestor of the branch it
+/// was cut from - never reads as landed. `None` whenever either fact cannot be established (no
+/// such branch, no reflog), failing closed: `rigger reset --runs` records a unit's terminal
+/// event on this answer, and an unprovable landing must leave the unit open.
+pub fn landed_branch_tip(repo: &str, branch: &str, run_branch: &str) -> Option<String> {
+    let tip = branch_tip(repo, branch).ok()?;
+    let reflog = run_git(
+        repo,
+        &[
+            "reflog",
+            "show",
+            "--format=%H",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .ok()?;
+    let created = reflog.lines().map(str::trim).rfind(|l| !l.is_empty())?;
+    let landed =
+        created != tip && run_git(repo, &["merge-base", "--is-ancestor", &tip, run_branch]).is_ok();
+    landed.then_some(tip)
+}
+
 /// Whether `r` resolves to a commit in `repo` (a branch, tag, remote-tracking ref,
 /// or sha). Used by [`Worktree::ensure_run_branch`] to distinguish a base ref it can
 /// anchor the run branch to from a not-yet-present default (e.g. `origin/main` on a
@@ -2617,9 +2641,9 @@ mod tests {
     use super::*;
     use crate::liveness::marker_filename;
     use crate::test_support::assert_concurrent_creates_succeed;
+    use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::run_log;
-    use std::process::Command;
 
     /// Test-only recomposition of [`Worktree::merge_into_worktree`] + [`Worktree::land`] into
     /// the single combined call this file's OWN pre-round-4 tests were written against (spec
@@ -5604,52 +5628,22 @@ mod tests {
         Worktree::create(&repo_path, &done_dir, "rigger/u/sweepreap", "").unwrap();
         let done_path = std::path::Path::new(&done_dir).to_path_buf();
 
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("trap '' TERM; while :; do sleep 1; done")
-            .current_dir(&done_path)
-            .spawn()
-            .expect("spawn a SIGTERM-ignoring fixture process");
-        assert!(
-            (0..200).any(|_| {
-                if crate::reap::processes_rooted_under(&done_path)
-                    .iter()
-                    .any(|(pid, _)| *pid == child.id())
-                {
-                    return true;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(25));
-                false
-            }),
-            "precondition: the fixture process is rooted in the terminal worktree"
-        );
-
-        let removed = sweep_terminal(
-            &repo_path,
-            &root,
-            "rigger-run",
-            &std::collections::HashSet::new(),
-            &std::collections::HashSet::new(),
-            &[],
-        )
-        .unwrap();
-        assert_eq!(removed, 1, "the terminal worktree is swept");
-
-        let died = (0..200).any(|_| {
-            if matches!(child.try_wait(), Ok(Some(_))) {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            false
-        });
-        if !died {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        assert!(
-            died,
-            "sweep_terminal must reap a process rooted inside a terminal worktree (SIGTERM then \
-             SIGKILL) before removing its dir"
+        assert_teardown_reaps_what_is_rooted_inside(
+            &done_path,
+            None,
+            || {
+                let removed = sweep_terminal(
+                    &repo_path,
+                    &root,
+                    "rigger-run",
+                    &std::collections::HashSet::new(),
+                    &std::collections::HashSet::new(),
+                    &[],
+                )
+                .unwrap();
+                assert_eq!(removed, 1, "the terminal worktree is swept");
+            },
+            "sweep_terminal",
         );
         assert!(
             !done_path.exists(),
@@ -5933,43 +5927,11 @@ mod tests {
         wt.commit("rigger: prior window work").unwrap();
         let wt_path = std::path::Path::new(&wt_dir).to_path_buf();
 
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("trap '' TERM; while :; do sleep 1; done")
-            .current_dir(&wt_path)
-            .spawn()
-            .expect("spawn a SIGTERM-ignoring fixture process");
-        assert!(
-            (0..200).any(|_| {
-                if crate::reap::processes_rooted_under(&wt_path)
-                    .iter()
-                    .any(|(pid, _)| *pid == child.id())
-                {
-                    return true;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(25));
-                false
-            }),
-            "precondition: the fixture process is rooted in the lingering worktree"
-        );
-
-        reclaim_worktree_on_branch(&repo_path, branch, &parent_str).unwrap();
-
-        let died = (0..200).any(|_| {
-            if matches!(child.try_wait(), Ok(Some(_))) {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            false
-        });
-        if !died {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        assert!(
-            died,
-            "reclaim_worktree_on_branch (via clear_worktree_dir) must reap a process rooted in \
-             the lingering worktree (SIGTERM then SIGKILL) before removing its dir"
+        assert_teardown_reaps_what_is_rooted_inside(
+            &wt_path,
+            None,
+            || reclaim_worktree_on_branch(&repo_path, branch, &parent_str).unwrap(),
+            "reclaim_worktree_on_branch",
         );
         assert!(
             !wt_path.exists(),
@@ -6663,64 +6625,11 @@ mod tests {
         )
         .unwrap();
 
-        // Inside: a process rooted in the worktree that ignores SIGTERM, so only the SIGKILL
-        // escalation reaps it. Outside: a plain sleeper rooted at the repo root.
-        let mut inside = Command::new("sh")
-            .arg("-c")
-            .arg("trap '' TERM; while :; do sleep 1; done")
-            .current_dir(&wt_dir)
-            .spawn()
-            .expect("spawn inside child");
-        let mut outside = Command::new("sleep")
-            .arg("300")
-            .current_dir(repo.path())
-            .spawn()
-            .expect("spawn outside child");
-
-        // Wait until the inside child is actually rooted in the worktree before tearing down.
-        let detected = (0..200).any(|_| {
-            if crate::reap::processes_rooted_under(&wt_dir)
-                .iter()
-                .any(|(pid, _)| *pid == inside.id())
-            {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            false
-        });
-        assert!(
-            detected,
-            "precondition: the inside child is rooted in the worktree"
-        );
-
-        wt.remove().unwrap();
-
-        // The inside child is no longer alive (reaped before the dir was removed).
-        let inside_died = (0..200).any(|_| {
-            if matches!(inside.try_wait(), Ok(Some(_))) {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            false
-        });
-        // The outside child is still alive - the safety boundary held.
-        let outside_alive = matches!(outside.try_wait(), Ok(None));
-
-        // Clean up the fixtures before asserting so a failure never leaks processes.
-        let _ = outside.kill();
-        let _ = outside.wait();
-        if !inside_died {
-            let _ = inside.kill();
-            let _ = inside.wait();
-        }
-
-        assert!(
-            inside_died,
-            "a process rooted inside the worktree must be reaped by remove() (SIGTERM then SIGKILL)"
-        );
-        assert!(
-            outside_alive,
-            "a process rooted at the repo root (OUTSIDE the worktree) must survive - the safety boundary"
+        assert_teardown_reaps_what_is_rooted_inside(
+            &wt_dir,
+            Some(repo.path()),
+            || wt.remove().unwrap(),
+            "Worktree::remove",
         );
         assert!(
             !wt_dir.exists(),

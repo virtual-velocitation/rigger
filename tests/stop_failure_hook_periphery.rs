@@ -137,9 +137,7 @@ fn hook_stop_failure_a_second_call_for_the_same_spawn_overwrites_which_class_rea
 
 #[test]
 fn hook_stop_failure_rejects_an_unrecognized_class() {
-    let project = courier_project();
-    let out = run_rigger(
-        project.path(),
+    hook_refuses_naming(
         &[
             "hook",
             "stop-failure",
@@ -148,17 +146,8 @@ fn hook_stop_failure_rejects_an_unrecognized_class() {
             "--class",
             "not_a_real_category",
         ],
+        "unrecognized",
     );
-    assert!(
-        !out.status.success(),
-        "an unrecognized class must be refused"
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("unrecognized"),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(recorded_stop_failures(project.path()).is_empty());
 }
 
 #[test]
@@ -188,7 +177,8 @@ fn hook_stop_failure_requires_spawn_and_class() {
 // (`main.rs`'s own `mod tests`, which only asserts `"hook"` is a REGISTERED name, never that
 // dispatching into it with a bad or missing sub-argument behaves correctly).
 
-/// `rigger hook` with `args` over a courier project must be refused, its stderr naming `named`.
+/// `rigger hook` with `args` over a courier project must be refused, its stderr naming `named`,
+/// and record nothing.
 fn hook_refuses_naming(args: &[&str], named: &str) {
     let project = courier_project();
     let out = run_rigger(project.path(), args);
@@ -201,6 +191,10 @@ fn hook_refuses_naming(args: &[&str], named: &str) {
         String::from_utf8_lossy(&out.stderr).contains(named),
         "stderr must name {named:?}: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        recorded_stop_failures(project.path()).is_empty(),
+        "a refused hook records nothing"
     );
 }
 

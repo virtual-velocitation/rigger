@@ -88,6 +88,8 @@ use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
+use common::fixtures::{meta_replay_key, plant_free_pages, pragma_i64};
+use common::repo::repo_text;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::Projection;
 use rigger::eventstore::namespace::Namespaced;
@@ -137,14 +139,6 @@ fn rows_in(rows: &[Row], prefix: &str) -> Vec<Row> {
         .filter(|r| r.1.starts_with(prefix))
         .cloned()
         .collect()
-}
-
-/// The replay key a row carries, if any, read out of its metadata exactly as the store reads it.
-fn replay_key(row: &Row) -> Option<String> {
-    let meta: serde_json::Value = serde_json::from_str(&row.5).ok()?;
-    meta.get(rigger::ingest::META_REPLAY_KEY)?
-        .as_str()
-        .map(str::to_string)
 }
 
 /// The SAME two replay keys are recorded in EVERY seeded namespace below. A prune that partitioned
@@ -279,7 +273,7 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
     for key in [KEY_DEF, KEY_REF] {
         let kept: Vec<Row> = rows_in(&after, &target_prefix)
             .into_iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .collect();
         assert_eq!(
             kept.len(),
@@ -288,7 +282,7 @@ fn the_prune_reaches_only_the_namespace_it_was_handed_and_matches_that_prefix_li
         );
         let latest = rows_in(&before, &target_prefix)
             .into_iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .map(|r| r.0)
             .max()
             .expect("the seed recorded this key in the target namespace");
@@ -925,7 +919,7 @@ fn a_migrated_project_log_is_still_seen_and_compacted_at_its_new_namespace() {
     for key in [KEY_DEF, KEY_REF] {
         let kept: Vec<Row> = rows_in(&after, &minted_ns)
             .into_iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .collect();
         assert_eq!(
             kept.len(),
@@ -934,7 +928,7 @@ fn a_migrated_project_log_is_still_seen_and_compacted_at_its_new_namespace() {
         );
         let latest = moved
             .iter()
-            .filter(|r| replay_key(r).as_deref() == Some(key))
+            .filter(|r| meta_replay_key(&r.5).as_deref() == Some(key))
             .map(|r| r.0)
             .max()
             .expect("the moved namespace holds this key");
@@ -1114,17 +1108,10 @@ const SHIPPED_DOCS: [&str; 2] = [
 /// the real one, so a paragraph that varied with the context could not match.
 #[test]
 fn the_committed_operator_documents_ship_the_derived_prunes_guidance() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paragraphs: Vec<(String, String)> = Vec::new();
 
     for rel in SHIPPED_DOCS {
-        let path = manifest.join(rel);
-        let shipped = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-            panic!(
-                "the operator document {rel} must ship from {}: {e}",
-                path.display()
-            )
-        });
+        let shipped = repo_text(rel);
 
         for (fact, needle) in [
             ("name the prune", "rigger reset --derived"),
@@ -1711,7 +1698,7 @@ fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_
 /// Every recording of `key` the log holds in `stream`, in position order.
 fn rows_of_key(rows: &[Row], stream: &str, key: &str) -> Vec<Row> {
     rows.iter()
-        .filter(|r| r.1 == stream && replay_key(r).as_deref() == Some(key))
+        .filter(|r| r.1 == stream && meta_replay_key(&r.5).as_deref() == Some(key))
         .cloned()
         .collect()
 }
@@ -2775,7 +2762,7 @@ fn dates_by_key(db: &Path) -> DatesByKey {
     let dates = valid_from_by_position(db);
     let mut out: DatesByKey = BTreeMap::new();
     for row in raw_rows(db) {
-        let key = replay_key(&row).unwrap_or_default();
+        let key = meta_replay_key(&row.5).unwrap_or_default();
         out.entry((row.2.clone(), key))
             .or_default()
             .push(dates[&row.0]);
@@ -3466,10 +3453,8 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
     // THE SHIPPED DOCUMENT PROMISED EXACTLY THIS, and the promise is only worth what the binary
     // does. Read from the committed bytes an operator opens, so the two cannot drift apart with
     // the renderer green.
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in SHIPPED_DOCS {
-        let shipped = std::fs::read_to_string(manifest.join(rel))
-            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        let shipped = repo_text(rel);
         assert!(
             shipped.contains("deletes ZERO rows from it and reports so"),
             "the committed {rel} must tell an operator what a clean log reports, or the run above \
@@ -3628,29 +3613,6 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
 // with it.
 // ---------------------------------------------------------------------------------------
 
-/// A whole-number `PRAGMA` read through a connection of its own, so the measurement never depends
-/// on the state of the connection the store is using.
-fn pragma_i64(db: &Path, pragma: &str) -> i64 {
-    rusqlite::Connection::open(db)
-        .expect("open the event log")
-        .query_row(&format!("PRAGMA {pragma}"), [], |r| r.get(0))
-        .unwrap_or_else(|e| panic!("read PRAGMA {pragma}: {e}"))
-}
-
-/// Leave roughly `pages` worth of reclaimable free pages in `db`: a table filled and dropped
-/// releases its pages to the freelist, where they stay until something vacuums the file.
-fn plant_free_pages(db: &Path, rows: u64) {
-    let conn = rusqlite::Connection::open(db).expect("open the event log");
-    conn.execute_batch(&format!(
-        "CREATE TABLE junk(x BLOB);
-         INSERT INTO junk(x)
-           WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < {rows})
-           SELECT randomblob(600) FROM c;
-         DROP TABLE junk;"
-    ))
-    .expect("plant reclaimable free pages");
-}
-
 /// Every byte of `db` as it stands on disk. A VACUUM rewrites the whole file - at the very least
 /// the header's change counter moves - so an unchanged byte string is the assertion that no
 /// rewrite ran, which neither `page_count` nor `freelist_count` can make about a file that had
@@ -3659,56 +3621,70 @@ fn file_bytes(db: &Path) -> Vec<u8> {
     std::fs::read(db).unwrap_or_else(|e| panic!("read {}: {e}", db.display()))
 }
 
-#[test]
-fn a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("clean.db");
+/// A store at `<dir>/<name>.db` holding ONE recording per replay key - the clean log the shipped
+/// guidance describes, so a prune sheds nothing - AND settled into a file with nothing in it to
+/// reclaim. The seeding itself leaves pages on the freelist, so that state is established here
+/// rather than assumed: a rewrite skipped over this file is skipped because of the file, never
+/// because of the zero deletes.
+fn settled_clean_store(dir: &Path, name: &str) -> (std::path::PathBuf, Store) {
+    let db = dir.join(format!("{name}.db"));
     let backend = Store::open(db.to_str().unwrap()).unwrap();
-    // ONE recording per replay key: the clean log the shipped guidance describes, differing from
-    // every duplicated fixture in this file by exactly the round count.
-    seed_namespace(&backend, "clean", 1);
-    // AND A FILE WITH NOTHING IN IT TO RECLAIM. The vacuum below is skipped because of THIS, not
-    // because of the zero deletes, so the fixture has to establish it rather than assume it.
-    backend
-        .prune_derived_index(
-            &Namespaced::prefix_for("clean"),
-            &rigger::ingest::derived_index_identity(),
-        )
-        .expect("settle the fixture into a compact file");
-    let free_before = pragma_i64(&db, "freelist_count");
+    seed_namespace(&backend, name, 1);
+    prune_all_types(&backend, &Namespaced::prefix_for(name));
     assert_eq!(
-        free_before, 0,
-        "the fixture must hold no reclaimable free page, or this pins the wrong reason for the \
-         rewrite being skipped"
+        pragma_i64(&db, "freelist_count"),
+        0,
+        "the fixture must start from a file holding no reclaimable page, or this pins the wrong \
+         reason for the rewrite being skipped"
     );
-    let bytes_before = file_bytes(&db);
+    (db, backend)
+}
 
-    let pruned = prune_all_types(&backend, &Namespaced::prefix_for("clean"));
+/// Prune the settled `db` behind `backend` under `prefix` and assert the pass shed nothing,
+/// reported NO rewrite beside a MEASURED zero and no error, and left every byte of the file as it
+/// was - the returned report is that skipped pass.
+fn assert_prune_skips_the_rewrite(backend: &Store, db: &Path, prefix: &str) -> PrunedDerived {
+    let bytes_before = file_bytes(db);
+    let skipped = prune_all_types(backend, prefix);
     assert_eq!(
-        pruned.total_removed(),
+        skipped.total_removed(),
         0,
         "the fixture holds no key twice, so nothing may be shed; got {:?}",
-        pruned.removed
+        skipped.removed
+    );
+    assert!(
+        !skipped.compaction_ran,
+        "a file holding no reclaimable page must be reported as NOT rewritten: the rewrite is the \
+         most expensive thing this command does, and declining it is a fact the operator is owed \
+         rather than one they infer from a zero. Got {skipped:?}"
     );
     assert_eq!(
-        pruned.reclaimed_bytes,
+        skipped.reclaimed_bytes,
         Some(0),
         "a prune over a file with no free space reclaimed nothing, and that is a MEASUREMENT \
          rather than a measurement it could not take: `None` means `unmeasured` and would send an \
-         operator looking for pages that land at some later checkpoint. Got {:?}",
-        pruned.reclaimed_bytes
+         operator looking for pages that land at some later checkpoint. Got {skipped:?}"
     );
     assert_eq!(
-        pruned.compaction_error, None,
-        "a compaction that never ran cannot have failed"
+        skipped.compaction_error, None,
+        "a rewrite that never ran cannot have failed; got {skipped:?}"
     );
     assert_eq!(
-        file_bytes(&db),
+        file_bytes(db),
         bytes_before,
-        "a prune with nothing to reclaim must not rewrite the file: a VACUUM here would hold the \
-         write lock for a full scan and stage a second copy of the log in the temporary directory \
-         to reclaim not one page"
+        "a prune with nothing to reclaim must not rewrite the file: a VACUUM rewrites every byte, \
+         so an unchanged byte string is what says the report of a skipped rewrite describes a \
+         skipped rewrite - and a VACUUM here would hold the write lock for a full scan and stage a \
+         second copy of the log to reclaim not one page"
     );
+    skipped
+}
+
+#[test]
+fn a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, backend) = settled_clean_store(dir.path(), "clean");
+    assert_prune_skips_the_rewrite(&backend, &db, &Namespaced::prefix_for("clean"));
 }
 
 #[test]
@@ -3840,10 +3816,8 @@ fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
 
     // THE COMMITTED DOCUMENTS PROMISE EXACTLY THIS COST, read from the bytes an operator opens so
     // the promise and the binary cannot drift apart with the renderer green.
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in SHIPPED_DOCS {
-        let shipped = std::fs::read_to_string(manifest.join(rel))
-            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        let shipped = repo_text(rel);
         assert!(
             shipped.contains("leaves the file exactly as it found it"),
             "the committed {rel} must promise that a prune with nothing to shed does not rewrite \
@@ -3975,10 +3949,8 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
     // command explains the prune in front of the operator; the document explains it before they
     // run anything - and if only one of the two carries the rule, the other teaches the misread
     // this clause exists to prevent.
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     for rel in SHIPPED_DOCS {
-        let shipped = std::fs::read_to_string(manifest.join(rel))
-            .unwrap_or_else(|e| panic!("the operator document {rel} must ship: {e}"));
+        let shipped = repo_text(rel);
         for needle in [
             "WHEN A DEDUPLICATED LOG STILL HAS SOMETHING TO SHED",
             "RETURNED to a generation the log had already recorded",
@@ -4114,53 +4086,13 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
 #[test]
 fn the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count() {
     let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("flag.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    // ONE recording per replay key over a settled file: every pass below sheds nothing, which is
+    // what makes the two reports comparable at all.
+    let (db, backend) = settled_clean_store(dir.path(), "flag");
     let prefix = Namespaced::prefix_for("flag");
-    // ONE recording per replay key: every pass below sheds nothing, which is what makes the two
-    // reports comparable at all.
-    seed_namespace(&backend, "flag", 1);
-    // AND A SETTLED FILE. The seeding itself leaves pages on the freelist, so the state this test
-    // is about - a file with nothing to reclaim - has to be established rather than assumed.
-    prune_all_types(&backend, &prefix);
-    assert_eq!(
-        pragma_i64(&db, "freelist_count"),
-        0,
-        "the fixture must start from a file holding no reclaimable page, or the two passes below \
-         differ by something other than the free space in the file"
-    );
 
     // PASS ONE: nothing deleted, and nothing in the file to reclaim.
-    let bytes_before = file_bytes(&db);
-    let skipped = prune_all_types(&backend, &prefix);
-    assert_eq!(
-        skipped.total_removed(),
-        0,
-        "the fixture holds no key twice, so nothing may be shed; got {:?}",
-        skipped.removed
-    );
-    assert!(
-        !skipped.compaction_ran,
-        "a file holding no reclaimable page must be reported as NOT rewritten: the rewrite is the \
-         most expensive thing this command does, and declining it is a fact the operator is owed \
-         rather than one they infer from a zero. Got {skipped:?}"
-    );
-    assert_eq!(
-        skipped.reclaimed_bytes,
-        Some(0),
-        "and the zero beside it is a MEASUREMENT - there was nothing to reclaim - never an \
-         unmeasured reclamation; got {skipped:?}"
-    );
-    assert_eq!(
-        skipped.compaction_error, None,
-        "a rewrite that never ran cannot have failed; got {skipped:?}"
-    );
-    assert_eq!(
-        file_bytes(&db),
-        bytes_before,
-        "and the flag must be TRUE OF THE FILE: a VACUUM rewrites every byte, so an unchanged \
-         byte string is what says the report of a skipped rewrite describes a skipped rewrite"
-    );
+    let skipped = assert_prune_skips_the_rewrite(&backend, &db, &prefix);
 
     // PASS TWO: the same log and the same zero deletes, over a file that is now holding free
     // space. This is the shape a reclamation that failed after its deletes committed leaves

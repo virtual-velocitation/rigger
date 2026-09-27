@@ -19,7 +19,8 @@
 //! so it can observe its own environment directly, the same way `src/worktree.rs`'s and
 //! `src/conductor.rs`'s ~43 `git commit` sites (which set no identity of their own) actually do.
 
-use std::path::PathBuf;
+mod common;
+use common::repo::repo_text;
 
 /// The identity + no-prompt keys criterion 1 completes (spec 90's own Design text: "this spec
 /// completes the block"), scoped deliberately to exclude the pre-landed environment-config
@@ -81,11 +82,7 @@ fn this_test_binary_actually_inherits_the_runners_fixed_git_identity_from_its_ow
 /// builds and tests on.
 #[test]
 fn cargo_config_actually_wires_the_hermetic_runner_for_the_test_target() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(".cargo")
-        .join("config.toml");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    let text = repo_text(".cargo/config.toml");
 
     let mut in_target_section = false;
     let mut runner_line = None;
@@ -102,11 +99,10 @@ fn cargo_config_actually_wires_the_hermetic_runner_for_the_test_target() {
     }
     let runner_line = runner_line.unwrap_or_else(|| {
         panic!(
-            "{} has no `runner = ...` entry under [target.x86_64-unknown-linux-gnu] - every \
-             test binary on this target would run WITHOUT the hermetic-git block (and without \
-             the pid-namespace containment spec 78 requires) instead of through the vetted \
-             script",
-            path.display()
+            ".cargo/config.toml has no `runner = ...` entry under \
+             [target.x86_64-unknown-linux-gnu] - every test binary on this target would run \
+             WITHOUT the hermetic-git block (and without the pid-namespace containment spec 78 \
+             requires) instead of through the vetted script"
         )
     });
     assert!(

@@ -44,6 +44,7 @@ mod common;
 mod console_wasm;
 
 use common::env_test_lock;
+use common::repo::repo_text;
 use std::path::PathBuf;
 
 const CARGO_MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
@@ -129,9 +130,7 @@ fn core_module_paths_reads_the_real_committed_audit_record() {
     // The genuine source of truth this seam depends on: prove the parser actually agrees
     // with `tests/core_lane_purity_audit.rs`'s own reading of the SAME file, not a
     // reimplementation drifting from it.
-    let path = PathBuf::from(CARGO_MANIFEST_DIR).join("docs/audit/core-lane-purity.json");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+    let text = repo_text("docs/audit/core-lane-purity.json");
     let paths = console_wasm::core_module_paths(&text);
     assert!(
         !paths.is_empty(),

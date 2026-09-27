@@ -31,19 +31,15 @@
 //! turbovec/grep symbols, so it runs identically in both lanes and is a real member
 //! of each lane's `cargo test` battery.
 
-use std::path::PathBuf;
+mod common;
+use common::repo::repo_text;
 
 /// The committed CI workflow, resolved from the crate manifest dir so the test is
 /// CWD-independent (integration tests may run from anywhere).
 fn workflow_yaml() -> serde_yaml::Value {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(".github")
-        .join("workflows")
-        .join("rust.yml");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("cannot read CI workflow at {}: {e}", path.display()));
+    let text = repo_text(".github/workflows/rust.yml");
     serde_yaml::from_str(&text)
-        .unwrap_or_else(|e| panic!("CI workflow at {} is not valid YAML: {e}", path.display()))
+        .unwrap_or_else(|e| panic!("CI workflow .github/workflows/rust.yml is not valid YAML: {e}"))
 }
 
 /// Every `run:` script across the steps of the named job, concatenated. A step's

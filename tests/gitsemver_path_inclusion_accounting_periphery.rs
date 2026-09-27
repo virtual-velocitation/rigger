@@ -41,8 +41,11 @@
 //! attribute as a worked example of an upward-escaping `#[path]` value; a naive substring
 //! scan would misidentify that comment as a fifth inclusion site).
 
+#[path = "common/audit_record.rs"]
+mod audit_record;
 mod common;
 
+use audit_record::read_audit_record;
 use common::repo::collect_rs_files;
 use common::repo::repo_root;
 use std::fs;
@@ -100,10 +103,7 @@ fn real_gitsemver_path_inclusion_sites(root: &Path) -> Vec<String> {
 /// record's full shape (`tests/compiler_pass_stage1_audit.rs` already owns that), only in
 /// this one field's content.
 fn stage1_visibility_reason_text(root: &Path) -> String {
-    let raw = fs::read_to_string(root.join(RECORD_PATH))
-        .unwrap_or_else(|e| panic!("{RECORD_PATH} must exist and be readable: {e}"));
-    let record: serde_json::Value = serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("{RECORD_PATH} must be valid JSON: {e}"));
+    let record = read_audit_record(root.join(RECORD_PATH));
     let fixes = record["strict_build"]["visibility_fixes_applied"]
         .as_array()
         .unwrap_or_else(|| {

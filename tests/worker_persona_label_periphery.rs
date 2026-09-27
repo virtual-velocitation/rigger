@@ -227,11 +227,11 @@ fn the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation() {
                  render distinct persona tokens AND distinct action phrases, an unmapped \
                  custom lens keeps its persona token with the generic \"review:\" verb, and an \
                  untitled item falls back to the spawn id. This criterion OWNS the label.";
-    let Some(label) = run_worker_label("u5/implementer#0", title) else {
-        return;
-    };
-    assert_eq!(
-        label,
+    // Exact equality also proves the second sentence never leaks into the subject.
+    assert_worker_label(
+        "u5/implementer#0",
+        title,
+        None,
         "Implementer - implement #0: a test proves ROWS LEAD WITH THE PERSONA: a titled wave \
          item's label renders the documented shape (persona title-cased from the role half; \
          subject is the title's first sentence, whitespace-normalized, passed whole with no \
@@ -239,11 +239,6 @@ fn the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation() {
          distinct persona tokens AND distinct action phrases, an unmapped custom lens keeps \
          its persona token with the generic \"review:\" verb, and an untitled item falls back \
          to the spawn id.",
-        "the subject must be the FULL first sentence, whitespace-normalized, never truncated"
-    );
-    assert!(
-        !label.contains("This criterion OWNS"),
-        "a second sentence must never leak into the rendered subject; got {label:?}"
     );
 }
 

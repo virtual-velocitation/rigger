@@ -517,7 +517,7 @@ pub(crate) struct CodeEntityExtracted {
     /// previous pass. Rides the existing event - the batch boundary is a property of the extraction
     /// pass, not a fact meriting its own event type - and defaults `false`, so a historical event
     /// recorded before the field existed folds as a non-boundary event.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
     /// Spec 92 criterion 2 round 4 (review REJECT `adj-u2c2-r3-verdict-reject`, finding
     /// `adv-u2c2-partial-marker-unimplemented`): mirrors
@@ -529,7 +529,7 @@ pub(crate) struct CodeEntityExtracted {
     /// visible on the node rather than silently presented as complete. Serde-defaulted and omitted
     /// when `false`, so the overwhelmingly common well-formed file's wire form is byte-identical to
     /// before this field existed.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
 }
 /// The `EdgeInferred` payload (spec 29a): one reference the extraction pass emits. Shares the
@@ -555,7 +555,7 @@ pub(crate) struct EdgeInferred {
     /// reads it as `supersede_file_proof`'s trigger rather than `supersede_file_edges`'s - the two
     /// concerns share the field because they share the same "first event of this file's re-emitted
     /// batch" shape, never because one is defined in terms of the other.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
     /// The enclosing definition this reference was attributed to during extraction (spec 37): the
     /// caller's name, same-file. `None` for a top-level reference outside every definition (an
@@ -582,12 +582,12 @@ pub(crate) struct EdgeInferred {
     /// node and never an edge on the canvas" promise extends to evidence too) - it instead folds the
     /// reference onto the referenced entity's `proven_by` count / evidence list. Serde-defaulted and
     /// omitted when `false`, so an ordinary reference's wire form is unaffected.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_test: bool,
     /// The `EdgeInferred` twin of [`CodeEntityExtracted::partial`] - see that field's own doc. A
     /// refs-only file (no definitions) carries its parse-degraded marker here instead, mirroring how
     /// `fresh` already rides whichever event happens to be the file's batch boundary.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
 }
 
@@ -597,14 +597,6 @@ pub(crate) struct EdgeInferred {
 #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // consumed only by contextgraph::sqlite's fold, gated out under core-only
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
-}
-
-/// Serde `skip_serializing_if` predicate: keep a flag off the wire while it is false, so a payload
-/// that never sets it serializes byte-identically to one from before the flag existed - the
-/// `fresh` extraction-batch boundary marker (only the FIRST event of each batch serializes it),
-/// and the neighborhood view's `back` recursion marker and `shared` concept-membership marker.
-pub(crate) fn is_false(b: &bool) -> bool {
-    !*b
 }
 
 /// The `DocConceptExtracted` payload: one entity a DEFINITION-extraction pass emits, either the
@@ -700,7 +692,7 @@ pub(crate) struct CommunityAssigned {
     /// leaves every OTHER resolution grain's memberships live. On the first-ever pass it supersedes
     /// nothing. Rides the existing event and defaults `false`, so a pre-field log folds as
     /// non-boundary.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
 }
 
@@ -740,7 +732,7 @@ pub(crate) struct ConceptDerived {
     /// accreting - and leaves every OTHER resolution grain's memberships live. On the first-ever pass
     /// it supersedes nothing. Rides the event and defaults `false`, so a pre-field log folds as
     /// non-boundary.
-    #[serde(default, skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fresh: bool,
 }
 

@@ -1128,24 +1128,13 @@ fn a_two_episode_supersession_beside_a_same_episode_split_is_recovered_by_resume
     // crit_y - the identical surviving set the internal harvest_proposed-seam test
     // asserts, now proven through the real run() entry over a genuinely pre-populated
     // resume history.
-    let serving_x: Vec<&str> = rs
-        .units
-        .values()
-        .filter(|u| u.spec_criterion == crit_x)
-        .map(|u| u.id.as_str())
-        .collect();
+    let serving_x = serving(&rs, crit_x);
     assert_eq!(
         serving_x,
         vec!["u-ep2"],
         "exactly one unit must serve crit_x after the resume fold; got {serving_x:?}"
     );
-    let mut serving_y: Vec<&str> = rs
-        .units
-        .values()
-        .filter(|u| u.spec_criterion == crit_y)
-        .map(|u| u.id.as_str())
-        .collect();
-    serving_y.sort_unstable();
+    let serving_y = serving(&rs, crit_y);
     assert_eq!(
         serving_y,
         vec!["u-split-1", "u-split-2"],

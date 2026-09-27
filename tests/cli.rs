@@ -23,6 +23,7 @@ use common::cli::read_run_events;
 use common::cli::reported_reclaimed_bytes;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::run_rigger_ok;
 use common::cli::run_stream_identity;
 use common::cli::seed_order_signature;
 use common::cli::seed_run_events;
@@ -11796,12 +11797,13 @@ fn validate_fails_before_any_output_when_the_mutation_gate_has_no_cargo_mutants(
 /// `rigger validate` over an initialized project with `build_block(root)` appended to its
 /// config (empty = none) and `PATH` set to `path(root)` must SUCCEED - a discovered-implicit
 /// degrade never fails validate - and report every line `expected(root)` names through its
-/// output, so what the build layer actually resolved (or silently skipped) is SEEN.
+/// output, so what the build layer actually resolved (or silently skipped) is SEEN. Returns the
+/// stdout.
 fn assert_validate_reports(
     build_block: fn(&Path) -> String,
     path: fn(&Path) -> String,
     expected: fn(&Path) -> Vec<String>,
-) {
+) -> String {
     let dir = initialized_project();
     let root = dir.path();
     let block = build_block(root);
@@ -11819,6 +11821,7 @@ fn assert_validate_reports(
             "validate must report {line:?} over build block {block:?}; stdout:\n{out}"
         );
     }
+    out
 }
 
 /// The `build.wrapper: auto` config block.
@@ -11915,19 +11918,15 @@ rigger::test_cases! {
 /// layer touches no cache dir, so a claimed one would be fabricated.
 #[test]
 fn validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off() {
-    let dir = initialized_project();
-    let root = dir.path();
-    append_build_block(root, "build:\n  wrapper: off\n  max_concurrent: 2\n");
-
-    let (out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(ok, "wrapper: off must not fail validate; stderr:\n{err}");
-    assert!(
-        out.lines().any(|l| l == "build wrapper: none"),
-        "an off wrapper reports none; stdout:\n{out}"
-    );
-    assert!(
-        out.lines().any(|l| l == "build budget: 2"),
-        "the budget is still reported with the wrapper off; stdout:\n{out}"
+    let out = assert_validate_reports(
+        |_| "build:\n  wrapper: off\n  max_concurrent: 2\n".to_string(),
+        |_| std::env::var("PATH").unwrap_or_default(),
+        |_| {
+            vec![
+                "build wrapper: none".to_string(),
+                "build budget: 2".to_string(),
+            ]
+        },
     );
     assert!(
         !out.lines().any(|l| l.starts_with("build cache dir:")),
@@ -17566,14 +17565,6 @@ fn dash_breadcrumb_project(url: Option<&str>, marker: Option<(u16, u32)>) -> tem
     proj
 }
 
-/// `rigger watch --once` over `root`, which must exit 0 whatever dash breadcrumbs it finds;
-/// returns its stdout.
-fn watch_once(root: &Path) -> String {
-    let (out, err, ok) = run_rigger(root, &["watch", "--once"]);
-    assert!(ok, "rigger watch --once must exit 0; stderr:\n{err}");
-    out
-}
-
 /// A marker carrying the [`rigger::dash::UNATTRIBUTED_PID`] sentinel on a dead port, beside
 /// `url` (or no `dash.url` at all): the dead marker port is still reported, but the sentinel is
 /// never printed as a fabricated dead process - it renders exactly like the no-matching-marker
@@ -17582,7 +17573,7 @@ fn assert_watch_once_never_names_the_sentinel_pid(url: Option<&str>) {
     let dead_port = free_loopback_port();
     let proj = dash_breadcrumb_project(url, Some((dead_port, rigger::dash::UNATTRIBUTED_PID)));
 
-    let out = watch_once(proj.path());
+    let out = run_rigger_ok(proj.path(), &["watch", "--once"]);
     assert!(
         out.contains("dash liveness") && out.contains(&dead_port.to_string()),
         "the dead marker port itself is a genuine anomaly and must still be reported, sentinel \
@@ -17631,7 +17622,7 @@ fn assert_watch_once_reports_a_dead_marker_less_url(path: &str) {
     let dead_port = free_loopback_port();
     let proj = dash_breadcrumb_project(Some(&format!("http://127.0.0.1:{dead_port}{path}")), None);
 
-    let out = watch_once(proj.path());
+    let out = run_rigger_ok(proj.path(), &["watch", "--once"]);
     assert!(
         out.contains("dash liveness") && out.contains(&dead_port.to_string()),
         "a dash.url naming a dead port with NO marker must still be reported, its port parsed \
@@ -17706,7 +17697,7 @@ fn assert_watch_once_names_the_urls_port_over_a_mismatched_marker(path: &str) {
         Some((marker_port, impossible_pid)),
     );
 
-    let out = watch_once(proj.path());
+    let out = run_rigger_ok(proj.path(), &["watch", "--once"]);
     assert!(
         out.contains("dash liveness") && out.contains(&format!("port {url_port}")),
         "the dash liveness report must probe and name the recorded dash.url's own port \
@@ -17867,7 +17858,7 @@ fn watch_once_over_a_dead_marker(
             .expect("seed the dash attempt marker");
     }
 
-    watch_once(root)
+    run_rigger_ok(root, &["watch", "--once"])
 }
 
 /// The dead marker is NOT the watched run's own breadcrumb - it belongs to a run that
@@ -18106,12 +18097,17 @@ fn setup_installs_graph_hygiene_guidance_into_consumer_skill() {
     }
 }
 
-/// Write `content` to `code.txt` under `root`, stage it, and `git commit` it with `PATH` set
-/// to `path` (so the pre-commit hook finds whichever `rigger` that `PATH` stages) and no
-/// inherited `CARGO_TARGET_DIR`. Returns whether the commit succeeded and its stderr.
+/// Write `content` to `code.txt` under `root`, stage it, and [`commit_staged`] it.
 fn commit_a_code_change(root: &Path, path: &str, content: &str, message: &str) -> (bool, String) {
     std::fs::write(root.join("code.txt"), content).unwrap();
     git_ok(root, &["add", "code.txt"]);
+    commit_staged(root, path, message)
+}
+
+/// `git commit` what is staged under `root` with `PATH` set to `path` (so the pre-commit hook
+/// finds whichever `rigger` that `PATH` stages) and no inherited `CARGO_TARGET_DIR`. Returns
+/// whether the commit succeeded and its stderr.
+fn commit_staged(root: &Path, path: &str, message: &str) -> (bool, String) {
     let out = Command::new("git")
         .args(["commit", "-q", "-m", message])
         .current_dir(root)
@@ -18734,12 +18730,7 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
     let main = temp_git_project_with_commit();
     let main_root = main.path();
     setup_selfhosting_repo_with_fresh_docs(main_root);
-    let fresh_skill_before =
-        git_answer(main_root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
-    assert!(
-        fresh_skill_before.contains("name: using-rigger"),
-        "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
-    );
+    let fresh_skill_before = fresh_committed_skill(main_root);
 
     let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
     let wt_path = wt_parent.path().join("rigger-wt-probeunit");
@@ -18755,26 +18746,18 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
     );
 
     let commit_path = stage_stale_rigger_shim(&wt_path);
-    std::fs::write(
-        wt_path.join("code.txt"),
-        "a rendered fact this worktree's code added\n",
-    )
-    .unwrap();
-    git_ok(&wt_path, &["add", "code.txt"]);
 
     // Round 1: no unit-derived candidate staged anywhere yet, and this worktree has no local
     // target build either - only the stale PATH shim is reachable, so this must REFUSE exactly
     // like the plain (non-worktree) fixture above, proving the hook genuinely runs here.
-    let out1 = Command::new("git")
-        .args(["commit", "-q", "-m", "add a rendered fact"])
-        .current_dir(&wt_path)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr1 = String::from_utf8_lossy(&out1.stderr);
+    let (committed1, stderr1) = commit_a_code_change(
+        &wt_path,
+        &commit_path,
+        "a rendered fact this worktree's code added\n",
+        "add a rendered fact",
+    );
     assert!(
-        !out1.status.success(),
+        !committed1,
         "with no unit-derived candidate staged, a linked worktree with only a stale PATH \
          rigger must still be REFUSED, same as the plain-project fixture; stderr:\n{stderr1}"
     );
@@ -18793,16 +18776,9 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
     // relative to `main_root`'s own `.git` (never inside the worktree) - the only thing that
     // changed between rounds is this candidate's presence.
     stage_unit_derived_binary(main_root, "probeunit");
-    let out2 = Command::new("git")
-        .args(["commit", "-q", "-m", "add a rendered fact"])
-        .current_dir(&wt_path)
-        .env("PATH", &commit_path)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()
-        .expect("git must be runnable");
-    let stderr2 = String::from_utf8_lossy(&out2.stderr);
+    let (committed2, stderr2) = commit_staged(&wt_path, &commit_path, "add a rendered fact");
     assert!(
-        out2.status.success(),
+        committed2,
         "the unit-derived candidate must be found and PREFERRED over the stale PATH rigger \
          once staged; stderr:\n{stderr2}"
     );
@@ -18816,10 +18792,9 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
         tree.contains("code.txt"),
         "the worktree's own change must ride the commit; tree:\n{tree}"
     );
-    let committed_after =
-        git_answer(&wt_path, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert_eq!(
-        committed_after, fresh_skill_before,
+        committed_skill(&wt_path),
+        fresh_skill_before,
         "the already-fresh doc must land byte-identical - the unit-derived binary's render \
          matched what was staged"
     );
@@ -25492,10 +25467,9 @@ fn mcp_spawn_scratch_tool_agrees_byte_for_byte_with_rigger_scratch() {
     );
 }
 
-/// Pipe `payload` into `rigger <args>` (a Claude Code hook verb) run from `cwd`: it must
-/// always exit 0 for a well-formed invocation - the decision rides in the JSON body - and
-/// print one JSON object, returned.
-fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value {
+/// Run `rigger <args>` from `cwd` with `stdin` piped in, returning its whole output whatever its
+/// exit status.
+fn pipe_into_rigger(cwd: &Path, args: &[&str], stdin: &[u8]) -> std::process::Output {
     use std::io::Write;
     use std::process::Stdio;
 
@@ -25508,15 +25482,18 @@ fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value 
         .stderr(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| panic!("spawn rigger {verb}: {e}"));
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
     child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(payload.as_bytes())
-        .unwrap();
-    let out = child
         .wait_with_output()
-        .unwrap_or_else(|e| panic!("rigger {verb} must exit: {e}"));
+        .unwrap_or_else(|e| panic!("rigger {verb} must exit: {e}"))
+}
+
+/// Pipe `payload` into `rigger <args>` (a Claude Code hook verb) run from `cwd`: it must
+/// always exit 0 for a well-formed invocation - the decision rides in the JSON body - and
+/// print one JSON object, returned.
+fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value {
+    let verb = args[0];
+    let out = pipe_into_rigger(cwd, args, payload.as_bytes());
     assert!(
         out.status.success(),
         "rigger {verb} must always exit 0 for a well-formed invocation (the decision rides in \
@@ -25525,6 +25502,20 @@ fn run_hook_verb(cwd: &Path, args: &[&str], payload: &str) -> serde_json::Value 
     );
     serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("{verb} must print one JSON object: {e}"))
+}
+
+/// `rigger <args>` fed `stdin` must exit the Claude-Code-documented BLOCKING code (2) - never a
+/// merely-nonzero exit, which Claude Code treats as NON-blocking and lets the write proceed.
+/// `why` names the failure.
+fn assert_blocks(args: &[&str], stdin: &[u8], why: &str) {
+    let cwd_dir = temp_project();
+    let out = pipe_into_rigger(cwd_dir.path(), args, stdin);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{why} must exit the BLOCKING code (2); stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// Spawn `rigger grep-guard` in `root`, write one PreToolUse `payload` to its stdin, and
@@ -25825,27 +25816,10 @@ fn guard_write_covers_notebook_edit_and_ignores_other_tools() {
 /// name claims to prove, so it must check the actual code, not just its sign.
 #[test]
 fn guard_write_without_a_root_fails_loudly_rather_than_allowing_everything() {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let cwd_dir = temp_project();
-    let mut cmd = common::rigger_courier();
-    cmd.arg("guard-write")
-        .current_dir(cwd_dir.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger guard-write");
-    child.stdin.take().unwrap().write_all(b"{}").unwrap();
-    let out = child
-        .wait_with_output()
-        .expect("rigger guard-write must exit");
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "guard-write with no --root must exit the BLOCKING code (2), never silently allow \
-         every write via a non-blocking exit; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+    assert_blocks(
+        &["guard-write"],
+        b"{}",
+        "guard-write with no --root (never silently allowing every write)",
     );
 }
 
@@ -25857,30 +25831,8 @@ fn guard_write_without_a_root_fails_loudly_rather_than_allowing_everything() {
 /// an exit-0 deny body, proven by `guard_write_denies_every_malformed_payload_shape_completely`).
 #[test]
 fn guard_write_exits_the_blocking_code_on_every_transport_failure() {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let cwd_dir = temp_project();
-
     // A dangling `--root` flag with no directory following it.
-    let mut cmd = common::rigger_courier();
-    cmd.arg("guard-write")
-        .arg("--root")
-        .current_dir(cwd_dir.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger guard-write");
-    child.stdin.take().unwrap().write_all(b"{}").unwrap();
-    let out = child
-        .wait_with_output()
-        .expect("rigger guard-write must exit");
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "a dangling --root flag must exit the BLOCKING code (2); stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_blocks(&["guard-write", "--root"], b"{}", "a dangling --root flag");
 
     // Invalid-UTF-8 stdin: `read_to_string` itself fails, a transport failure distinct
     // from an unparseable-but-valid-UTF-8 JSON payload.
@@ -25890,30 +25842,10 @@ fn guard_write_exits_the_blocking_code_on_every_transport_failure() {
         .to_str()
         .unwrap()
         .to_string();
-    let mut cmd = common::rigger_courier();
-    cmd.arg("guard-write")
-        .arg("--root")
-        .arg(&root_str)
-        .current_dir(cwd_dir.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger guard-write");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&[0xFF, 0xFE, 0xFD])
-        .unwrap();
-    let out = child
-        .wait_with_output()
-        .expect("rigger guard-write must exit");
-    assert_eq!(
-        out.status.code(),
-        Some(2),
-        "invalid-UTF-8 stdin must exit the BLOCKING code (2), never fall through to a \
-         non-blocking exit that lets the write proceed; stderr:\n{}",
-        String::from_utf8_lossy(&out.stderr)
+    assert_blocks(
+        &["guard-write", "--root", &root_str],
+        &[0xFF, 0xFE, 0xFD],
+        "invalid-UTF-8 stdin (never falling through to a non-blocking exit)",
     );
 }
 

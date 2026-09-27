@@ -12,7 +12,7 @@
 
 #[cfg(test)]
 use crate::config;
-use crate::config::{ReviewPanel, Stage, Workflow, RIGGER_DIR};
+use crate::config::{push_reviewers, ReviewPanel, Stage, Workflow, RIGGER_DIR};
 use crate::config_store;
 use crate::contextgraph::{
     DocConceptExtracted, DocLinkExtracted, KIND_AGENT, KIND_GATE, KIND_STAGE, REL_NEEDS,
@@ -121,32 +121,14 @@ fn extract(workflow: &Workflow) -> (Vec<ConceptTuple>, Vec<LinkTuple>) {
     (concepts, links)
 }
 
-/// The FULL-panel-only reviewer agent ids a review panel names on its own top-level roster
-/// (lenses, adversary, adjudicator) - the roster a unit at this panel's stage reviews itself with
-/// whenever it is NOT routed to the panel's opt-in `tiers.light` reduced roster instead.
-/// Deliberately excludes that light roster (see [`light_reviewers_of`]): unlike
-/// [`config::ReviewPanel::agent_ids`], which unions both rosters for REFERENTIAL VALIDATION (a
-/// different question - "does this id resolve to a real agent"), this asks "which agent reviews a
-/// unit that stays on the full panel", and a light-only agent is never that.
-fn full_reviewers_of(panel: &ReviewPanel) -> Vec<String> {
-    let mut ids = panel.lenses.clone();
-    if !panel.adversary.is_empty() {
-        ids.push(panel.adversary.clone());
-    }
-    if !panel.adjudicator.is_empty() {
-        ids.push(panel.adjudicator.clone());
-    }
-    ids
-}
-
 /// The reviewer agent ids a review panel's OPT-IN `tiers.light` reduced roster names, if
-/// configured - the roster a LOW-risk unit routes to INSTEAD of [`full_reviewers_of`]'s roster,
+/// configured - the roster a LOW-risk unit routes to INSTEAD of [`ReviewPanel::full_roster`]'s roster,
 /// never alongside it. Empty when the panel names no depth policy (the shipped default),
 /// mirroring [`config::ReviewPanel::depth`].
 fn light_reviewers_of(panel: &ReviewPanel) -> Vec<String> {
     panel
         .depth()
-        .map(|depth| full_reviewers_of(&depth.light))
+        .map(|depth| depth.light.full_roster())
         .unwrap_or_default()
 }
 
@@ -155,7 +137,7 @@ fn light_reviewers_of(panel: &ReviewPanel) -> Vec<String> {
 /// stage's own direct fields/review panel, else - when gated - the workflow's `defaults.review`).
 /// `.0` feeds the plain [`REL_REVIEWS`] edge: a stage's own direct `adversary:`/`adjudicator:`
 /// fields (which carry no tiers concept of their own) plus the resolved panel's FULL-only roster
-/// ([`full_reviewers_of`]). `.1` feeds the distinctly-tagged [`REL_REVIEWS_LIGHT`] edge: the SAME
+/// ([`ReviewPanel::full_roster`]). `.1` feeds the distinctly-tagged [`REL_REVIEWS_LIGHT`] edge: the SAME
 /// resolved panel's `tiers.light` roster ([`light_reviewers_of`]). Kept apart rather than folded
 /// into one `.agent_ids()` union because a real run routes each unit to light XOR full exclusively
 /// by its observable risk (`config::Workflow::tiers` doc): an undistinguished edge would assert
@@ -166,17 +148,12 @@ fn light_reviewers_of(panel: &ReviewPanel) -> Vec<String> {
 fn reviewers_of(workflow: &Workflow, stage: &Stage) -> (Vec<String>, Vec<String>) {
     let mut full: Vec<String> = Vec::new();
     let mut light: Vec<String> = Vec::new();
-    if !stage.adversary.is_empty() {
-        full.push(stage.adversary.clone());
-    }
-    if !stage.adjudicator.is_empty() {
-        full.push(stage.adjudicator.clone());
-    }
-    full.extend(full_reviewers_of(&stage.review));
+    push_reviewers(&mut full, &stage.adversary, &stage.adjudicator);
+    full.extend(stage.review.full_roster());
     light.extend(light_reviewers_of(&stage.review));
     if full.is_empty() && light.is_empty() && !stage.gates.is_empty() {
         let panel = workflow.effective_review_panel(stage);
-        full.extend(full_reviewers_of(panel));
+        full.extend(panel.full_roster());
         light.extend(light_reviewers_of(panel));
     }
     full.retain(|r| !r.is_empty());

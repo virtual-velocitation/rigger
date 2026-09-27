@@ -721,7 +721,7 @@ fn concurrent_appends_to_distinct_streams_get_distinct_positions(store: &dyn Eve
                             &[Event::new("C", vec![i as u8])],
                         )
                         .expect("concurrent appends to distinct streams must all succeed")
-                        .last()
+                        .one("a concurrent one-event append")
                         .expect("a one-event append reports the position it wrote")
                 })
             })

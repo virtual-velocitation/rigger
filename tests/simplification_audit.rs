@@ -2130,6 +2130,244 @@ const ADVERSARIAL_SAMPLE_SIZE: usize = 30;
 /// rewrite by this criterion can now never perturb another criterion's owned artifact again.
 const ADVERSARIAL_SAMPLE_EXCLUDED_FILE: &str = "tests/prioritized_plan_citation_periphery.rs";
 
+/// The date of the latest hand reading pass over the adversarial draw. The draw is seeded on
+/// population size, so any change to the scanned function count reshuffles it; the rows the
+/// pass read carry their verdicts in [`ADVERSARIAL_SAMPLE_VERDICTS`], and a row drawn since then
+/// renders as NOT READ until the next pass records it.
+const ADVERSARIAL_SAMPLE_READ_ON: &str = "2026-09-27";
+
+/// One hand verdict on a drawn function, recorded once by the reading pass and rendered on its
+/// row: reading is the one thing no generator can do (spec 85 THOROUGHNESS), so the verdict is
+/// data the pass writes, never a label the renderer assumes.
+enum SampleVerdict {
+    /// Read by hand with its host file and siblings: no duplicate beyond what the catalog caught.
+    NoDuplicate,
+    /// Read by hand: a duplicate was found and closed; the text names it and its one home.
+    Closed(&'static str),
+}
+
+/// The latest reading pass's verdict per drawn function, keyed `(file, name)`.
+const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[
+    (
+        "src/canary.rs",
+        "from_event",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/canary_store.rs",
+        "any_finding_is_critical",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/canary_store.rs",
+        "score_item_reports_no_resolved_model_for_a_tier_whose_driver_leaves_it_empty",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/conductor.rs",
+        "land_refused",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/conductor.rs",
+        "speculation_escalates_when_every_candidate_is_rejected",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/conductor.rs",
+        "replay_step",
+        SampleVerdict::Closed(
+        "three stepwise budget and attention tests re-rolled its body (and `started_store`'s) as inline closures; all now call `replay_step`",
+    ),
+    ),
+    (
+        "src/contextgraph/mod.rs",
+        "a_caller_less_reference_event_serializes_byte_identically_to_the_pre37_wire_form",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/dash.rs",
+        "get_static",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/dash.rs",
+        "export_neutralizes_a_script_breakout_in_the_inlined_state",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/driver/cli.rs",
+        "bridge_emits_propagates_the_first_emit_error",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/main.rs",
+        "runs_menu_line",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/main.rs",
+        "reclaim_spawn_scratch",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/main.rs",
+        "workflow_drift_advisory",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/metrics.rs",
+        "artifact_verdict",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "src/subprocess.rs",
+        "detach_process_group",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/cli.rs",
+        "workflow_accepts_a_spec_and_a_base_flag",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/cli.rs",
+        "validate_reports_budget_but_no_cache_dir_when_the_wrapper_is_off",
+        SampleVerdict::Closed(
+        "it re-rolled `assert_validate_reports` inline; it now calls it, which returns the stdout for its extra no-cache-dir check",
+    ),
+    ),
+    (
+        "tests/cli.rs",
+        "setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_over_a_stale_path_rigger",
+        SampleVerdict::Closed(
+        "it re-rolled `fresh_committed_skill`, `committed_skill` and `commit_a_code_change` inline; it now calls them, with the commit half split out as `commit_staged`",
+    ),
+    ),
+    (
+        "tests/cli.rs",
+        "guard_write_under_a_root",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/cli.rs",
+        "guard_write_exits_the_blocking_code_on_every_transport_failure",
+        SampleVerdict::Closed(
+        "it and `guard_write_without_a_root_fails_loudly_rather_than_allowing_everything` re-rolled `run_hook_verb`'s piped-stdin spawn; all three now call `pipe_into_rigger`, the blocking checks through `assert_blocks`",
+    ),
+    ),
+    (
+        "tests/common/audit_record.rs",
+        "read_audit_record",
+        SampleVerdict::Closed(
+        "`tests/gitsemver_path_inclusion_accounting_periphery.rs` re-rolled it to read the stage1 record; it now includes and calls it",
+    ),
+    ),
+    (
+        "tests/compiler_pass_stage1_audit.rs",
+        "stage1_record_has_the_shape_every_consumer_relies_on",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/concepts_labels_membership.rs",
+        "label_of_the_documentless_hub",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/reset_derived_compaction_periphery.rs",
+        "a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten",
+        SampleVerdict::Closed(
+        "`the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count` repeated its settled-file fixture and skipped-rewrite assertions; both now call `settled_clean_store` and `assert_prune_skips_the_rewrite`",
+    ),
+    ),
+    (
+        "tests/simplification_audit.rs",
+        "a_bare_test_attribute_on_a_free_function_marks_it_test_without_a_cfg_test_mod",
+        SampleVerdict::Closed(
+        "it and five sibling scanner tests re-rolled `scan_single`; all now call it or its name and span assertions",
+    ),
+    ),
+    (
+        "tests/spawn_recorded_lenient_periphery.rs",
+        "recorded_lenient_collapses_a_re_parked_duplicate_id_to_the_last_recorded_request",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/step_attention_periphery.rs",
+        "hung_cursor_functions_are_a_working_public_contract_across_the_crate_boundary",
+        SampleVerdict::NoDuplicate,
+    ),
+    (
+        "tests/worker_persona_label_periphery.rs",
+        "the_subject_is_the_titles_first_sentence_passed_whole_with_no_truncation",
+        SampleVerdict::Closed(
+        "it re-rolled `assert_worker_label` inline; it now calls it",
+    ),
+    ),
+];
+
+/// Duplicates the 2026-09-27 reading passes found and closed on functions an earlier draw picked:
+/// the draw was then by population index, so each closure reshuffled it until the draw became
+/// rank-stable ([`sample_indices`]). Each names the drawn function and its closure, so the finding
+/// count stays whole.
+const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
+    "`tests/kurrentdb_always_available.rs` \
+     `architecture_blueprint_has_no_retired_kurrentdb_feature_reference` re-rolled the \
+     manifest-relative read `common::repo::repo_text` owns, as did thirteen sibling reads across \
+     eleven suites; every one now calls `repo_text`",
+    "`tests/replan_episode_identity.rs` `serving` had two inline copies of its scan in its own \
+     file; both now call it",
+    "`src/conductor.rs` `integrate_and_emit` repeated `catch_up_owed_regeneration`'s \
+     regenerate/record/clear sequence twice; all three now call `regenerate_and_record`",
+    "`tests/dash_run_tree_spine.rs` \
+     `an_off_linear_unit_with_no_gate_verdict_renders_no_phantom_gates_passed` repeated \
+     `a_crashed_implementer_renders_no_gates_node`'s crash-and-no-Gates assertions; both now call \
+     `assert_crash_at_implement_and_no_gates`",
+    "`src/main.rs` `dash_read_liveness` repeated `liveness_ages_for_wave`'s marker-age loop, as \
+     did `rigger_activity` in `src/mcpserver.rs`; all three now call `liveness::marker_ages`",
+    "`src/main.rs` `merge_hung_attention_defers_to_an_existing_budget_halt` was a value-only \
+     copy of `merge_hung_attention_does_nothing_when_not_newly_hung`; both are now cases of \
+     `assert_merge_hung_attention_leaves_untouched`",
+    "`tests/code_entity_test_exclusion_periphery.rs` \
+     `a_pre_round9_persisted_index_with_no_enclosing_inline_module_path_key_loads_defaulting_to_none` \
+     repeated its round-6 and round-7 siblings' legacy fixture; all three now call \
+     `legacy_module_def`",
+    "`tests/product_binary_location.rs` \
+     `no_suite_bakes_the_product_path_at_compile_time_except_the_one_authority` re-rolled the \
+     tree walk `common::repo::for_each_rs_file` owns; it now calls it",
+    "`tests/simplification_audit.rs` `two_renamed_identical_functions_form_one_exact_cluster` and \
+     `build_sweep_clusters_always_returns_exactly_five_named_clusters` re-rolled `on_fixture`, as \
+     did eleven sibling tests; all thirteen now call it",
+    "`tests/stop_failure_hook_periphery.rs` `hook_refuses_naming` was repeated inline by \
+     `hook_stop_failure_rejects_an_unrecognized_class`; it now calls it",
+    "`src/conductor.rs` `proposal_event` was re-rolled inline by \
+     `a_same_episode_re_seen_on_a_later_fold_still_never_self_supersedes`; it now calls it and \
+     `harvest_seeded`",
+    "`src/contextgraph/mod.rs` `is_false` re-implemented `std::ops::Not::not`, which the symbol \
+     model already uses; every flag now skips through `Not::not`",
+    "`src/eventstore/mod.rs` `one` was bypassed by the concurrent contract append's \
+     `.last().expect(..)`; it now calls `Appended::one`",
+    "`src/eventstore/sqlite.rs` `a_rerun_reclaims_the_space_a_failed_reclamation_left_behind` \
+     carried its own copies of the periphery suite's `plant_free_pages` and `pragma_i64`; both \
+     now live once in the shared store fixtures",
+    "`src/grounder/workflowdef.rs` `full_reviewers_of` repeated the head of \
+     `ReviewPanel::agent_ids`; both now call `ReviewPanel::full_roster`, and every \
+     adversary/adjudicator pair goes through `config::push_reviewers`",
+    "`tests/common/fixtures/graph.rs` `summarized_node` was re-rolled as an inline closure by \
+     `tests/rationale_overlay_data.rs`; it now calls it",
+    "`src/contextgraph/sqlite.rs` `tier_default_matches_the_extracted_const` was repeated inline \
+     by `tests/code_ingest_events.rs`; the one test now pins all three tier consts",
+    "`src/worktree.rs` `remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside` \
+     and `tests/reap_before_removal_periphery.rs` `reaps_before_removing` each re-rolled the \
+     spawn/wait/teardown/assert reap proof, as did five siblings in `src/main.rs`, \
+     `src/reap.rs`, `src/worktree.rs` and the relocated-scratch periphery suite; all now call \
+     `assert_teardown_reaps_what_is_rooted_inside`",
+    "`tests/heartbeat_write_read_agree_periphery.rs` \
+     `watch_once_suppresses_a_false_dead_driver_when_the_configured_workdir_resolves_from_the_owning_root_with_no_agents_fleet` \
+     repeated its two siblings' configured-workdir fixture; all three now call \
+     `marker_under_a_configured_workdir`",
+];
+
 // -----------------------------------------------------------------------------------------
 // THE TOKENIZER
 // -----------------------------------------------------------------------------------------
@@ -3628,24 +3866,29 @@ fn render_section_2(
 /// Renders the "### Adversarial sample" subsection required by spec 85 THOROUGHNESS ("the
 /// adversary draws 30 functions by seeded random index... The report states the sample seed so
 /// the check is reproducible"). The draw itself and each row's catalog membership are computed
-/// live from `files`/`clusters`, so the listing can never drift from the tree; the closing
-/// paragraph is a hand-verified reading-pass finding (spec 85: the recall check is proven by
-/// reading, which no generator can do) and is refreshed by hand whenever the draw shifts enough
-/// to change what it covers.
+/// live from `files`/`clusters`, so the listing can never drift from the tree; each uncaught
+/// row's label and the reading-pass line are the hand verdicts [`ADVERSARIAL_SAMPLE_VERDICTS`]
+/// records (spec 85: the recall check is proven by reading, which no generator can do), so a
+/// row drawn after the last pass reads NOT READ rather than claiming a reading nobody did.
 fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> String {
     let mut out = String::new();
     let refs = adversarial_sample_population(files);
-    let picked = sample_indices(refs.len(), ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
+    let picked = sample_indices(
+        &sample_keys(files, &refs),
+        ADVERSARIAL_SAMPLE_SIZE,
+        ADVERSARIAL_SEED,
+    );
     let _ = writeln!(out, "### Adversarial sample");
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Recall check (spec 85 THOROUGHNESS): {} functions drawn by seeded random index (seed \
+        "Recall check (spec 85 THOROUGHNESS): {} functions drawn by seeded rank (seed \
          `{ADVERSARIAL_SEED}`, `sample_indices` over all {} functions scanned in `src/` and \
-         `tests/`, excluding `{ADVERSARIAL_SAMPLE_EXCLUDED_FILE}` - criterion 4's own citation-\
+         `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change \
+         elsewhere never reshuffles a drawn row, excluding `{ADVERSARIAL_SAMPLE_EXCLUDED_FILE}` - criterion 4's own citation-\
          guard periphery test, whose function count grows as its citation-drift-guard mechanism \
-         hardens round over round; excluding it keeps that unrelated growth from ever reshuffling \
-         this already-verified draw), each read by hand - together with its host file's \
+         hardens round over round; excluding it keeps that unrelated growth out of \
+         the draw), each read by hand - together with its host file's \
          surrounding context, since a duplicate can live anywhere in the file or a sibling file - \
          to judge whether a duplicate exists that the mechanical pass and the five sweeps above \
          did not already catch.",
@@ -3653,29 +3896,49 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
         refs.len(),
     );
     let _ = writeln!(out);
+    let (mut read, mut closed) = (0, ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW.len());
     for &i in &picked {
         let sf = refs[i].scanned(files);
+        // Keyed on the site's position, not its name: a file can define several functions of
+        // one name (trait-impl doubles), and only the one a cluster actually lists is caught.
         let hit = clusters.iter().find(|c| {
             c.sites
                 .iter()
-                .any(|s| s.file == sf.file && s.name == sf.name)
+                .any(|s| s.file == sf.file && s.start_line == sf.start_line)
         });
-        match hit {
-            Some(c) => {
-                let _ = writeln!(
-                    out,
-                    "- `{}:{}-{}` `{}` - caught: `{}`",
-                    sf.file, sf.start_line, sf.end_line, sf.name, c.id
-                );
+        let verdict = ADVERSARIAL_SAMPLE_VERDICTS
+            .iter()
+            .find(|(file, name, _)| *file == sf.file && *name == sf.name)
+            .map(|(_, _, v)| v);
+        read += usize::from(verdict.is_some());
+        let label = match (hit, verdict) {
+            (Some(c), _) => format!("caught: `{}`", c.id),
+            (None, Some(SampleVerdict::NoDuplicate)) => "no duplicate found by reading".into(),
+            (None, Some(SampleVerdict::Closed(what))) => {
+                closed += 1;
+                format!("duplicate found by reading and closed: {what}")
             }
-            None => {
-                let _ = writeln!(
-                    out,
-                    "- `{}:{}-{}` `{}` - no duplicate found by reading",
-                    sf.file, sf.start_line, sf.end_line, sf.name
-                );
-            }
-        }
+            (None, None) => format!(
+                "NOT READ - drawn after the {ADVERSARIAL_SAMPLE_READ_ON} reading pass; read it \
+                 and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`"
+            ),
+        };
+        let _ = writeln!(
+            out,
+            "- `{}:{}-{}` `{}` - {label}",
+            sf.file, sf.start_line, sf.end_line, sf.name
+        );
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Reading pass {ADVERSARIAL_SAMPLE_READ_ON}: {read} of the {} drawn functions read by hand \
+         (a caught row too, to judge whether its duplicate reaches past the cluster); {closed} \
+         duplicate(s) found by reading, each closed.",
+        picked.len(),
+    );
+    for what in ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW {
+        let _ = writeln!(out, "- closed before the redraw: {what}");
     }
     let _ = writeln!(out);
     let _ = writeln!(
@@ -5649,34 +5912,46 @@ fn render_section_6() -> String {
 // THE ADVERSARIAL SAMPLE (spec 85 THOROUGHNESS)
 // -----------------------------------------------------------------------------------------
 
-/// One step of a 64-bit linear congruential generator (the Knuth/Numerical-Recipes constants) -
-/// deterministic, zero new dependency (no `rand`).
-fn lcg_next(state: &mut u64) -> u64 {
-    *state = state
-        .wrapping_mul(6_364_136_223_846_793_005)
-        .wrapping_add(1_442_695_040_888_963_407);
-    *state
-}
-
-/// Deterministically draw `k` distinct indices in `[0, n)` from `seed` (spec 85 THOROUGHNESS:
+/// Deterministically draw `k` of the functions named by `keys` from `seed` (spec 85 THOROUGHNESS:
 /// "the adversary draws 30 functions by seeded random index... The report states the sample
-/// seed so the check is reproducible"), sorted ascending for a stable, readable listing.
-fn sample_indices(n: usize, k: usize, seed: u64) -> Vec<usize> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let mut state = seed;
-    let mut seen = HashSet::new();
-    let mut picked = Vec::new();
-    let want = k.min(n);
-    while picked.len() < want {
-        let r = ((lcg_next(&mut state) >> 33) as usize) % n;
-        if seen.insert(r) {
-            picked.push(r);
-        }
-    }
+/// seed so the check is reproducible"), returned as indices into `keys`, sorted ascending for a
+/// stable, readable listing. Each function is ranked by the seeded hash of its OWN identity (see
+/// [`sample_key`]) and the `k` lowest ranks are drawn, so the draw is stable under change: a
+/// function added or removed elsewhere never moves any other function's rank, and a cleanup
+/// that closes a duplicate replaces only the drawn rows it deleted rather than reshuffling the
+/// whole already-read sample (a draw by index into the population reshuffled on every change to
+/// the function count, discarding each reading pass).
+fn sample_indices(keys: &[String], k: usize, seed: u64) -> Vec<usize> {
+    let mut ranked: Vec<(String, usize)> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, key)| (content_hash(&format!("{seed}\u{0}{key}")), i))
+        .collect();
+    ranked.sort();
+    let mut picked: Vec<usize> = ranked.into_iter().take(k).map(|(_, i)| i).collect();
     picked.sort_unstable();
     picked
+}
+
+/// The identity [`sample_indices`] ranks a drawn function by: its file, its name, and its
+/// ordinal among the same-named functions of that file (in source order) - never its line or
+/// its position in the population, both of which move whenever anything above it changes.
+fn sample_keys(files: &[FileScan], refs: &[FnRef]) -> Vec<String> {
+    let mut seen: HashMap<(String, String), usize> = HashMap::new();
+    refs.iter()
+        .map(|r| {
+            let sf = r.scanned(files);
+            let ordinal = seen.entry((sf.file.clone(), sf.name.clone())).or_insert(0);
+            let key = sample_key(&sf.file, &sf.name, *ordinal);
+            *ordinal += 1;
+            key
+        })
+        .collect()
+}
+
+/// One function's draw identity - see [`sample_keys`].
+fn sample_key(file: &str, name: &str, ordinal: usize) -> String {
+    format!("{file}\u{0}{name}\u{0}{ordinal}")
 }
 
 // =========================================================================================
@@ -6974,7 +7249,7 @@ mod tests {
     /// Scan `src`, assert it holds exactly ONE function, and return that function.
     fn scan_single(src: &str) -> ScannedFn {
         let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
+        assert_eq!(fns.len(), 1, "{fns:?}");
         fns.into_iter().next().unwrap()
     }
 
@@ -6986,6 +7261,12 @@ mod tests {
     /// `src` scans to exactly one function, whose body closes on line `end_line`.
     fn assert_single_fn_ends_at(src: &str, end_line: usize) {
         assert_eq!(scan_single(src).end_line, end_line);
+    }
+
+    /// `src` scans to exactly one function, named `name`, whose body closes on line `end_line`.
+    fn assert_single_fn_spans(src: &str, name: &str, end_line: usize) {
+        let f = scan_single(src);
+        assert_eq!((f.name.as_str(), f.end_line), (name, end_line), "{f:?}");
     }
 
     rigger::test_cases! {
@@ -7036,19 +7317,10 @@ mod tests {
 
     #[test]
     fn a_fn_pointer_type_usage_is_not_recorded() {
-        let src = "fn takes_fp(f: fn(usize) -> bool) -> bool {\n    f(1)\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1, "{fns:?}");
-        assert_eq!(fns[0].name, "takes_fp");
-    }
-
-    #[test]
-    fn a_semicolon_inside_an_array_type_param_does_not_end_the_signature_early() {
-        let src = "fn a(buf: [u8; 32]) -> bool {\n    buf.len() == 32\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1, "{fns:?}");
-        assert_eq!(fns[0].name, "a");
-        assert_eq!(fns[0].end_line, 3);
+        assert_single_fn_named(
+            "fn takes_fp(f: fn(usize) -> bool) -> bool {\n    f(1)\n}\n",
+            "takes_fp",
+        );
     }
 
     // -------------------------------------------------------------------------------------
@@ -7099,9 +7371,8 @@ mod tests {
         // Sanity: the fix must not make every impl test-only - a plain impl outside any
         // cfg-test context stays production.
         let src = "impl Foo {\n    fn bar(&self) {}\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert!(!fns[0].is_test, "{:?}", fns[0]);
+        let f = scan_single(src);
+        assert!(!f.is_test, "{f:?}");
     }
 
     /// `src` scans to exactly one function, flagged test, enclosed by the `mods` path.
@@ -7125,9 +7396,8 @@ mod tests {
     #[test]
     fn a_bare_test_attribute_on_a_free_function_marks_it_test_without_a_cfg_test_mod() {
         let src = "#[test]\nfn a_thing_works() {}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert!(fns[0].is_test);
+        let f = scan_single(src);
+        assert!(f.is_test);
     }
 
     #[test]
@@ -7142,10 +7412,9 @@ mod tests {
     #[test]
     fn a_mod_declaration_without_a_body_is_not_pushed_as_a_frame() {
         let src = "mod gitsemver;\nfn a() {}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].name, "a");
-        assert_eq!(fns[0].enclosing_mods, Vec::<String>::new());
+        let f = scan_single(src);
+        assert_eq!(f.name, "a");
+        assert_eq!(f.enclosing_mods, Vec::<String>::new());
     }
 
     #[test]
@@ -7155,13 +7424,17 @@ mod tests {
         assert_eq!(names, vec!["inner".to_string(), "outer".to_string()]);
     }
 
-    #[test]
-    fn braces_from_if_match_and_closures_do_not_break_the_enclosing_fns_span() {
-        let src = "fn a(x: i32) -> i32 {\n    if x > 0 {\n        1\n    } else {\n        match x {\n            _ => 0,\n        }\n    }\n}\n";
-        let fns = scan_str(src);
-        assert_eq!(fns.len(), 1);
-        assert_eq!(fns[0].name, "a");
-        assert_eq!(fns[0].end_line, 9);
+    rigger::test_cases! {
+        a_semicolon_inside_an_array_type_param_does_not_end_the_signature_early: assert_single_fn_spans(
+            "fn a(buf: [u8; 32]) -> bool {\n    buf.len() == 32\n}\n",
+            "a",
+            3,
+        );
+        braces_from_if_match_and_closures_do_not_break_the_enclosing_fns_span: assert_single_fn_spans(
+            "fn a(x: i32) -> i32 {\n    if x > 0 {\n        1\n    } else {\n        match x {\n            _ => 0,\n        }\n    }\n}\n",
+            "a",
+            9,
+        );
     }
 
     // -------------------------------------------------------------------------------------
@@ -8245,11 +8518,14 @@ mod tests {
 
     #[test]
     fn scan_tree_finds_functions_under_both_src_and_tests_but_not_elsewhere() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/a.rs", "fn one() {}\n");
-        write_fixture(dir.path(), "tests/b.rs", "fn two() {}\n");
-        write_fixture(dir.path(), "docs/c.rs", "fn three() {}\n");
-        let files = scan_tree(dir.path());
+        let files = on_fixture(
+            scan_tree,
+            &[
+                ("src/a.rs", "fn one() {}\n"),
+                ("tests/b.rs", "fn two() {}\n"),
+                ("docs/c.rs", "fn three() {}\n"),
+            ],
+        );
         let names: Vec<&str> = files
             .iter()
             .flat_map(|f| f.fns.iter().map(|s| s.name.as_str()))
@@ -8276,13 +8552,13 @@ mod tests {
         // A nested fn closes (and so is emitted by scan_file) BEFORE its enclosing one - this
         // fixture's outer() encloses inner(), so scan_file's own push order is [inner, outer],
         // the exact case all_fn_refs's explicit sort exists to correct.
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/nested.rs",
-            "fn outer() {\n    fn inner() {}\n    inner();\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[(
+                "src/nested.rs",
+                "fn outer() {\n    fn inner() {}\n    inner();\n}\n",
+            )],
         );
-        let files = scan_tree(dir.path());
         let refs = all_fn_refs(&files);
         let names: Vec<&str> = refs
             .iter()
@@ -8297,14 +8573,16 @@ mod tests {
     /// why this one file is singled out.
     #[test]
     fn adversarial_sample_population_excludes_only_the_citation_guard_periphery_file() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/a.rs", "fn included_one() {}\n");
-        write_fixture(
-            dir.path(),
-            ADVERSARIAL_SAMPLE_EXCLUDED_FILE,
-            "fn excluded_one() {}\nfn excluded_two() {}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[
+                ("src/a.rs", "fn included_one() {}\n"),
+                (
+                    ADVERSARIAL_SAMPLE_EXCLUDED_FILE,
+                    "fn excluded_one() {}\nfn excluded_two() {}\n",
+                ),
+            ],
         );
-        let files = scan_tree(dir.path());
 
         let all = all_fn_refs(&files);
         assert_eq!(
@@ -8337,18 +8615,13 @@ mod tests {
 
     #[test]
     fn two_renamed_identical_functions_form_one_exact_cluster() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[
+                ("src/a.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"),
+                ("src/b.rs", "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n"),
+            ],
         );
-        write_fixture(
-            dir.path(),
-            "src/b.rs",
-            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
-        );
-        let files = scan_tree(dir.path());
         let clusters = clusters_for(&files);
         assert_eq!(clusters.len(), 1);
         assert_eq!(clusters[0].classification, "exact");
@@ -8359,18 +8632,7 @@ mod tests {
 
     #[test]
     fn two_unrelated_functions_form_no_cluster() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn read_config(path: &str) -> String {\n    std::fs::read_to_string(path).unwrap()\n}\n",
-        );
-        write_fixture(
-            dir.path(),
-            "src/b.rs",
-            "fn sum_all(xs: &[i64]) -> i64 {\n    xs.iter().sum()\n}\n",
-        );
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[("src/a.rs", "fn read_config(path: &str) -> String {\n    std::fs::read_to_string(path).unwrap()\n}\n"), ("src/b.rs", "fn sum_all(xs: &[i64]) -> i64 {\n    xs.iter().sum()\n}\n")]);
         assert!(clusters_for(&files).is_empty());
     }
 
@@ -8494,9 +8756,10 @@ mod tests {
 
     #[test]
     fn command_new_sweep_ignores_an_unrelated_call() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/a.rs", "fn run() {\n    Other::new();\n}\n");
-        let files = scan_tree(dir.path());
+        let files = on_fixture(
+            scan_tree,
+            &[("src/a.rs", "fn run() {\n    Other::new();\n}\n")],
+        );
         assert!(find_ident_path_call_sites(&files, "Command", &["new"]).is_empty());
     }
 
@@ -8537,26 +8800,14 @@ mod tests {
 
     #[test]
     fn sqlite_open_sweep_matches_either_tail() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn a() {\n    Connection::open(p)?;\n}\nfn b() {\n    Connection::open_with_flags(p, f)?;\n}\n",
-        );
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[("src/a.rs", "fn a() {\n    Connection::open(p)?;\n}\nfn b() {\n    Connection::open_with_flags(p, f)?;\n}\n")]);
         let hits = find_ident_path_call_sites(&files, "Connection", &["open", "open_with_flags"]);
         assert_eq!(hits.len(), 2);
     }
 
     #[test]
     fn proc_literal_sweep_finds_a_proc_path_string_and_ignores_an_unrelated_one() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn a() {\n    let _ = std::fs::read_to_string(\"/proc/1/stat\");\n    let _ = \"hello\";\n}\n",
-        );
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[("src/a.rs", "fn a() {\n    let _ = std::fs::read_to_string(\"/proc/1/stat\");\n    let _ = \"hello\";\n}\n")]);
         let hits = find_literal_containing(&files, "/proc");
         assert_eq!(hits.len(), 1);
         assert!(hits[0].name.contains("/proc"));
@@ -8564,13 +8815,10 @@ mod tests {
 
     #[test]
     fn rigger_path_literal_sweep_finds_a_rigger_relative_string() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn a() {\n    let _ = \".rigger/tmp\";\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[("src/a.rs", "fn a() {\n    let _ = \".rigger/tmp\";\n}\n")],
         );
-        let files = scan_tree(dir.path());
         assert_eq!(find_literal_containing(&files, ".rigger").len(), 1);
     }
 
@@ -8598,9 +8846,7 @@ mod tests {
 
     #[test]
     fn build_sweep_clusters_always_returns_exactly_five_named_clusters() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(dir.path(), "src/a.rs", "fn a() {}\n");
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[("src/a.rs", "fn a() {}\n")]);
         let refs = all_fn_refs(&files);
         let clusters = build_sweep_clusters(&files, &refs);
         assert_eq!(clusters.len(), 5);
@@ -8693,13 +8939,7 @@ mod tests {
 
     #[test]
     fn parallel_constructor_sweep_groups_two_constructors_for_one_type_but_not_a_lone_one() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "impl Widget {\n    fn ok(a: u32) -> Self {\n        Self { a, b: 0 }\n    }\n    fn zeroed() -> Self {\n        Self { a: 0, b: 0 }\n    }\n}\nimpl Gadget {\n    fn only() -> Self {\n        Self { x: 1 }\n    }\n}\n",
-        );
-        let files = scan_tree(dir.path());
+        let files = on_fixture(scan_tree, &[("src/a.rs", "impl Widget {\n    fn ok(a: u32) -> Self {\n        Self { a, b: 0 }\n    }\n    fn zeroed() -> Self {\n        Self { a: 0, b: 0 }\n    }\n}\nimpl Gadget {\n    fn only() -> Self {\n        Self { x: 1 }\n    }\n}\n")]);
         let refs = all_fn_refs(&files);
         let clusters = find_parallel_constructor_clusters(&files, &refs);
         assert_eq!(clusters.len(), 1);
@@ -8751,18 +8991,19 @@ mod tests {
     #[test]
     fn same_named_helper_sweep_groups_across_files_but_not_within_one_file_or_below_the_length_floor(
     ) {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "tests/a.rs",
-            "fn exploration_graph() -> u32 {\n    1\n}\nfn new() -> u32 {\n    2\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[
+                (
+                    "tests/a.rs",
+                    "fn exploration_graph() -> u32 {\n    1\n}\nfn new() -> u32 {\n    2\n}\n",
+                ),
+                (
+                    "tests/b.rs",
+                    "fn exploration_graph() -> u32 {\n    3\n}\nfn new() -> u32 {\n    4\n}\n",
+                ),
+            ],
         );
-        write_fixture(
-            dir.path(),
-            "tests/b.rs",
-            "fn exploration_graph() -> u32 {\n    3\n}\nfn new() -> u32 {\n    4\n}\n",
-        );
-        let files = scan_tree(dir.path());
         let refs = all_fn_refs(&files);
         let clusters = find_same_named_helper_functions(&files, &refs);
         // Only `exploration_graph` (>= SAME_NAME_MIN_LEN) qualifies; `new` (a coincidental
@@ -9169,18 +9410,13 @@ mod tests {
 
     #[test]
     fn render_section_2_names_every_mandatory_sweep_and_every_cluster_id() {
-        let dir = tempfile::tempdir().expect("a scratch dir for the fixture tree");
-        write_fixture(
-            dir.path(),
-            "src/a.rs",
-            "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n",
+        let files = on_fixture(
+            scan_tree,
+            &[
+                ("src/a.rs", "fn add_one(n: u32) -> u32 {\n    n + 1\n}\n"),
+                ("src/z.rs", "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n"),
+            ],
         );
-        write_fixture(
-            dir.path(),
-            "src/z.rs",
-            "fn plus_one(m: u32) -> u32 {\n    m + 1\n}\n",
-        );
-        let files = scan_tree(dir.path());
         let clusters = build_catalog(&files);
         let lines: Vec<DupClusterLines> = clusters.iter().map(dup_cluster_lines).collect();
         let rendered = render_section_2(&files, &clusters, &lines);
@@ -9224,10 +9460,17 @@ mod tests {
     // The adversarial sample
     // -------------------------------------------------------------------------------------
 
-    /// Two 30-of-1000 draws are identical exactly when their seeds are.
+    /// `n` synthetic draw identities, one function each in its own file.
+    fn keys(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| sample_key(&format!("src/f{i}.rs"), "f", 0))
+            .collect()
+    }
+
+    /// Draws of the same population under `seed_a` and `seed_b` agree exactly when the seeds do.
     fn assert_draws_match_iff_seeds_do(seed_a: u64, seed_b: u64) {
-        let a = sample_indices(1000, 30, seed_a);
-        let b = sample_indices(1000, 30, seed_b);
+        let a = sample_indices(&keys(1000), 30, seed_a);
+        let b = sample_indices(&keys(1000), 30, seed_b);
         if seed_a == seed_b {
             assert_eq!(a, b);
         } else {
@@ -9237,11 +9480,12 @@ mod tests {
 
     rigger::test_cases! {
         sample_indices_is_deterministic_for_a_fixed_seed: assert_draws_match_iff_seeds_do(42, 42);
+        different_seeds_produce_different_draws: assert_draws_match_iff_seeds_do(1, 2);
     }
 
     #[test]
     fn sample_indices_returns_k_distinct_sorted_in_bounds_indices() {
-        let picked = sample_indices(500, 30, ADVERSARIAL_SEED);
+        let picked = sample_indices(&keys(500), 30, ADVERSARIAL_SEED);
         assert_eq!(picked.len(), 30);
         let distinct: HashSet<usize> = picked.iter().copied().collect();
         assert_eq!(distinct.len(), 30);
@@ -9253,17 +9497,41 @@ mod tests {
 
     #[test]
     fn sample_indices_caps_at_n_when_k_exceeds_it() {
-        let picked = sample_indices(5, 30, 7);
-        assert_eq!(picked, vec![0, 1, 2, 3, 4]);
+        assert_eq!(sample_indices(&keys(5), 30, 7), vec![0, 1, 2, 3, 4]);
     }
 
     #[test]
     fn sample_indices_of_an_empty_population_is_empty() {
-        assert!(sample_indices(0, 30, 7).is_empty());
+        assert!(sample_indices(&[], 30, 7).is_empty());
     }
 
-    rigger::test_cases! {
-        different_seeds_produce_different_draws: assert_draws_match_iff_seeds_do(1, 2);
+    /// The draw is stable under change: removing a function the draw did NOT pick leaves every
+    /// drawn function drawn, and removing a drawn one replaces only that one - the property that
+    /// keeps a hand reading pass valid across a cleanup, which a draw by population index lacked.
+    #[test]
+    fn removing_a_function_replaces_at_most_that_function_in_the_draw() {
+        let population = keys(500);
+        let drawn = |pop: &[String]| -> BTreeSet<String> {
+            sample_indices(pop, 30, ADVERSARIAL_SEED)
+                .into_iter()
+                .map(|i| pop[i].clone())
+                .collect()
+        };
+        let before = drawn(&population);
+        let undrawn = population.iter().position(|k| !before.contains(k)).unwrap();
+        let mut without_undrawn = population.clone();
+        without_undrawn.remove(undrawn);
+        assert_eq!(drawn(&without_undrawn), before);
+
+        let first_drawn = population.iter().position(|k| before.contains(k)).unwrap();
+        let mut without_drawn = population.clone();
+        let removed = without_drawn.remove(first_drawn);
+        let after = drawn(&without_drawn);
+        assert_eq!(after.len(), 30);
+        assert_eq!(
+            before.difference(&after).collect::<Vec<_>>(),
+            vec![&removed]
+        );
     }
 
     // -------------------------------------------------------------------------------------
@@ -9329,8 +9597,9 @@ mod tests {
             refs.len() > ADVERSARIAL_SAMPLE_SIZE,
             "expected far more than {ADVERSARIAL_SAMPLE_SIZE} functions in the real tree"
         );
-        let a = sample_indices(refs.len(), ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
-        let b = sample_indices(refs.len(), ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
+        let keys = sample_keys(real_files(), &refs);
+        let a = sample_indices(&keys, ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
+        let b = sample_indices(&keys, ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
         assert_eq!(a, b);
         assert_eq!(a.len(), ADVERSARIAL_SAMPLE_SIZE);
         assert!(a.iter().all(|&i| i < refs.len()));

@@ -30,6 +30,7 @@ use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
 use common::fixtures::edge_inferred;
+use common::fixtures::meta_replay_key;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
@@ -94,13 +95,6 @@ fn rows(db: &Path) -> Vec<Row> {
         .map(|r| r.unwrap())
         .collect();
     out
-}
-
-/// The replay key a row carries, if any - read out of the row's metadata JSON exactly as the store
-/// reads it.
-fn replay_key(row: &Row) -> Option<String> {
-    let meta: serde_json::Value = serde_json::from_str(&row.5).ok()?;
-    meta.get("replay_key")?.as_str().map(str::to_string)
 }
 
 fn derived(row: &Row) -> bool {
@@ -263,7 +257,7 @@ fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every
     for key in [KEY_A_DEF, KEY_A_REF, KEY_B_GEN1, KEY_B_GEN2, KEY_D_SPEC] {
         let kept: Vec<&Row> = after
             .iter()
-            .filter(|r| derived(r) && replay_key(r).as_deref() == Some(key))
+            .filter(|r| derived(r) && meta_replay_key(&r.5).as_deref() == Some(key))
             .collect();
         assert_eq!(
             kept.len(),
@@ -273,7 +267,7 @@ fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every
         );
         let latest = before
             .iter()
-            .filter(|r| derived(r) && replay_key(r).as_deref() == Some(key))
+            .filter(|r| derived(r) && meta_replay_key(&r.5).as_deref() == Some(key))
             .map(|r| r.0)
             .max()
             .expect("the seed recorded this key");
@@ -288,7 +282,7 @@ fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every
     let b_rows: Vec<String> = after
         .iter()
         .filter(|r| derived(r))
-        .filter_map(replay_key)
+        .filter_map(|r| meta_replay_key(&r.5))
         .filter(|k| k.starts_with("gc/src/b.rs@"))
         .collect();
     assert_eq!(
@@ -340,7 +334,7 @@ fn reset_derived_preserves_every_non_derived_event_and_every_keyless_derived_eve
     assert_eq!(
         after
             .iter()
-            .filter(|r| derived(r) && replay_key(r).is_none())
+            .filter(|r| derived(r) && meta_replay_key(&r.5).is_none())
             .count(),
         2,
         "a derived event carrying no replay key must survive - it names no content generation"

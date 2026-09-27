@@ -1029,7 +1029,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "19630db174eee206"
+    "content_hash": "1f5db1b81a838908"
   },
   {
     "file": "src/conductor.rs",
@@ -1101,7 +1101,15 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "20730e4ebce4ddbc"
+    "content_hash": "01e2fc4c7dd61627"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "regenerate_and_record",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "bf00801fe0e5488e"
   },
   {
     "file": "src/conductor.rs",
@@ -2693,7 +2701,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c2408a01b78b302e"
+    "content_hash": "1373cc8301baab13"
   },
   {
     "file": "src/conductor.rs",
@@ -4277,7 +4285,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f6fb71f38c2d63fa"
+    "content_hash": "7358d539a5385cc0"
   },
   {
     "file": "src/conductor.rs",
@@ -4317,7 +4325,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2d9d21f22b1d311c"
+    "content_hash": "b7de3a38f58d90fe"
   },
   {
     "file": "src/conductor.rs",
@@ -4365,7 +4373,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "27b033f99ed6a0de"
+    "content_hash": "ec6229031241e71a"
   },
   {
     "file": "src/conductor.rs",
@@ -7629,7 +7637,7 @@
     "is_test": false,
     "proposed_module": "main::dash_glue",
     "reason": "name contains \"dash_\" (dash registry/marker glue); grouped under `main::dash_glue`.",
-    "content_hash": "0d852570adf6ed9a"
+    "content_hash": "4e2dab238030a177"
   },
   {
     "file": "src/main.rs",
@@ -7725,7 +7733,7 @@
     "is_test": false,
     "proposed_module": "main::liveness",
     "reason": "name contains \"live\" (liveness/heartbeat reporting); grouped under `main::liveness`.",
-    "content_hash": "c1d942caef3d9420"
+    "content_hash": "3e3e39ad737c6757"
   },
   {
     "file": "src/main.rs",
@@ -7773,7 +7781,7 @@
     "is_test": false,
     "proposed_module": "main::commands",
     "reason": "name contains \"cmd_\" (CLI command handler); grouped under `main::commands`.",
-    "content_hash": "30effd9bc397c24a"
+    "content_hash": "4123394b48abca61"
   },
   {
     "file": "src/main.rs",
@@ -7869,7 +7877,31 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"reset_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "47fe382a7b702d4e"
+    "content_hash": "9a020a1c75d82802"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "reasons",
+    "is_test": false,
+    "proposed_module": "main::live_writer_facts",
+    "reason": "method inside `impl LiveWriterFacts`; grouped with its other `LiveWriterFacts` methods.",
+    "content_hash": "11815221ce30002e"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "driver_dead",
+    "is_test": false,
+    "proposed_module": "main::live_writer_facts",
+    "reason": "method inside `impl LiveWriterFacts`; grouped with its other `LiveWriterFacts` methods.",
+    "content_hash": "22f12898f7827d08"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "live_writer_facts",
+    "is_test": false,
+    "proposed_module": "main::liveness",
+    "reason": "name contains \"live\" (liveness/heartbeat reporting); grouped under `main::liveness`.",
+    "content_hash": "de898ee149e1ded8"
   },
   {
     "file": "src/main.rs",
@@ -7877,7 +7909,23 @@
     "is_test": false,
     "proposed_module": "main::store",
     "reason": "name contains \"reset_\" (store hygiene); grouped under `main::store`.",
-    "content_hash": "cb27274561bd8ed5"
+    "content_hash": "dc3c2610abec7751"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "close_landed_units",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "9ec2072bcc05e94d"
+  },
+  {
+    "file": "src/main.rs",
+    "name": "landed_units",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "901ad57b77fd9fb5"
   },
   {
     "file": "src/main.rs",
@@ -9973,7 +10021,7 @@
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0f91d93221d22852"
+    "content_hash": "02df97b377f76604"
   },
   {
     "file": "src/main.rs",
@@ -10745,19 +10793,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "merge_hung_attention_does_nothing_when_not_newly_hung",
+    "name": "assert_merge_hung_attention_leaves_untouched",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b752ea19f0ef38be"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "merge_hung_attention_defers_to_an_existing_budget_halt",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8bb97a5028f71d4c"
+    "content_hash": "6003946b638042f5"
   },
   {
     "file": "src/main.rs",

@@ -9255,14 +9255,9 @@ impl RunCtx<'_> {
                         // is the SAME durable marker `record_regenerate_pending` already wrote
                         // below, keyed by this same mixed-conflict episode's `retry` (unchanged
                         // since that write - no new conflict has been detected in between).
-                        let regen_sha = self.regenerate_conflicted_paths(wt, &st.name, &owed)?;
-                        self.record_regenerate_commit(
-                            &st.name,
-                            attempt,
-                            &retry.to_string(),
-                            &regen_sha,
-                        )?;
-                        clear_attempt(&self.conflict_regenerate_pending, &st.name, attempt);
+                        self.regenerate_and_record(wt, &st.name, attempt, &owed, |_| {
+                            retry.to_string()
+                        })?;
                         lock = self.integrate_mu.lock().unwrap();
                         // Loop back: the next pass's `merge_into_worktree` picks up the follow-up
                         // regenerate commit just made and fast-forwards it too, this time with
@@ -9302,10 +9297,13 @@ impl RunCtx<'_> {
                                 &all_regenerable,
                             )?;
                             drop(lock);
-                            let regen_sha =
-                                self.regenerate_conflicted_paths(wt, &st.name, &all_regenerable)?;
-                            self.record_regenerate_commit(&st.name, attempt, &episode, &regen_sha)?;
-                            clear_attempt(&self.conflict_regenerate_pending, &st.name, attempt);
+                            self.regenerate_and_record(
+                                wt,
+                                &st.name,
+                                attempt,
+                                &all_regenerable,
+                                |_| episode,
+                            )?;
                             lock = self.integrate_mu.lock().unwrap();
                             continue;
                         }
@@ -9944,18 +9942,32 @@ impl RunCtx<'_> {
         if owed.is_empty() {
             return Ok(false);
         }
-        let regen_sha = self.regenerate_conflicted_paths(wt, unit, &owed)?;
-        self.record_regenerate_commit(unit, attempt, &format!("resume-{regen_sha}"), &regen_sha)?;
-        // Clear the LIVE (in-process) pending entry now the regeneration ran - as after every
-        // regenerate_conflicted_paths call. Without it `regenerate_pending_for` would keep
-        // reporting the same paths owed forever THIS process (the durable log marker itself
-        // is deliberately never retracted - re-running the regenerate command on an
-        // already-regenerated, unchanged tree is an established idempotent no-op, see
-        // `u88c1-nothing-to-commit-guard-justified` - so a resumed process re-doing it once
-        // more is harmless), spinning `integrate_and_emit`'s own loop forever on a `Merged`
-        // outcome that never stops looking "owed".
-        clear_attempt(&self.conflict_regenerate_pending, unit, attempt);
+        self.regenerate_and_record(wt, unit, attempt, &owed, |sha| format!("resume-{sha}"))?;
         Ok(true)
+    }
+
+    /// The ONE regenerate / record / clear sequence every conflict-regeneration path runs:
+    /// regenerate `paths` in `wt`, record the resulting commit under the episode tag `tag`
+    /// derives from its sha (pairing it with its `record_regenerate_pending` before-record),
+    /// then clear the LIVE (in-process) pending entry. Without that clear
+    /// `regenerate_pending_for` would keep reporting the same paths owed forever THIS process
+    /// (the durable log marker itself is deliberately never retracted - re-running the
+    /// regenerate command on an already-regenerated, unchanged tree is an established
+    /// idempotent no-op, see `u88c1-nothing-to-commit-guard-justified`), spinning
+    /// `integrate_and_emit`'s own loop forever on a `Merged` outcome that never stops looking
+    /// "owed".
+    fn regenerate_and_record(
+        &self,
+        wt: &Worktree,
+        unit: &str,
+        attempt: u32,
+        paths: &[String],
+        tag: impl FnOnce(&str) -> String,
+    ) -> Result<(), Error> {
+        let regen_sha = self.regenerate_conflicted_paths(wt, unit, paths)?;
+        self.record_regenerate_commit(unit, attempt, &tag(&regen_sha), &regen_sha)?;
+        clear_attempt(&self.conflict_regenerate_pending, unit, attempt);
+        Ok(())
     }
 
     /// The regenerable paths recorded so far (durably, [`STATUS_INTEGRATE_CONFLICT_REGEN`])
@@ -17121,38 +17133,15 @@ mod tests {
         // shape), must both survive - a `<` comparison that degenerated to `<=` would
         // wrongly let the second same-episode proposal supersede the first.
         let criterion = "the gadget module is implemented";
-        let cfg = supersede_cfg();
         let st = Store::open(":memory:").unwrap();
         let cid = criterion_stable_id(1, criterion);
         for id in ["u-sib-1", "u-sib-2"] {
-            st.append(
-                STREAM,
-                ExpectedRevision::Any,
-                &[Event::new(
-                    TYPE_UNIT_PROPOSED,
-                    serde_json::to_vec(&json!({
-                        "id": id,
-                        "agent": "worker",
-                        "criterion": criterion,
-                        "criterion_id": cid,
-                        "episode": "shared-episode",
-                        "gates": ["ok"],
-                    }))
-                    .unwrap(),
-                )],
-            )
-            .unwrap();
+            let mut data = proposal_data(id, criterion, &cid);
+            data["episode"] = json!("shared-episode");
+            st.append(STREAM, ExpectedRevision::Any, &[proposal_event(data, None)])
+                .unwrap();
         }
-
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, vec![criterion.to_string()]);
-        let ctx = RunCtx::for_test(&cfg, &deps);
-        let mut stages = seed_refine_dag(&deps.criteria);
-        let mut proposed: HashSet<String> = HashSet::new();
-        let integrated: HashSet<String> = HashSet::new();
-        let terminal: HashSet<String> = HashSet::new();
-        ctx.harvest_proposed(&mut stages, &mut proposed, &integrated, &terminal)
-            .unwrap();
+        let stages = harvest_seeded(&st, &[criterion]);
 
         for id in ["u-sib-1", "u-sib-2"] {
             assert!(
@@ -27771,7 +27760,6 @@ mod tests {
         // `a_budget_halt_stamps_an_attention_entry` above, whose blocking `Stub` driver
         // completes a run in one `run()` call and so cannot exercise a SECOND poll against an
         // still-halted, still-parked run).
-        use crate::driver::replay::ReplayDriver;
 
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -27789,14 +27777,8 @@ mod tests {
             );
         }
 
-        let st = Store::open(":memory:").unwrap();
-        crate::run_store::ensure_started(&st, &[]).unwrap();
-
-        let step = |st: &Store| {
-            let driver = ReplayDriver::new(st);
-            let deps = stub_deps(st, &driver, Vec::new());
-            run(&cfg, &deps).unwrap()
-        };
+        let st = started_store();
+        let step = |st: &Store| replay_step(&cfg, st);
 
         // Round 1: `w1`'s implementer is admitted (budget 0 -> 1) and parks unanswered; `w2`'s
         // is REFUSED (budget already spent) - the breaker trips, crossing both the budget halt
@@ -27947,18 +27929,11 @@ mod tests {
         // This test pins the OTHER half of that division: `run()` in isolation must stay
         // silent on it, so a future change does not silently reintroduce a second, competing
         // hung-detector inside `compute_attention` alongside main.rs's.
-        use crate::driver::replay::ReplayDriver;
 
         let cfg = one_gated_stage_cfg("u");
 
-        let st = Store::open(":memory:").unwrap();
-        crate::run_store::ensure_started(&st, &[]).unwrap();
-
-        let step = |st: &Store| {
-            let driver = ReplayDriver::new(st);
-            let deps = stub_deps(st, &driver, Vec::new());
-            run(&cfg, &deps).unwrap()
-        };
+        let st = started_store();
+        let step = |st: &Store| replay_step(&cfg, st);
 
         // Round 1: the implementer's attempt 0 is freshly parked - nothing crosses yet.
         let rs = step(&st);
@@ -28190,7 +28165,6 @@ mod tests {
         // (18 = 20 - 20/10); recording their results and stepping again folds them to
         // Integrated with NOTHING new to reserve, so the second call's before/after spawn
         // count is unchanged at 18 - already past, not a fresh crossing.
-        use crate::driver::replay::ReplayDriver;
 
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -28209,14 +28183,8 @@ mod tests {
             );
         }
 
-        let st = Store::open(":memory:").unwrap();
-        crate::run_store::ensure_started(&st, &[]).unwrap();
-
-        let step = |st: &Store| {
-            let driver = ReplayDriver::new(st);
-            let deps = stub_deps(st, &driver, Vec::new());
-            run(&cfg, &deps).unwrap()
-        };
+        let st = started_store();
+        let step = |st: &Store| replay_step(&cfg, st);
 
         // Call 1: all 18 disjoint units are ready at once and park together in one wave -
         // the crossing.

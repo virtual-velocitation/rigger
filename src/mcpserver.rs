@@ -722,18 +722,10 @@ impl<'a> Server<'a> {
             let frontier = crate::spawn::step_result(run_events)
                 .map_err(|e| ToolError::new(INTERNAL_ERROR, e.to_string()))?
                 .wave;
-            for w in &frontier {
-                let Some(path) = crate::liveness::marker_path(&self.scratch_root, &run_id, &w.id)
-                else {
-                    continue;
-                };
-                if let Ok(age) = std::fs::metadata(&path)
-                    .and_then(|md| md.modified())
-                    .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
-                {
-                    liveness_ages.insert(w.id.clone(), age);
-                }
-            }
+            liveness_ages =
+                crate::liveness::marker_ages(&self.scratch_root, &run_id, &frontier, now)
+                    .into_iter()
+                    .collect();
         }
 
         let view = crate::progress::consolidate(run_events, &prog_events, &liveness_ages, now)

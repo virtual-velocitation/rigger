@@ -701,8 +701,10 @@ fn strip_deleted_suffix(cwd: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::cleanup;
     use crate::test_support::sigterm_ignorer_in;
+    use crate::test_support::sleeper_in;
     use crate::test_support::wait_until;
     use std::process::{Child, Command as StdCommand};
 
@@ -741,15 +743,6 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             dir
         }
-    }
-
-    /// Spawn a long-lived `sleep` whose cwd is `dir`, so it appears in `/proc` rooted there.
-    fn sleeper_in(dir: &Path) -> Child {
-        StdCommand::new("sleep")
-            .arg("300")
-            .current_dir(dir)
-            .spawn()
-            .expect("spawn sleep")
     }
 
     /// Poll `child.try_wait()` until the process has exited or a generous timeout elapses;
@@ -1040,35 +1033,11 @@ mod tests {
         let repo = FakeRepo::new();
         let base = repo.base("scratch");
 
-        let mut inside = sigterm_ignorer_in(&base);
-        let mut outside = sleeper_in(&repo.root_path);
-
-        assert!(
-            wait_until(|| processes_rooted_under(&base)
-                .iter()
-                .any(|(pid, _)| *pid == inside.id())),
-            "precondition: the inside child is detected before the reap"
-        );
-
-        reap_processes_rooted_under(&base, &repo.tmp);
-
-        let inside_died = wait_for_exit(&mut inside);
-        // The outside sleeper must still be running; capture before cleanup.
-        let outside_alive = matches!(outside.try_wait(), Ok(None));
-
-        cleanup(&mut outside);
-        // Belt and braces: if the inside child somehow survived, do not leak it.
-        if !inside_died {
-            cleanup(&mut inside);
-        }
-
-        assert!(
-            inside_died,
-            "a SIGTERM-ignoring process rooted inside a valid base must be SIGKILLed"
-        );
-        assert!(
-            outside_alive,
-            "a process rooted OUTSIDE the base must survive the reap (safety boundary)"
+        assert_teardown_reaps_what_is_rooted_inside(
+            &base,
+            Some(&repo.root_path),
+            || reap_processes_rooted_under(&base, &repo.tmp),
+            "the reap of a valid base",
         );
     }
 

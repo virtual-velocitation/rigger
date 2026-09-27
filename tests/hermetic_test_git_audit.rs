@@ -156,21 +156,9 @@ fn ci_workflow_env_block_matches_the_runners_exported_git_identity_set() {
     let runner_script = repo_text(".cargo/pidns-runner.sh");
     let runner_block = parse_shell_assignments(&runner_script);
 
-    let workflow_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(".github")
-        .join("workflows")
-        .join("rust.yml");
-    let workflow_text = std::fs::read_to_string(&workflow_path).unwrap_or_else(|e| {
-        panic!(
-            "cannot read CI workflow at {}: {e}",
-            workflow_path.display()
-        )
-    });
+    let workflow_text = repo_text(".github/workflows/rust.yml");
     let workflow: serde_yaml::Value = serde_yaml::from_str(&workflow_text).unwrap_or_else(|e| {
-        panic!(
-            "CI workflow at {} is not valid YAML: {e}",
-            workflow_path.display()
-        )
+        panic!("CI workflow .github/workflows/rust.yml is not valid YAML: {e}")
     });
     let workflow_env = workflow
         .get("env")

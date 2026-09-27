@@ -682,7 +682,12 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              on it. It is read-only - safe to run any time just to look.\n",
             "- `rigger reset --runs` prunes dead-run rows and superseded edges out of \
              `graph.db`. It works over ANY event-store backend (the graph is always a local \
-             file); rerun it any time, especially before a large run.",
+             file); rerun it any time, especially before a large run. When no driver is alive \
+             (no `rigger step` holds the lock, no spawn awaits a result, no `run`/`serve` is \
+             registered), it also closes the current run's units whose branch work is already \
+             landed on `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the \
+             conductor mints, so `rigger status` stops reporting the finished run as working. \
+             It only appends; a live run is left untouched.",
             "- `rigger reset --derived` compacts `events.db`: it keeps the LATEST event per \
              replay key of each derived project-ingest type, deletes the superseded \
              duplicates, and vacuums so the file shrinks on disk. Every other event - every \

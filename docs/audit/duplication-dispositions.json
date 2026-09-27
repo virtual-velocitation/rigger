@@ -1,5 +1,20 @@
 [
   {
+    "id": "dup-d95a94647dcd",
+    "disposition": "not-a-duplicate",
+    "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity); the shared token shape is a one-line `format!`."
+  },
+  {
+    "id": "dup-088ec120e4ac",
+    "disposition": "not-a-duplicate",
+    "reason": "`sleeper_in` spawns a plain `sleep` that honours SIGTERM while `sigterm_ignorer_in` spawns a shell loop that traps and ignores it; the reaper tests need both behaviours."
+  },
+  {
+    "id": "dup-6faa030a03b7",
+    "disposition": "not-a-duplicate",
+    "reason": "`ids` lists a neighborhood view's node ids for a dash test while `light_reviewers_of` reads a review panel's light-tier roster; they share only the collect-into-a-Vec shape."
+  },
+  {
     "id": "dup-4841cf90306e",
     "disposition": "not-a-duplicate",
     "reason": "`usage` prints the CLI usage text to stderr while `print_scaffold_pointer` prints the post-setup starter-fleet pointer to stdout: one print call each, with different text and a different stream."
@@ -480,11 +495,6 @@
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
-    "id": "dup-0481ed780703",
-    "disposition": "not-a-duplicate",
-    "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id); the shared token shape is a one-line `format!`."
-  },
-  {
     "id": "dup-e6404599f437",
     "disposition": "not-a-duplicate",
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
@@ -658,16 +668,6 @@
     "id": "dup-17538867af44",
     "disposition": "not-a-duplicate",
     "reason": "Event-filter projections over different event types and fields (failed, integrated and escalated units; decisions; findings)."
-  },
-  {
-    "id": "dup-7a0ec0f1fd4b",
-    "disposition": "not-a-duplicate",
-    "reason": "`event_unit_id` extracts a unit id from a progress event while `replay_key` builds a compaction replay key from a different event shape."
-  },
-  {
-    "id": "dup-3439bf494b88",
-    "disposition": "not-a-duplicate",
-    "reason": "`sleeper_in` spawns a plain `sleep` that honours SIGTERM while `sigterm_ignorer_in` spawns a shell loop that traps and ignores it; the reaper tests need both behaviours."
   },
   {
     "id": "dup-3dd926889508",
@@ -853,11 +853,6 @@
     "id": "dup-f43cc4afc6a2",
     "disposition": "not-a-duplicate",
     "reason": "The two sides of the reclaim guard: a dirty worktree the workflow still declares is spared (and reclaimed once clean), while an undeclared dirty one is removed; different declared sets, outcomes and follow-up checks."
-  },
-  {
-    "id": "dup-9a077e3876ec",
-    "disposition": "not-a-duplicate",
-    "reason": "Scanner unit tests that each feed a different source shape and assert a different property (span, name, test flag, enclosing mods, advisory count); they share only the parse-then-assert idiom."
   },
   {
     "id": "dup-5bb2147904eb",

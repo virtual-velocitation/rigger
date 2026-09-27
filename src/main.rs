@@ -1603,7 +1603,10 @@ grounding noise without wiping the store: it deletes no\n                       
 event. reset itself does write the log once, on a store\n                              \
 still under the legacy basename namespace: the one-time\n                              \
 identity migration renames those streams and records one\n                              \
-DecisionMade before either mode prunes\n  \
+DecisionMade before either mode prunes. When no driver is\n                              \
+alive, it also closes the current run's units whose branch\n                              \
+work is landed on rigger-run, appending the UnitIntegrated\n                              \
+a hand landing never recorded\n  \
 rigger reset --derived      compact the EVENT LOG: keep the latest event per\n                              \
 replay key of each derived index type, delete the\n                              \
 superseded re-recordings, and vacuum so the file shrinks\n                              \
@@ -7398,28 +7401,17 @@ fn dash_read_liveness(
     scratch_root: &str,
     run_id: &str,
 ) -> std::collections::HashMap<String, u64> {
-    let mut ages = std::collections::HashMap::new();
-    if scratch_root.is_empty() {
-        return ages;
-    }
     let Ok(step) = spawn::step_result(events) else {
-        return ages;
+        return std::collections::HashMap::new();
     };
-    let now = std::time::SystemTime::now();
-    for w in &step.wave {
-        // A degenerate id (never a real spawn id rigger itself mints) has no marker path at
-        // all - skip it exactly like a marker that is absent for any other reason.
-        let Some(path) = rigger::liveness::marker_path(scratch_root, run_id, &w.id) else {
-            continue;
-        };
-        if let Ok(age) = std::fs::metadata(&path)
-            .and_then(|md| md.modified())
-            .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
-        {
-            ages.insert(w.id.clone(), age);
-        }
-    }
-    ages
+    rigger::liveness::marker_ages(
+        scratch_root,
+        run_id,
+        &step.wave,
+        std::time::SystemTime::now(),
+    )
+    .into_iter()
+    .collect()
 }
 
 /// Which registered instance a dash request ATTACHES to (spec 50, criterion 3), resolved from the
@@ -7850,25 +7842,13 @@ fn liveness_ages_for_wave(
     wave: &[spawn::WaveItem],
     now: std::time::SystemTime,
 ) -> std::collections::BTreeMap<String, u64> {
-    let mut ages = std::collections::BTreeMap::new();
     if repo.is_empty() {
-        return ages;
+        return std::collections::BTreeMap::new();
     }
     // A read-only report resolves the root without creating it: `rigger status` must never
     // conjure a scratch root, nor run the orphan-root reclaim that creating one does.
     let root = rigger::worktree::scratch_root_path_from_env(repo, workdir);
-    for w in wave {
-        let Some(path) = rigger::liveness::marker_path(&root, run_id, &w.id) else {
-            continue;
-        };
-        if let Ok(age) = std::fs::metadata(&path)
-            .and_then(|md| md.modified())
-            .map(|mtime| now.duration_since(mtime).map(|d| d.as_secs()).unwrap_or(0))
-        {
-            ages.insert(w.id.clone(), age);
-        }
-    }
-    ages
+    rigger::liveness::marker_ages(&root, run_id, wave, now)
 }
 
 /// Spec 94 CONSTRAINTS WALK's own empty-store text ("no run recorded; start one with `rigger
@@ -8520,7 +8500,7 @@ fn cmd_reset(args: &[String]) -> Res {
         migrate_identity_at(&loc)?;
     }
     if modes.runs {
-        reset_runs(&loc, &selection)?;
+        reset_runs(&loc, &selection, rigger::registry::default_dir().as_deref())?;
     }
     if modes.build_cache {
         // A pure filesystem reclaim over the scratch root, orthogonal to the event log and
@@ -9068,6 +9048,54 @@ fn refuse_derived_reset_if_live(
     selection: &StoreSelection,
     registry_dir: Option<&Path>,
 ) -> Res {
+    let backend = resolve_store(selection, &loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &loc.identity());
+    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
+    let reasons = live_writer_facts(loc, selection, registry_dir, &events)?.reasons();
+    if reasons.is_empty() {
+        return Ok(());
+    }
+    Err(live_writer_refusal(&reasons).into())
+}
+
+/// The four facts [`live_writer_reasons`] composes, gathered once so both consumers read the
+/// same probe: `reset --derived`'s refusal ([`refuse_derived_reset_if_live`]) and `reset
+/// --runs`'s dead-driver test ([`close_landed_units`]).
+struct LiveWriterFacts {
+    step_lock_held: bool,
+    live_units: std::collections::HashSet<String>,
+    in_flight_spawn_ids: Vec<String>,
+    driver_registrations: usize,
+}
+
+impl LiveWriterFacts {
+    fn reasons(&self) -> Vec<String> {
+        live_writer_reasons(
+            self.step_lock_held,
+            &self.live_units,
+            &self.in_flight_spawn_ids,
+            self.driver_registrations,
+        )
+    }
+
+    /// Nothing is driving the run: no `rigger step` holds the lock, no spawn awaits its result,
+    /// and no `run`/`serve` is registered for this store. A non-terminal unit alone is not a
+    /// driver - it is exactly what a dead driver leaves behind.
+    fn driver_dead(&self) -> bool {
+        !self.step_lock_held
+            && self.in_flight_spawn_ids.is_empty()
+            && self.driver_registrations == 0
+    }
+}
+
+/// Gather [`LiveWriterFacts`] over `events` (the whole run stream). IMPURE (a lock probe and an
+/// optional registry read) so the decisions built on it stay pure and unit-tested.
+fn live_writer_facts(
+    loc: &StoreLocation,
+    selection: &StoreSelection,
+    registry_dir: Option<&Path>,
+    events: &[Event],
+) -> Result<LiveWriterFacts, Box<dyn std::error::Error>> {
     // A non-blocking probe of the SAME advisory lock `rigger step` holds for its whole duration,
     // resolved at THIS STORE's own directory (never the process cwd) - `reset --derived` is run
     // from a nested worktree just as every other courier is (see `require_store_dir`), and a
@@ -9082,11 +9110,8 @@ fn refuse_derived_reset_if_live(
         Err(e) => return Err(e),
     };
 
-    let backend = resolve_store(selection, &loc.file("events.db"))?;
-    let store = Namespaced::new(backend.as_ref(), &loc.identity());
-    let events = store.read_stream(conductor::STREAM, 0, Direction::Forward)?;
-    let live_units = current_run_units(&events).live_branches;
-    let in_flight_spawn_ids: Vec<String> = spawn::step_result(runscope::current_run(&events))?
+    let live_units = current_run_units(events).live_branches;
+    let in_flight_spawn_ids: Vec<String> = spawn::step_result(runscope::current_run(events))?
         .wave
         .into_iter()
         .map(|w| w.id)
@@ -9114,16 +9139,12 @@ fn refuse_derived_reset_if_live(
         })
         .unwrap_or(0);
 
-    let reasons = live_writer_reasons(
+    Ok(LiveWriterFacts {
         step_lock_held,
-        &live_units,
-        &in_flight_spawn_ids,
+        live_units,
+        in_flight_spawn_ids,
         driver_registrations,
-    );
-    if reasons.is_empty() {
-        return Ok(());
-    }
-    Err(live_writer_refusal(&reasons).into())
+    })
 }
 
 /// `rigger reset --runs` (spec 21, unit 2) - drop the decisions and findings of every
@@ -9151,7 +9172,7 @@ fn refuse_derived_reset_if_live(
 /// ([`Projector::prune`]). ONE whole-stream forward read feeds the attribution AND the
 /// node-id lookup (the index-keying contract `run_attribution` documents - a filtered slice
 /// would misattribute); the derived node ids are then handed to the prune.
-fn reset_runs(loc: &StoreLocation, selection: &StoreSelection) -> Res {
+fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, registry_dir: Option<&Path>) -> Res {
     let backend = resolve_store(selection, &loc.file("events.db"))?;
     let store = Namespaced::new(backend.as_ref(), &loc.identity());
     // ONE whole-stream forward read: it feeds BOTH the attribution and the per-index node-id
@@ -9164,6 +9185,8 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection) -> Res {
     let boundary = superseded_edge_boundary(&events);
 
     let graph = Projector::open(&loc.file("graph.db"), &loc.identity())?;
+    let facts = live_writer_facts(loc, selection, registry_dir, &events)?;
+    close_landed_units(loc, &store, &graph, &events, &facts)?;
     let removed = graph.prune(&drop, boundary)?;
     // Compact the projection file so the prune reclaims DISK, not just rows (spec 46, criterion 3):
     // the deletes free pages inside graph.db that SQLite retains on a freelist, so without a VACUUM
@@ -9182,6 +9205,61 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection) -> Res {
         removed.nodes, removed.superseded_edges, reclaimed_bytes
     );
     Ok(())
+}
+
+/// Close the current run's hand-landed units: when nothing drives the run
+/// ([`LiveWriterFacts::driver_dead`]), record the `UnitIntegrated` the conductor never minted for
+/// every unit whose branch work is landed on the run branch
+/// ([`rigger::worktree::landed_branch_tip`]). A run the operator finished by hand otherwise
+/// stays "working" forever, because only the conductor mints that event and `rigger emit`
+/// refuses it. Appends only - no event is deleted or rewritten - and a live run is never
+/// touched.
+fn close_landed_units(
+    loc: &StoreLocation,
+    store: &dyn EventStore,
+    graph: &Projector,
+    events: &[Event],
+    facts: &LiveWriterFacts,
+) -> Res {
+    if !facts.driver_dead() {
+        return Ok(());
+    }
+    let run = ledger::project(runscope::current_run(events))?;
+    let repo = loc.repo_root();
+    let landed = landed_units(&run, |branch| {
+        rigger::worktree::landed_branch_tip(&repo, branch, RUN_BRANCH)
+    });
+    let run_id = runscope::current_run_id(events).unwrap_or_default();
+    let closing = landed
+        .iter()
+        .map(|(unit, tip)| {
+            let body = serde_json::json!({"id": unit, "commit": tip, "by": "operator"});
+            let ev = Event::new(ledger::TYPE_UNIT_INTEGRATED, serde_json::to_vec(&body)?);
+            Ok(ev.with_meta(runscope::META_RUN_ID, &run_id))
+        })
+        .collect::<Result<Vec<Event>, serde_json::Error>>()?;
+    rigger::ingest::append_and_fold_batch(store, Some(graph), conductor::STREAM, &closing)?;
+    for (unit, tip) in &landed {
+        println!(
+            "reset --runs: closed unit {unit:?} of run {run_id}: no driver is alive and its \
+             branch tip {tip} is landed on {RUN_BRANCH}, so its UnitIntegrated is recorded \
+             (by operator)"
+        );
+    }
+    Ok(())
+}
+
+/// The units of `run` that have not integrated but whose branch `landed_tip` reports landed,
+/// as `(unit, tip)` in the run's unit order. Pure over the injected landing oracle.
+fn landed_units(
+    run: &RunState,
+    landed_tip: impl Fn(&str) -> Option<String>,
+) -> Vec<(String, String)> {
+    run.units
+        .values()
+        .filter(|u| u.status != ledger::Status::Integrated && !u.branch.is_empty())
+        .filter_map(|u| landed_tip(&u.branch).map(|tip| (u.id.clone(), tip)))
+        .collect()
 }
 
 /// The retention cutoff `rigger reset --runs` reclaims superseded structural edges beneath
@@ -14618,6 +14696,7 @@ blocks integration no matter what the static gates say.\n",
 mod tests {
     use super::*;
     use crate::test_support::assert_driver_guards_a_null_step;
+    use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::ev;
     use crate::test_support::git_init_quiet;
     use crate::test_support::git_ok;
@@ -19266,58 +19345,11 @@ mod tests {
         let swept = scratch_root.join("agent-scratch");
         std::fs::create_dir_all(&swept).unwrap();
 
-        let mut inside = Command::new("sh")
-            .arg("-c")
-            .arg("trap '' TERM; while :; do sleep 1; done")
-            .current_dir(&swept)
-            .spawn()
-            .expect("spawn inside child");
-        let mut outside = Command::new("sleep")
-            .arg("300")
-            .current_dir(&root_path)
-            .spawn()
-            .expect("spawn outside child");
-
-        let detected = (0..200).any(|_| {
-            if rigger::reap::processes_rooted_under(&swept)
-                .iter()
-                .any(|(pid, _)| *pid == inside.id())
-            {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            false
-        });
-        assert!(
-            detected,
-            "precondition: the inside child is rooted in the swept dir"
-        );
-
-        reap_then_remove_dir(&swept, &scratch_root);
-
-        let inside_died = (0..200).any(|_| {
-            if matches!(inside.try_wait(), Ok(Some(_))) {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-            false
-        });
-        let outside_alive = matches!(outside.try_wait(), Ok(None));
-
-        let _ = outside.kill();
-        let _ = outside.wait();
-        if !inside_died {
-            let _ = inside.kill();
-            let _ = inside.wait();
-        }
-
-        assert!(
-            inside_died,
-            "a process rooted in the swept scratch dir must be reaped before its removal"
-        );
-        assert!(
-            outside_alive,
-            "a process rooted OUTSIDE the swept dir must survive the sweep (safety boundary)"
+        assert_teardown_reaps_what_is_rooted_inside(
+            &swept,
+            Some(&root_path),
+            || reap_then_remove_dir(&swept, &scratch_root),
+            "the scratch-area sweep",
         );
         assert!(
             !swept.exists(),
@@ -23159,44 +23191,48 @@ mod tests {
         );
     }
 
-    /// Spec 69, criterion 5, signal 2's hung-liveness half (review u69c5 round 3, cause
-    /// genuine-defect): `merge_hung_attention` must not fire when there is nothing newly
-    /// hung, proving the crossing gate, not just the merge mechanics, since a wrong-way bug
-    /// here would restamp on every call exactly like the defect this round fixes.
-    #[test]
-    fn merge_hung_attention_does_nothing_when_not_newly_hung() {
-        let attention = vec![ledger::AttentionEntry::unit_scoped(
-            ledger::ATTENTION_ESCALATED,
-            "u",
-            "escalated after exhausting remediation",
-        )];
-        let merged = merge_hung_attention(attention.clone(), false, || {
-            panic!("the reason closure must not run when nothing is newly hung")
+    /// `merge_hung_attention` leaves `attention` untouched - and never evaluates the
+    /// (potentially expensive) reason closure - given `newly_hung`, `why` naming the case.
+    fn assert_merge_hung_attention_leaves_untouched(
+        attention: Vec<ledger::AttentionEntry>,
+        newly_hung: bool,
+        why: &str,
+    ) {
+        let merged = merge_hung_attention(attention.clone(), newly_hung, || {
+            panic!("the reason closure must not run: {why}")
         });
-        assert_eq!(
-            merged, attention,
-            "attention must be untouched when newly_hung is false"
-        );
+        assert_eq!(merged, attention, "attention must be untouched: {why}");
     }
 
-    /// A budget halt this same call takes precedence over a co-occurring hung-liveness halt
-    /// (mirroring the SAME precedence the `halted` wire field already gives the budget
-    /// breaker over its own hung fallback, just above this function's call site in
-    /// `cmd_step`) - proving the merge does NOT stamp a second `halted` entry, and does not
-    /// evaluate the (potentially expensive) reason closure, when one is already present.
-    #[test]
-    fn merge_hung_attention_defers_to_an_existing_budget_halt() {
-        let attention = vec![ledger::AttentionEntry::run_scoped(
-            ledger::ATTENTION_HALTED,
-            "budget exhausted: 1/1 spawns",
-        )];
-        let merged = merge_hung_attention(attention.clone(), true, || {
-            panic!("the reason closure must not run when a halted entry already exists")
-        });
-        assert_eq!(
-            merged, attention,
-            "a budget halt already on the channel must not be joined by a second halted entry"
-        );
+    rigger::test_cases! {
+        /// Spec 69, criterion 5, signal 2's hung-liveness half (review u69c5 round 3, cause
+        /// genuine-defect): `merge_hung_attention` must not fire when there is nothing newly
+        /// hung, proving the crossing gate, not just the merge mechanics, since a wrong-way bug
+        /// here would restamp on every call exactly like the defect this round fixes.
+        merge_hung_attention_does_nothing_when_not_newly_hung:
+            assert_merge_hung_attention_leaves_untouched(
+                vec![ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_ESCALATED,
+                    "u",
+                    "escalated after exhausting remediation",
+                )],
+                false,
+                "nothing is newly hung",
+            );
+        /// A budget halt this same call takes precedence over a co-occurring hung-liveness halt
+        /// (mirroring the SAME precedence the `halted` wire field already gives the budget
+        /// breaker over its own hung fallback, just above this function's call site in
+        /// `cmd_step`) - proving the merge does NOT stamp a second `halted` entry, and does not
+        /// evaluate the reason closure, when one is already present.
+        merge_hung_attention_defers_to_an_existing_budget_halt:
+            assert_merge_hung_attention_leaves_untouched(
+                vec![ledger::AttentionEntry::run_scoped(
+                    ledger::ATTENTION_HALTED,
+                    "budget exhausted: 1/1 spawns",
+                )],
+                true,
+                "a halted entry already exists",
+            );
     }
 
     /// The merge must land the hung-liveness `halted` entry in its CANONICAL position

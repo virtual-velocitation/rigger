@@ -28,13 +28,13 @@
 mod common;
 use common::fixtures::NoopDriver;
 
+use common::repo::repo_text;
 use rigger::conductor::{run, Deps, STREAM};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::ledger::{Status, TYPE_UNIT_STARTED};
 use serde_json::Value;
-use std::path::Path;
 
 /// The exact real-world input spec 80's Goal names: specs/62's own criterion 1, extracted through
 /// the SAME public `extract_criteria` call every real consumer (`main.rs::load_criteria`,
@@ -43,9 +43,7 @@ use std::path::Path;
 /// three-line text; this helper only replays that call so the value this file drives through the
 /// conductor is the genuine current output, not a copy that could silently drift from it.
 fn real_spec_62_criterion_one() -> String {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("specs/62-dash-marker-lifecycle.md");
-    let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text = repo_text("specs/62-dash-marker-lifecycle.md");
     let criteria = rigger::spec::extract_criteria(&text);
     assert!(
         !criteria.is_empty(),

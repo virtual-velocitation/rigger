@@ -29,7 +29,7 @@ use common::git::git_ok;
 use std::collections::HashSet;
 use std::path::Path;
 
-use common::fixtures::{cleanup, sigterm_ignorer_in};
+use common::fixtures::{assert_teardown_reaps_what_is_rooted_inside, cleanup, sigterm_ignorer_in};
 use common::git::init_repo;
 use common::wait_until;
 use rigger::gate::STORE_FENCE_SUFFIX;
@@ -80,34 +80,24 @@ fn reaps_before_removing(teardown: Teardown, name: &str, target: fn(&str) -> Str
     let target_path = Path::new(&target(dir.to_str().unwrap())).to_path_buf();
     std::fs::create_dir_all(&target_path).unwrap();
 
-    let mut child = sigterm_ignorer_in(&target_path);
-    assert!(
-        wait_until(|| processes_rooted_under(&target_path)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process is rooted in {} before the teardown runs",
-        target_path.display()
+    assert_teardown_reaps_what_is_rooted_inside(
+        &target_path,
+        None,
+        || match teardown {
+            Teardown::UnitRemove => wt.remove().expect("remove() itself must still succeed"),
+            Teardown::ReviewDiscard => {
+                drop(wt); // the Rust struct is gone but the worktree registration + dir survive.
+                Worktree::discard(
+                    repo_path.to_str().unwrap(),
+                    dir.to_str().unwrap(),
+                    &branch,
+                    scratch_path.to_str().unwrap(),
+                )
+                .expect("discard() itself must still succeed");
+            }
+        },
+        why,
     );
-
-    match teardown {
-        Teardown::UnitRemove => wt.remove().expect("remove() itself must still succeed"),
-        Teardown::ReviewDiscard => {
-            drop(wt); // the Rust struct is gone but the worktree registration + dir survive.
-            Worktree::discard(
-                repo_path.to_str().unwrap(),
-                dir.to_str().unwrap(),
-                &branch,
-                scratch_path.to_str().unwrap(),
-            )
-            .expect("discard() itself must still succeed");
-        }
-    }
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        cleanup(&mut child);
-    }
-    assert!(died, "{why}");
     assert!(
         !target_path.exists(),
         "{} is still reclaimed once its rooted process is reaped",
@@ -237,34 +227,22 @@ fn sweep_terminal_reaps_a_process_rooted_in_a_terminal_worktree_through_the_real
         .expect("create a worktree whose tip is already an ancestor of rigger-run");
     let done_path = Path::new(&done_dir).to_path_buf();
 
-    let mut child = sigterm_ignorer_in(&done_path);
-    assert!(
-        wait_until(|| processes_rooted_under(&done_path)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())),
-        "precondition: the fixture process is rooted in the terminal worktree before \
-         sweep_terminal() runs"
-    );
-
-    let removed = sweep_terminal(
-        &repo_str,
-        &root,
-        "rigger-run",
-        &HashSet::new(),
-        &HashSet::new(),
-        &[],
-    )
-    .expect("sweep_terminal must still succeed");
-    assert_eq!(removed, 1, "the merged terminal worktree is swept");
-
-    let died = wait_until(|| matches!(child.try_wait(), Ok(Some(_))));
-    if !died {
-        cleanup(&mut child);
-    }
-    assert!(
-        died,
-        "sweep_terminal must reap a process rooted inside a terminal worktree (SIGTERM then \
-         SIGKILL) BEFORE removing its dir, driven through the real public API"
+    assert_teardown_reaps_what_is_rooted_inside(
+        &done_path,
+        None,
+        || {
+            let removed = sweep_terminal(
+                &repo_str,
+                &root,
+                "rigger-run",
+                &HashSet::new(),
+                &HashSet::new(),
+                &[],
+            )
+            .expect("sweep_terminal must still succeed");
+            assert_eq!(removed, 1, "the merged terminal worktree is swept");
+        },
+        "sweep_terminal, driven through the real public API",
     );
     assert!(
         !done_path.exists(),
