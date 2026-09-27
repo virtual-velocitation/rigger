@@ -1990,6 +1990,24 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 2 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
+    "id": "dup-8f7714cdea58",
+    "classification": "near",
+    "sites": [
+      {
+        "file": "src/conductor.rs",
+        "name": "has_type",
+        "content_hash": "5e513e6b5ecbe3f9"
+      },
+      {
+        "file": "tests/run_scoping_survives_periphery.rs",
+        "name": "count_of_type",
+        "content_hash": "50fe95123cc6ed11"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: src/conductor.rs, tests/run_scoping_survives_periphery.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
     "id": "dup-0e5893f29c61",
     "classification": "near",
     "sites": [
@@ -6044,12 +6062,17 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-5bd15f79c86e",
+    "id": "dup-393a5896d8c6",
     "classification": "near",
     "sites": [
       {
         "file": "src/conductor.rs",
         "name": "approving_stub",
+        "content_hash": "b0fb4cdb213ad8c7"
+      },
+      {
+        "file": "src/conductor.rs",
+        "name": "rejecting_stub",
         "content_hash": "b0fb4cdb213ad8c7"
       },
       {
@@ -6062,146 +6085,18 @@
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
-    "id": "dup-21ffc2583c7a",
+    "id": "dup-c0c1027128b1",
     "classification": "near",
     "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "per_unit_adjudicator_reject_blocks_integration_and_escalates",
-        "content_hash": "989ba6ae132e163c"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "approval_on_the_final_permitted_attempt_integrates_a_per_unit_stage",
-        "content_hash": "0d5b7f45b37b9100"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "approval_on_the_final_permitted_attempt_integrates_a_standalone_review_stage",
-        "content_hash": "205c33abb2f57d3d"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "unparseable_adjudicator_output_blocks_integration",
-        "content_hash": "98a69e7915f6214e"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 4 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-e34fe623ab91",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "a_higher_max_retries_gives_more_attempts_before_escalation",
-        "content_hash": "fe0bb2eddfd0e3fa"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "escalation_run",
-        "content_hash": "a7b0b0d2f8756a68"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-363503d15360",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "mid_spawn_crash_escalates_without_aborting_the_run",
-        "content_hash": "c68747f06af71eb6"
-      },
       {
         "file": "src/conductor.rs",
         "name": "a_newly_escalated_unit_stamps_an_attention_entry",
-        "content_hash": "965495d37900fbef"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-b422bc52ac0f",
-    "classification": "near",
-    "sites": [
+        "content_hash": "08ea897832a6db8a"
+      },
       {
         "file": "src/conductor.rs",
         "name": "a_budget_halt_stamps_an_attention_entry",
-        "content_hash": "b9800c6981d21755"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_budget_halt_surfaces_its_reason_on_the_run_state",
-        "content_hash": "9ad7d7ab182991f7"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-5295abd0febb",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps",
-        "content_hash": "c42bdb57a7e3da10"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "an_escalation_does_not_restamp_attention_on_a_resumed_process",
-        "content_hash": "2ece5c8905a31421"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "a_second_failure_recurs_and_a_third_also_stalls_the_frontier",
-        "content_hash": "755d9c23bbabd54e"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-3ac274dc1b96",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "budget_breaker_stops_the_run_after_the_first_wave",
-        "content_hash": "4c4e87e07287a50e"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "budget_exhaustion_aborts_the_task",
-        "content_hash": "4b5f820f2c341f6f"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "manual_stage_pauses_while_an_auto_stage_integrates",
-        "content_hash": "ae7e360b2cf99f02"
-      }
-    ],
-    "proposed_home": "conductor::support (consolidate these 3 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-2e15fb3b9367",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "name": "the_spawn_budget_folds_from_recorded_spawn_requests_across_steps",
-        "content_hash": "6f0d1c70e9654207"
-      },
-      {
-        "file": "src/conductor.rs",
-        "name": "the_pre_wave_breaker_trips_only_on_a_new_over_budget_spawn",
-        "content_hash": "418718248a54e7aa"
+        "content_hash": "9466f476090f34d8"
       }
     ],
     "proposed_home": "conductor::support (consolidate these 2 sites into one function in this file)",
@@ -8301,44 +8196,6 @@
       }
     ],
     "proposed_home": "dash::support (consolidate these 2 sites into one function in this file)",
-    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
-  },
-  {
-    "id": "dup-3f680da704c9",
-    "classification": "near",
-    "sites": [
-      {
-        "file": "src/dash.rs",
-        "name": "the_page_layout_cannot_scroll_the_body_horizontally",
-        "content_hash": "aad5148a963a7209"
-      },
-      {
-        "file": "src/dash.rs",
-        "name": "the_landing_view_lists_instances_and_threads_the_attach_selector",
-        "content_hash": "3084b69297f01150"
-      },
-      {
-        "file": "tests/checkin_mutation_diff_base_periphery.rs",
-        "name": "the_shipped_mutation_gate_guards_on_rigger_run_base_never_a_merge_base",
-        "content_hash": "f3ff49e3f09ecb9d"
-      },
-      {
-        "file": "tests/console_palette_periphery.rs",
-        "name": "the_served_console_page_sends_the_scrub_position_to_palette_commands_when_not_live",
-        "content_hash": "5150fcc6015ab76e"
-      },
-      {
-        "file": "tests/projections_stay_local.rs",
-        "name": "the_graph_and_progress_projections_open_via_the_local_sqlite_constructors",
-        "content_hash": "5150fcc6015ab76e"
-      },
-      {
-        "file": "tests/store_resolution.rs",
-        "name": "the_single_resolver_exists_and_the_old_per_command_helper_is_retired",
-        "content_hash": "f3ff49e3f09ecb9d"
-      }
-    ],
-    "proposed_home": "a new shared module (sites span 5 files: src/dash.rs, tests/checkin_mutation_diff_base_periphery.rs, tests/console_palette_periphery.rs, tests/projections_stay_local.rs, tests/store_resolution.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
   },
   {
@@ -12386,6 +12243,25 @@
     "note": "mandatory sweep: same-named helper function defined independently in 2+ files - 3 site(s), collected mechanically regardless of the Jaccard pass (spec 85 Design)"
   },
   {
+    "id": "dup-71839f37e2e1",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/checkin_mutation_diff_base_periphery.rs",
+        "name": "the_shipped_mutation_gate_guards_on_rigger_run_base_never_a_merge_base",
+        "content_hash": "f3ff49e3f09ecb9d"
+      },
+      {
+        "file": "tests/store_resolution.rs",
+        "name": "the_single_resolver_exists_and_the_old_per_command_helper_is_retired",
+        "content_hash": "f3ff49e3f09ecb9d"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/checkin_mutation_diff_base_periphery.rs, tests/store_resolution.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
+  },
+  {
     "id": "dup-59674298e70d",
     "classification": "near",
     "sites": [
@@ -15130,6 +15006,25 @@
     ],
     "proposed_home": "a new shared module (sites span 2 files: tests/console_palette_periphery.rs, tests/console_position_model_periphery.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)"
+  },
+  {
+    "id": "dup-ba75141201f2",
+    "classification": "exact",
+    "sites": [
+      {
+        "file": "tests/console_palette_periphery.rs",
+        "name": "the_served_console_page_sends_the_scrub_position_to_palette_commands_when_not_live",
+        "content_hash": "5150fcc6015ab76e"
+      },
+      {
+        "file": "tests/projections_stay_local.rs",
+        "name": "the_graph_and_progress_projections_open_via_the_local_sqlite_constructors",
+        "content_hash": "5150fcc6015ab76e"
+      }
+    ],
+    "proposed_home": "a new shared module (sites span 2 files: tests/console_palette_periphery.rs, tests/projections_stay_local.rs)",
+    "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
+    "disposition": "not-a-duplicate"
   },
   {
     "id": "dup-f99638d3db96",

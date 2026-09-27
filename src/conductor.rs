@@ -14001,6 +14001,23 @@ mod tests {
             }
         }
 
+        /// Whether `events` hold any event of type `type_`.
+        pub(super) fn has_type(events: &[Event], type_: &str) -> bool {
+            events.iter().any(|e| e.type_ == type_)
+        }
+
+        /// Run `cfg` under `driver` over a fresh store with the stub dependencies; returns the
+        /// run state and the whole log.
+        pub(super) fn run_logged(cfg: &Config, driver: &dyn AgentDriver) -> (RunState, Vec<Event>) {
+            let st = Store::open(":memory:").unwrap();
+            let deps = stub_deps(&st, driver, Vec::new());
+            let rs = run(cfg, &deps).unwrap();
+            let events = st
+                .read_all(0, Direction::Forward, &Filter::default())
+                .unwrap();
+            (rs, events)
+        }
+
         /// A stage map keyed by each stage's own name.
         pub(super) fn stage_map(
             stages: impl IntoIterator<Item = Stage>,
@@ -27106,42 +27123,52 @@ mod tests {
         );
     }
 
-    #[test]
-    fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
-        // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
-        // failure: it blocks THAT unit's integration and remediates, escalating after
-        // the retry bound - EVEN THOUGH the unit's static gates pass. The shared Stub
-        // returns {"verdict":"reject"} for every spawn, but only the adjudicator's
-        // output gates; the implementer keeps producing a green diff each retry.
+    /// A per-unit `implement` stage (worker, static gate `ok` that passes, merge on pass) under a
+    /// `defaults.review` panel of `lens` + `adversary` + `adj`, with `max_retries` when set.
+    fn per_unit_panel_cfg(max_retries: Option<u32>) -> Config {
         let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("adversary".into(), agent("adversary"));
-        cfg.agents.insert("adj".into(), agent("adj"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        for id in ["worker", "lens", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
         cfg.workflow.defaults.review = config::ReviewPanel {
             lenses: vec!["lens".into()],
             adversary: "adversary".into(),
             adjudicator: "adj".into(),
             tiers: None,
         };
+        if let Some(bound) = max_retries {
+            cfg.workflow.defaults.max_retries = bound;
+        }
         cfg.workflow.stages.insert(
             "implement".into(),
             Stage {
                 name: "implement".into(),
                 agent: "worker".into(),
-                gates: vec!["ok".into()], // static gates pass
+                gates: vec!["ok".into()],
                 on_pass: "merge".into(),
                 ..Default::default()
             },
         );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
+        cfg
+    }
+
+    /// A driver whose every spawn outputs `{"verdict":"reject","issues":[]}` - only the
+    /// adjudicator's output gates, so the implementer keeps producing a green diff each retry.
+    fn rejecting_stub() -> Stub {
+        Stub {
             output: r#"{"verdict":"reject","issues":[]}"#.into(),
             ..Stub::new()
-        };
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        }
+    }
+
+    #[test]
+    fn per_unit_adjudicator_reject_blocks_integration_and_escalates() {
+        // A rejecting adjudicator on the per-unit review (§3.2) is treated like a gate
+        // failure: it blocks THAT unit's integration and remediates, escalating after
+        // the retry bound - EVEN THOUGH the unit's static gates pass.
+        let driver = rejecting_stub();
+        let (rs, events) = run_logged(&per_unit_panel_cfg(None), &driver);
         assert_eq!(
             rs.units["implement"].status,
             ledger::Status::Escalated,
@@ -27158,17 +27185,12 @@ mod tests {
             order.iter().any(|a| a == "adj"),
             "the adjudicator must have rendered the gating verdict"
         );
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
         assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            !has_type(&events, ledger::TYPE_UNIT_INTEGRATED),
             "a rejected unit must emit no UnitIntegrated"
         );
         assert!(
-            events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            has_type(&events, ledger::TYPE_UNIT_FAILED),
             "a rejected unit must record a UnitFailed as it remediates"
         );
     }
@@ -27272,41 +27294,13 @@ mod tests {
         // a higher value buys more attempts, a lower value escalates earlier, and the
         // review path is identical in every case.
 
-        // Build a config whose only knob that varies is `defaults.max_retries`, run it
-        // against an always-rejecting adjudicator, and return (worker spawns, final
-        // status, final attempts). The review panel (lenses + adversary + adjudicator)
-        // and gates are byte-identical across every bound, so this isolates the depth.
-        fn escalation_run(max_retries: u32) -> (u32, ledger::Status, u32) {
-            let mut cfg = Config::default();
-            cfg.agents.insert("worker".into(), agent("worker"));
-            cfg.agents.insert("lens".into(), agent("lens"));
-            cfg.agents.insert("adversary".into(), agent("adversary"));
-            cfg.agents.insert("adj".into(), agent("adj"));
-            cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
-            cfg.workflow.defaults.review = config::ReviewPanel {
-                lenses: vec!["lens".into()],
-                adversary: "adversary".into(),
-                adjudicator: "adj".into(),
-                tiers: None,
-            };
-            cfg.workflow.defaults.max_retries = max_retries;
-            cfg.workflow.stages.insert(
-                "implement".into(),
-                Stage {
-                    name: "implement".into(),
-                    agent: "worker".into(),
-                    gates: vec!["ok".into()],
-                    on_pass: "merge".into(),
-                    ..Default::default()
-                },
-            );
-            let st = Store::open(":memory:").unwrap();
-            let driver = Stub {
-                output: r#"{"verdict":"reject","issues":[]}"#.into(),
-                ..Stub::new()
-            };
-            let deps = stub_deps(&st, &driver, Vec::new());
-            let rs = run(&cfg, &deps).unwrap();
+        // Run a config whose only knob that varies is `defaults.max_retries` against an
+        // always-rejecting adjudicator, and return (worker spawns, final status, final
+        // attempts). The review panel (lenses + adversary + adjudicator) and gates are
+        // byte-identical across every bound, so this isolates the depth.
+        let escalation_run = |max_retries: u32| -> (u32, ledger::Status, u32) {
+            let driver = rejecting_stub();
+            let (rs, _events) = run_logged(&per_unit_panel_cfg(Some(max_retries)), &driver);
             let order = driver.call_order.lock().unwrap().clone();
             let worker_spawns = order.iter().filter(|a| *a == "worker").count() as u32;
             (
@@ -27314,7 +27308,7 @@ mod tests {
                 rs.units["implement"].status,
                 rs.units["implement"].attempts,
             )
-        }
+        };
 
         // A higher bound (6) gives the unit SIX attempts to converge before escalating -
         // exactly six worker spawns, not three.
@@ -27650,6 +27644,38 @@ mod tests {
         }
     }
 
+    /// The retry bound the final-attempt-approval fixtures run under.
+    const FINAL_ATTEMPT_CAP: u32 = 3;
+
+    /// Under `cfg` (retry bound [`FINAL_ATTEMPT_CAP`]) an adjudicator that rejects every earlier
+    /// attempt and approves the FINAL permitted one must INTEGRATE unit `unit` (`kind` names it),
+    /// never escalate it.
+    fn assert_final_attempt_approval_integrates(cfg: &Config, unit: &str, kind: &str) {
+        let driver = AdjApprovesOnAttempt::new("adj", FINAL_ATTEMPT_CAP - 1);
+        let (rs, events) = run_logged(cfg, &driver);
+        assert_eq!(
+            rs.units[unit].status,
+            ledger::Status::Integrated,
+            "{kind} approved on its FINAL permitted attempt must integrate, not escalate"
+        );
+        // The adjudicator ran once per attempt up to and including the final permitted
+        // one (0..CAP), so the approve genuinely landed on attempt == cap, not earlier.
+        let adj_attempts = driver.adj_attempts.lock().unwrap().clone();
+        assert_eq!(
+            adj_attempts,
+            (0..FINAL_ATTEMPT_CAP).collect::<Vec<u32>>(),
+            "the adjudicator must have rejected every earlier attempt and approved the last; attempts were {adj_attempts:?}"
+        );
+        assert!(
+            !has_type(&events, ledger::TYPE_UNIT_ESCALATED),
+            "{kind} approved must record NO UnitEscalated"
+        );
+        assert!(
+            has_type(&events, ledger::TYPE_UNIT_INTEGRATED),
+            "{kind} approved must record a UnitIntegrated"
+        );
+    }
+
     #[test]
     fn approval_on_the_final_permitted_attempt_integrates_a_per_unit_stage() {
         // Gap 16 (spec 06 unit 3): an adjudicator APPROVE on a unit's FINAL permitted
@@ -27660,61 +27686,10 @@ mod tests {
         // approve that still integrates proves the verdict is folded BEFORE the attempt
         // counter - the exact regression that recorded unit-2's approved-on-attempt-6
         // review as UnitFailed/UnitEscalated (design-intent Gap 16).
-        const CAP: u32 = 3;
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("adversary".into(), agent("adversary"));
-        cfg.agents.insert("adj".into(), agent("adj"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
-        cfg.workflow.defaults.review = config::ReviewPanel {
-            lenses: vec!["lens".into()],
-            adversary: "adversary".into(),
-            adjudicator: "adj".into(),
-            tiers: None,
-        };
-        cfg.workflow.defaults.max_retries = CAP;
-        cfg.workflow.stages.insert(
-            "implement".into(),
-            Stage {
-                name: "implement".into(),
-                agent: "worker".into(),
-                gates: vec!["ok".into()],
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = AdjApprovesOnAttempt::new("adj", CAP - 1);
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(
-            rs.units["implement"].status,
-            ledger::Status::Integrated,
-            "an approval on the FINAL permitted attempt must integrate the unit, not escalate it"
-        );
-        // The adjudicator ran once per attempt up to and including the final permitted
-        // one (0..CAP), so the approve genuinely landed on attempt == cap, not earlier.
-        let adj_attempts = driver.adj_attempts.lock().unwrap().clone();
-        assert_eq!(
-            adj_attempts,
-            (0..CAP).collect::<Vec<u32>>(),
-            "the adjudicator must have rejected every earlier attempt and approved the last; attempts were {adj_attempts:?}"
-        );
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
-            "an approved unit must record NO UnitEscalated"
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
-            "an approved unit must record a UnitIntegrated"
+        assert_final_attempt_approval_integrates(
+            &per_unit_panel_cfg(Some(FINAL_ATTEMPT_CAP)),
+            "implement",
+            "a per-unit stage",
         );
     }
 
@@ -27811,13 +27786,12 @@ mod tests {
         // recorded UnitFailed/UnitEscalated with the APPROVE text quoted under a "review
         // rejected:" header; the fixed conductor integrates. Same discriminating driver as
         // the per-unit test, on the standalone-review path.
-        const CAP: u32 = 3;
         let mut cfg = Config::default();
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("adversary".into(), agent("adversary"));
-        cfg.agents.insert("adj".into(), agent("adj"));
+        for id in ["lens", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
         cfg.workflow.gates.insert("ok".into(), gate_def("true")); // static gates pass
-        cfg.workflow.defaults.max_retries = CAP;
+        cfg.workflow.defaults.max_retries = FINAL_ATTEMPT_CAP;
         cfg.workflow.stages.insert(
             "review".into(),
             Stage {
@@ -27832,40 +27806,12 @@ mod tests {
                 ..Default::default()
             },
         );
-        let st = Store::open(":memory:").unwrap();
-        let driver = AdjApprovesOnAttempt::new("adj", CAP - 1);
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(
-            rs.units["review"].status,
-            ledger::Status::Integrated,
-            "a standalone review approved on its FINAL permitted attempt must integrate, not escalate"
-        );
-        let adj_attempts = driver.adj_attempts.lock().unwrap().clone();
-        assert_eq!(
-            adj_attempts,
-            (0..CAP).collect::<Vec<u32>>(),
-            "the adjudicator must have rejected every earlier attempt and approved the last; attempts were {adj_attempts:?}"
-        );
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED),
-            "an approved standalone review must record NO UnitEscalated"
-        );
-        assert!(
-            events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
-            "an approved standalone review must record a UnitIntegrated"
-        );
+        assert_final_attempt_approval_integrates(&cfg, "review", "a standalone review");
     }
 
-    #[test]
-    fn mid_spawn_crash_escalates_without_aborting_the_run() {
+    /// Run one stage `s` whose every spawn crashes mid-flight: the run completes (Ok), never
+    /// aborted, and the crashing unit escalates. Returns the run state.
+    fn crashing_spawn_run() -> RunState {
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
         cfg.workflow.stages.insert(
@@ -27876,15 +27822,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        let st = Store::open(":memory:").unwrap();
         let driver = Stub {
             fail_spawn: true,
             ..Stub::new()
         };
-        let deps = stub_deps(&st, &driver, Vec::new());
-        // The run completes (Ok), not aborted; the crashing unit escalates.
-        let rs = run(&cfg, &deps).unwrap();
+        let (rs, _events) = run_logged(&cfg, &driver);
         assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
+        rs
+    }
+
+    #[test]
+    fn mid_spawn_crash_escalates_without_aborting_the_run() {
+        let rs = crashing_spawn_run();
         // spec 69, criterion 3 (the cause wire): a mid-spawn crash's UnitFailed carries
         // the closed-vocabulary "infra:spawn" cause, never a gate or review label.
         assert_eq!(
@@ -27899,24 +27848,7 @@ mod tests {
         // exhausts remediation and goes terminal without integrating must surface it on
         // the wire, naming the unit - not just fold it into `units[..].status`, which an
         // orchestrator would have to poll every unit to notice.
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.stages.insert(
-            "s".into(),
-            Stage {
-                name: "s".into(),
-                agent: "a".into(),
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            fail_spawn: true,
-            ..Stub::new()
-        };
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
-        assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
+        let rs = crashing_spawn_run();
         // The default remediation bound (MAX_RETRIES=3) means the escalating attempt is
         // ALSO the unit's third failure - a recurrence - so both entries fire together;
         // that co-occurrence is correct, not a double-report of the same signal.
@@ -27939,30 +27871,40 @@ mod tests {
         );
     }
 
+    /// A stage `name` run by agent `a`, gated by `ok`, needing `needs`.
+    fn gated_by_ok(name: &str, needs: &[&str]) -> Stage {
+        Stage {
+            name: name.into(),
+            agent: "a".into(),
+            needs: needs.iter().map(|n| n.to_string()).collect(),
+            gates: vec!["ok".into()],
+            ..Default::default()
+        }
+    }
+
+    /// A config with agent `a`, a passing gate `ok` and `stages`.
+    fn agent_a_cfg(stages: Vec<Stage>) -> Config {
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages = stage_map(stages);
+        cfg
+    }
+
+    /// A run over budget 1 with two independent units: one spawn is admitted, the second is
+    /// refused and trips the breaker, so the run halts with the spent count over the budget.
+    fn budget_of_one_over_two_units() -> RunState {
+        let mut cfg = agent_a_cfg(vec![gated_by_ok("w1", &[]), gated_by_ok("w2", &[])]);
+        cfg.workflow.defaults.budget = 1;
+        run_logged(&cfg, &Stub::new()).0
+    }
+
     #[test]
     fn a_budget_halt_stamps_an_attention_entry() {
         // Spec 69, criterion 5, signal 2 (run HALTED with reason): mirrors `budget_halt`
         // exactly (same reason string), but on the generic `attention` channel a driver
         // can render without a field-by-field halt/escalated/attention triage.
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.defaults.budget = 1;
-        for name in ["w1", "w2"] {
-            cfg.workflow.stages.insert(
-                name.into(),
-                Stage {
-                    name: name.into(),
-                    agent: "a".into(),
-                    gates: vec!["ok".into()],
-                    ..Default::default()
-                },
-            );
-        }
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let rs = budget_of_one_over_two_units();
         // A budget of 1 is ALSO its own final tenth (1 - 1/10 = 1, floored): the one
         // admitted spawn crosses both signals in the same call, deterministically ordered
         // (`halted` before `budget-final-tenth`) - a genuine co-occurrence, not a
@@ -28068,6 +28010,30 @@ mod tests {
         );
     }
 
+    /// A fresh store whose run has begun.
+    fn started_store() -> Store {
+        let st = Store::open(":memory:").unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
+        st
+    }
+
+    /// One stepwise `rigger step`-shaped call of `cfg` over `st`: a FRESH process each call (a
+    /// new `ReplayDriver`/`Deps`, a real resume boundary).
+    fn replay_step(cfg: &Config, st: &Store) -> RunState {
+        let driver = crate::driver::replay::ReplayDriver::new(st);
+        let deps = stub_deps(st, &driver, Vec::new());
+        run(cfg, &deps).unwrap()
+    }
+
+    /// Record a failed result for unit `unit`'s implementer attempt `attempt`.
+    fn fail_implementer(st: &Store, unit: &str, attempt: u32) {
+        crate::spawn_store::record_result(
+            st,
+            &crate::spawn::SpawnResult::failed(spawn_id(unit, ROLE_IMPLEMENTER, attempt), "boom"),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps() {
         // Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" -
@@ -28087,44 +28053,12 @@ mod tests {
         // `prior_events` instead (see `compute_attention`'s doc comment), which correctly
         // stays absent through round 1 (never emitted, nothing tripped) and so still stamps
         // in round 2, the call that is the genuine first crossing.
-        use crate::driver::replay::ReplayDriver;
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.defaults.budget = 1;
-        cfg.workflow.stages.insert(
-            "s1".into(),
-            Stage {
-                name: "s1".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "s2".into(),
-            Stage {
-                name: "s2".into(),
-                agent: "a".into(),
-                needs: vec!["s1".into()],
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-
-        let st = Store::open(":memory:").unwrap();
-        crate::run_store::ensure_started(&st, &[]).unwrap();
-
-        let step = |st: &Store| {
-            let driver = ReplayDriver::new(st);
-            let deps = stub_deps(st, &driver, Vec::new());
-            run(&cfg, &deps).unwrap()
-        };
+        let cfg = budget_of_one_over_a_chain();
+        let st = started_store();
 
         // Round 1: only s1 is ready (s2 needs it). s1's implementer parks; nothing else is
         // ready to refuse, so the budget is reached (0->1) WITHOUT tripping the breaker.
-        let rs = step(&st);
+        let rs = replay_step(&cfg, &st);
         assert!(
             rs.budget_halt.is_none(),
             "reaching the budget count with nothing left to refuse must not halt yet"
@@ -28151,7 +28085,7 @@ mod tests {
         // Round 2: s1 integrates, s2 becomes ready, and is REFUSED (budget already spent) -
         // the call that GENUINELY halts, and must stamp exactly once even though the spawn
         // count itself did not change this call.
-        let rs = step(&st);
+        let rs = replay_step(&cfg, &st);
         assert_eq!(
             rs.budget_halt.as_deref(),
             Some("budget exhausted: 1/1 spawns"),
@@ -28233,6 +28167,20 @@ mod tests {
         );
     }
 
+    /// A config whose one gated unit `u` retries up to `max_retries`, over a started store whose
+    /// first stepwise call freshly parks attempt 0 - crossing no threshold.
+    fn parked_unit_u(max_retries: u32) -> (Config, Store) {
+        let mut cfg = agent_a_cfg(vec![gated_by_ok("u", &[])]);
+        cfg.workflow.defaults.max_retries = max_retries;
+        let st = started_store();
+        let rs = replay_step(&cfg, &st);
+        assert!(
+            rs.attention.is_empty(),
+            "parking the first attempt crosses no threshold"
+        );
+        (cfg, st)
+    }
+
     #[test]
     fn an_escalation_does_not_restamp_attention_on_a_resumed_process() {
         // Spec 69, criterion 5, signal 1: "once per threshold crossing" must hold across a
@@ -28243,48 +28191,15 @@ mod tests {
         // resume-safe: `prior` is freshly re-derived from the log at the START of every
         // call, so an escalation already in the log before this call is already in `prior`
         // and never counts as newly crossed).
-        use crate::driver::replay::ReplayDriver;
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        //
         // max_retries=1: `remediate(0, 1)` already decides Escalate on the FIRST failure
         // (prior_attempts=0 -> attempts=1 -> `1 >= 1`), so one recorded failure is enough
         // to drive the unit straight to Escalated with no second park.
-        cfg.workflow.defaults.max_retries = 1;
-        cfg.workflow.stages.insert(
-            "u".into(),
-            Stage {
-                name: "u".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-
-        let st = Store::open(":memory:").unwrap();
-        crate::run_store::ensure_started(&st, &[]).unwrap();
-
-        let step = |st: &Store| {
-            let driver = ReplayDriver::new(st);
-            let deps = stub_deps(st, &driver, Vec::new());
-            run(&cfg, &deps).unwrap()
-        };
-
-        // Round 1: attempt 0 is freshly parked - nothing crosses yet.
-        let rs = step(&st);
-        assert!(
-            rs.attention.is_empty(),
-            "parking the first attempt crosses no threshold"
-        );
+        let (cfg, st) = parked_unit_u(1);
 
         // Attempt 0 fails: `max_retries=1` escalates the unit on THIS single failure.
-        crate::spawn_store::record_result(
-            &st,
-            &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 0), "boom"),
-        )
-        .unwrap();
-        let rs = step(&st);
+        fail_implementer(&st, "u", 0);
+        let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].status, ledger::Status::Escalated);
         assert_eq!(
             rs.attention,
@@ -28296,10 +28211,10 @@ mod tests {
             "the step that escalates the unit must stamp exactly one escalated entry"
         );
 
-        // Round 3: a FRESH process (a new `ReplayDriver`/`Deps`, a real resume boundary) with
-        // NOTHING new recorded. The unit is already escalated from round 2, folded into
-        // THIS call's own `prior` at the top of `run()` - so it must NOT re-stamp.
-        let rs = step(&st);
+        // Round 3: a FRESH process with NOTHING new recorded. The unit is already escalated
+        // from round 2, folded into THIS call's own `prior` at the top of `run()` - so it must
+        // NOT re-stamp.
+        let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].status, ledger::Status::Escalated);
         assert!(
             rs.attention.is_empty(),
@@ -28348,45 +28263,11 @@ mod tests {
         // max_retries=5 (> 3) so the unit is STILL retrying (not yet escalated) once its
         // attempt count passes the stalled-frontier threshold of 2 - the scenario the
         // signal exists to catch.
-        use crate::driver::replay::ReplayDriver;
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.defaults.max_retries = 5;
-        cfg.workflow.stages.insert(
-            "u".into(),
-            Stage {
-                name: "u".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-
-        let st = Store::open(":memory:").unwrap();
-        crate::run_store::ensure_started(&st, &[]).unwrap();
-
-        let step = |st: &Store| {
-            let driver = ReplayDriver::new(st);
-            let deps = stub_deps(st, &driver, Vec::new());
-            run(&cfg, &deps).unwrap()
-        };
-
-        // Round 1: nothing recorded yet - the implementer's attempt 0 is freshly parked.
-        let rs = step(&st);
-        assert!(
-            rs.attention.is_empty(),
-            "parking the first attempt crosses no threshold"
-        );
+        let (cfg, st) = parked_unit_u(5);
 
         // Attempt 0 fails: the FIRST failure is not a recurrence.
-        crate::spawn_store::record_result(
-            &st,
-            &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 0), "boom"),
-        )
-        .unwrap();
-        let rs = step(&st);
+        fail_implementer(&st, "u", 0);
+        let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 1);
         assert!(
             rs.attention.is_empty(),
@@ -28395,12 +28276,8 @@ mod tests {
         );
 
         // Attempt 1 fails: the SECOND failure - a recurrence.
-        crate::spawn_store::record_result(
-            &st,
-            &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 1), "boom"),
-        )
-        .unwrap();
-        let rs = step(&st);
+        fail_implementer(&st, "u", 1);
+        let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 2);
         assert_eq!(
             rs.attention,
@@ -28415,12 +28292,8 @@ mod tests {
         // Attempt 2 fails: the THIRD failure - another recurrence, AND now the unit
         // already carries more than two recorded (failed) results while a fresh attempt
         // (#3) is still parked awaiting an answer: the stalled-frontier signal.
-        crate::spawn_store::record_result(
-            &st,
-            &crate::spawn::SpawnResult::failed(spawn_id("u", ROLE_IMPLEMENTER, 2), "boom"),
-        )
-        .unwrap();
-        let rs = step(&st);
+        fail_implementer(&st, "u", 2);
+        let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 3);
         assert_eq!(
             rs.attention,
@@ -28446,7 +28319,7 @@ mod tests {
         // may re-stamp - "once per threshold crossing" (spec 69) means the crossing, not
         // the still-exceeded state, so a step that folds no new result must be silent even
         // though the unit remains both a recurring failure AND stalled.
-        let rs = step(&st);
+        let rs = replay_step(&cfg, &st);
         assert_eq!(rs.units["u"].attempts, 3);
         assert!(
             rs.attention.is_empty(),
@@ -28580,86 +28453,35 @@ mod tests {
         );
     }
 
+    /// A spawn budget of 1 over two stages in sequential waves (`s2` needs `s1`).
+    fn budget_of_one_over_a_chain() -> Config {
+        let mut cfg = agent_a_cfg(vec![gated_by_ok("s1", &[]), gated_by_ok("s2", &["s1"])]);
+        cfg.workflow.defaults.budget = 1;
+        cfg
+    }
+
     #[test]
     fn budget_breaker_stops_the_run_after_the_first_wave() {
         // Two stages in sequential waves (s2 needs s1). A spawn budget of 1 lets the
         // first wave run, then the pre-wave checkBudget (§4.4, §8) trips before the
         // second wave: s1 integrates, s2 never starts.
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.defaults.budget = 1;
-        cfg.workflow.stages.insert(
-            "s1".into(),
-            Stage {
-                name: "s1".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "s2".into(),
-            Stage {
-                name: "s2".into(),
-                agent: "a".into(),
-                needs: vec!["s1".into()],
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let (rs, events) = run_logged(&budget_of_one_over_a_chain(), &Stub::new());
         assert_eq!(rs.units["s1"].status, ledger::Status::Integrated);
         assert!(
             !rs.units.contains_key("s2"),
             "the budget breaker must stop the second wave before it starts"
         );
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
         assert!(
-            events.iter().any(|e| e.type_ == TYPE_BUDGET_EXHAUSTED),
+            has_type(&events, TYPE_BUDGET_EXHAUSTED),
             "tripping the budget must emit a BudgetExhausted event"
         );
     }
 
     #[test]
     fn budget_exhaustion_aborts_the_task() {
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.defaults.budget = 1;
-        cfg.workflow.stages.insert(
-            "s1".into(),
-            Stage {
-                name: "s1".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "s2".into(),
-            Stage {
-                name: "s2".into(),
-                agent: "a".into(),
-                needs: vec!["s1".into()],
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        run(&cfg, &deps).unwrap();
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
+        let (_rs, events) = run_logged(&budget_of_one_over_a_chain(), &Stub::new());
         assert!(
-            events.iter().any(|e| e.type_ == TYPE_TASK_ABORTED),
+            has_type(&events, TYPE_TASK_ABORTED),
             "a tripped budget must abort the task"
         );
     }
@@ -28668,28 +28490,8 @@ mod tests {
     fn a_budget_halt_surfaces_its_reason_on_the_run_state() {
         // Gap 13: a budget halt is a RUNTIME condition of this run process, surfaced on the
         // returned RunState so `rigger step` can print a halt reason DISTINCT from
-        // convergence (and the thin driver stops loudly on it). budget=1, two independent
-        // units: one spawn is admitted, the second is refused and trips the breaker, so the
-        // run halts with the spent count over the budget.
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.defaults.budget = 1;
-        for name in ["w1", "w2"] {
-            cfg.workflow.stages.insert(
-                name.into(),
-                Stage {
-                    name: name.into(),
-                    agent: "a".into(),
-                    gates: vec!["ok".into()],
-                    ..Default::default()
-                },
-            );
-        }
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        // convergence (and the thin driver stops loudly on it).
+        let rs = budget_of_one_over_two_units();
         assert_eq!(
             rs.budget_halt.as_deref(),
             Some("budget exhausted: 1/1 spawns"),
@@ -28724,6 +28526,26 @@ mod tests {
         );
     }
 
+    /// A fresh process's `RunCtx` under a spawn budget of 2 over a log in which earlier steps
+    /// parked one implementer spawn request per unit of `recorded`, handed to `check`.
+    fn with_budget_two_ctx_over(recorded: &[&str], check: impl FnOnce(&RunCtx)) {
+        let st = Store::open(":memory:").unwrap();
+        for unit in recorded {
+            spawn_store::park_in_run(
+                &st,
+                &crate::spawn::test_request(unit, unit, ROLE_IMPLEMENTER, 0, "p"),
+                "",
+            )
+            .unwrap();
+        }
+        let mut cfg = Config::default();
+        cfg.agents.insert("a".into(), agent("a"));
+        cfg.workflow.defaults.budget = 2;
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, Vec::new());
+        check(&RunCtx::for_test(&cfg, &deps));
+    }
+
     #[test]
     fn the_spawn_budget_folds_from_recorded_spawn_requests_across_steps() {
         // Criterion 5 / finding adv-budget-per-step-resets: the spawn count is DERIVED
@@ -28732,61 +28554,42 @@ mod tests {
         // a fresh process building a new RunCtx folds them from the log, so with a budget
         // of 2 it already sees the budget spent - even though its own counter started at
         // zero.
-        let st = Store::open(":memory:").unwrap();
-        spawn_store::park_in_run(
-            &st,
-            &crate::spawn::test_request("u1", "u1", ROLE_IMPLEMENTER, 0, "p"),
-            "",
-        )
-        .unwrap();
-        spawn_store::park_in_run(
-            &st,
-            &crate::spawn::test_request("u2", "u2", ROLE_IMPLEMENTER, 0, "p"),
-            "",
-        )
-        .unwrap();
+        with_budget_two_ctx_over(&["u1", "u2"], |c| {
+            // The cumulative count was folded from the log, not reset to 0.
+            assert_eq!(
+                c.spawns.load(Ordering::SeqCst),
+                2,
+                "the spawn count seeds from spawn::recorded(log).len(), not 0"
+            );
+            // At-budget with only recorded spawns pending, the pre-wave breaker HOLDS: the
+            // already-paid work must still be free to replay and integrate on this step.
+            assert!(
+                !c.budget_tripped(),
+                "a resume whose frontier is entirely replays does not pre-wave-trip"
+            );
 
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.defaults.budget = 2;
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let c = RunCtx::for_test(&cfg, &deps);
+            // A REPLAY of an already-recorded spawn is admitted for FREE (its budget was
+            // spent when it was first parked) and is never counted again.
+            assert!(
+                c.reserve_spawn(&spawn_id("u1", ROLE_IMPLEMENTER, 0)),
+                "a recorded spawn replays free, even at budget"
+            );
+            assert_eq!(
+                c.spawns.load(Ordering::SeqCst),
+                2,
+                "a replay does not re-spend the budget"
+            );
 
-        // The cumulative count was folded from the log, not reset to 0.
-        assert_eq!(
-            c.spawns.load(Ordering::SeqCst),
-            2,
-            "the spawn count seeds from spawn::recorded(log).len(), not 0"
-        );
-        // At-budget with only recorded spawns pending, the pre-wave breaker HOLDS: the
-        // already-paid work must still be free to replay and integrate on this step.
-        assert!(
-            !c.budget_tripped(),
-            "a resume whose frontier is entirely replays does not pre-wave-trip"
-        );
-
-        // A REPLAY of an already-recorded spawn is admitted for FREE (its budget was
-        // spent when it was first parked) and is never counted again.
-        assert!(
-            c.reserve_spawn(&spawn_id("u1", ROLE_IMPLEMENTER, 0)),
-            "a recorded spawn replays free, even at budget"
-        );
-        assert_eq!(
-            c.spawns.load(Ordering::SeqCst),
-            2,
-            "a replay does not re-spend the budget"
-        );
-
-        // A genuinely NEW spawn is refused: the log already holds `budget` spawns.
-        assert!(
-            !c.reserve_spawn(&spawn_id("u3", ROLE_IMPLEMENTER, 0)),
-            "a new spawn beyond the folded count is refused"
-        );
-        assert!(
-            c.budget_broke.load(Ordering::SeqCst),
-            "refusing a new over-budget spawn trips the breaker"
-        );
+            // A genuinely NEW spawn is refused: the log already holds `budget` spawns.
+            assert!(
+                !c.reserve_spawn(&spawn_id("u3", ROLE_IMPLEMENTER, 0)),
+                "a new spawn beyond the folded count is refused"
+            );
+            assert!(
+                c.budget_broke.load(Ordering::SeqCst),
+                "refusing a new over-budget spawn trips the breaker"
+            );
+        });
     }
 
     #[test]
@@ -28794,36 +28597,23 @@ mod tests {
         // The pre-wave breaker must not abort a resume before it can replay its recorded
         // work, but it MUST trip once this process admits a NEW spawn that reaches the
         // budget (spawns > base_spawns). One spawn recorded, budget 2.
-        let st = Store::open(":memory:").unwrap();
-        spawn_store::park_in_run(
-            &st,
-            &crate::spawn::test_request("u1", "u1", ROLE_IMPLEMENTER, 0, "p"),
-            "",
-        )
-        .unwrap();
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.defaults.budget = 2;
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let c = RunCtx::for_test(&cfg, &deps);
-
-        // Nothing new spent yet - the recorded frontier is free to replay.
-        assert!(
-            !c.budget_tripped(),
-            "one recorded spawn under a budget of 2 does not pre-wave-trip"
-        );
-        // Admit one NEW spawn: there is room, and it reaches the budget.
-        assert!(
-            c.reserve_spawn(&spawn_id("u2", ROLE_IMPLEMENTER, 0)),
-            "there is room for one new spawn"
-        );
-        // Now the pre-wave breaker trips: this process spent a new spawn to reach the cap.
-        assert!(
-            c.budget_tripped(),
-            "reaching the budget via a new spawn trips the pre-wave breaker"
-        );
+        with_budget_two_ctx_over(&["u1"], |c| {
+            // Nothing new spent yet - the recorded frontier is free to replay.
+            assert!(
+                !c.budget_tripped(),
+                "one recorded spawn under a budget of 2 does not pre-wave-trip"
+            );
+            // Admit one NEW spawn: there is room, and it reaches the budget.
+            assert!(
+                c.reserve_spawn(&spawn_id("u2", ROLE_IMPLEMENTER, 0)),
+                "there is room for one new spawn"
+            );
+            // Now the pre-wave breaker trips: this process spent a new spawn to reach the cap.
+            assert!(
+                c.budget_tripped(),
+                "reaching the budget via a new spawn trips the pre-wave breaker"
+            );
+        });
     }
 
     #[test]
@@ -29143,32 +28933,12 @@ mod tests {
     fn manual_stage_pauses_while_an_auto_stage_integrates() {
         // An explicitly-manual stage pauses (ManualReview, not integrated); an
         // independent default-autonomy stage in the same wave integrates (§4.3).
-        let mut cfg = Config::default();
-        cfg.agents.insert("a".into(), agent("a"));
-        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
-        cfg.workflow.stages.insert(
-            "manual".into(),
-            Stage {
-                name: "manual".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                autonomy: "manual".into(),
-                ..Default::default()
-            },
-        );
-        cfg.workflow.stages.insert(
-            "auto".into(),
-            Stage {
-                name: "auto".into(),
-                agent: "a".into(),
-                gates: vec!["ok".into()],
-                ..Default::default()
-            },
-        );
-        let st = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let manual = Stage {
+            autonomy: "manual".into(),
+            ..gated_by_ok("manual", &[])
+        };
+        let cfg = agent_a_cfg(vec![manual, gated_by_ok("auto", &[])]);
+        let (rs, events) = run_logged(&cfg, &Stub::new());
         assert_eq!(
             rs.units["auto"].status,
             ledger::Status::Integrated,
@@ -29184,11 +28954,8 @@ mod tests {
             ledger::Status::Escalated,
             "the manual stage is paused, not failed"
         );
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
         assert!(
-            events.iter().any(|e| e.type_ == TYPE_MANUAL_REVIEW),
+            has_type(&events, TYPE_MANUAL_REVIEW),
             "a manual stage must emit ManualReview"
         );
     }
@@ -29679,9 +29446,7 @@ mod tests {
             .read_all(0, Direction::Forward, &Filter::default())
             .unwrap();
         assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            !has_type(&events, ledger::TYPE_UNIT_INTEGRATED),
             "an `on_pass: none` stage must emit no UnitIntegrated"
         );
     }
@@ -34260,25 +34025,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        let st = Store::open(":memory:").unwrap();
         let driver = Stub {
             output: "the diff looks fine to me, ship it".into(), // no JSON verdict
             ..Stub::new()
         };
-        let deps = stub_deps(&st, &driver, Vec::new());
-        let rs = run(&cfg, &deps).unwrap();
+        let (rs, events) = run_logged(&cfg, &driver);
         assert_eq!(
             rs.units["review"].status,
             ledger::Status::Escalated,
             "an unparseable adjudicator verdict must NOT approve (fail-closed)"
         );
-        let events = st
-            .read_all(0, Direction::Forward, &Filter::default())
-            .unwrap();
         assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED),
+            !has_type(&events, ledger::TYPE_UNIT_INTEGRATED),
             "an unapproved unit must emit no UnitIntegrated"
         );
     }

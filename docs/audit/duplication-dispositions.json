@@ -148,5 +148,15 @@
     "id": "dup-1772cddc48d8",
     "disposition": "not-a-duplicate",
     "reason": "Both are one-line public probes over the one shared `read_workflow_probe` read, each declaring the single workflow key its own caller needs (`store:` versus `defaults:`); the read itself is already one definition."
+  },
+  {
+    "id": "dup-71839f37e2e1",
+    "disposition": "not-a-duplicate",
+    "reason": "Both pin source text but over different artifacts and contracts - the shipped mutation gate command's RIGGER_RUN_BASE diff base versus main.rs's single event-log resolver - and share only the contains/not-contains assertion shape."
+  },
+  {
+    "id": "dup-ba75141201f2",
+    "disposition": "not-a-duplicate",
+    "reason": "Both pin source text but over different artifacts and contracts - the served console page's palette scrub position versus main.rs's local graph and progress projection constructors - and share only the contains assertion shape."
   }
 ]
