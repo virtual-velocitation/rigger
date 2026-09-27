@@ -9248,14 +9248,9 @@ impl RunCtx<'_> {
                         // is the SAME durable marker `record_regenerate_pending` already wrote
                         // below, keyed by this same mixed-conflict episode's `retry` (unchanged
                         // since that write - no new conflict has been detected in between).
-                        let regen_sha = self.regenerate_conflicted_paths(wt, &st.name, &owed)?;
-                        self.record_regenerate_commit(
-                            &st.name,
-                            attempt,
-                            &retry.to_string(),
-                            &regen_sha,
-                        )?;
-                        clear_attempt(&self.conflict_regenerate_pending, &st.name, attempt);
+                        self.regenerate_and_record(wt, &st.name, attempt, &owed, |_| {
+                            retry.to_string()
+                        })?;
                         lock = self.integrate_mu.lock().unwrap();
                         // Loop back: the next pass's `merge_into_worktree` picks up the follow-up
                         // regenerate commit just made and fast-forwards it too, this time with
@@ -9295,10 +9290,13 @@ impl RunCtx<'_> {
                                 &all_regenerable,
                             )?;
                             drop(lock);
-                            let regen_sha =
-                                self.regenerate_conflicted_paths(wt, &st.name, &all_regenerable)?;
-                            self.record_regenerate_commit(&st.name, attempt, &episode, &regen_sha)?;
-                            clear_attempt(&self.conflict_regenerate_pending, &st.name, attempt);
+                            self.regenerate_and_record(
+                                wt,
+                                &st.name,
+                                attempt,
+                                &all_regenerable,
+                                |_| episode,
+                            )?;
                             lock = self.integrate_mu.lock().unwrap();
                             continue;
                         }
@@ -9937,18 +9935,32 @@ impl RunCtx<'_> {
         if owed.is_empty() {
             return Ok(false);
         }
-        let regen_sha = self.regenerate_conflicted_paths(wt, unit, &owed)?;
-        self.record_regenerate_commit(unit, attempt, &format!("resume-{regen_sha}"), &regen_sha)?;
-        // Clear the LIVE (in-process) pending entry now the regeneration ran - as after every
-        // regenerate_conflicted_paths call. Without it `regenerate_pending_for` would keep
-        // reporting the same paths owed forever THIS process (the durable log marker itself
-        // is deliberately never retracted - re-running the regenerate command on an
-        // already-regenerated, unchanged tree is an established idempotent no-op, see
-        // `u88c1-nothing-to-commit-guard-justified` - so a resumed process re-doing it once
-        // more is harmless), spinning `integrate_and_emit`'s own loop forever on a `Merged`
-        // outcome that never stops looking "owed".
-        clear_attempt(&self.conflict_regenerate_pending, unit, attempt);
+        self.regenerate_and_record(wt, unit, attempt, &owed, |sha| format!("resume-{sha}"))?;
         Ok(true)
+    }
+
+    /// The ONE regenerate / record / clear sequence every conflict-regeneration path runs:
+    /// regenerate `paths` in `wt`, record the resulting commit under the episode tag `tag`
+    /// derives from its sha (pairing it with its `record_regenerate_pending` before-record),
+    /// then clear the LIVE (in-process) pending entry. Without that clear
+    /// `regenerate_pending_for` would keep reporting the same paths owed forever THIS process
+    /// (the durable log marker itself is deliberately never retracted - re-running the
+    /// regenerate command on an already-regenerated, unchanged tree is an established
+    /// idempotent no-op, see `u88c1-nothing-to-commit-guard-justified`), spinning
+    /// `integrate_and_emit`'s own loop forever on a `Merged` outcome that never stops looking
+    /// "owed".
+    fn regenerate_and_record(
+        &self,
+        wt: &Worktree,
+        unit: &str,
+        attempt: u32,
+        paths: &[String],
+        tag: impl FnOnce(&str) -> String,
+    ) -> Result<(), Error> {
+        let regen_sha = self.regenerate_conflicted_paths(wt, unit, paths)?;
+        self.record_regenerate_commit(unit, attempt, &tag(&regen_sha), &regen_sha)?;
+        clear_attempt(&self.conflict_regenerate_pending, unit, attempt);
+        Ok(())
     }
 
     /// The regenerable paths recorded so far (durably, [`STATUS_INTEGRATE_CONFLICT_REGEN`])

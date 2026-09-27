@@ -34,33 +34,33 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 15605,
-        "end_line": 15605
+        "start_line": 15617,
+        "end_line": 15617
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 15610,
-        "end_line": 15610
+        "start_line": 15622,
+        "end_line": 15622
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 25587,
-        "end_line": 25587
+        "start_line": 25599,
+        "end_line": 25599
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36757,
-        "end_line": 36757
+        "start_line": 36769,
+        "end_line": 36769
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36771,
-        "end_line": 36771
+        "start_line": 36783,
+        "end_line": 36783
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37544,
-        "end_line": 37544
+        "start_line": 37556,
+        "end_line": 37556
       },
       {
         "file": "src/dash.rs",
@@ -704,8 +704,8 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 11981,
-        "end_line": 11988
+        "start_line": 11993,
+        "end_line": 12000
       },
       {
         "file": "src/eventstore/namespace.rs",
@@ -809,8 +809,8 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 26825,
-        "end_line": 26883
+        "start_line": 26837,
+        "end_line": 26895
       },
       {
         "file": "src/grounder/mod.rs",
@@ -884,18 +884,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 10093,
-        "end_line": 10107
+        "start_line": 10105,
+        "end_line": 10119
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 10139,
-        "end_line": 10154
+        "start_line": 10151,
+        "end_line": 10166
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 10164,
-        "end_line": 10179
+        "start_line": 10176,
+        "end_line": 10191
       }
     ]
   },
@@ -904,8 +904,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 12806,
-        "end_line": 12808
+        "start_line": 12818,
+        "end_line": 12820
       },
       {
         "file": "src/eventstore/sqlite.rs",
@@ -919,8 +919,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 15424,
-        "end_line": 15429
+        "start_line": 15436,
+        "end_line": 15441
       },
       {
         "file": "tests/plan_stage_commit_landing_periphery.rs",
@@ -934,23 +934,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 15462,
-        "end_line": 15464
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 15467,
-        "end_line": 15469
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 15473,
-        "end_line": 15475
+        "start_line": 15474,
+        "end_line": 15476
       },
       {
         "file": "src/conductor.rs",
         "start_line": 15479,
         "end_line": 15481
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 15485,
+        "end_line": 15487
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 15491,
+        "end_line": 15493
       }
     ]
   },
@@ -959,28 +959,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 15491,
-        "end_line": 15493
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 33825,
-        "end_line": 33827
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 33828,
-        "end_line": 33830
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 33831,
-        "end_line": 33833
-      },
-      {
-        "file": "src/conductor.rs",
-        "start_line": 33834,
-        "end_line": 33836
+        "start_line": 15503,
+        "end_line": 15505
       },
       {
         "file": "src/conductor.rs",
@@ -994,8 +974,28 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33962,
-        "end_line": 33964
+        "start_line": 33843,
+        "end_line": 33845
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 33846,
+        "end_line": 33848
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 33849,
+        "end_line": 33851
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 33852,
+        "end_line": 33854
+      },
+      {
+        "file": "src/conductor.rs",
+        "start_line": 33974,
+        "end_line": 33976
       },
       {
         "file": "src/eventstore/mod.rs",
@@ -1029,8 +1029,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 15497,
-        "end_line": 15503
+        "start_line": 15509,
+        "end_line": 15515
       },
       {
         "file": "src/eventstore/mod.rs",
@@ -1044,8 +1044,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 18163,
-        "end_line": 18163
+        "start_line": 18175,
+        "end_line": 18175
       },
       {
         "file": "src/config.rs",
@@ -3739,8 +3739,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29154,
-        "end_line": 29169
+        "start_line": 29166,
+        "end_line": 29181
       },
       {
         "file": "tests/postmerge_gate_error_cleanup_periphery.rs",
@@ -3754,23 +3754,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 35149,
-        "end_line": 35190
+        "start_line": 35161,
+        "end_line": 35202
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35692,
-        "end_line": 35734
+        "start_line": 35704,
+        "end_line": 35746
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36155,
-        "end_line": 36192
+        "start_line": 36167,
+        "end_line": 36204
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36300,
-        "end_line": 36345
+        "start_line": 36312,
+        "end_line": 36357
       },
       {
         "file": "tests/revert_on_base_hook_bypass_periphery.rs",
@@ -3784,8 +3784,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 39429,
-        "end_line": 39439
+        "start_line": 39441,
+        "end_line": 39451
       },
       {
         "file": "tests/replan_episode_identity.rs",

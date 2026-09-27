@@ -1029,7 +1029,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "19630db174eee206"
+    "content_hash": "1f5db1b81a838908"
   },
   {
     "file": "src/conductor.rs",
@@ -1101,7 +1101,15 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "20730e4ebce4ddbc"
+    "content_hash": "01e2fc4c7dd61627"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "regenerate_and_record",
+    "is_test": false,
+    "proposed_module": "conductor::run_ctx",
+    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
+    "content_hash": "bf00801fe0e5488e"
   },
   {
     "file": "src/conductor.rs",
