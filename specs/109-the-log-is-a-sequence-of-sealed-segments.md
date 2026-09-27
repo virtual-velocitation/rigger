@@ -71,7 +71,7 @@ and `progress_store.rs` reads and writes kind-2 records through the same engine.
 
 BACKEND SELECTION, decided: `[store] backend = "segments"` is the default once this spec
 lands; the server-backed backend keeps its config value; the `sqlite` value is removed and
-`src/eventstore/sqlite.rs` is deleted together with the SQL progress store. The graph backend
+`crates/rigger-store-sqlite/src/eventstore/sqlite.rs` is deleted together with the SQL progress store. The graph backend
 (spec 110) is untouched by this spec.
 
 CONSTRAINTS WALK: empty store - manifest with no segments, first append opens segment 0.
@@ -130,7 +130,7 @@ behind the two existing ports; nothing above the ports changes. Footer type list
   `DecisionMade` with the counts; a re-run is a no-op; the progress store migrates to kind-2
   records. This criterion OWNS the migration and the backend default; deleting the SQL
   backend is criterion 8's, NOT this one's.
-- [ ] a test proves THE SQL LOG IS GONE: `src/eventstore/sqlite.rs` and the SQL progress store
+- [ ] a test proves THE SQL LOG IS GONE: `crates/rigger-store-sqlite/src/eventstore/sqlite.rs` and the SQL progress store
   no longer exist, the `sqlite` backend value is rejected with a message naming the
   migration, and the simplification audit lists no dead store code. This criterion OWNS the
   removal.

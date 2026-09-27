@@ -1886,6 +1886,7 @@ dependencies = [
  "kurrentdb",
  "regex",
  "rigger-domain",
+ "rigger-store-sqlite",
  "rusqlite",
  "rustix 1.1.4",
  "serde",
@@ -1918,6 +1919,21 @@ dependencies = [
  "serde_path_to_error",
  "serde_yaml",
  "thiserror",
+ "uuid",
+]
+
+[[package]]
+name = "rigger-store-sqlite"
+version = "0.1.0"
+dependencies = [
+ "kurrentdb",
+ "rigger-domain",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "testcontainers",
+ "tokio",
  "uuid",
 ]
 

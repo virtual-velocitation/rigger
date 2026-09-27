@@ -89,10 +89,11 @@ fn append_stamped<R: RunStamped>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conductor;
+    // The run stream, which the conductor re-exports as `conductor::STREAM`.
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{Direction, Event};
     use crate::progress::TYPE_AGENT_PROGRESS;
+    use crate::run as conductor;
     use crate::run::META_RUN_ID;
 
     #[test]

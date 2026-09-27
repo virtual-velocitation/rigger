@@ -21,7 +21,7 @@ compaction, base rewrite, manifest). A process that cannot take the lock is a cl
 MOUNT, decided: taking the OWNER lock, opening the manifest, loading indexes and the resident
 graph, taking the project's machine-scope slot `$XDG_STATE_HOME/rigger/machine/mounts/<project-id>.slot`
 (an exclusive lock held for the mount's life; `$XDG_STATE_HOME` is the registry's state home,
-`src/registry.rs:109`, `~/.local/state` by default) and writing into it, every 30 s alongside the
+`crates/rigger-store-sqlite/src/registry.rs:109`, `~/.local/state` by default) and writing into it, every 30 s alongside the
 supervisor beat, the owner's identity `(pid, start-time, boot-id)`, the mount time and its
 measured resident bytes (RSS now minus RSS at mount). A slot whose lock is free is a stale
 row; its content is informational only.
@@ -68,7 +68,7 @@ until the rename.
 ## Notes (non-criteria)
 
 The slot file is a small TOML the world-authority addendum's machine-scope substrate can adopt
-unchanged; content is never project data. The instance registry (`src/registry.rs`) keeps
+unchanged; content is never project data. The instance registry (`crates/rigger-store-sqlite/src/registry.rs`) keeps
 its discovery role and its 900 s heartbeat; the slot, not the registry, is what admission
 reads, because a slot is proven by a held lock and a registry row is not. The dashboard,
 serving many projects, is a client of every one of them and keeps at most four mapped bases. Expected bytes for admission are an estimate only

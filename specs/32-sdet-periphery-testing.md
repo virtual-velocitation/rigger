@@ -35,14 +35,14 @@ surface                         diff signal                          periphery l
 -----------------------------   ------------------------------       -------------------------------
 new/changed public API          `pub fn|struct|enum|trait` added     API test (tests/cli.rs et al.)
 trait impl                      `impl <Trait> for`                   contract suite (assert_contract,
-                                                                     src/eventstore/contract.rs)
+                                                                     crates/rigger-store-sqlite/src/eventstore/contract.rs)
 CLI subcommand / flag           addition to the command registry     tests/cli.rs (drives the binary)
 event type / serialized format  new Event / changed serde struct     round-trip + back-compat contract
 cross-module seam / fold arm    new call across a module boundary    integration test
 ```
 
 **Gates need no change:** the `test` gate is unscoped `cargo test` (`config::Gate.inputs` empty), so
-any periphery test the author writes - under `src/eventstore/contract.rs`, `tests/cli.rs`,
+any periphery test the author writes - under `crates/rigger-store-sqlite/src/eventstore/contract.rs`, `tests/cli.rs`,
 `tests/ci_lanes.rs`, or a new `tests/*.rs` - runs automatically. A failing periphery test reveals a
 boundary bug and drives remediation of the CODE (the implementer), never a weakening of the test.
 

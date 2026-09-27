@@ -117,7 +117,7 @@ pub fn state_home() -> Option<PathBuf> {
 /// precedence over its own explicitly-read env values - [`crate::gate::default_cache_dir`] is
 /// the first - composes it directly instead of reaching for the ambient-reading [`state_home`]
 /// and duplicating this logic behind it.
-pub(crate) fn state_home_from(
+pub fn state_home_from(
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {

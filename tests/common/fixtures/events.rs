@@ -1,6 +1,9 @@
 //! Event fixtures.
 
-use rigger::eventstore::Event;
+use rigger::eventstore::{
+    Appended, Direction, Error, Event, EventStore, ExpectedRevision, Filter, Position, Revision,
+    Subscription,
+};
 
 /// An event of type `type_` whose payload is the UTF-8 bytes of `json`.
 pub fn ev(type_: &str, json: &str) -> Event {
@@ -66,4 +69,55 @@ macro_rules! delegate_event_store_reads {
             self.inner.subscribe_stream(stream, from)
         }
     };
+}
+
+/// A port that ACCEPTS every append and reports writing nothing - the one answer every
+/// single-event seam has to surface rather than absorb. It lives with the shared fixtures,
+/// one definition for every crate whose seams append through the port, so each seam's test
+/// holds it to the SAME double instead of to a local one that could drift into a friendlier
+/// shape.
+///
+/// Reads answer EMPTY rather than failing: a seam that reads before it appends (a
+/// compare-and-append) must reach its append to be tested at all.
+#[cfg(test)]
+#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // every consumer (spawn_store, run_store, progress_store, canary_store, mcpserver,
+                                                                             // conductor) is store-gated, so this double is unused under core-only
+pub struct SilentStore;
+
+#[cfg(test)]
+impl EventStore for SilentStore {
+    fn append(
+        &self,
+        _stream: &str,
+        _expected: ExpectedRevision,
+        events: &[Event],
+    ) -> Result<Appended, Error> {
+        Ok(Appended::from_placements(vec![None; events.len()]))
+    }
+    fn read_stream(
+        &self,
+        _stream: &str,
+        _from: Revision,
+        _dir: Direction,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+    fn read_all(
+        &self,
+        _from: Position,
+        _dir: Direction,
+        _filter: &Filter,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
+    fn subscribe_all(&self, _from: Position, _filter: &Filter) -> Result<Subscription, Error> {
+        Err(Error::Backend(
+            "the silent double answers appends only".into(),
+        ))
+    }
+    fn subscribe_stream(&self, _stream: &str, _from: Revision) -> Result<Subscription, Error> {
+        Err(Error::Backend(
+            "the silent double answers appends only".into(),
+        ))
+    }
 }

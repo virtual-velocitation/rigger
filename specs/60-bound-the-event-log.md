@@ -69,7 +69,7 @@ not change because a new run started.
   only ever write MORE, never drop), and its module says so in one line. The HONESTY half is a
   PORT obligation every adapter owes, because it is what keeps the shared append-and-fold
   authority correct for whichever store is wired: the backend-agnostic contract suite
-  (`src/eventstore/contract.rs`, which both adapters' tests run) is where it is pinned, so a
+  (`crates/rigger-store-sqlite/src/eventstore/contract.rs`, which both adapters' tests run) is where it is pinned, so a
   caller can never derive a position the store did not issue on ANY backend. This criterion's
   own suppression test therefore drives the STORE PORT directly rather than the run's ingest
   path - it must, because the sink above it is built to never hand the store a redundant append

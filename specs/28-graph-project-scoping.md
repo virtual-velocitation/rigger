@@ -9,7 +9,7 @@ the graph off per-project-local storage onto a shared backend.
 ## Design
 
 Today project isolation on the graph is purely physical: the `Namespaced` decorator
-(`src/eventstore/namespace.rs`) prefixes event STREAMS with `proj-<id>-`, but the graph nodes and
+(`crates/rigger-store-sqlite/src/eventstore/namespace.rs`) prefixes event STREAMS with `proj-<id>-`, but the graph nodes and
 edges carry NO project field - the schema is `nodes(id, kind, attrs)` and `edges(from_id, to_id,
 rel, valid_from, valid_to, source)` (`src/contextgraph/sqlite.rs`). Two projects stay separate only
 because each has its own `graph.db`. A shared backend would mix them. This spec adds the missing

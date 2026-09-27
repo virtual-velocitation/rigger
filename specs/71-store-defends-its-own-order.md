@@ -9,7 +9,7 @@ validate detects the signature after the fact.
 
 ## Design
 
-- **Append asserts monotonicity** (`src/eventstore/sqlite.rs`, inside the same transaction as
+- **Append asserts monotonicity** (`crates/rigger-store-sqlite/src/eventstore/sqlite.rs`, inside the same transaction as
   the cursor seek at :1081 and the insert): before committing, verify the revision to be
   written is STRICTLY GREATER than the stream's last row in position order (one indexed
   seek). A violation fails loudly, naming stream, both revisions, and the likely cause (a
@@ -61,7 +61,7 @@ validate detects the signature after the fact.
   `cargo test` - on default features AND `--no-default-features`.
 - Fail-safe directions only: the assertion may only refuse a write; the compaction guard may
   only refuse a prune; validate may only report. No path gains repair-by-side-effect.
-- The port contract suite (`src/eventstore/contract.rs`) pins the assertion so every backend
+- The port contract suite (`crates/rigger-store-sqlite/src/eventstore/contract.rs`) pins the assertion so every backend
   owes the same refusal.
 
 ## Done when

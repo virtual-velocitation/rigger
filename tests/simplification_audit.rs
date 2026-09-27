@@ -2078,7 +2078,7 @@ const SCAN_ROOTS: [&str; 2] = ["src", "tests"];
 /// The member crates the workspace split carved out of the root package's `src/`: the
 /// duplication catalog keeps scanning their `src`/`tests` after [`SCAN_ROOTS`], exactly as it
 /// scanned that code before the move.
-const SPLIT_CRATES: [&str; 1] = ["crates/rigger-domain"];
+const SPLIT_CRATES: [&str; 2] = ["crates/rigger-domain", "crates/rigger-store-sqlite"];
 
 /// Shingle window width (spec 85 Design: "Jaccard over 8-token shingles").
 const SHINGLE_SIZE: usize = 8;

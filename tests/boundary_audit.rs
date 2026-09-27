@@ -314,13 +314,22 @@ fn declares(text: &str, item: &str) -> bool {
 }
 
 /// Every [`DEFERRED_DOMAIN_ITEMS`]-shaped entry under `root` that no longer describes a deferred
-/// item: its file or item is gone, or the item now lives in the domain crate.
-fn stale_deferred_items(root: &Path, entries: &[(&str, &str, &str)]) -> Vec<String> {
-    let mut domain = Vec::new();
-    collect_rs_files(&root.join(DOMAIN_SRC), &mut domain);
-    let domain_text: Vec<String> = domain
+/// item: its file or item is gone, or the item now lives in one of the `homes` crate sources it
+/// waits to join.
+fn stale_deferred_items(
+    root: &Path,
+    homes: &[&str],
+    entries: &[(&str, &str, &str)],
+) -> Vec<String> {
+    let home_text: Vec<(&str, String)> = homes
         .iter()
-        .map(|p| fs::read_to_string(p).unwrap_or_default())
+        .flat_map(|home| {
+            let mut files = Vec::new();
+            collect_rs_files(&root.join(home), &mut files);
+            files
+                .into_iter()
+                .map(move |p| (*home, fs::read_to_string(p).unwrap_or_default()))
+        })
         .collect();
     entries
         .iter()
@@ -331,9 +340,9 @@ fn stale_deferred_items(root: &Path, entries: &[(&str, &str, &str)]) -> Vec<Stri
                     "({file:?}, {item:?}, {lesson:?}): `{item}` is no longer declared in {file}; \
                      delete the entry"
                 ))
-            } else if domain_text.iter().any(|t| declares(t, item)) {
+            } else if let Some((home, _)) = home_text.iter().find(|(_, t)| declares(t, item)) {
                 Some(format!(
-                    "({file:?}, {item:?}, {lesson:?}): `{item}` is now declared in {DOMAIN_SRC}; \
+                    "({file:?}, {item:?}, {lesson:?}): `{item}` is now declared in {home}; \
                      finish the move and delete the entry"
                 ))
             } else {
@@ -381,10 +390,15 @@ fn stale_domain_violations(root: &Path, entries: &[(&str, &str, &str, &str)]) ->
 }
 
 #[test]
-fn every_domain_allowlist_entry_is_still_live() {
+fn every_split_allowlist_entry_is_still_live() {
     let root = repo_root();
-    let mut stale = stale_deferred_items(&root, DEFERRED_DOMAIN_ITEMS);
+    let mut stale = stale_deferred_items(&root, &[DOMAIN_SRC], DEFERRED_DOMAIN_ITEMS);
     stale.extend(stale_domain_violations(&root, DOMAIN_VIOLATIONS));
+    stale.extend(stale_deferred_items(
+        &root,
+        ADAPTER_SRCS,
+        DEFERRED_ADAPTER_ITEMS,
+    ));
     assert!(stale.is_empty(), "{}", stale.join("\n"));
 }
 
@@ -407,7 +421,7 @@ fn a_domain_allowlist_entry_that_moved_or_vanished_is_reported() {
         ("src/ledger.rs", "fold", "l2"),
         ("src/ledger.rs", "Gone", "l3"),
     ];
-    let stale = stale_deferred_items(root, &deferred);
+    let stale = stale_deferred_items(root, &[DOMAIN_SRC], &deferred);
     assert_eq!(stale.len(), 2, "{stale:#?}");
     assert!(stale[0].contains("`fold` is now declared in crates/rigger-domain/src"));
     assert!(stale[1].contains("`Gone` is no longer declared in src/ledger.rs"));
@@ -433,6 +447,66 @@ fn a_domain_allowlist_entry_that_moved_or_vanished_is_reported() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Rule 1d: adapter items still outside their adapter crate
+// ---------------------------------------------------------------------------------------------
+
+/// The adapter crates' sources.
+const ADAPTER_SRCS: &[&str] = &["crates/rigger-store-sqlite/src"];
+
+/// Items the workspace plan assigns to an adapter crate that still live in the root crate,
+/// `(file, item, lesson)`: each one's code names a type from a crate that does not exist yet (the
+/// conductor, a driver, the grounder), so it cannot compile in the adapter crate. The lesson
+/// records what it reaches for and the extraction that lets it move; the entry goes when the item
+/// leaves the file or lands in an adapter crate.
+const DEFERRED_ADAPTER_ITEMS: &[(&str, &str, &str)] = &[
+    (
+        "src/canary_store.rs",
+        "CanaryItem",
+        "lesson-split-store-canary-runner",
+    ),
+    (
+        "src/canary_store.rs",
+        "load_corpus",
+        "lesson-split-store-canary-runner",
+    ),
+    (
+        "src/canary_store.rs",
+        "corpus_hash",
+        "lesson-split-store-canary-runner",
+    ),
+    (
+        "src/canary_store.rs",
+        "ModelPins",
+        "lesson-split-store-canary-runner",
+    ),
+    (
+        "src/canary_store.rs",
+        "apply_model_pins",
+        "lesson-split-store-canary-runner",
+    ),
+    (
+        "src/canary_store.rs",
+        "CanaryReport",
+        "lesson-split-store-canary-runner",
+    ),
+    (
+        "src/canary_store.rs",
+        "record_header",
+        "lesson-split-store-canary-runner",
+    ),
+    (
+        "src/canary_store.rs",
+        "run_canary",
+        "lesson-split-store-canary-runner",
+    ),
+    (
+        "src/canary_store.rs",
+        "default_jobs",
+        "lesson-split-store-canary-runner",
+    ),
+];
+
+// ---------------------------------------------------------------------------------------------
 // Rule 2: adapters are wired only in the composition root
 // ---------------------------------------------------------------------------------------------
 
@@ -452,8 +526,6 @@ const ADAPTERS: &[Adapter] = &[
         family: "sqlite opener",
         constructor: r"\bopen_connection\(",
         home: &[
-            "src/sqlite.rs",
-            "src/eventstore/sqlite.rs",
             "src/contextgraph/sqlite.rs",
             "crates/rigger-store-sqlite/",
             "crates/rigger-graph-sqlite/",
@@ -462,11 +534,7 @@ const ADAPTERS: &[Adapter] = &[
     Adapter {
         family: "event store",
         constructor: r"\bStore::open\(",
-        home: &[
-            "src/eventstore/sqlite.rs",
-            "src/eventstore/kurrentdb.rs",
-            "crates/rigger-store-sqlite/",
-        ],
+        home: &["crates/rigger-store-sqlite/"],
     },
     Adapter {
         family: "graph projection",
@@ -607,7 +675,7 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
     );
     write_file(
         root,
-        "src/eventstore/sqlite.rs",
+        "crates/rigger-store-sqlite/src/eventstore/sqlite.rs",
         "fn open() {\n    let c = open_connection(path);\n}\n",
     );
     write_file(

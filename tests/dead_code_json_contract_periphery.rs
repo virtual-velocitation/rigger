@@ -407,8 +407,10 @@ rigger::test_cases! {
 /// broke the resolver-agreement property in a way neither resolver's own self-comparison could
 /// see, a candidate from either of these two named files landing in the committed artifact would
 /// still be caught here.
-const KNOWN_OUT_OF_LINE_TEST_FILES: [&str; 2] =
-    ["src/eventstore/contract.rs", "src/blast_radius_eval.rs"];
+const KNOWN_OUT_OF_LINE_TEST_FILES: [&str; 2] = [
+    "crates/rigger-store-sqlite/src/eventstore/contract.rs",
+    "src/blast_radius_eval.rs",
+];
 
 /// Round 1 class 3 (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances`): the
 /// exact misclassification spec 87's own Goal names by name must never reappear in the committed
@@ -475,7 +477,7 @@ rigger::test_cases! {
     generic_impl_header_constructors_previously_false_flagged_are_absent_from_the_committed_file:
         assert_absent_from_dead_code(
             &[
-                ("new", Some("src/eventstore/namespace.rs")), // Namespaced::new
+                ("new", Some("crates/rigger-store-sqlite/src/eventstore/namespace.rs")), // Namespaced::new
                 ("new", Some("src/driver/replay.rs")),        // ReplayDriver::new
                 ("new", Some("src/dash.rs")),                 // Buckets::new
                 ("new", Some("src/mcpserver.rs")),            // Server::new

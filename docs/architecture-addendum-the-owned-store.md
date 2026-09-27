@@ -37,7 +37,7 @@ the engine itself, and the engine is wrong in three ways that no read discipline
 - **It is a foreign engine under a log-shaped workload.** Across 10,135 lines of store code
   behind two ports of five and six methods (`EventStore`, `crates/rigger-domain/src/eventstore.rs:499`;
   `Projection`, `crates/rigger-domain/src/contextgraph.rs:531`), the relational surface in use is four joins
-  and no trigger, view or full-text index; the log is one table (`src/eventstore/sqlite.rs:21`)
+  and no trigger, view or full-text index; the log is one table (`crates/rigger-store-sqlite/src/eventstore/sqlite.rs:21`)
   and the progress side-store is a second instance of the same engine over the same schema.
   SQL is being used as a B-tree with transactions and a file format. Its bundled C library
   (`Cargo.toml:150`) is the one C dependency in the build and the one reason the `store` lane
@@ -51,7 +51,7 @@ the engine itself, and the engine is wrong in three ways that no read discipline
   reader (`?instance=<id>`, `src/dash.rs:3413`), reopens each attached project's files on
   every HTTP request (`src/main.rs:7270-7377`), and every subscription is a thread waking
   every 25 ms to poll through the store's single mutexed connection
-  (`src/eventstore/sqlite.rs:42`, `:1001`). Nothing distinguishes a project running three
+  (`crates/rigger-store-sqlite/src/eventstore/sqlite.rs:42`, `:1001`). Nothing distinguishes a project running three
   agents from a project nobody has touched in a month; both are reached the same way and cost
   the same to read. With two projects on one machine, the memory a courier spends is set by
   the largest project it happens to open. The MCP server even resolves its log through the
@@ -306,7 +306,7 @@ root (`require_store_dir`, `src/main.rs:2068`). `.rigger/project.id` holds the s
 two projects with two roots and one id only if they share the tracked file, exactly as the
 namespace treats them today; a project moved to a new root keeps its id, and its slot row's
 recorded root is overwritten on the next mount. The instance registry
-(`src/registry.rs`, discovery metadata, never truth) keeps its role; the slot substrate is
+(`crates/rigger-store-sqlite/src/registry.rs`, discovery metadata, never truth) keeps its role; the slot substrate is
 the held-lock authority the world authority asks for and the registry is not.
 
 ### 6.2 The mount lifecycle

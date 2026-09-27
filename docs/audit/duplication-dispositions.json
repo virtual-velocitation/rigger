@@ -80,7 +80,7 @@
     "reason": "Four one-line unit tests over four different functions (agent frontmatter parsing, graph JSON loading, dirty-path listing, criteria extraction); only the assert shape is shared."
   },
   {
-    "id": "dup-53976e6dadff",
+    "id": "dup-ee034ee789c2",
     "disposition": "not-a-duplicate",
     "reason": "Three multi-case unit tests over three different functions (the map label budget, endpoint labelling, inline-code stripping); only the three-assert shape is shared."
   },
@@ -100,7 +100,7 @@
     "reason": "Two builder setters on two different types setting different fields (`valid_from` on an event, `meta` on a spawn result)."
   },
   {
-    "id": "dup-09b3cd252ed3",
+    "id": "dup-2586d99fb4f1",
     "disposition": "not-a-duplicate",
     "reason": "`factor` and `cost_per_upheld` are different ratios over different fields with different zero-denominator answers (1.0 versus 0.0)."
   },
@@ -140,7 +140,7 @@
     "reason": "The outcome and the header serialize different payloads (one item's score versus the batch's build, corpus and resolved models) through the one shared `canary_event` constructor, so only the json! literal shape is shared."
   },
   {
-    "id": "dup-866e5f4c8285",
+    "id": "dup-183455104b30",
     "disposition": "not-a-duplicate",
     "reason": "Three contract checks of different clauses (revision assignment and order on append, backward-read order and inclusive lower bound, forward-read inclusive `from`) that share only the append-then-read setup every contract check performs."
   },
@@ -150,12 +150,12 @@
     "reason": "Two different enum mappings: `ConceptKind::node_kind` names a design concept's node kind while `LinkRel::rel` names a design link's edge relation; only the match-to-constant shape is shared."
   },
   {
-    "id": "dup-ede1947069a2",
+    "id": "dup-09fd5c38b65b",
     "disposition": "not-a-duplicate",
     "reason": "Two public record entry points for different report types (a spawn launch, a stop-failure hook firing) that already delegate their shared append contract to `append_stamped` and differ only in the record they name."
   },
   {
-    "id": "dup-77bd4d35ea26",
+    "id": "dup-10504155864a",
     "disposition": "not-a-duplicate",
     "reason": "Opposite outcomes of `ensure_started`: the same criteria adopt the existing run and append nothing, while changed criteria mint a distinct run with its own boundary and move the current-run pointer."
   },
@@ -245,7 +245,7 @@
     "reason": "Two named modes of the shared `find_word_boundary` (a hyphen as a word character vs as a boundary), each serving a different caller's matching rule."
   },
   {
-    "id": "dup-1b857c1af535",
+    "id": "dup-831910355599",
     "disposition": "not-a-duplicate",
     "reason": "Both seed through the shared `store_with`/`keyed`; one proves distinct keys measure no duplication, the other that one key under two covered types is two subjects and cross-checks the real prune."
   },
@@ -495,12 +495,12 @@
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
   },
   {
-    "id": "dup-e6404599f437",
+    "id": "dup-a6e475e1f6ef",
     "disposition": "not-a-duplicate",
     "reason": "One-line `format!` compositions of different keys and labels (adoption provenance, quarantine record, code-entity id, spawn-store subject, audit join) over different inputs."
   },
   {
-    "id": "dup-495cf87c4673",
+    "id": "dup-1d4ac4370fe6",
     "disposition": "not-a-duplicate",
     "reason": "One-line key and message builders for different concerns (deferred-gate verdict and failure keys, review protocol text, namespace prefixes, retired-grounder error); they share only the `format!` shape."
   },
@@ -515,7 +515,7 @@
     "reason": "`spawn_is_recorded` checks a test driver's recorded spawn set while `is_shared` classifies a graph query result; the shared shape is a single boolean lookup."
   },
   {
-    "id": "dup-9b50f55fa65b",
+    "id": "dup-a87f9002607d",
     "disposition": "not-a-duplicate",
     "reason": "`unit_branch` names a unit's git branch while `key_expr` builds a SQL key expression; both are one-line `format!` calls over different templates."
   },
@@ -570,7 +570,7 @@
     "reason": "Unit tests of different functions (module-of, district-purpose, short run id, spec stem, impl self-type, where-clause stripping, identifier kind) that share only the assert-equality shape."
   },
   {
-    "id": "dup-fdbf1d3819aa",
+    "id": "dup-d32a420335cb",
     "disposition": "not-a-duplicate",
     "reason": "Two property tests over different functions and invariants (module names never carry a dot or slash; credential fragments never survive redaction)."
   },
@@ -625,7 +625,7 @@
     "reason": "`stage` builds a review-less never-merging `Stage` for the replay tests while `agent_with_prompt` builds an `AgentDef`; they construct different types."
   },
   {
-    "id": "dup-705c28b30bbe",
+    "id": "dup-20c2938a0805",
     "disposition": "not-a-duplicate",
     "reason": "Three enum-to-string mappings over different enums (edge direction to SQL, entity kind, language)."
   },

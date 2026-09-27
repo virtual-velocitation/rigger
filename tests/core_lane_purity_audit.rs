@@ -126,6 +126,28 @@ fn purity_audit_record_has_the_shape_every_consumer_relies_on() {
     }
 }
 
+/// For a `core_modules` entry inside a split member crate (`crates/<crate>/src/...`), the text of
+/// the file that declares it and the name it is declared under: `lib.rs` for a top-level module
+/// (`x.rs` or `x/mod.rs`), else the parent module's file (`<dir>/mod.rs` or `<dir>.rs`).
+/// `None` for a root-package entry.
+fn split_crate_parent(m: &str) -> Option<(String, String)> {
+    let rest = m.strip_prefix("crates/")?;
+    let (krate, rest) = rest.split_once("/src/")?;
+    let src = format!("crates/{krate}/src");
+    let rel = rest
+        .strip_suffix("/mod.rs")
+        .unwrap_or(rest.trim_end_matches(".rs"));
+    let (parent, name) = match rel.rsplit_once('/') {
+        None => (format!("{src}/lib.rs"), rel),
+        Some((dir, name)) if Path::new(&format!("{src}/{dir}/mod.rs")).is_file() => {
+            (format!("{src}/{dir}/mod.rs"), name)
+        }
+        Some((dir, name)) => (format!("{src}/{dir}.rs"), name),
+    };
+    let text = fs::read_to_string(&parent).unwrap_or_else(|e| panic!("reading {parent}: {e}"));
+    Some((text, name.to_string()))
+}
+
 /// Every file the record names as `core_modules` must genuinely carry no un-gated
 /// `#[cfg(any(feature = "store", not(feature = "core")))]`-EXCLUDED module declaration for
 /// itself in `src/lib.rs` - i.e. the record's own module list has not drifted from `lib.rs`'s
@@ -174,11 +196,12 @@ fn every_listed_core_module_is_declared_ungated_in_its_parent() {
         fs::read_to_string("src/eventstore/mod.rs").expect("reading src/eventstore/mod.rs");
     let console_text =
         fs::read_to_string("src/console/mod.rs").expect("reading src/console/mod.rs");
-    let domain_lib_text = fs::read_to_string("crates/rigger-domain/src/lib.rs")
-        .expect("reading crates/rigger-domain/src/lib.rs");
 
     for m in &modules {
-        let (parent_text, name): (&str, &str) = if m == "src/contextgraph/mod.rs" {
+        let crate_parent = split_crate_parent(m);
+        let (parent_text, name): (&str, &str) = if let Some((text, name)) = &crate_parent {
+            (text, name)
+        } else if m == "src/contextgraph/mod.rs" {
             (&lib_text, "contextgraph")
         } else if m == "src/eventstore/mod.rs" {
             (&lib_text, "eventstore")
@@ -190,8 +213,6 @@ fn every_listed_core_module_is_declared_ungated_in_its_parent() {
             (&eventstore_text, rest.trim_end_matches(".rs"))
         } else if let Some(rest) = m.strip_prefix("src/console/") {
             (&console_text, rest.trim_end_matches(".rs"))
-        } else if let Some(rest) = m.strip_prefix("crates/rigger-domain/src/") {
-            (&domain_lib_text, rest.trim_end_matches(".rs"))
         } else {
             let name = m
                 .strip_prefix("src/")

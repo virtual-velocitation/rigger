@@ -10,8 +10,9 @@
 //! types, the request/result shapes); this module only ever appends what `spawn` already
 //! knows how to serialize.
 
-use crate::conductor::STREAM;
+// The run stream (the conductor re-exports the same constant as `conductor::STREAM`).
 use crate::eventstore::{Direction, Error, Event, EventStore, ExpectedRevision, Position};
+use crate::run::STREAM;
 use crate::spawn::SpawnEvent;
 use crate::spawn::{SpawnRequest, SpawnResult};
 

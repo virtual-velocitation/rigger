@@ -17,12 +17,14 @@ mod git;
 mod graph;
 mod host;
 mod page;
+mod spawn;
 pub use config::*;
 pub use events::*;
 pub use git::*;
 pub use graph::*;
 pub use host::*;
 pub use page::*;
+pub use spawn::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod canary;
@@ -31,6 +33,8 @@ mod conductor;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod fold;
 #[cfg(any(feature = "store", not(feature = "core")))]
+mod sqlite;
+#[cfg(any(feature = "store", not(feature = "core")))]
 mod store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use canary::*;
@@ -38,5 +42,7 @@ pub use canary::*;
 pub use conductor::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use fold::*;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use sqlite::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use store::*;

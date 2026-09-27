@@ -979,7 +979,7 @@ The fixed singleton above is the shared, always-on observation point that `rigge
 the `rigger step` loop bind; the port-searching per-run dash is `rigger run`'s private view,
 not the machine singleton.
 
-- **An instance registry** (`src/registry.rs`) makes discovery a lookup, not a protocol.
+- **An instance registry** (`crates/rigger-store-sqlite/src/registry.rs`) makes discovery a lookup, not a protocol.
   Every `rigger` invocation that starts or advances a run registers its instance - the
   project identity, the project root, a **credential-free** store identity, and a heartbeat
   it refreshes while it works - as pure discovery metadata under the machine's state

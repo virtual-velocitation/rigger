@@ -120,8 +120,9 @@ impl RunStarted {
     /// Build the appendable event for this run start, with the run id stamped in
     /// [`META_RUN_ID`] so the RunStarted itself belongs to its own run's slice, and the
     /// resolved run-branch base stamped in [`META_BASE`] (only when non-empty) so status/dash
-    /// can name the run's actual base (spec 38, criterion 3). `pub(crate)`: the impure mint
-    /// path ([`crate::run_store::start_fresh`]) is the only caller outside this module.
+    /// can name the run's actual base (spec 38, criterion 3). `pub` because its one caller
+    /// outside this module, the impure mint path (`run_store::start_fresh`), lives in the
+    /// `rigger-store-sqlite` adapter crate.
     #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the *_store sibling under core-only
     pub fn to_event(&self) -> Result<Event, serde_json::Error> {
         let mut ev = Event::new(TYPE_RUN_STARTED, serde_json::to_vec(self)?)

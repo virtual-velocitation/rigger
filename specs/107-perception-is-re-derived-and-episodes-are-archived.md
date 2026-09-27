@@ -18,14 +18,14 @@ itself accepts any derived append. Spec 101 stops READING them;
 nothing stops WRITING them. 35,334 events are a run's own
 mechanics and carry 333 MB, 55% of every byte: `SpawnRequested` alone is 6,729 events and
 302 MB of prompts (`SpawnRequest::prompt`, `crates/rigger-domain/src/spawn.rs:290`, parked whole by
-`spawn_store::park_in_run`, `src/spawn_store.rs:31`). The knowledge the hive keeps across runs - `DecisionMade`, `LessonLearned`,
+`spawn_store::park_in_run`, `crates/rigger-store-sqlite/src/spawn_store.rs:32`). The knowledge the hive keeps across runs - `DecisionMade`, `LessonLearned`,
 `ReviewFinding` - is 17,424 events and 23 MB. 149 runs are recorded; the current one spans
 90,008 events and 12 MB. Every courier replays the whole file: `rigger status` peaks at 3.2 GB
 resident in 4.6 s, `rigger step` at 8.3 GB, and on 2026-09-24 15:13 the kernel's
 out-of-memory killer chose that step as the largest process on the machine. `rigger reset
 --runs` (`src/main.rs:9154`) prunes the GRAPH of dead runs (`superseded_graph_nodes`,
 `main.rs:9231`) and leaves the log untouched, so no run's mechanics have ever left the live
-store; `read_stream` (`src/eventstore/sqlite.rs:897`) materializes the whole stream on every
+store; `read_stream` (`crates/rigger-store-sqlite/src/eventstore/sqlite.rs:897`) materializes the whole stream on every
 call and nearly every caller passes position 0.
 
 ## Design

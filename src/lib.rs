@@ -79,30 +79,30 @@ pub mod playbooks;
 pub mod progress;
 /// The write half of [`progress`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod progress_store;
+pub use rigger_store_sqlite::progress_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod reap;
+pub use rigger_domain::run;
+pub use rigger_domain::safety;
 /// Machine-global instance registry (spec 50): credential-free discovery metadata so a single
 /// machine-level dash can find every local project's runs (and any configured shared store)
 /// without a coordination protocol. Discovery only - never a source of truth, never a credential.
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod registry;
-pub use rigger_domain::run;
+pub use rigger_store_sqlite::registry;
 /// The write half of [`run`] (spec 93, criterion 1): see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod run_store;
-pub use rigger_domain::safety;
+pub use rigger_store_sqlite::run_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod sidecar;
 pub mod spawn;
-/// The write half of [`spawn`] (spec 93, criterion 1): see that module's own doc.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod spawn_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_domain::spec;
+/// The write half of [`spawn`] (spec 93, criterion 1): see that module's own doc.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_store_sqlite::spawn_store;
 /// The one opener every SQLite store connection goes through: see that module's own doc.
 #[cfg(any(feature = "store", not(feature = "core")))]
-pub mod sqlite;
+pub use rigger_store_sqlite::sqlite;
 /// The driver-independent watchdog (spec 69, criterion 2): `rigger watch`'s pure
 /// domain core - the five `rigger-watch-a-run` signals plus a store-integrity check,
 /// folded from already-gathered inputs into one line per anomaly, with in-process

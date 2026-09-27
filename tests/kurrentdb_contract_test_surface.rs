@@ -4,7 +4,7 @@
 //! gracefully skips without a container runtime) in BOTH lanes." Retiring the
 //! build-time `kurrentdb` cargo feature un-gated the adapter module - and with it the
 //! backend-agnostic contract test `passes_the_contract` in
-//! `src/eventstore/kurrentdb.rs`, which drives `eventstore::contract::assert_contract`
+//! `crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs`, which drives `eventstore::contract::assert_contract`
 //! against a real KurrentDB container. That test now compiles into EVERY lane's
 //! `cargo test`, and it must keep two properties, neither of which any other test pins:
 //!
@@ -72,11 +72,11 @@ fn fn_body(src: &str, name: &str) -> String {
 /// breaking "runs in BOTH lanes". Space-insensitive so `feature="x"` is caught too.
 #[test]
 fn the_contract_test_is_present_and_never_gated_on_a_cargo_feature() {
-    let src = repo_text("src/eventstore/kurrentdb.rs");
+    let src = repo_text("crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs");
 
     assert!(
         src.contains("fn passes_the_contract"),
-        "src/eventstore/kurrentdb.rs must still define the backend-agnostic contract test \
+        "crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs must still define the backend-agnostic contract test \
          `passes_the_contract` (spec 47 criterion 3: the existing contract test compiles and runs \
          in both lanes) - it is gone"
     );
@@ -84,7 +84,7 @@ fn the_contract_test_is_present_and_never_gated_on_a_cargo_feature() {
     let squeezed: String = src.chars().filter(|c| !c.is_whitespace()).collect();
     assert!(
         !squeezed.contains("cfg(feature="),
-        "the KurrentDB adapter (src/eventstore/kurrentdb.rs) must carry NO `#[cfg(feature = ...)]` \
+        "the KurrentDB adapter (crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs) must carry NO `#[cfg(feature = ...)]` \
          gate: the build-time feature is retired (spec 47), so a cargo-feature predicate here would \
          compile the adapter and its `passes_the_contract` contract test OUT of the lane that lacks \
          the feature, breaking 'compiles and runs in BOTH lanes'"
@@ -99,7 +99,7 @@ fn the_contract_test_is_present_and_never_gated_on_a_cargo_feature() {
 #[test]
 fn the_contract_test_gracefully_skips_without_a_container_runtime() {
     let body = fn_body(
-        &repo_text("src/eventstore/kurrentdb.rs"),
+        &repo_text("crates/rigger-store-sqlite/src/eventstore/kurrentdb.rs"),
         "passes_the_contract",
     );
 
