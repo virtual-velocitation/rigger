@@ -10793,19 +10793,11 @@
   },
   {
     "file": "src/main.rs",
-    "name": "merge_hung_attention_does_nothing_when_not_newly_hung",
+    "name": "assert_merge_hung_attention_leaves_untouched",
     "is_test": true,
     "proposed_module": "main::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b752ea19f0ef38be"
-  },
-  {
-    "file": "src/main.rs",
-    "name": "merge_hung_attention_defers_to_an_existing_budget_halt",
-    "is_test": true,
-    "proposed_module": "main::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "8bb97a5028f71d4c"
+    "content_hash": "6003946b638042f5"
   },
   {
     "file": "src/main.rs",

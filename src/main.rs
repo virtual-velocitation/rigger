@@ -23207,44 +23207,48 @@ mod tests {
         );
     }
 
-    /// Spec 69, criterion 5, signal 2's hung-liveness half (review u69c5 round 3, cause
-    /// genuine-defect): `merge_hung_attention` must not fire when there is nothing newly
-    /// hung, proving the crossing gate, not just the merge mechanics, since a wrong-way bug
-    /// here would restamp on every call exactly like the defect this round fixes.
-    #[test]
-    fn merge_hung_attention_does_nothing_when_not_newly_hung() {
-        let attention = vec![ledger::AttentionEntry::unit_scoped(
-            ledger::ATTENTION_ESCALATED,
-            "u",
-            "escalated after exhausting remediation",
-        )];
-        let merged = merge_hung_attention(attention.clone(), false, || {
-            panic!("the reason closure must not run when nothing is newly hung")
+    /// `merge_hung_attention` leaves `attention` untouched - and never evaluates the
+    /// (potentially expensive) reason closure - given `newly_hung`, `why` naming the case.
+    fn assert_merge_hung_attention_leaves_untouched(
+        attention: Vec<ledger::AttentionEntry>,
+        newly_hung: bool,
+        why: &str,
+    ) {
+        let merged = merge_hung_attention(attention.clone(), newly_hung, || {
+            panic!("the reason closure must not run: {why}")
         });
-        assert_eq!(
-            merged, attention,
-            "attention must be untouched when newly_hung is false"
-        );
+        assert_eq!(merged, attention, "attention must be untouched: {why}");
     }
 
-    /// A budget halt this same call takes precedence over a co-occurring hung-liveness halt
-    /// (mirroring the SAME precedence the `halted` wire field already gives the budget
-    /// breaker over its own hung fallback, just above this function's call site in
-    /// `cmd_step`) - proving the merge does NOT stamp a second `halted` entry, and does not
-    /// evaluate the (potentially expensive) reason closure, when one is already present.
-    #[test]
-    fn merge_hung_attention_defers_to_an_existing_budget_halt() {
-        let attention = vec![ledger::AttentionEntry::run_scoped(
-            ledger::ATTENTION_HALTED,
-            "budget exhausted: 1/1 spawns",
-        )];
-        let merged = merge_hung_attention(attention.clone(), true, || {
-            panic!("the reason closure must not run when a halted entry already exists")
-        });
-        assert_eq!(
-            merged, attention,
-            "a budget halt already on the channel must not be joined by a second halted entry"
-        );
+    rigger::test_cases! {
+        /// Spec 69, criterion 5, signal 2's hung-liveness half (review u69c5 round 3, cause
+        /// genuine-defect): `merge_hung_attention` must not fire when there is nothing newly
+        /// hung, proving the crossing gate, not just the merge mechanics, since a wrong-way bug
+        /// here would restamp on every call exactly like the defect this round fixes.
+        merge_hung_attention_does_nothing_when_not_newly_hung:
+            assert_merge_hung_attention_leaves_untouched(
+                vec![ledger::AttentionEntry::unit_scoped(
+                    ledger::ATTENTION_ESCALATED,
+                    "u",
+                    "escalated after exhausting remediation",
+                )],
+                false,
+                "nothing is newly hung",
+            );
+        /// A budget halt this same call takes precedence over a co-occurring hung-liveness halt
+        /// (mirroring the SAME precedence the `halted` wire field already gives the budget
+        /// breaker over its own hung fallback, just above this function's call site in
+        /// `cmd_step`) - proving the merge does NOT stamp a second `halted` entry, and does not
+        /// evaluate the reason closure, when one is already present.
+        merge_hung_attention_defers_to_an_existing_budget_halt:
+            assert_merge_hung_attention_leaves_untouched(
+                vec![ledger::AttentionEntry::run_scoped(
+                    ledger::ATTENTION_HALTED,
+                    "budget exhausted: 1/1 spawns",
+                )],
+                true,
+                "a halted entry already exists",
+            );
     }
 
     /// The merge must land the hung-liveness `halted` entry in its CANONICAL position
