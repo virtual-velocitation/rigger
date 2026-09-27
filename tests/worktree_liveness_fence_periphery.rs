@@ -155,7 +155,6 @@ fn seed_events(root: &Path, events: Vec<rigger::eventstore::Event>) {
 ///   DOES reach `sweep_terminal`'s own ancestor-merge + internal-fence check, and that
 ///   REMOVAL evidence line is exactly what this test can - and does - observe on real stderr.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_real_process_boundaries(
 ) {
     let dir = temp_git_project_with_commit();

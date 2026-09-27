@@ -604,7 +604,6 @@ fn current_run_id(root: &Path) -> String {
 /// `Store::open` round trip a completely separate `rigger step` process reads back - the
 /// shape this file's own header already argues for.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempotent_path() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();

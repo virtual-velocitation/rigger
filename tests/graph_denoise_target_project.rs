@@ -33,7 +33,6 @@ mod common;
 use common::fixtures::apply_json_as;
 
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_whole_runs_fold_projects_the_content_but_none_of_the_machinery() {
     // Fold a whole run's mixed event stream - one of every arm the de-noise touches - into a single
     // projection, each event in its raw production shape (with the machinery keys the log still

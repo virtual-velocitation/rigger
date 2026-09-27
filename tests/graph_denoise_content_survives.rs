@@ -31,7 +31,6 @@ mod common;
 use common::fixtures::apply_json_as;
 
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn the_de_noised_fold_keeps_the_design_memory_and_drops_only_the_agent_attribution() {
     // Fold a whole run's mixed stream - the machinery arms (touched file, unit lifecycle, gate) AND
     // the design-memory arms (a decision, a finding, a lesson, and a design-intent rationale link) -

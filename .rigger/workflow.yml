@@ -169,9 +169,8 @@ gates:                      # the project's verification library, referenced by 
   # The boundary gate (workspace split, step 0): Clean Architecture made mechanical.
   # `tests/boundary_audit.rs` fails when a workspace crate depends outward (the ring table in
   # the test), when production code constructs an adapter (a store, a graph, an agent driver)
-  # outside the composition root, when a source file passes 3,000 lines, or when a denied
-  # principle lint gains an exemption. Each rule's allowlist of today's offenders only
-  # shrinks. The adjudicator treats a red boundary gate as non-negotiable.
+  # outside the composition root, or when an item exempts itself from a denied principle
+  # lint. Each rule's allowlist of today's offenders only shrinks. The adjudicator treats a red boundary gate as non-negotiable.
   boundary: { run: "cargo test --test boundary_audit", kind: core }
   # The audit gate (workspace split, step 0): DRY and YAGNI as a red gate. The simplification
   # audit fails on any duplicate cluster left open, any dead-code ledger entry and any

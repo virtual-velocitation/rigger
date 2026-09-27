@@ -132,7 +132,6 @@ pub fn render_handbook_discipline(ctx: &DocsContext) -> String {
 /// time. Written pure-ASCII (hyphens, not unicode dashes) so the drift check has no
 /// false positives, and self-contained (it explains the problem each rule solves and
 /// names no tool outside rigger's own surface).
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn discipline_body(ctx: &DocsContext) -> String {
     let mut s = String::new();
 

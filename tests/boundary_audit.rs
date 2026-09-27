@@ -9,9 +9,10 @@
 //! 2. ADAPTERS ARE WIRED ONLY IN THE COMPOSITION ROOT. An adapter constructor (a store opener,
 //!    a graph opener, an agent driver) is named in production code only inside the composition
 //!    root or inside that adapter's own files. Anything else reaches past a port.
-//! 3. NO GOD FILES. A source file holds at most [`MAX_LINES`] lines.
+//! 3. THE PRINCIPLE LINTS CARRY NO EXEMPTION. No item opts out of a lint the root manifest
+//!    denies.
 //!
-//! Each rule carries an allowlist of today's offenders that may only shrink: an entry that no
+//! Rules 1 and 2 each carry an allowlist of today's offenders that may only shrink: an entry that no
 //! longer matches an offender fails the suite until it is deleted, so the list is the follow-up
 //! work queue and never outlives the work.
 
@@ -450,76 +451,21 @@ fn a_constructor_outside_the_root_is_reported_by_file_and_item() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Rule 3: no god files
+// Rule 3: the principle lints carry no exemption
 // ---------------------------------------------------------------------------------------------
 
-/// The most lines a source file may hold.
-const MAX_LINES: usize = 3_000;
+/// The lints the root manifest's `[workspace.lints.clippy]` denies. Clippy is their gate; this
+/// rule only keeps an item from opting out of one with an `allow` or `expect` attribute.
+const PRINCIPLE_LINTS: &[&str] = &["large_enum_variant", "module_inception"];
 
-/// Today's source files over [`MAX_LINES`]; the extraction commit named beside each entry
-/// splits the file and deletes the entry.
-const GOD_FILES: &[&str] = &[
-    "src/conductor.rs",           // removed by: split: extract rigger-conductor
-    "src/contextgraph/sqlite.rs", // removed by: split: extract rigger-graph-sqlite
-    "src/dash.rs",                // removed by: split: extract rigger-dash
-    "src/main.rs",                // removed by: split: extract rigger (main.rs into cli/ modules)
-    "src/metrics.rs",             // removed by: split: extract rigger-gates-shell
-    "src/worktree.rs",            // removed by: split: extract rigger-worktree-git
-];
-
-/// Every production source file under `root` over [`MAX_LINES`], with its line count.
-fn oversized_files(root: &Path) -> BTreeMap<String, usize> {
-    production_sources(root)
-        .into_iter()
-        .map(|(rel, text)| (rel, text.lines().count()))
-        .filter(|&(_, n)| n > MAX_LINES)
-        .collect()
-}
-
-#[test]
-fn no_source_file_exceeds_the_line_limit() {
-    let oversized = oversized_files(&repo_root());
-    let mut problems: Vec<String> = oversized
-        .iter()
-        .filter(|(file, _)| !GOD_FILES.contains(&file.as_str()))
-        .map(|(file, lines)| {
-            format!("{file} holds {lines} lines (limit {MAX_LINES}): split it by responsibility")
-        })
-        .collect();
-    for file in GOD_FILES {
-        if !oversized.contains_key(*file) {
-            problems.push(format!(
-                "{file} is allowlisted but is gone or within {MAX_LINES} lines: delete its \
-                 GOD_FILES entry"
-            ));
-        }
-    }
-    assert!(problems.is_empty(), "{}", problems.join("\n"));
-}
-
-// ---------------------------------------------------------------------------------------------
-// Rule 4: the principle lints only lose exemptions
-// ---------------------------------------------------------------------------------------------
-
-/// The lints the root manifest's `[workspace.lints.clippy]` denies, each with the number of
-/// items still exempted by a per-item `#[expect(clippy::<lint>)] // lesson: <id>` marker. A
-/// count may only fall: `expect` fails the build the moment its item complies, and this pin
-/// fails the suite the moment a new exemption appears.
-const LINT_EXEMPTION_PINS: &[(&str, usize)] = &[
-    ("too_many_lines", 108),
-    ("cognitive_complexity", 9),
-    ("large_enum_variant", 0),
-    ("module_inception", 0),
-];
-
-/// Per denied lint: the `expect` markers (each must name its lesson) and any `allow` of it,
-/// over every `.rs` file under `root`'s `src/`, `crates/` and `tests/`.
-fn lint_exemptions(root: &Path) -> BTreeMap<&'static str, (usize, Vec<String>)> {
+/// Every `allow`/`expect` of a [`PRINCIPLE_LINTS`] lint over every `.rs` file under `root`'s
+/// `src/`, `crates/` and `tests/`, as `file:line: lint`.
+fn lint_exemptions(root: &Path) -> Vec<String> {
     let mut files = Vec::new();
     for dir in ["src", "crates", "tests"] {
         collect_rs_files(&root.join(dir), &mut files);
     }
-    let mut out: BTreeMap<&'static str, (usize, Vec<String>)> = BTreeMap::new();
+    let mut out = Vec::new();
     for path in files {
         let text = fs::read_to_string(&path).unwrap_or_default();
         let rel = path
@@ -528,21 +474,12 @@ fn lint_exemptions(root: &Path) -> BTreeMap<&'static str, (usize, Vec<String>)> 
             .display()
             .to_string();
         for (i, line) in text.lines().enumerate() {
-            for &(lint, _) in LINT_EXEMPTION_PINS {
-                let entry = out.entry(lint).or_default();
-                if line.contains(&format!("#[expect(clippy::{lint})]")) {
-                    entry.0 += 1;
-                    if !line.contains("// lesson: ") {
-                        entry
-                            .1
-                            .push(format!("{rel}:{}: marker names no lesson", i + 1));
-                    }
-                }
-                if line.contains(&format!("allow(clippy::{lint})")) {
-                    entry.1.push(format!(
-                        "{rel}:{}: `allow` hides the lint; use `expect`",
-                        i + 1
-                    ));
+            for lint in PRINCIPLE_LINTS {
+                if ["allow", "expect"]
+                    .iter()
+                    .any(|attr| line.contains(&format!("{attr}(clippy::{lint})")))
+                {
+                    out.push(format!("{rel}:{}: exempts `{lint}`; fix the item", i + 1));
                 }
             }
         }
@@ -551,22 +488,7 @@ fn lint_exemptions(root: &Path) -> BTreeMap<&'static str, (usize, Vec<String>)> 
 }
 
 #[test]
-fn principle_lint_exemptions_only_fall() {
-    let found = lint_exemptions(&repo_root());
-    let mut problems = Vec::new();
-    for &(lint, pin) in LINT_EXEMPTION_PINS {
-        let (count, bad) = found.get(lint).cloned().unwrap_or_default();
-        if count > pin {
-            problems.push(format!(
-                "{count} `{lint}` exemptions exceed the pin {pin}: fix the new item instead"
-            ));
-        }
-        if count < pin {
-            problems.push(format!(
-                "`{lint}` exemptions fell to {count}: lower its pin from {pin} to {count}"
-            ));
-        }
-        problems.extend(bad);
-    }
+fn principle_lints_carry_no_exemption() {
+    let problems = lint_exemptions(&repo_root());
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

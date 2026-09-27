@@ -697,8 +697,6 @@ struct UnitFold {
 /// [`crate::ledger::project`]. Pure and replay-safe: unknown event types and
 /// malformed payloads are ignored, so the same shared log feeds this read-model
 /// alongside the ledger and the context graph.
-#[expect(clippy::cognitive_complexity)] // lesson: lesson-split-clippy-cognitive-complexity
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 pub fn project(events: &[Event]) -> Metrics {
     let mut units: BTreeMap<String, UnitFold> = BTreeMap::new();
     let mut metrics = Metrics::default();

@@ -824,7 +824,6 @@ fn cherry_pick_onto_run_branch_public_api_no_op_on_empty_shas() {
 /// its own work but names the producer via `compensate`), over a MULTI-commit producer
 /// landing, which that implementer fixture never constructs.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn plan_stage_compensation_reverts_every_landed_commit_not_just_the_newest() {
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
@@ -1081,7 +1080,6 @@ fn plan_stage_commit_reverting_its_own_out_of_scope_touch_still_fails_the_stage_
 /// reverting the recovered commit from the run branch - the concrete, business-relevant
 /// consequence permanently uncompensable content would otherwise have.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn plan_stage_resumed_after_a_crash_recovers_the_real_sha_and_stays_compensable() {
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
@@ -1628,7 +1626,6 @@ fn plan_intent_record_is_log_carried_before_any_git_mutation_and_names_the_origi
 /// patch-id search - and still reaches `Integrated` with the real landed sha and content a
 /// downstream stage can read.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn plan_stage_resumed_with_a_pre_existing_plan_landed_record_recovers_without_any_new_git_mutation()
 {
     let repo = init_repo();

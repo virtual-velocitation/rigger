@@ -1094,7 +1094,6 @@ impl Worktree {
         }
     }
 
-    #[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
     pub fn cherry_pick_onto_run_branch(&self, shas: &[String]) -> Result<CherryPickOutcome, Error> {
         if shas.is_empty() {
             return Ok(CherryPickOutcome::Picked(Vec::new()));

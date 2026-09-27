@@ -111,7 +111,6 @@ impl AgentDriver for NonAncestorAmendDriver {
 /// residue check would miss entirely, since it anchors on the merge-base strictly before
 /// `round_start_sha`, where `work.rs` never existed either.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_non_ancestor_amend_names_the_true_diff_not_the_triple_dot_under_report() {
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();

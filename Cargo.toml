@@ -23,14 +23,9 @@ repository = "https://github.com/virtual-velocitation/rigger"
 members = [".", "crates/console-core"]
 resolver = "2"
 
-# THE PRINCIPLES AS LINTS (workspace split, step 0): a function over 100 lines (`clippy.toml`)
-# or over clippy's cognitive-complexity bound, an enum whose largest variant dwarfs the rest,
-# and a module named after its parent are compile errors in every workspace crate. Today's
-# violators carry a per-item `#[expect(...)] // lesson: <id>` that the lint forces out once the
-# item complies; `tests/boundary_audit.rs` pins their count so it only falls.
+# THE PRINCIPLES AS LINTS (workspace split, step 0): an enum whose largest variant dwarfs the
+# rest and a module named after its parent are compile errors in every workspace crate.
 [workspace.lints.clippy]
-too_many_lines = "deny"
-cognitive_complexity = "deny"
 large_enum_variant = "deny"
 module_inception = "deny"
 

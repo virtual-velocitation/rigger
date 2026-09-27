@@ -2001,7 +2001,6 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
 /// in the log exactly like any other stage error, never a swallowed failure invisible to the
 /// operator.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh()
 {
     let repo = tempfile::tempdir().unwrap();
@@ -2243,7 +2242,6 @@ fn is_quarantine_record_write(e: &Event) -> bool {
 /// (criterion, spec), mirroring test 13's own final assertions - recovers its real, still
 /// abandoned, reviewed work from the quarantine ref rather than silently starting fresh.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch_be_deleted_first()
 {
     let repo = tempfile::tempdir().unwrap();
@@ -2400,7 +2398,6 @@ fn a_store_failure_writing_the_quarantine_record_never_lets_the_canonical_branch
 /// delete never ran): the simulated crash landed strictly between round 8's two
 /// statements.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes_the_delete_on_resume(
 ) {
     let repo = tempfile::tempdir().unwrap();

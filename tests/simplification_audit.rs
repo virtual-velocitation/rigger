@@ -268,8 +268,6 @@ struct FileScanCore {
 /// - `#[path = "value"]` is tracked the same way as `#[cfg(test)]`, consumed by the next `mod`.
 /// - `mod name;` (external, no body) now records an [`OutOfLineMod`] instead of silently
 ///   discarding the declaration.
-#[expect(clippy::cognitive_complexity)] // lesson: lesson-split-clippy-cognitive-complexity
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn scan_file_core(file: &str, content: &str) -> FileScanCore {
     let chars: Vec<char> = content.chars().collect();
     let n = chars.len();
@@ -2447,7 +2445,6 @@ fn skip_block_comment(chars: &[char], i: &mut usize) -> usize {
 /// other character is its own single-char `Punct` token (so a multi-char operator like `::` or
 /// `->` becomes two/three adjacent `Punct` tokens - the mandatory-sweep matchers below account
 /// for this).
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn tokenize(chars: &[char]) -> Vec<RawTok> {
     let n = chars.len();
     let mut i = 0usize;
@@ -2950,7 +2947,6 @@ fn propose_home(files: &[FileScan], members: &[usize], refs: &[FnRef]) -> String
 
 /// THE MECHANICAL PASS (this module's doc comment): normalized-token-shingle Jaccard
 /// clustering over every function `refs` names. Deterministically ordered.
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn build_mechanical_clusters(files: &[FileScan], refs: &[FnRef]) -> Vec<DupCluster> {
     let n = refs.len();
     let mut norm_keys: Vec<String> = Vec::with_capacity(n);
@@ -3941,15 +3937,6 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
         let _ = writeln!(out, "- closed before the redraw: {what}");
     }
     let _ = writeln!(out);
-    out.push_str(&render_recall_gap_history());
-    out
-}
-
-/// The adversarial-sample subsection's closing paragraph: the recall gaps and precision defect
-/// earlier reading passes surfaced, each named with the generalizable sweep (and its decision)
-/// that closed it.
-fn render_recall_gap_history() -> String {
-    let mut out = String::new();
     let _ = writeln!(
         out,
         "Two real recall gaps surfaced this way and were closed by widening the mechanical \
@@ -4173,7 +4160,6 @@ fn joined(lines: &[usize]) -> String {
 /// port-concretion sweeps and the use-cases-importing-infrastructure / second-mutation-authority
 /// categories (decision `u85c3-boundary-violation-mutation-scratch-reach`). Every citation and
 /// figure is computed from `files` and the tree at render time.
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn render_section_3(files: &[FileScan]) -> String {
     const CONDUCTOR: &str = "src/conductor.rs";
     const INGEST: &str = "src/ingest.rs";
@@ -4508,7 +4494,6 @@ fn render_dead_code_deletion_list(
 /// workspace production-reference sweep; 4.2 states the live-or-deleted rule; 4.3 renders the
 /// ledger from [`real_dead_code_candidates`]; 4.4 (retired-feature remnants, stale doc claims)
 /// is carried forward verbatim.
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn render_section_4() -> String {
     let mut out = String::new();
     out.push_str("## 4. Dead and Vestigial Code\n\n");
@@ -4981,7 +4966,6 @@ fn cli_cross_file_clusters<'a>(test_only: &[&'a DupCluster]) -> Vec<&'a DupClust
 /// table-driven-test consolidation candidates cross-referenced from the ALREADY-COMMITTED
 /// `docs/audit/duplication-catalog.json` filtered to clusters whose every site sits under
 /// `tests/` (decision `u85c3-test-suite-shape-from-committed-catalog`).
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 pub(crate) fn render_section_5() -> String {
     let test_only = test_only_clusters();
     let (test_only_n, helpers_n, tests_n) = (
@@ -5346,7 +5330,6 @@ fn distinct_files(c: &DupCluster) -> String {
 /// the cluster accounting (test-only + 7 named + remaining src-touching = every catalogued
 /// cluster, each count read from the catalog at render time). Tier 1 item 0, "Delete the dead-code set", cites section 4.3's ledger
 /// only, the same "adds no new findings" discipline every other section-6 entry follows.
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn render_section_6() -> String {
     let catalog = real_catalog();
     let test_only = test_only_clusters();
@@ -6857,7 +6840,6 @@ fn receiver_type(file: &FileScan, i: usize) -> Option<String> {
 /// `is_test`) with zero references from production code. `files` is [`scan_tree`]'s whole
 /// `src`+`tests` output; `whole_file_test` is [`resolve_out_of_line_test_files`]'s `src/`-only
 /// result over the SAME tree `files` was read from.
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn build_dead_code_candidates(
     files: &[FileScan],
     whole_file_test: &BTreeSet<String>,
@@ -10352,7 +10334,6 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::cognitive_complexity)] // lesson: lesson-split-clippy-cognitive-complexity
     fn render_section_6_cites_every_tier_and_the_explicit_none_needed_category() {
         let rendered = render_section_6();
         assert!(rendered.contains("## 6. Prioritized Plan"));

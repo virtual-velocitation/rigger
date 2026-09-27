@@ -348,7 +348,6 @@ fn rigger_result_folds_an_adjudicator_discard_into_the_persisted_graph() {
 /// pre-boundary lesson is KEPT, and - closing the cross-run id-reuse keep-invariant hazard - a
 /// decision id `shared-d` recorded in BOTH the dead run and the active run is KEPT.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn reset_runs_prunes_dead_runs_from_the_graph_keeping_lessons_active_run_and_reused_ids() {
     let dir = temp_store_project();
     let root = dir.path();
@@ -868,7 +867,6 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
 /// reclaims exactly 0 bytes and does not shrink the file further. Seeds directly through the edge
 /// table for speed, then prunes and compacts through the real `Projector` API on ONE connection.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn projector_compact_returns_the_on_disk_bytes_reclaimed_and_never_changes_a_query() {
     use rigger::contextgraph::sqlite::Projector;
 
@@ -5349,7 +5347,6 @@ fn assert_a_real_worktree_sha(
 /// restore, silently empty in exactly this scenario) at the same real-binary boundary,
 /// not just through the implementer's in-crate `Stub`-driven regression.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn step_restores_the_unit_worktree_a_gate_deletes_before_the_review_spawn() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
@@ -5717,8 +5714,6 @@ stages:
 /// closes that specific gap through the synchronous CLI driver instead - the only path a
 /// deletion WITHIN one process, between two tiers, can occur through a real agent spawn).
 #[test]
-#[expect(clippy::cognitive_complexity)] // lesson: lesson-split-clippy-cognitive-complexity
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn step_stamps_a_real_reviewed_sha_after_repeated_between_step_deletions() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
@@ -5946,7 +5941,6 @@ stages:
 /// panel (a lens, an adversary, and an adjudicator) and reads the roster off the real,
 /// printed wave JSON at each tier.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn step_stamps_the_real_routed_roster_onto_the_printed_wave() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
@@ -7046,7 +7040,6 @@ stages:
 /// `rigger run` so both candidates' implementer and adjudicator spawns are real, synchronous
 /// subprocesses in the SAME process - never a fabricated in-memory deletion.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn run_speculation_stamps_a_real_failed_sha_after_the_post_merge_re_gates_own_deletion_is_restored()
 {
     let dir = temp_git_project_with_commit();
@@ -10751,7 +10744,6 @@ fn a_step_driven_run_yields_nonempty_gate_and_review_sections_in_stats() {
 /// re-park is observable at the true external boundary, and (with its liveness-fault sibling
 /// below) that ONLY a plain recorded error re-parks.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn a_plain_error_on_a_review_spawn_re_parks_a_fresh_attempt_then_a_real_verdict_folds() {
     use rigger::eventstore::namespace::Namespaced;
     use rigger::eventstore::sqlite::Store;
@@ -15360,7 +15352,6 @@ fn write_gating_lint_project(root: &Path, adjudicator_body: &str) {
 /// emit-only verdict is a guaranteed stall that this lint refuses up front instead of
 /// letting it ferment into an escalation loop.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn validate_hard_errors_on_a_gating_persona_that_only_emits_its_verdict() {
     // Non-compliant: the `{"verdict"...}` literal appears only as the rigger_emit payload.
     let emit_only = temp_project();
@@ -22009,7 +22000,6 @@ fn dash_is_a_fixed_address_singleton_a_second_invocation_reports_and_exits_clean
 /// the SELECTED instance's stores, not the dash's own project. The dash is a real, long-lived
 /// process the test REAPS before its assertions so a failure never leaks a dashboard.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn dash_landing_lists_instances_and_attach_serves_each_instance_store() {
     use rigger::registry;
     use std::process::Stdio;
@@ -25093,7 +25083,6 @@ rigger::test_cases! {
 /// `rigger_progress` with the bound spawn BY CONSTRUCTION with no argument naming it, and
 /// refuses a `rigger_emit` whose `meta.spawn` names a DIFFERENT spawn.
 #[test]
-#[expect(clippy::too_many_lines)] // lesson: lesson-split-clippy-too-many-lines
 fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
     use rigger::eventstore::namespace::Namespaced;
     use rigger::eventstore::sqlite::Store as SqliteStore;
