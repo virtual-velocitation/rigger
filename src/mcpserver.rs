@@ -1028,9 +1028,13 @@ mod tests {
 
     /// A `tools/call` request (id 1) for tool `name` with empty arguments.
     fn tools_call(name: &str) -> String {
-        format!(
-            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#
-        )
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": {}},
+        })
+        .to_string()
     }
 
     /// The `rigger_peers` call scoped to `a.rs`.
