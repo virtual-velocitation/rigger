@@ -172,18 +172,11 @@ fn every_real_hash_path_inclusion_site_of_gitsemver_rs_is_named_in_the_stage1_re
 mod scan_self_tests {
     use super::*;
 
-    #[test]
-    fn a_real_top_level_path_attribute_line_is_recognized() {
-        assert!(is_real_path_attribute_line(
-            "#[path = \"../build/gitsemver.rs\"]"
-        ));
-    }
-
-    #[test]
-    fn an_indented_path_attribute_line_is_still_recognized() {
-        assert!(is_real_path_attribute_line(
-            "    #[path = \"../build/gitsemver.rs\"]"
-        ));
+    rigger::test_cases! {
+        a_real_top_level_path_attribute_line_is_recognized:
+            assert!(is_real_path_attribute_line("#[path = \"../build/gitsemver.rs\"]"));
+        an_indented_path_attribute_line_is_still_recognized:
+            assert!(is_real_path_attribute_line("    #[path = \"../build/gitsemver.rs\"]"));
     }
 
     #[test]

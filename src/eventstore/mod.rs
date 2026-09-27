@@ -106,9 +106,9 @@ impl Event {
     /// `position`, and `revision` on append; `valid_from` defaults to now and may
     /// be overridden with [`Event::with_valid_from`].
     pub fn new(type_: impl Into<String>, data: Vec<u8>) -> Self {
-        let now = Self::mint_time();
+        let (id, now) = Self::mint();
         Event {
-            id: Self::mint_id(),
+            id,
             stream: String::new(),
             type_: type_.into(),
             data,
@@ -120,40 +120,28 @@ impl Event {
         }
     }
 
-    /// A fresh random id, minted with real entropy (spec 93, criterion 1: THE CORE LANE
+    /// A fresh identity for a new event: its random id, minted with real entropy, and its
+    /// construction timestamp, read from the real clock (spec 93, criterion 1: THE CORE LANE
     /// IS PURE). This is the `store` half - the `core` lane's own stub is below.
     #[cfg(any(feature = "store", not(feature = "core")))]
-    fn mint_id() -> String {
-        uuid::Uuid::new_v4().to_string()
+    fn mint() -> (String, SystemTime) {
+        (uuid::Uuid::new_v4().to_string(), SystemTime::now())
     }
 
-    /// The pure `core` lane has no entropy source at all (`uuid` is a banned import, and
-    /// the wasm target the lane also builds for carries no `getrandom` backend without
-    /// extra opt-in). A page constructs an `Event` only to hand its already-decoded JSON
-    /// to `fold_push`/`fold_reset` (spec 93 criterion 2's ABI), which stamps nothing
-    /// itself - the id it read off the wire is already the recorded one - so an empty id
-    /// here is never presented as a real, storable identity; every real mint runs through
-    /// the `store` arm above.
-    #[cfg(all(feature = "core", not(feature = "store")))]
-    fn mint_id() -> String {
-        String::new()
-    }
-
-    /// The construction timestamp, read from the real clock (spec 93, criterion 1). This
-    /// is the `store` half - the `core` lane's own stub is below.
-    #[cfg(any(feature = "store", not(feature = "core")))]
-    fn mint_time() -> SystemTime {
-        SystemTime::now()
-    }
-
-    /// CONSTRAINTS WALK, Clock (spec 93): "the core has no `now()`, every age arrives as
-    /// an input" - `SystemTime::now()` is itself a banned import, so the pure `core`
-    /// lane's own `Event::new` returns the epoch rather than reading the clock; a caller
-    /// that needs a real timestamp on a core-built `Event` sets it explicitly via
+    /// The pure `core` lane's identity stub. It has no entropy source at all (`uuid` is a
+    /// banned import, and the wasm target the lane also builds for carries no `getrandom`
+    /// backend without extra opt-in). A page constructs an `Event` only to hand its
+    /// already-decoded JSON to `fold_push`/`fold_reset` (spec 93 criterion 2's ABI), which
+    /// stamps nothing itself - the id it read off the wire is already the recorded one - so
+    /// an empty id here is never presented as a real, storable identity; every real mint runs
+    /// through the `store` arm above. And CONSTRAINTS WALK, Clock (spec 93): "the core has no
+    /// `now()`, every age arrives as an input" - `SystemTime::now()` is itself a banned
+    /// import, so the timestamp is the epoch rather than the clock; a caller that needs a
+    /// real timestamp on a core-built `Event` sets it explicitly via
     /// [`Event::with_valid_from`], or reads it off the wire it decoded the event from.
     #[cfg(all(feature = "core", not(feature = "store")))]
-    fn mint_time() -> SystemTime {
-        SystemTime::UNIX_EPOCH
+    fn mint() -> (String, SystemTime) {
+        (String::new(), SystemTime::UNIX_EPOCH)
     }
 
     /// Builder: set a metadata entry (causation / correlation / actor).

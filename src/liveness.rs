@@ -517,7 +517,7 @@ pub fn hung_spawns(events: &[Event]) -> Result<Vec<HungSpawn>, Error> {
                 hung.push(HungSpawn {
                     id: id.clone(),
                     unit: req.unit.clone(),
-                    class: res.liveness_class(),
+                    class: res.meta_str(crate::spawn::META_LIVENESS_CLASS),
                 });
             }
         }
@@ -995,7 +995,7 @@ mod tests {
             res.is_liveness_fault(),
             "recorded a liveness fault on the spawn id"
         );
-        assert_eq!(res.liveness_class(), "infra");
+        assert_eq!(res.meta_str(crate::spawn::META_LIVENESS_CLASS), "infra");
         assert!(
             res.is_error(),
             "a hung spawn's fault carries a describing error"

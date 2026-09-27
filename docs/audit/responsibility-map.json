@@ -9,27 +9,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "gate_verdict_key",
+    "name": "gate_key",
     "is_test": false,
     "proposed_module": "conductor::gate",
     "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "c80d78f767bd7919"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "gate_skip_key",
-    "is_test": false,
-    "proposed_module": "conductor::gate",
-    "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "0d4aee73b3dec391"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "postmerge_gate_verdict_key",
-    "is_test": false,
-    "proposed_module": "conductor::gate",
-    "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "2ed0d74c0dd29341"
+    "content_hash": "6ae2664587e186ee"
   },
   {
     "file": "src/conductor.rs",
@@ -137,30 +121,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "from",
-    "is_test": false,
-    "proposed_module": "conductor::error",
-    "reason": "method inside `impl From<crate::eventstore::Error> for Error`; grouped with its other `Error` methods.",
-    "content_hash": "ba40f681ffe2127c"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "from",
-    "is_test": false,
-    "proposed_module": "conductor::error",
-    "reason": "method inside `impl From<crate::worktree::Error> for Error`; grouped with its other `Error` methods.",
-    "content_hash": "7aa3f9920d99592c"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "from",
-    "is_test": false,
-    "proposed_module": "conductor::error",
-    "reason": "method inside `impl From<serde_json::Error> for Error`; grouped with its other `Error` methods.",
-    "content_hash": "89ab6d0f46e862de"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "conflict_resolution_prompt",
     "is_test": false,
     "proposed_module": null,
@@ -214,6 +174,22 @@
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
     "content_hash": "a2e8a215c20fb8b6"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "cached",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "348cf844005e1695"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "clear_attempt",
+    "is_test": false,
+    "proposed_module": null,
+    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
+    "content_hash": "ed1f4cbbb9559c2e"
   },
   {
     "file": "src/conductor.rs",
@@ -297,11 +273,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "budget_refused",
+    "name": "spawn_halt",
     "is_test": false,
-    "proposed_module": "conductor::budget",
-    "reason": "name contains \"budget\" (budget accounting); grouped under `conductor::budget`.",
-    "content_hash": "b50ecdd32bf91b19"
+    "proposed_module": "conductor::spawn",
+    "reason": "name contains \"spawn\" (spawn lifecycle); grouped under `conductor::spawn`.",
+    "content_hash": "87c3646713cbc845"
   },
   {
     "file": "src/conductor.rs",
@@ -334,14 +310,6 @@
     "proposed_module": "conductor::review",
     "reason": "name contains \"review\" (review orchestration); grouped under `conductor::review`.",
     "content_hash": "605a2dd86112322f"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "verdict_channel_mismatch",
-    "is_test": false,
-    "proposed_module": "conductor::gate",
-    "reason": "name contains \"verdict\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "050caa327207dcd8"
   },
   {
     "file": "src/conductor.rs",
@@ -437,7 +405,7 @@
     "is_test": false,
     "proposed_module": null,
     "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "0dd8bcb62f4a294f"
+    "content_hash": "034e4bc9ae82f560"
   },
   {
     "file": "src/conductor.rs",
@@ -537,22 +505,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "recorded_gate_verdict",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "f1ed8cfce46495e4"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "cached_green_verdict",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "14dd32b185e8edd6"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "is_stale",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
@@ -605,7 +557,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "d9b11b403ed8538f"
+    "content_hash": "2d2d6ec08b1cbbd4"
   },
   {
     "file": "src/conductor.rs",
@@ -657,38 +609,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "budget_broke",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "171fe464f080712f"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "parked",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "2373b4b812a585d3"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "manual_review_pending",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "317795789e154c6f"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "budget_halted",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "379b5987ea7963f7"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "trip_budget_breaker",
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
@@ -701,7 +621,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "a976bbcd2d9df50f"
+    "content_hash": "baacc369585ba656"
   },
   {
     "file": "src/conductor.rs",
@@ -765,7 +685,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "0f979c67b62156c9"
+    "content_hash": "2112a449b2349442"
   },
   {
     "file": "src/conductor.rs",
@@ -829,7 +749,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "0a45ddc362c82eed"
+    "content_hash": "303f03c7a113f880"
   },
   {
     "file": "src/conductor.rs",
@@ -957,7 +877,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "2cd39a797990595b"
+    "content_hash": "11c14b67c9755942"
   },
   {
     "file": "src/conductor.rs",
@@ -1021,7 +941,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "37250b8de8cf8600"
+    "content_hash": "b8e7bf89624f8eae"
   },
   {
     "file": "src/conductor.rs",
@@ -1085,7 +1005,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "ed0fb6659e8eb90e"
+    "content_hash": "257463278d5992fd"
   },
   {
     "file": "src/conductor.rs",
@@ -1125,7 +1045,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "5781e54a75eaf73a"
+    "content_hash": "b15b2a40ed0fabd6"
   },
   {
     "file": "src/conductor.rs",
@@ -1133,7 +1053,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "53abe8e8c81c0c17"
+    "content_hash": "6621c276a3aac772"
   },
   {
     "file": "src/conductor.rs",
@@ -1141,7 +1061,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "af92a2e170a3c9f9"
+    "content_hash": "ec86dbda8d9b7733"
   },
   {
     "file": "src/conductor.rs",
@@ -1213,7 +1133,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "a01e83d144acb4c0"
+    "content_hash": "20730e4ebce4ddbc"
   },
   {
     "file": "src/conductor.rs",
@@ -1221,39 +1141,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "aeb04f9af2256a81"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "clear_regenerate_pending",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "a5d4bb8e9b76d492"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "pending_landing_for",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "7e5961172fad8e9d"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "clear_pending_landing",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "5ad55723d7b95f77"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "landed_sha_for",
-    "is_test": false,
-    "proposed_module": "conductor::run_ctx",
-    "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "bd8be5a15c00a864"
+    "content_hash": "0dd8715f51db6685"
   },
   {
     "file": "src/conductor.rs",
@@ -1333,7 +1221,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "6608cd74d22879de"
+    "content_hash": "87be67c7ee237e3c"
   },
   {
     "file": "src/conductor.rs",
@@ -1357,7 +1245,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "053a5fde1084adc3"
+    "content_hash": "275e52e9adf4a9bb"
   },
   {
     "file": "src/conductor.rs",
@@ -1525,7 +1413,7 @@
     "is_test": false,
     "proposed_module": "conductor::run_ctx",
     "reason": "method inside `impl RunCtx<'_>`; grouped with its other `RunCtx` methods.",
-    "content_hash": "2c58955ea6dc8aaf"
+    "content_hash": "88d3b29b7336d51d"
   },
   {
     "file": "src/conductor.rs",
@@ -1945,19 +1833,19 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "first_stage_named",
+    "is_test": false,
+    "proposed_module": "conductor::schedule",
+    "reason": "name contains \"stage\" (unit scheduling); grouped under `conductor::schedule`.",
+    "content_hash": "7ad23efeb11bdfaa"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "is_fan_out_template",
     "is_test": false,
     "proposed_module": "conductor::support",
     "reason": "name contains \"is_\" (predicate helper); grouped under `conductor::support`.",
     "content_hash": "efc2fad73f8f4df4"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "fan_out_template_name",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "32fd8cd289da9038"
   },
   {
     "file": "src/conductor.rs",
@@ -2001,19 +1889,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "producer_name",
-    "is_test": false,
-    "proposed_module": null,
-    "reason": "no impl-block or naming-convention rule matched this free function; flagged for manual triage in the follow-up refactor spec.",
-    "content_hash": "7e2d5b722aa77ca0"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "critique_gate_name",
     "is_test": false,
     "proposed_module": "conductor::gate",
     "reason": "name contains \"gate\" (gate execution); grouped under `conductor::gate`.",
-    "content_hash": "f70bcc7838abe91d"
+    "content_hash": "857441735bca71a9"
   },
   {
     "file": "src/conductor.rs",
@@ -2113,6 +1993,62 @@
   },
   {
     "file": "src/conductor.rs",
+    "name": "occurrences",
+    "is_test": true,
+    "proposed_module": "conductor::tests::support",
+    "reason": "defined inside `support`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "195a7ee6cd063e89"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "snapshot",
+    "is_test": true,
+    "proposed_module": "conductor::tests::support",
+    "reason": "defined inside `support`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "da6673fcaa60e828"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "stage_shape",
+    "is_test": true,
+    "proposed_module": "conductor::tests::support",
+    "reason": "defined inside `support`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "4099d3184652424b"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "apply",
+    "is_test": true,
+    "proposed_module": "conductor::tests::support",
+    "reason": "defined inside `support`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "05b3b40aa70bf744"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "apply_batch",
+    "is_test": true,
+    "proposed_module": "conductor::tests::support",
+    "reason": "defined inside `support`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "f412fd8bcececfc8"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "subgraph",
+    "is_test": true,
+    "proposed_module": "conductor::tests::support",
+    "reason": "defined inside `support`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "810db332de0c7643"
+  },
+  {
+    "file": "src/conductor.rs",
+    "name": "resolve",
+    "is_test": true,
+    "proposed_module": "conductor::tests::support",
+    "reason": "defined inside `support`, a #[cfg(test)] module; proposed home groups it with that named test subgroup pending consolidation (spec 85 section 5).",
+    "content_hash": "802ca7a9506b1c7d"
+  },
+  {
+    "file": "src/conductor.rs",
     "name": "agent_failure_as_str_round_trips_through_from_category_for_every_category",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -2189,7 +2125,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e49a7ccbffc10703"
+    "content_hash": "f9318719a1d3a5fe"
   },
   {
     "file": "src/conductor.rs",
@@ -2197,7 +2133,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "32006dd7424c3710"
+    "content_hash": "34ef94d5a5ee58f6"
   },
   {
     "file": "src/conductor.rs",
@@ -2545,14 +2481,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "spawn_count",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "20d6b5ba70bec5b2"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "spawned",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -2825,19 +2753,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "shape",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5399b021a11d2861"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "a_resume_catch_up_over_two_episode_supersession_and_a_split_matches_a_live_incremental_fold",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c3df6e725f670765"
+    "content_hash": "fc4bc04653cc2639"
   },
   {
     "file": "src/conductor.rs",
@@ -2857,19 +2777,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "shape",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5399b021a11d2861"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "a_legacy_history_resume_catch_up_matches_a_live_incremental_fold_mutual_siblings_then_superseded",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f4af8423c50a0f6f"
+    "content_hash": "914e682a4c75c68d"
   },
   {
     "file": "src/conductor.rs",
@@ -3229,7 +3141,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "a11f1bdf71da8e05"
+    "content_hash": "43aca1d2dda354fa"
   },
   {
     "file": "src/conductor.rs",
@@ -3241,75 +3153,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "read_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "477c8540a3f25ecc"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "read_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b33b5a578a27ef85"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "0acfa6ce655248d3"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b6bdbdc8d779c1e2"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "apply",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "05b3b40aa70bf744"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "apply_batch",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f412fd8bcececfc8"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subgraph",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3a76eb7afaf57631"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "resolve",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "802ca7a9506b1c7d"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "the_ingest_sink_appends_and_folds_once_per_file_batch_never_once_per_event",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f19de69d9f5e3d84"
+    "content_hash": "3d0ff833064ff505"
   },
   {
     "file": "src/conductor.rs",
@@ -3613,7 +3461,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5d62a434067edad1"
+    "content_hash": "266c1b36b4b61221"
   },
   {
     "file": "src/conductor.rs",
@@ -3637,7 +3485,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "79768e327123ec25"
+    "content_hash": "e8223eeb093bafc5"
   },
   {
     "file": "src/conductor.rs",
@@ -3669,7 +3517,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "add3066cbc3bce0a"
+    "content_hash": "94dc538920d1d3b0"
   },
   {
     "file": "src/conductor.rs",
@@ -3677,7 +3525,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "083bec4b402c9f2b"
+    "content_hash": "c679d25672fe6cd9"
   },
   {
     "file": "src/conductor.rs",
@@ -3685,7 +3533,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "78145c3020c56fa7"
+    "content_hash": "6af7dcffd6f5c611"
   },
   {
     "file": "src/conductor.rs",
@@ -3949,7 +3797,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "810efdb80dd6de04"
+    "content_hash": "bbc084a0b44778e8"
   },
   {
     "file": "src/conductor.rs",
@@ -3957,7 +3805,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f0eaff4cd0ff52c8"
+    "content_hash": "d2d9ccf406874754"
   },
   {
     "file": "src/conductor.rs",
@@ -3965,7 +3813,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b247bab773b61f2c"
+    "content_hash": "588bf4acabdab296"
   },
   {
     "file": "src/conductor.rs",
@@ -4037,7 +3885,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ad5234c69393948f"
+    "content_hash": "d4efe47f440147d3"
   },
   {
     "file": "src/conductor.rs",
@@ -4045,7 +3893,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "82922bfc3d317edb"
+    "content_hash": "00183ecb01109929"
   },
   {
     "file": "src/conductor.rs",
@@ -4190,38 +4038,6 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "1c3e1dada2643d25"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "read_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "aa4f06f44903b35c"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "read_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "762287eff39b0e95"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9426cdca6b9af633"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cf4ff0118dc3c5e2"
   },
   {
     "file": "src/conductor.rs",
@@ -4469,7 +4285,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "38adeb2c8879ec0e"
+    "content_hash": "4b752c22188efb9b"
   },
   {
     "file": "src/conductor.rs",
@@ -4721,14 +4537,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "envs",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e011d5aa8626519e"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "spawn",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -4741,7 +4549,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e0b1689174e57d46"
+    "content_hash": "d828d8f82a2be638"
   },
   {
     "file": "src/conductor.rs",
@@ -4749,7 +4557,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "ad868742fe2d874a"
+    "content_hash": "1a99a750ac4464e8"
   },
   {
     "file": "src/conductor.rs",
@@ -4917,7 +4725,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2bc595fafa7fd9e1"
+    "content_hash": "c089a854e37694ee"
   },
   {
     "file": "src/conductor.rs",
@@ -5061,7 +4869,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d1664aaf0af6f516"
+    "content_hash": "bf7a5847c3210f84"
   },
   {
     "file": "src/conductor.rs",
@@ -5297,14 +5105,6 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "build_envs",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "39a4877be51138a4"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "store_fences",
     "is_test": true,
     "proposed_module": "conductor::tests",
@@ -5529,35 +5329,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "apply",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2fa5285a3511572e"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subgraph",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "b2ae3e948ab7570e"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "resolve",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "802ca7a9506b1c7d"
-  },
-  {
-    "file": "src/conductor.rs",
     "name": "grounded_blast_radius_tier_filters_the_subgraph_and_keeps_the_grep_superset",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "f58ad8147fbf9ad9"
+    "content_hash": "b4ab812660f58068"
   },
   {
     "file": "src/conductor.rs",
@@ -5737,11 +5513,11 @@
   },
   {
     "file": "src/conductor.rs",
-    "name": "a_compensated_unit_re_gates_its_re_implemented_tree_not_the_condemned_verdict",
+    "name": "assert_compensated_unit_re_gates",
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "1ef977a3ddb4677c"
+    "content_hash": "e15c8ade98ab2ba0"
   },
   {
     "file": "src/conductor.rs",
@@ -5750,14 +5526,6 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "50ff01d862b22416"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "a_compensated_unit_that_remediated_before_integrating_re_gates_at_a_fresh_key",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cfa35a39fb454775"
   },
   {
     "file": "src/conductor.rs",
@@ -5814,38 +5582,6 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "c049b727c492976f"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "read_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "aa4f06f44903b35c"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "read_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "762287eff39b0e95"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_all",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9426cdca6b9af633"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "subscribe_stream",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "cf4ff0118dc3c5e2"
   },
   {
     "file": "src/conductor.rs",
@@ -6085,7 +5821,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "9be56c821c3697be"
+    "content_hash": "6c0f09290d72a33c"
   },
   {
     "file": "src/conductor.rs",
@@ -6149,23 +5885,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "10c1aaf0d5b7dab6"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "always_rejecting",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "430c480393f89c07"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "count",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "01dbac9274b467c0"
+    "content_hash": "aa05db932fe489b7"
   },
   {
     "file": "src/conductor.rs",
@@ -6181,7 +5901,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "09244e379609aa94"
+    "content_hash": "ccd5a71b96b65dec"
   },
   {
     "file": "src/conductor.rs",
@@ -6197,7 +5917,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "3f41643f63308560"
+    "content_hash": "f31b37f8f3542625"
   },
   {
     "file": "src/conductor.rs",
@@ -6205,7 +5925,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "781d64898694952b"
+    "content_hash": "186b41af60f684ab"
   },
   {
     "file": "src/conductor.rs",
@@ -6261,7 +5981,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "181b18fb922c9ae9"
+    "content_hash": "1ed108b6ac07fe8b"
   },
   {
     "file": "src/conductor.rs",
@@ -6269,7 +5989,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "2da82948e9b71c2c"
+    "content_hash": "d81ef7dbb498686a"
   },
   {
     "file": "src/conductor.rs",
@@ -6277,7 +5997,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "e361cc869d5fd0a2"
+    "content_hash": "2d8463f50f6d4462"
   },
   {
     "file": "src/conductor.rs",
@@ -6285,7 +6005,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "c1ef7b5159ac375a"
+    "content_hash": "69600822574d5b17"
   },
   {
     "file": "src/conductor.rs",
@@ -6294,14 +6014,6 @@
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
     "content_hash": "74562fc320b93bc7"
-  },
-  {
-    "file": "src/conductor.rs",
-    "name": "count",
-    "is_test": true,
-    "proposed_module": "conductor::tests",
-    "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "01dbac9274b467c0"
   },
   {
     "file": "src/conductor.rs",
@@ -6317,7 +6029,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "d30dc3f82f55360e"
+    "content_hash": "85db9690e9f9bf8c"
   },
   {
     "file": "src/conductor.rs",
@@ -6325,7 +6037,7 @@
     "is_test": true,
     "proposed_module": "conductor::tests",
     "reason": "defined inside a #[cfg(test)] test module; proposed home groups it with that file's own test suite pending consolidation (spec 85 section 5).",
-    "content_hash": "5affa40e88264629"
+    "content_hash": "7bda1a5bdb615231"
   },
   {
     "file": "src/conductor.rs",
@@ -12373,7 +12085,7 @@
     "is_test": false,
     "proposed_module": "dash::reproject",
     "reason": "name contains \"reproject\" (graph reprojection); grouped under `dash::reproject`.",
-    "content_hash": "5e5746772fa38f21"
+    "content_hash": "774ea4044f4aebc9"
   },
   {
     "file": "src/dash.rs",
@@ -12445,7 +12157,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"route\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "8d03ad82f9de6201"
+    "content_hash": "fe663756820da5df"
   },
   {
     "file": "src/dash.rs",
@@ -12689,19 +12401,11 @@
   },
   {
     "file": "src/dash.rs",
-    "name": "html",
+    "name": "rendered",
     "is_test": false,
     "proposed_module": "dash::response",
     "reason": "method inside `impl Response`; grouped with its other `Response` methods.",
-    "content_hash": "18962b8137df91cc"
-  },
-  {
-    "file": "src/dash.rs",
-    "name": "json",
-    "is_test": false,
-    "proposed_module": "dash::response",
-    "reason": "method inside `impl Response`; grouped with its other `Response` methods.",
-    "content_hash": "ad36251766bf7353"
+    "content_hash": "e83d5fd4bc8a5b6d"
   },
   {
     "file": "src/dash.rs",
@@ -12741,7 +12445,7 @@
     "is_test": false,
     "proposed_module": "dash::server",
     "reason": "name contains \"route\" (HTTP serving); grouped under `dash::server`.",
-    "content_hash": "89981e9149588078"
+    "content_hash": "16bcb4ac3f340970"
   },
   {
     "file": "src/dash.rs",

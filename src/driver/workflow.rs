@@ -122,7 +122,7 @@ impl Driver {
     /// off the wire and passes it straight through here, never the agent's own output
     /// text. Empty when the shim observed no single authoritative id (never a guess or
     /// default). The stepwise `rigger step` path already surfaced this field via
-    /// [`SpawnResult::resolved_model`](crate::spawn::SpawnResult::resolved_model); the
+    /// [`SpawnResult::meta_str`](crate::spawn::SpawnResult::meta_str); the
     /// in-process workflow path now matches it instead of hardcoding it empty.
     ///
     /// Returns `true` if `id` named a pending spawn and the result was delivered,

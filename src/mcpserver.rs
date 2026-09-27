@@ -874,17 +874,17 @@ pub fn emit_event(
 /// trims, this surface returns in full (adj-u1gap17).
 pub fn peers_json(peers: &Sidecar, files: &[String]) -> Value {
     let decisions: Vec<Value> = peers
-        .decisions_for(files)
+        .peers_for::<crate::sidecar::PeerDecision>(files)
         .iter()
         .map(|d| json!({"id": d.id, "summary": d.summary, "governs": d.governs, "live": d.live}))
         .collect();
     let lessons: Vec<Value> = peers
-        .lessons_for(files)
+        .peers_for::<crate::sidecar::PeerLesson>(files)
         .iter()
         .map(|l| json!({"id": l.id, "summary": l.summary, "about": l.about}))
         .collect();
     let findings: Vec<Value> = peers
-        .findings_for(files)
+        .peers_for::<crate::sidecar::PeerFinding>(files)
         .iter()
         .map(|f| json!({"id": f.id, "by": f.by, "summary": f.summary, "about": f.about}))
         .collect();
@@ -1434,7 +1434,9 @@ mod tests {
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while peers.decisions().len() < 2 || peers.lessons().len() < 2 {
+        while peers.peers::<crate::sidecar::PeerDecision>().len() < 2
+            || peers.peers::<crate::sidecar::PeerLesson>().len() < 2
+        {
             assert!(Instant::now() < deadline, "side-car never caught up");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1596,7 +1598,7 @@ mod tests {
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         // Wait for the side-car to catch up on both decisions.
         let deadline = Instant::now() + Duration::from_secs(2);
-        while peers.decisions().len() < 2 {
+        while peers.peers::<crate::sidecar::PeerDecision>().len() < 2 {
             assert!(Instant::now() < deadline, "side-car never caught up");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1639,7 +1641,7 @@ mod tests {
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         // Wait for the side-car to catch up on both findings.
         let deadline = Instant::now() + Duration::from_secs(2);
-        while peers.findings().len() < 2 {
+        while peers.peers::<crate::sidecar::PeerFinding>().len() < 2 {
             assert!(Instant::now() < deadline, "side-car never caught up");
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -1973,7 +1975,7 @@ mod tests {
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while peers.decisions().is_empty() {
+        while peers.peers::<crate::sidecar::PeerDecision>().is_empty() {
             assert!(
                 std::time::Instant::now() < deadline,
                 "side-car never caught up"

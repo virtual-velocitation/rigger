@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 use crate::contextgraph;
@@ -64,6 +65,63 @@ pub struct PeerLesson {
     pub about: Vec<String>,
 }
 
+/// A peer record the side-car surfaces: the event type it folds from, and the files it
+/// scopes on for [`Sidecar::peers_for`].
+pub trait Peer: DeserializeOwned {
+    /// The event type every record of this kind is decoded from.
+    const EVENT_TYPE: &'static str;
+    /// The files a record of this kind is scoped on.
+    const SCOPE: fn(&Self) -> &[String];
+
+    /// Every record of this kind in `seen`, in stream order - each matching event's body
+    /// decoded, an undecodable one skipped.
+    fn collect(seen: &[Event]) -> Vec<Self> {
+        seen.iter()
+            .filter(|e| e.type_ == Self::EVENT_TYPE)
+            .filter_map(|e| serde_json::from_slice(&e.data).ok())
+            .collect()
+    }
+}
+
+impl Peer for PeerDecision {
+    const EVENT_TYPE: &'static str = contextgraph::TYPE_DECISION_MADE;
+    const SCOPE: fn(&Self) -> &[String] = |d| &d.governs;
+
+    /// Each decision carries a LIVE/HISTORICAL provenance label (spec 21, unit 3),
+    /// derived from the SINGLE c1 run attribution - [`run::run_attribution`] keyed by
+    /// event index plus [`run::current_run_id`] - over the WHOLE `seen` stream. The same
+    /// slice feeds both the attribution and the active-run id, and `.enumerate()` maps a
+    /// decision's index back onto that same slice, so the index contract holds (a
+    /// filtered/partial slice would misalign the keys). Grounding is NOT scoped here: the
+    /// label only makes provenance legible; `graph_context` still surfaces cross-run
+    /// decisions unchanged.
+    fn collect(seen: &[Event]) -> Vec<Self> {
+        let attribution = run::run_attribution(seen);
+        let active = run::current_run_id(seen);
+        seen.iter()
+            .enumerate()
+            .filter(|(_, e)| e.type_ == Self::EVENT_TYPE)
+            .filter_map(|(i, e)| {
+                let mut d: PeerDecision = serde_json::from_slice(&e.data).ok()?;
+                d.live = attribution
+                    .get(&i)
+                    .is_some_and(|run_of| run_of.is_live(active.as_deref()));
+                Some(d)
+            })
+            .collect()
+    }
+}
+
+impl Peer for PeerFinding {
+    const EVENT_TYPE: &'static str = contextgraph::TYPE_REVIEW_FINDING;
+    const SCOPE: fn(&Self) -> &[String] = |f| &f.about;
+}
+
+impl Peer for PeerLesson {
+    const EVENT_TYPE: &'static str = contextgraph::TYPE_LESSON_LEARNED;
+    const SCOPE: fn(&Self) -> &[String] = |l| &l.about;
+}
+
 /// Sidecar collects the events on a filtered catch-up subscription in the
 /// background while one agent works.
 pub struct Sidecar {
@@ -100,108 +158,30 @@ impl Sidecar {
         })
     }
 
-    /// The DecisionMade events seen so far - the concurrent decisions an agent
-    /// should be aware of before it acts.
-    ///
-    /// Each decision carries a LIVE/HISTORICAL provenance label (spec 21, unit 3),
-    /// derived from the SINGLE c1 run attribution - [`run::run_attribution`] keyed by
-    /// event index plus [`run::current_run_id`] - over the WHOLE `seen` stream. The same
-    /// slice feeds both the attribution and the active-run id, and `.enumerate()` maps a
-    /// decision's index back onto that same slice, so the index contract holds (a
-    /// filtered/partial slice would misalign the keys). Grounding is NOT scoped here: the
-    /// label only makes provenance legible; `graph_context` still surfaces cross-run
-    /// decisions unchanged.
-    pub fn decisions(&self) -> Vec<PeerDecision> {
-        let seen = self.seen.lock().unwrap();
-        let attribution = run::run_attribution(&seen);
-        let active = run::current_run_id(&seen);
-        seen.iter()
-            .enumerate()
-            .filter(|(_, e)| e.type_ == contextgraph::TYPE_DECISION_MADE)
-            .filter_map(|(i, e)| {
-                let mut d: PeerDecision = serde_json::from_slice(&e.data).ok()?;
-                d.live = attribution
-                    .get(&i)
-                    .is_some_and(|run_of| run_of.is_live(active.as_deref()));
-                Some(d)
-            })
-            .collect()
+    /// Every peer record of kind `T` seen so far ([`Peer::collect`] over the whole `seen`
+    /// stream): the concurrent decisions an agent should be aware of before it acts, the
+    /// findings a concurrent reviewer should be aware of before it renders its own, or the
+    /// lessons a prior run's escalations recorded about the files an agent is touching.
+    pub fn peers<T: Peer>(&self) -> Vec<T> {
+        T::collect(&self.seen.lock().unwrap())
     }
 
-    /// The concurrent decisions scoped to an agent's blast-radius (§5.3). The
+    /// The peer records of kind `T` scoped to an agent's blast-radius (§5.3). The
     /// side-car's catch-up subscription is filtered by stream prefix, but blast-radius
-    /// scoping lives in the decision CONTENT: a peer decision is relevant only when its
-    /// `governs` files intersect the agent's blast-radius. An empty `blast_radius`
-    /// means "no scope" and returns every decision (the historical `decisions()`
-    /// behavior), so a caller that does not know its files still sees its peers.
-    pub fn decisions_for(&self, blast_radius: &[String]) -> Vec<PeerDecision> {
+    /// scoping lives in the record CONTENT: a peer record is relevant only when its
+    /// [`Peer::SCOPE`] files (a decision's `governs`, a finding's or lesson's `about`)
+    /// intersect the agent's blast-radius. An empty `blast_radius` means "no scope" and
+    /// returns every record (the unscoped [`Self::peers`] behavior), so a caller that does
+    /// not know its files still sees its peers.
+    pub fn peers_for<T: Peer>(&self, blast_radius: &[String]) -> Vec<T> {
+        let all = self.peers::<T>();
         if blast_radius.is_empty() {
-            return self.decisions();
+            return all;
         }
         let scope: std::collections::HashSet<&str> =
             blast_radius.iter().map(String::as_str).collect();
-        self.decisions()
-            .into_iter()
-            .filter(|d| d.governs.iter().any(|f| scope.contains(f.as_str())))
-            .collect()
-    }
-
-    /// The ReviewFinding events seen so far - the findings a concurrent reviewer
-    /// should be aware of before it renders its own. The side-car collects these the
-    /// same way it collects decisions, so concurrent lenses see each other's findings
-    /// live (the later tiers retrieve them via the graph once they ground; the
-    /// side-car covers reviewers running AT THE SAME TIME, before any of them grounds
-    /// again).
-    pub fn findings(&self) -> Vec<PeerFinding> {
-        let seen = self.seen.lock().unwrap();
-        seen.iter()
-            .filter(|e| e.type_ == contextgraph::TYPE_REVIEW_FINDING)
-            .filter_map(|e| serde_json::from_slice(&e.data).ok())
-            .collect()
-    }
-
-    /// The concurrent findings scoped to a reviewer's blast-radius (§5.3), mirroring
-    /// [`decisions_for`]: a peer finding is relevant only when its `about` files
-    /// intersect the reviewer's blast-radius. An empty `blast_radius` returns every
-    /// finding (the unscoped behavior), so a caller that does not know its files still
-    /// sees its peers' findings.
-    pub fn findings_for(&self, blast_radius: &[String]) -> Vec<PeerFinding> {
-        if blast_radius.is_empty() {
-            return self.findings();
-        }
-        let scope: std::collections::HashSet<&str> =
-            blast_radius.iter().map(String::as_str).collect();
-        self.findings()
-            .into_iter()
-            .filter(|f| f.about.iter().any(|file| scope.contains(file.as_str())))
-            .collect()
-    }
-
-    /// The LessonLearned events seen so far - the lessons a prior run's escalations
-    /// recorded about the files an agent is touching. The side-car collects these the
-    /// same way it collects decisions and findings, so `rigger peers` can recover the
-    /// lessons a capped prompt section elided.
-    pub fn lessons(&self) -> Vec<PeerLesson> {
-        let seen = self.seen.lock().unwrap();
-        seen.iter()
-            .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
-            .filter_map(|e| serde_json::from_slice(&e.data).ok())
-            .collect()
-    }
-
-    /// The lessons scoped to an agent's blast-radius (§5.3), mirroring [`decisions_for`]
-    /// and [`findings_for`]: a lesson is relevant only when its `about` files intersect
-    /// the blast-radius. An empty `blast_radius` returns every lesson (the unscoped
-    /// behavior), so a caller that does not know its files still recovers its lessons.
-    pub fn lessons_for(&self, blast_radius: &[String]) -> Vec<PeerLesson> {
-        if blast_radius.is_empty() {
-            return self.lessons();
-        }
-        let scope: std::collections::HashSet<&str> =
-            blast_radius.iter().map(String::as_str).collect();
-        self.lessons()
-            .into_iter()
-            .filter(|l| l.about.iter().any(|file| scope.contains(file.as_str())))
+        all.into_iter()
+            .filter(|p| (T::SCOPE)(p).iter().any(|f| scope.contains(f.as_str())))
             .collect()
     }
 
@@ -250,7 +230,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if sidecar
-                .decisions()
+                .peers::<PeerDecision>()
                 .iter()
                 .any(|d| d.id == "d1" && d.summary == "chose X")
             {
@@ -287,7 +267,7 @@ mod tests {
         // Wait until both decisions have surfaced through the subscription.
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if sidecar.decisions().len() >= 2 {
+            if sidecar.peers::<PeerDecision>().len() >= 2 {
                 break;
             }
             assert!(
@@ -298,12 +278,12 @@ mod tests {
         }
 
         // Scoped to a.rs: only the a.rs decision comes back.
-        let scoped = sidecar.decisions_for(&["a.rs".into()]);
+        let scoped = sidecar.peers_for::<PeerDecision>(&["a.rs".into()]);
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].id, "da");
 
         // An empty blast-radius returns every decision.
-        let all = sidecar.decisions_for(&[]);
+        let all = sidecar.peers_for::<PeerDecision>(&[]);
         assert_eq!(all.len(), 2);
     }
 
@@ -334,7 +314,7 @@ mod tests {
         // Wait until both findings have surfaced through the subscription.
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if sidecar.findings().len() >= 2 {
+            if sidecar.peers::<PeerFinding>().len() >= 2 {
                 break;
             }
             assert!(
@@ -345,7 +325,7 @@ mod tests {
         }
 
         // Scoped to a.rs: only the a.rs finding comes back.
-        let scoped = sidecar.findings_for(&["a.rs".into()]);
+        let scoped = sidecar.peers_for::<PeerFinding>(&["a.rs".into()]);
         assert_eq!(
             scoped.len(),
             1,
@@ -354,7 +334,7 @@ mod tests {
         assert_eq!(scoped[0].id, "fa");
 
         // An empty blast-radius returns every finding.
-        let all = sidecar.findings_for(&[]);
+        let all = sidecar.peers_for::<PeerFinding>(&[]);
         assert_eq!(all.len(), 2);
     }
 
@@ -387,7 +367,7 @@ mod tests {
         // Wait until both lessons have surfaced through the subscription.
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if sidecar.lessons().len() >= 2 {
+            if sidecar.peers::<PeerLesson>().len() >= 2 {
                 break;
             }
             assert!(
@@ -398,7 +378,7 @@ mod tests {
         }
 
         // Scoped to a.rs: only the a.rs lesson comes back.
-        let scoped = sidecar.lessons_for(&["a.rs".into()]);
+        let scoped = sidecar.peers_for::<PeerLesson>(&["a.rs".into()]);
         assert_eq!(
             scoped.len(),
             1,
@@ -408,7 +388,7 @@ mod tests {
         assert_eq!(scoped[0].summary, "do not repeat x");
 
         // An empty blast-radius returns every lesson.
-        let all = sidecar.lessons_for(&[]);
+        let all = sidecar.peers_for::<PeerLesson>(&[]);
         assert_eq!(all.len(), 2);
     }
 
@@ -450,7 +430,7 @@ mod tests {
         // append order, so once d_new is seen its preceding r2 boundary is seen too.
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            if sidecar.decisions().len() >= 2 {
+            if sidecar.peers::<PeerDecision>().len() >= 2 {
                 break;
             }
             assert!(
@@ -460,7 +440,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        let decisions = sidecar.decisions();
+        let decisions = sidecar.peers::<PeerDecision>();
         let by_id = |id: &str| {
             decisions
                 .iter()

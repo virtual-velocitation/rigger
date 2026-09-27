@@ -575,23 +575,18 @@ impl SpawnResult {
         self.meta.get(META_LIVENESS_CLASS).is_some()
     }
 
-    /// The liveness class recorded on this fault (empty when it is not a liveness fault).
-    pub fn liveness_class(&self) -> String {
+    /// The string value of the `key` entry of [`meta`](SpawnResult::meta), or empty when the
+    /// worker reported none (or reported a non-string value). The two keys it serves:
+    ///
+    /// - [`META_LIVENESS_CLASS`]: the liveness class recorded on a fault (empty when it is not
+    ///   a liveness fault).
+    /// - [`META_RESOLVED_MODEL`]: the RESOLVED model id the worker reported through `--meta`.
+    ///   This is the concrete model that actually ran the spawn - distinct from the requested
+    ///   alias on the spawn REQUEST - which the conductor copies onto the spawn's unit events
+    ///   (spec 05 line 52).
+    pub fn meta_str(&self, key: &str) -> String {
         self.meta
-            .get(META_LIVENESS_CLASS)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    }
-
-    /// The RESOLVED model id the worker reported through `--meta` (the
-    /// [`META_RESOLVED_MODEL`] key of [`meta`](SpawnResult::meta)), or empty when the
-    /// worker reported none (or reported a non-string value). This is the concrete model
-    /// that actually ran the spawn - distinct from the requested alias on the spawn
-    /// REQUEST - which the conductor copies onto the spawn's unit events (spec 05 line 52).
-    pub fn resolved_model(&self) -> String {
-        self.meta
-            .get(META_RESOLVED_MODEL)
+            .get(key)
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string()
@@ -1186,7 +1181,7 @@ mod tests {
             f.is_liveness_fault(),
             "it is recognizable as a liveness fault"
         );
-        assert_eq!(f.liveness_class(), "infra");
+        assert_eq!(f.meta_str(META_LIVENESS_CLASS), "infra");
         // A plain success/failure is NOT a liveness fault.
         assert!(!SpawnResult::ok("u/implementer#0", "done").is_liveness_fault());
         assert!(!SpawnResult::failed("u/implementer#0", "boom").is_liveness_fault());
@@ -1220,27 +1215,30 @@ mod tests {
     #[test]
     fn resolved_model_reads_the_meta_key_the_worker_reports() {
         // spec 05 line 52: the worker reports the resolved model via `rigger result --meta
-        // '{"resolved_model": ..}'`; `resolved_model()` reads exactly that key so the
+        // '{"resolved_model": ..}'`; `meta_str(META_RESOLVED_MODEL)` reads exactly that key so the
         // conductor can copy it onto the spawn's unit events.
         let with = SpawnResult::ok("u/implementer#0", "done")
             .with_meta(serde_json::json!({ "resolved_model": "claude-opus-4-8-20260101" }));
-        assert_eq!(with.resolved_model(), "claude-opus-4-8-20260101");
+        assert_eq!(
+            with.meta_str(META_RESOLVED_MODEL),
+            "claude-opus-4-8-20260101"
+        );
 
         // No meta, wrong key, or a non-string value each read as empty (then omitted).
         assert_eq!(
-            SpawnResult::ok("u/implementer#0", "done").resolved_model(),
+            SpawnResult::ok("u/implementer#0", "done").meta_str(META_RESOLVED_MODEL),
             ""
         );
         assert_eq!(
             SpawnResult::ok("u/implementer#0", "done")
                 .with_meta(serde_json::json!({ "by": "courier" }))
-                .resolved_model(),
+                .meta_str(META_RESOLVED_MODEL),
             ""
         );
         assert_eq!(
             SpawnResult::ok("u/implementer#0", "done")
                 .with_meta(serde_json::json!({ "resolved_model": 7 }))
-                .resolved_model(),
+                .meta_str(META_RESOLVED_MODEL),
             ""
         );
     }
@@ -1248,7 +1246,7 @@ mod tests {
     #[test]
     fn resolved_model_never_reads_a_conflicting_claim_from_the_agents_own_output() {
         // Spec 61 c10 (AUTHORITATIVE MODEL IDENTITY): "a conflicting agent-prose claim
-        // never enters the record" - resolved_model() is sourced EXCLUSIVELY from the
+        // never enters the record" - meta_str(META_RESOLVED_MODEL) is sourced EXCLUSIVELY from the
         // structured `meta` object a runner (never the agent itself) attaches, so a
         // model id an agent typed into its own free-text `output` - even one shaped
         // exactly like the real meta payload - can never be mistaken for it.
@@ -1257,7 +1255,7 @@ mod tests {
             r#"done. {"resolved_model":"a-model-i-am-lying-about"}"#,
         );
         assert_eq!(
-            prose_claim.resolved_model(),
+            prose_claim.meta_str(META_RESOLVED_MODEL),
             "",
             "a claim living only in `output` (agent prose) must never surface as the resolved model"
         );
@@ -1271,7 +1269,7 @@ mod tests {
         )
         .with_meta(serde_json::json!({ "resolved_model": "claude-sonnet-4-9-20260215" }));
         assert_eq!(
-            with_structured_meta.resolved_model(),
+            with_structured_meta.meta_str(META_RESOLVED_MODEL),
             "claude-sonnet-4-9-20260215",
             "the structured meta value is authoritative even when output carries a conflicting claim"
         );

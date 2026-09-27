@@ -120,7 +120,10 @@ fn spawn_records_the_result_in_the_run_store_with_its_full_meta() {
     assert_eq!(res.id, "u104-stream/implementer#0");
     assert_eq!(res.output, "done: the answer is 42");
     assert!(!res.is_error());
-    assert_eq!(res.resolved_model(), "claude-sonnet-4-5-20250929");
+    assert_eq!(
+        res.meta_str(spawn::META_RESOLVED_MODEL),
+        "claude-sonnet-4-5-20250929"
+    );
     assert_eq!(
         res.meta["session_id"],
         "11111111-1111-4111-8111-111111111111"
@@ -886,7 +889,7 @@ fn spawn_stops_gracefully_when_a_silent_child_winds_down_on_its_own() {
         res.meta
     );
     assert_eq!(
-        res.liveness_class(),
+        res.meta_str(spawn::META_LIVENESS_CLASS),
         rigger::failure::FailureClass::Infra.as_str()
     );
 

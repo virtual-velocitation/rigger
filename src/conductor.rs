@@ -307,38 +307,43 @@ fn review_round_start_key(unit: &str, attempt: u32) -> String {
     format!("{unit}/review-round-start#{attempt}")
 }
 
-/// The replay key for a gate's verdict, keyed by the `(unit, attempt, gate)` coordinate
-/// the gate ran under - so a step re-reaching an already-run gate REPLAYS its recorded
-/// verdict instead of re-running the command (spec 04, criterion 4). Distinct attempts
-/// are distinct gate runs (a re-implementation must re-gate), so only re-reaching the
-/// SAME attempt's gate is a replay.
-fn gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
-    format!("{unit}/gate:{gate}#{attempt}")
+/// Which gate-keyed record a [`gate_key`] names - each kind keys apart from the others at the
+/// SAME `(unit, attempt, gate)` coordinate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GateKey {
+    /// A gate's verdict, keyed by the `(unit, attempt, gate)` coordinate the gate ran under -
+    /// so a step re-reaching an already-run gate REPLAYS its recorded verdict instead of
+    /// re-running the command (spec 04, criterion 4). Distinct attempts are distinct gate
+    /// runs (a re-implementation must re-gate), so only re-reaching the SAME attempt's gate
+    /// is a replay. Format `{unit}/gate:{gate}#{attempt}`.
+    Verdict,
+    /// A blast-radius SKIP verdict (spec 12, unit 3), DISTINCT from the gate-RUN key. The
+    /// skip is a logged provenance record ("the inner loop did not run this gate because its
+    /// `inputs:` miss the blast radius"), NOT a gate outcome: keying it apart means
+    /// [`cached`] over `gate_verdicts` never treats a skip as a recorded verdict, so the
+    /// exhaustive integrate pass still RUNS the skipped gate. The `gate-skip:` infix contains
+    /// no `/gate:` substring, so [`unit_of_gate_key`] never mis-parses it. Keyed so a stepwise
+    /// resume re-emits the skip exactly once.
+    Skip,
+    /// A POST-MERGE re-gate verdict (spec 12, unit 5), DISTINCT from the pre-merge gate-RUN
+    /// key at the SAME `(unit, attempt)`. Keying the post-merge re-gate apart is what lets it
+    /// re-verify the MERGED tree instead of REPLAYING the pre-merge isolation green via the
+    /// content-blind exact-key replay - the merged tree runs (or content-cache-hits) under
+    /// its own key. The `postmerge-gate:` infix carries no `/gate:` substring, so
+    /// [`unit_of_gate_key`] never mis-parses it as a pre-merge gate key (it neither pollutes
+    /// unit-4's attempt high-water scan nor seeds the cache with a unit). Keyed so a stepwise
+    /// resume re-emits the post-merge verdict exactly once.
+    PostMergeVerdict,
 }
 
-/// The replay key for a blast-radius SKIP verdict (spec 12, unit 3), DISTINCT from the
-/// gate-RUN key [`gate_verdict_key`] produces (`{unit}/gate:{gate}#{attempt}`). The skip
-/// is a logged provenance record ("the inner loop did not run this gate because its
-/// `inputs:` miss the blast radius"), NOT a gate outcome: keying it apart means
-/// [`recorded_gate_verdict`](RunCtx::recorded_gate_verdict) never treats a skip as a
-/// recorded verdict, so the exhaustive integrate pass still RUNS the skipped gate. The
-/// `gate-skip:` infix contains no `/gate:` substring, so [`unit_of_gate_key`] never
-/// mis-parses it. Keyed so a stepwise resume re-emits the skip exactly once.
-fn gate_skip_key(unit: &str, attempt: u32, gate: &str) -> String {
-    format!("{unit}/gate-skip:{gate}#{attempt}")
-}
-
-/// The replay key for a POST-MERGE re-gate verdict (spec 12, unit 5), DISTINCT from the
-/// pre-merge gate-RUN key [`gate_verdict_key`] produces (`{unit}/gate:{gate}#{attempt}`) at
-/// the SAME `(unit, attempt)`. Keying the post-merge re-gate apart is what lets it re-verify
-/// the MERGED tree instead of REPLAYING the pre-merge isolation green via the content-blind
-/// exact-key replay ([`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)) - the merged
-/// tree runs (or content-cache-hits) under its own key. The `postmerge-gate:` infix carries
-/// no `/gate:` substring, so [`unit_of_gate_key`] never mis-parses it as a pre-merge gate key
-/// (it neither pollutes unit-4's attempt high-water scan nor seeds the cache with a unit).
-/// Keyed so a stepwise resume re-emits the post-merge verdict exactly once.
-fn postmerge_gate_verdict_key(unit: &str, attempt: u32, gate: &str) -> String {
-    format!("{unit}/postmerge-gate:{gate}#{attempt}")
+/// The replay key for the [`GateKey`] record of `gate` run by `unit` at `attempt`.
+fn gate_key(kind: GateKey, unit: &str, attempt: u32, gate: &str) -> String {
+    let infix = match kind {
+        GateKey::Verdict => "gate",
+        GateKey::Skip => "gate-skip",
+        GateKey::PostMergeVerdict => "postmerge-gate",
+    };
+    format!("{unit}/{infix}:{gate}#{attempt}")
 }
 
 /// The replay key for a durable compensation-QUEUED mark (spec 12, unit 4), keyed by the
@@ -561,7 +566,7 @@ pub fn unit_of_gate_key(key: &str) -> Option<&str> {
 }
 
 /// The ATTEMPT ordinal a gate-run key ran under, recovered from the `{unit}/gate:{gate}#{attempt}`
-/// grammar [`gate_verdict_key`] mints. Distinct attempts are distinct gate runs (a
+/// grammar [`gate_key`] mints. Distinct attempts are distinct gate runs (a
 /// re-implementation re-gates), so the gate-outcome read ([`recorded_gate_outcome`]) uses this to
 /// aggregate only the LATEST attempt's per-gate verdicts. Parsing the ordinal off the suffix AFTER
 /// `/gate:` (never the whole key) keeps a `#` anywhere in the unit portion from being mis-read as
@@ -705,21 +710,23 @@ const ROLE_REPLAN: &str = "replan";
 #[error("conductor: {0}")]
 pub struct Error(pub String);
 
-impl From<crate::eventstore::Error> for Error {
-    fn from(e: crate::eventstore::Error) -> Self {
-        Error(e.to_string())
-    }
+/// Each listed error converts into a conductor [`Error`] carrying its display text.
+macro_rules! error_from_display {
+    ($($source:ty),+) => {
+        $(
+            impl From<$source> for Error {
+                fn from(e: $source) -> Self {
+                    Error(e.to_string())
+                }
+            }
+        )+
+    };
 }
-impl From<crate::worktree::Error> for Error {
-    fn from(e: crate::worktree::Error) -> Self {
-        Error(e.to_string())
-    }
-}
-impl From<serde_json::Error> for Error {
-    fn from(e: serde_json::Error) -> Self {
-        Error(e.to_string())
-    }
-}
+error_from_display!(
+    crate::eventstore::Error,
+    crate::worktree::Error,
+    serde_json::Error
+);
 
 /// What an agent returns when it finishes.
 #[derive(Clone, Debug, Default)]
@@ -727,7 +734,7 @@ pub struct AgentResult {
     pub output: String,
     /// The RESOLVED model id that actually ran this spawn (spec 05 line 52), or empty when
     /// unknown. The replay driver surfaces it from the worker's `rigger result --meta`
-    /// report ([`SpawnResult::resolved_model`](crate::spawn::SpawnResult::resolved_model));
+    /// report ([`SpawnResult::meta_str`](crate::spawn::SpawnResult::meta_str));
     /// the conductor copies it onto the spawn's unit events via [`META_MODEL_RESOLVED`].
     /// The blocking drivers (cli/workflow) do not learn it and leave it empty.
     pub resolved_model: String,
@@ -1093,6 +1100,23 @@ fn conflict_regenerate_key(unit: &str, attempt: u32) -> String {
     format!("{unit}#{attempt}")
 }
 
+/// The live value `key` maps to in one of [`RunCtx`]'s lock-guarded, string-keyed caches or
+/// ledgers (a gate-verdict replay key, a content digest, or a
+/// [`conflict_regenerate_key`]), cloned out so the lock is never held past the lookup.
+fn cached<V: Clone>(map: &Mutex<HashMap<String, V>>, key: &str) -> Option<V> {
+    map.lock().unwrap().get(key).cloned()
+}
+
+/// Clear the LIVE (in-process) entry for `unit`'s `attempt` from a per-`(unit, attempt)`
+/// crash-resume ledger once its episode has closed (the durable log record is never
+/// retracted; only this process's live view forgets it).
+fn clear_attempt<V>(ledger: &Mutex<HashMap<String, V>>, unit: &str, attempt: u32) {
+    ledger
+        .lock()
+        .unwrap()
+        .remove(&conflict_regenerate_key(unit, attempt));
+}
+
 /// The common parse-and-match prefix every spec 88 criterion 1 round 4 TABLE row fold
 /// shares: a `TYPE_UNIT_STATUS` marker whose own `status` field, `(unit, attempt)` key
 /// ([`conflict_regenerate_key`]), and `pass` (recovered from the event's own `replay_key`
@@ -1131,7 +1155,7 @@ fn integrate_row(e: &Event) -> Option<(String, String, u32, Value)> {
 /// reporting a genuine "nothing new" on resume - indistinguishable, from git state alone,
 /// from a stage that never had anything to land at all. `run_tip` (the OLDER base this
 /// landing merged FROM) is carried so a resumed `integrate_and_emit` can recompute the
-/// files this landing touched via [`Worktree::committed_diff_names`] against it, since the
+/// files this landing touched via [`Worktree::diff_names`] (merge-base mode) against it, since the
 /// CURRENT base has already absorbed them.
 fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, String, String)> {
     let mut pending: HashMap<String, (u32, String, String)> = HashMap::new();
@@ -1162,7 +1186,7 @@ fn pending_landing_from_log(prior_events: &[Event]) -> HashMap<String, (u32, Str
 /// `integrate-landed` row - [`RunCtx::pending_landing`]'s own after-record, kept here
 /// too because the moment it closes a pending landing-intent, [`pending_landing_from_log`]
 /// stops seeing that landing at all. A resumed [`integrate_and_emit`](RunCtx::integrate_and_emit)
-/// call whose `files` read empty and whose `pending_landing_for` found nothing PENDING
+/// call whose `files` read empty and whose the `pending_landing` lookup found nothing PENDING
 /// still cannot tell "genuinely nothing to land" apart from "landed for real, but the
 /// post-merge re-gate that must follow never completed" from git state alone - this map
 /// is the one durable fact that can: a unit with an entry here landed something real and
@@ -1552,21 +1576,56 @@ pub fn is_parked(e: &Error) -> bool {
 /// adv-confirm-review-tier-no-budgetexhausted, adv-budget-guard-cannot-assemble-reviewed-unit).
 const BUDGET_MARKER: &str = "\u{1}rigger:spawn-budget-exhausted\u{1}";
 
-/// Construct the budget-refusal signal a review-tier spawn returns when
-/// [`reserve_spawn`](RunCtx::reserve_spawn) denies it: `tier` names the refused review
-/// tier and `agent` the refused agent (for the audit trail), and the embedded
-/// [`BUDGET_MARKER`] lets [`is_budget_refused`] recognize it through the conductor's own
-/// `format!("... {}", e.0)` error wrapping. Only [`reserve_spawn`] returning `false`
-/// produces this - and it sets `budget_broke` before it does - so the sentinel and the
-/// breaker flag always travel together.
-fn budget_refused(stage: &str, tier: &str, agent: &str) -> Error {
-    Error(format!(
-        "{BUDGET_MARKER} stage {stage:?} {tier} {agent:?}: spawn budget exhausted"
-    ))
+/// Which LOUD spawn-level signal [`spawn_halt`] constructs for a refused or faulted
+/// spawn of `tier` (the refused review tier, or `"planner"`/`"implementer"`) and `agent`
+/// in `stage`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpawnHalt {
+    /// The budget-refusal signal a spawn returns when
+    /// [`reserve_spawn`](RunCtx::reserve_spawn) denies it: `tier` and `agent` name the
+    /// refused spawn (for the audit trail), and the embedded [`BUDGET_MARKER`] lets
+    /// [`is_budget_refused`] recognize it through the conductor's own `format!("... {}", e.0)`
+    /// error wrapping. Only [`reserve_spawn`] returning `false` produces this - and it sets
+    /// `budget_broke` before it does - so the sentinel and the breaker flag always travel
+    /// together.
+    BudgetRefused,
+    /// The LOUD-HALT error a GATING spawn returns when its result carries NO verdict line
+    /// yet it emitted an approve-shaped verdict via `rigger_emit` during the spawn (spec 18,
+    /// unit 3). This BACKSTOPS a persona that passed the static lint (spec 18, unit 1) but
+    /// still returned no result-channel verdict: the integration gate reads ONLY the result
+    /// channel ([`verdict_approves`]), so folding this empty verdict as a reject would
+    /// remediate a unit the reviewer actually APPROVED, until it escalated - the silent
+    /// stall this unit exists to make loud. Instead the run HARD-ERRORS with the
+    /// SPEC-pinned result-channel fix, naming the dead gate (`tier`/`agent`/`stage`).
+    ///
+    /// The diagnostic use of events (the emitted approve EXPLAINS the empty verdict) while
+    /// the result channel still DECIDES: the message is raised only when both hold. It
+    /// carries [`MISMATCH_MARKER`] so the wave/gate route it through the no-lesson arm, and
+    /// like the degenerate halt it charges the unit NO remediation attempt (no `UnitFailed`,
+    /// no `UnitEscalated`) - the fault is the persona, not the unit under review.
+    VerdictChannelMismatch,
+}
+
+/// Construct the [`SpawnHalt`] signal `kind` for `agent`'s `tier` spawn in `stage`.
+fn spawn_halt(kind: SpawnHalt, stage: &str, tier: &str, agent: &str) -> Error {
+    match kind {
+        SpawnHalt::BudgetRefused => Error(format!(
+            "{BUDGET_MARKER} stage {stage:?} {tier} {agent:?}: spawn budget exhausted"
+        )),
+        SpawnHalt::VerdictChannelMismatch => Error(format!(
+            "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?} returned NO verdict line on its result \
+             output, yet emitted an approve-shaped verdict via rigger_emit during the spawn: the gate \
+             reads the result channel, not emitted events; end your output with the verdict line (e.g. \
+             {{\"verdict\":\"approve\"}}). The run halts and the unit is NOT charged a remediation \
+             attempt - a gating persona that records its verdict only as an emitted event is a \
+             configuration fault, not a reject. Fix the {agent:?} persona to end its output with the \
+             verdict line, then re-run."
+        )),
+    }
 }
 
 /// Whether `e` is a budget-refusal signal from a review-tier spawn (see
-/// [`budget_refused`]) rather than a real spawn failure. Robust to the review sites' own
+/// [`SpawnHalt::BudgetRefused`]) rather than a real spawn failure. Robust to the review sites' own
 /// error wrapping, since the marker survives as a substring.
 fn is_budget_refused(e: &Error) -> bool {
     e.0.contains(BUDGET_MARKER)
@@ -1660,34 +1719,8 @@ fn is_degenerate_reviewer(e: &Error) -> bool {
 /// message surfaces, so the operator's fix stays clean.
 const MISMATCH_MARKER: &str = "\u{1}rigger:verdict-channel-mismatch\u{1}";
 
-/// Construct the LOUD-HALT error a GATING spawn returns when its result carries NO
-/// verdict line yet it emitted an approve-shaped verdict via `rigger_emit` during the
-/// spawn (spec 18, unit 3). This BACKSTOPS a persona that passed the static lint (spec
-/// 18, unit 1) but still returned no result-channel verdict: the integration gate reads
-/// ONLY the result channel ([`verdict_approves`]), so folding this empty verdict as a
-/// reject would remediate a unit the reviewer actually APPROVED, until it escalated -
-/// the silent stall this unit exists to make loud. Instead the run HARD-ERRORS with the
-/// SPEC-pinned result-channel fix, naming the dead gate (`tier`/`agent`/`stage`).
-///
-/// The diagnostic use of events (the emitted approve EXPLAINS the empty verdict) while
-/// the result channel still DECIDES: the message is raised only when both hold. It
-/// carries [`MISMATCH_MARKER`] so the wave/gate route it through the no-lesson arm, and
-/// like the degenerate halt it charges the unit NO remediation attempt (no `UnitFailed`,
-/// no `UnitEscalated`) - the fault is the persona, not the unit under review.
-fn verdict_channel_mismatch(stage: &str, tier: &str, agent: &str) -> Error {
-    Error(format!(
-        "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?} returned NO verdict line on its result \
-         output, yet emitted an approve-shaped verdict via rigger_emit during the spawn: the gate \
-         reads the result channel, not emitted events; end your output with the verdict line (e.g. \
-         {{\"verdict\":\"approve\"}}). The run halts and the unit is NOT charged a remediation \
-         attempt - a gating persona that records its verdict only as an emitted event is a \
-         configuration fault, not a reject. Fix the {agent:?} persona to end its output with the \
-         verdict line, then re-run."
-    ))
-}
-
 /// Whether `e` is a runtime verdict-channel-mismatch HALT signal (see
-/// [`verdict_channel_mismatch`]) rather than a real stage failure. Robust to the review
+/// [`SpawnHalt::VerdictChannelMismatch`]) rather than a real stage failure. Robust to the review
 /// sites' own error wrapping, since the [`MISMATCH_MARKER`] survives as a substring.
 fn is_verdict_channel_mismatch(e: &Error) -> bool {
     e.0.contains(MISMATCH_MARKER)
@@ -2326,9 +2359,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // this template declared" (the invariant violation).
     let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
     if !deps.criteria.is_empty() {
-        if let Some(template_name) = fan_out_template_name(&stages) {
+        if let Some(template_name) = first_stage_named(&stages, is_fan_out_template) {
             let template = stages.remove(&template_name).expect("template just found");
-            let producer = producer_name(&stages);
+            let producer = first_stage_named(&stages, is_producer);
             let units = baseline_units(&template, &deps.criteria, producer.as_deref());
             fanout_criteria.insert(
                 template_name.clone(),
@@ -2452,7 +2485,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             } else if terminal.contains(&gate) {
                 fan_out_released = false;
             } else {
-                let plan = producer_name(&stages)
+                let plan = first_stage_named(&stages, is_producer)
                     .expect("a critique gate is detected only when a producer exists");
                 match ctx.run_plan_critique_gate(
                     &gate,
@@ -2496,7 +2529,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // A held fan-out (the plan-critique gate did not release, or a gate spawn was parked/
     // budget-refused) must still trip the breaker if a gate spawn exhausted the budget -
     // the main wave loop below is skipped, so it cannot.
-    if !fan_out_released && ctx.budget_broke() {
+    if !fan_out_released && ctx.budget_broke.load(Ordering::SeqCst) {
         ctx.trip_budget_breaker()?;
     }
 
@@ -2553,7 +2586,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             // The breaker also trips at SPAWN granularity, mid-wave (item 9): a single
             // wide wave can exhaust the budget partway through, refusing later spawns.
             // Record the breaker and stop here too, not only at the next wave boundary.
-            if ctx.budget_broke() {
+            if ctx.budget_broke.load(Ordering::SeqCst) {
                 ctx.trip_budget_breaker()?;
                 break;
             }
@@ -2596,7 +2629,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // transiently pending, every remaining unit is settled - integrated, escalated,
     // verified-but-does-not-integrate, or blocked-forever behind such a unit - so the
     // as-assembled tree IS final and the deferred gate runs against it, once.
-    let converged = !ctx.parked() && !ctx.manual_review_pending() && !ctx.budget_halted();
+    let converged = !ctx.parked.load(Ordering::SeqCst)
+        && !ctx.manual_review.load(Ordering::SeqCst)
+        && !ctx.budget_halted.load(Ordering::SeqCst);
     ctx.run_deferred_gates(&stages, converged)?;
 
     let events = deps.store.read_stream(STREAM, 0, Direction::Forward)?;
@@ -3066,7 +3101,7 @@ struct RunCtx<'a> {
     replayed_generations: Mutex<HashMap<String, (String, HashSet<String>)>>,
     /// The recorded gate verdicts keyed by their replay key -> `(pass, evidence)`, seeded
     /// ONCE at run start from the prior log's `GateVerdict` events and extended as this
-    /// process records new verdicts. [`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)
+    /// process records new verdicts. [`cached`] over [`gate_verdicts`](RunCtx::gate_verdicts)
     /// consults this map instead of re-reading and re-scanning the whole append-only
     /// stream on every inline/deferred gate of every step (finding
     /// arch-gate-verdict-redundant-scan): gate-verdict replay is O(1) per lookup, seeded
@@ -3075,7 +3110,7 @@ struct RunCtx<'a> {
     /// The content-address cache (spec 12, unit 1): `input_digest -> (position, unit)` of
     /// each GREEN gate verdict, seeded ONCE at run start from the prior log's GateVerdicts
     /// that carry a [`META_INPUT_DIGEST`] and extended as this process records fresh greens.
-    /// [`cached_green_verdict`](RunCtx::cached_green_verdict) consults it at the ONE
+    /// [`cached`] over [`green_digests`](RunCtx::green_digests) consults it at the ONE
     /// run_gates hit-site so a gate whose `(command, tree-sha)` digest matches a prior green
     /// is answered as a logged cache-hit citing that `position` instead of re-running the
     /// command. Only GREEN verdicts enter it (a red must always re-prove), and the EARLIEST
@@ -3151,14 +3186,14 @@ struct RunCtx<'a> {
     /// so a crash between that real mutation and its durable after-record leaves git state
     /// alone unable to tell that apart from a stage that genuinely never had anything to
     /// contribute. `run_tip` lets the resumed call recompute the actual touched-files set via
-    /// [`Worktree::committed_diff_names`] against the OLDER base this landing merged from.
+    /// [`Worktree::diff_names`] (merge-base mode) against the OLDER base this landing merged from.
     pending_landing: Mutex<HashMap<String, (u32, String, String)>>,
     /// Every durably-recorded `integrate-landed` row (spec 103, criterion 3 - RE-GATE WHAT
     /// LANDED), per `(unit, attempt)`: `(pass, sha, pre_merge)`. Seeded ONCE at run start
     /// from the prior log ([`landed_from_log`]) and never removed - unlike
     /// [`pending_landing`](RunCtx::pending_landing), which stops tracking a landing the
     /// instant it closes. Consulted at the TOP of
-    /// [`integrate_and_emit`](RunCtx::integrate_and_emit) exactly when `pending_landing_for`
+    /// [`integrate_and_emit`](RunCtx::integrate_and_emit) exactly when the `pending_landing` lookup
     /// finds nothing pending and nothing is owed: that combination alone cannot distinguish
     /// "never landed anything" from "landed for real, crashed before the post-merge re-gate
     /// that must follow it ever ran" - this map is the durable fact that can, so a real
@@ -3464,35 +3499,6 @@ impl RunCtx<'_> {
             .unwrap_or_default()
     }
 
-    /// The recorded outcome of a gate whose verdict was already emitted under `key` in a
-    /// prior step - its `(pass, evidence)` - or `None` if this gate has not run yet. A
-    /// step re-reaching an already-run gate REPLAYS this instead of re-running the
-    /// command (spec 04, criterion 4): the log is the single source of truth for a
-    /// gate's outcome, so a re-run never pays gate-duration time twice and never appends
-    /// a second GateVerdict. Only [`emit_keyed`](RunCtx::emit_keyed)-stamped verdicts
-    /// (the inline and deferred gate runs) carry a replay key; the integrate-time
-    /// GATED_BY artifact verdicts do not, so they never match a gate-run key.
-    ///
-    /// Consults the `gate_verdicts` cache (seeded once at run start from the prior log,
-    /// extended by [`emit_gate_verdict`](RunCtx::emit_gate_verdict) as this process runs
-    /// gates), so a lookup is O(1) - never a fresh whole-stream scan per gate per step
-    /// (finding arch-gate-verdict-redundant-scan).
-    fn recorded_gate_verdict(&self, key: &str) -> Option<(bool, String)> {
-        self.gate_verdicts.lock().unwrap().get(key).cloned()
-    }
-
-    /// The content-address cache-hit for a gate whose `(command, tree-sha)` `digest`
-    /// matches a prior GREEN verdict: its `(position, unit)`, or `None` when no green
-    /// carries this digest (spec 12, unit 1). This is the ONE site the content cache is
-    /// consulted - the gate is answered from the log instead of re-run - so it is also the
-    /// single seam unit 2's staleness pass gates the hit at (its [`is_stale`](RunCtx::is_stale)
-    /// guard skips this consult for a stale REQUESTING unit) and the merged-tree re-gate
-    /// (unit 5) reuses. Only GREEN verdicts ever populate the cache, so a red is never
-    /// cache-answered here.
-    fn cached_green_verdict(&self, digest: &str) -> Option<(u64, String)> {
-        self.green_digests.lock().unwrap().get(digest).cloned()
-    }
-
     /// Whether `unit`'s cached gate verdicts are STALE (spec 12, unit 2): a downstream
     /// staleness pass invalidated them because an integrated unit touched files in its
     /// blast radius. The run_gates content-cache hit-site checks this before honoring a
@@ -3540,7 +3546,7 @@ impl RunCtx<'_> {
 
     /// The highest attempt at which `unit` has a recorded gate verdict in the LIVE
     /// [`gate_verdicts`](RunCtx::gate_verdicts) cache (spec 12, unit 4). The cache is keyed by
-    /// [`gate_verdict_key`] (`{unit}/gate:{gate}#{attempt}`), seeded once at run start from the
+    /// [`gate_key`] (`{unit}/gate:{gate}#{attempt}`), seeded once at run start from the
     /// prior log and extended by [`emit_gate_verdict`](RunCtx::emit_gate_verdict) as this
     /// process runs gates, so unlike the immutable `prior_attempts` snapshot it reflects an
     /// IN-RUN unit's true attempt reach. Recovers the `{unit}` segment via [`unit_of_gate_key`]
@@ -3738,7 +3744,7 @@ impl RunCtx<'_> {
     /// Log a blast-radius SKIP (spec 12, unit 3): the inner loop did not run `gid` because its
     /// `inputs:` globs miss the unit's grounded blast radius. Recorded as a `GateVerdict`
     /// carrying `skipped: true` and the reason (no new event type - the skip rides the existing
-    /// vocabulary), under the distinct [`gate_skip_key`] so it never shadows the gate-RUN key
+    /// vocabulary), under the distinct [`gate_key`] so it never shadows the gate-RUN key
     /// the exhaustive integrate pass records, and with NO content digest so it never seeds the
     /// cache. The metrics fold excludes `skipped` verdicts exactly as it excludes the
     /// integrate-time artifact bookkeeping, so a skip is never counted as a gate pass. Keyed so
@@ -3751,7 +3757,7 @@ impl RunCtx<'_> {
         inputs: &[String],
         blast_radius: &[String],
     ) -> Result<(), Error> {
-        let key = gate_skip_key(unit, attempt, gid);
+        let key = gate_key(GateKey::Skip, unit, attempt, gid);
         {
             // Idempotency guard, identical to `emit_gate_verdict`: a re-step that already
             // recorded this skip re-appends nothing.
@@ -3778,8 +3784,8 @@ impl RunCtx<'_> {
 
     /// Emit a gate's `GateVerdict` under its replay `key`, stamping its content address and
     /// caching its outcome so both the exact-key replay
-    /// ([`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)) and the content-address
-    /// cache ([`cached_green_verdict`](RunCtx::cached_green_verdict)) can answer a later
+    /// ([`cached`] over [`gate_verdicts`](RunCtx::gate_verdicts)) and the content-address
+    /// cache ([`cached`] over [`green_digests`](RunCtx::green_digests)) can answer a later
     /// gate without re-running the command. The append and the two cache inserts are paired
     /// here so they can never drift.
     ///
@@ -3908,7 +3914,7 @@ impl RunCtx<'_> {
     /// implementer replays free and the unit reaches `verified`, the first review-tier
     /// spawn is a new spawn that `reserve_spawn` refuses at a spent budget. That refusal
     /// now unwinds cleanly and trips the breaker (a `BudgetExhausted` event via
-    /// [`budget_refused`]/[`is_budget_refused`] + the mid-wave `budget_broke()` check),
+    /// [`SpawnHalt::BudgetRefused`]/[`is_budget_refused`] + the mid-wave `budget_broke()` check),
     /// exactly as the implementer's `Ok(false)` refusal does - so a run that exceeds
     /// `defaults.budget` at ANY spawn site aborts with `BudgetExhausted` (criterion 5).
     /// Completing such a unit requires the operator to raise `defaults.budget`; the count
@@ -3971,34 +3977,6 @@ impl RunCtx<'_> {
         admitted
     }
 
-    /// Whether a spawn was refused mid-wave because the budget was spent (item 9).
-    fn budget_broke(&self) -> bool {
-        self.budget_broke.load(Ordering::SeqCst)
-    }
-
-    /// Whether any in-flight spawn PARKED this run (the stepwise/replay driver hit an
-    /// unrecorded frontier). A parked run has not converged - a later step drains the
-    /// frontier and integrates more units - so the phase boundary holds the deferred
-    /// gate rather than record a verdict against the partial/base tree.
-    fn parked(&self) -> bool {
-        self.parked.load(Ordering::SeqCst)
-    }
-
-    /// Whether any unit is PAUSED for human review this run (§4.3): a Manual-autonomy
-    /// stage emitted ManualReview and returned pending without integrating. Like a
-    /// park, it is a TRANSIENT non-final state, so the phase boundary holds the
-    /// deferred gate rather than record a verdict against the tree missing that unit.
-    fn manual_review_pending(&self) -> bool {
-        self.manual_review.load(Ordering::SeqCst)
-    }
-
-    /// Whether the spawn-budget breaker HALTED the run with ready units still
-    /// unscheduled (item 9 / §4.4). A budget-halted run left work undone that a resume
-    /// completes, so the tree is not final and the deferred gate is deferred.
-    fn budget_halted(&self) -> bool {
-        self.budget_halted.load(Ordering::SeqCst)
-    }
-
     /// Trip the spawn-budget circuit-breaker (§4.4, §8): record `BudgetExhausted` with the
     /// budget and the spawns made, then record the `TaskAborted` that halts the run (abortTask,
     /// §4.4: integrated work is already committed and every per-stage worktree is removed as
@@ -4048,7 +4026,7 @@ impl RunCtx<'_> {
     /// so the thin driver stops LOUDLY on a halt instead of reading `{"wave":[],"done":true}`
     /// as a clean completion.
     fn halt_reason(&self) -> Option<String> {
-        if self.budget_halted() {
+        if self.budget_halted.load(Ordering::SeqCst) {
             Some(format!(
                 "budget exhausted: {}/{} spawns",
                 self.spawns.load(Ordering::SeqCst),
@@ -4524,7 +4502,7 @@ impl RunCtx<'_> {
             id: String::new(),
             run: String::new(),
             kind: gate::Kind::Core,
-            autonomy: gate::Autonomy::parse(raw),
+            autonomy: gate::parse::<gate::Autonomy>(raw),
             history: Vec::new(),
         };
         gate::decide(&probe) == gate::Action::Pause
@@ -5036,12 +5014,15 @@ impl RunCtx<'_> {
         }
         let mut residue = dirty;
         if moved {
-            // Two-dot, never `committed_diff_names`' three-dot: `round_start_sha` is
+            // Two-dot, never the merge-base three-dot: `round_start_sha` is
             // THIS worktree's own prior tip, not a possibly-diverged base branch, and a
             // non-ancestor moved tip (residue that rewrote history rather than just
             // adding to it) must not have its named paths inflated by merge-base
             // anchoring (sdet-u103c6-committed-diff-names-triple-dot-non-ancestor).
-            residue.extend(w.diff_names_since(round_start_sha).unwrap_or_default());
+            residue.extend(
+                w.diff_names(round_start_sha, crate::worktree::DiffMode::Direct)
+                    .unwrap_or_default(),
+            );
             residue.sort();
             residue.dedup();
         }
@@ -7088,7 +7069,12 @@ impl RunCtx<'_> {
             let opts =
                 self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
             if !self.reserve_spawn(&id) {
-                return Err(budget_refused(&st.name, tier, agent_id));
+                return Err(spawn_halt(
+                    SpawnHalt::BudgetRefused,
+                    &st.name,
+                    tier,
+                    agent_id,
+                ));
             }
             // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
             // adv-u3c3r3-ensure-present-covers-only-the-first-tier, UPHELD): `run_reviewer`
@@ -7193,7 +7179,12 @@ impl RunCtx<'_> {
                     && !has_verdict_line(&result.output)
                     && self.gating_spawn_emitted_approve(&id)?
                 {
-                    return Err(verdict_channel_mismatch(&st.name, tier, agent_id));
+                    return Err(spawn_halt(
+                        SpawnHalt::VerdictChannelMismatch,
+                        &st.name,
+                        tier,
+                        agent_id,
+                    ));
                 }
                 return Ok(result);
             }
@@ -7604,7 +7595,12 @@ impl RunCtx<'_> {
         })?;
         let id = spawn_id(plan_name, ROLE_REPLAN, critique_attempt);
         if !self.reserve_spawn(&id) {
-            return Err(budget_refused(plan_name, "planner", &plan_st.agent));
+            return Err(spawn_halt(
+                SpawnHalt::BudgetRefused,
+                plan_name,
+                "planner",
+                &plan_st.agent,
+            ));
         }
         let prompt = format!(
             "The plan-critique gate REJECTED your previous decomposition:\n{}\n\nRevise \
@@ -8191,7 +8187,7 @@ impl RunCtx<'_> {
                 .get(gid)
                 .cloned()
                 .unwrap_or_default();
-            let kind = gate::Kind::parse(&gc.kind);
+            let kind = gate::parse::<gate::Kind>(&gc.kind);
             // Deferred gates are NOT run inline in the per-unit lifecycle (§4.3): they
             // are held until the run's phase boundary and run ONCE there (see
             // `run_deferred_gates`), so a unit integrates on its inline Core/Elevated
@@ -8204,15 +8200,17 @@ impl RunCtx<'_> {
             // MERGED tree under its own key instead of REPLAYING the isolation green; every
             // other selection uses the canonical gate-run key.
             let key = match selection {
-                GateSelection::PostMerge => postmerge_gate_verdict_key(&st.name, attempt, gid),
-                _ => gate_verdict_key(&st.name, attempt, gid),
+                GateSelection::PostMerge => {
+                    gate_key(GateKey::PostMergeVerdict, &st.name, attempt, gid)
+                }
+                _ => gate_key(GateKey::Verdict, &st.name, attempt, gid),
             };
             // REPLAY a recorded verdict (spec 04, criterion 4): this gate already ran in
             // a prior step, so reuse its recorded pass/evidence and re-run NOTHING - not
             // the command, not the GateVerdict emit, not the ratchet. The recorded
             // outcome is authoritative, so the unit's verified/failed decision is
             // identical to the live run's.
-            if let Some((pass, evidence)) = self.recorded_gate_verdict(&key) {
+            if let Some((pass, evidence)) = cached(&self.gate_verdicts, &key) {
                 if !pass {
                     outcome.pass = false;
                     outcome.evidence.push(format!("{gid}: {evidence}"));
@@ -8249,7 +8247,7 @@ impl RunCtx<'_> {
             // are not stale, so their greens still stand and hit here.
             let digest = input_digest(&gc.run, &tree_sha);
             if !digest.is_empty() && !self.is_stale(&st.name) {
-                if let Some((pos, cached_unit)) = self.cached_green_verdict(&digest) {
+                if let Some((pos, cached_unit)) = cached(&self.green_digests, &digest) {
                     let evidence = format!(
                         "cache-hit: gate {gid:?} was proven green at log position {pos} \
                          (unit {cached_unit:?}) for the same command and input digest \
@@ -8694,7 +8692,7 @@ impl RunCtx<'_> {
                     .get(gid)
                     .cloned()
                     .unwrap_or_default();
-                if gate::Kind::parse(&gc.kind).runs_inline() {
+                if gate::parse::<gate::Kind>(&gc.kind).runs_inline() {
                     continue;
                 }
                 seen.insert(gid.clone());
@@ -8709,7 +8707,7 @@ impl RunCtx<'_> {
             // command and no duplicate GateVerdict), otherwise run fresh - but ONLY once
             // the run has genuinely converged, so the command measures the fully
             // integrated tree rather than a parked frontier's partial/base tree.
-            let (pass, evidence) = match self.recorded_gate_verdict(&key) {
+            let (pass, evidence) = match cached(&self.gate_verdicts, &key) {
                 Some(v) => v,
                 None => {
                     // Not yet recorded. On a non-converged step (a parked stepwise
@@ -8726,7 +8724,7 @@ impl RunCtx<'_> {
                         .get(gid)
                         .cloned()
                         .unwrap_or_default();
-                    let kind = gate::Kind::parse(&gc.kind);
+                    let kind = gate::parse::<gate::Kind>(&gc.kind);
                     let g = Gate {
                         id: gid.clone(),
                         run: gc.run,
@@ -8882,7 +8880,7 @@ impl RunCtx<'_> {
         } else {
             stage_autonomy
         };
-        let autonomy = gate::Autonomy::parse(raw);
+        let autonomy = gate::parse::<gate::Autonomy>(raw);
         // Carry the gate's real Kind onto the tracked gate so the ratchet honors
         // its ceiling: an Elevated gate can be promoted to AutoNotify but never
         // proposed for Silent (it always surfaces a notification a human can veto).
@@ -9051,7 +9049,10 @@ impl RunCtx<'_> {
         // real, never take this short-circuit.
         let mut already_landed: Option<(u32, String, String)> = None;
         if files.is_empty() {
-            match self.pending_landing_for(&st.name, attempt) {
+            match cached(
+                &self.pending_landing,
+                &conflict_regenerate_key(&st.name, attempt),
+            ) {
                 None => {
                     // Round 5 fix (sdet-u88c1r4-pending-landing-hides-owed-regeneration):
                     // `None` here means row 4 (landing) is fully closed - but says nothing
@@ -9064,7 +9065,7 @@ impl RunCtx<'_> {
                     if !self.catch_up_owed_regeneration(wt, &st.name, attempt)? {
                         // Spec 103, criterion 3 (RE-GATE WHAT LANDED): row 4 fully closed
                         // and nothing owed is NOT by itself proof there is nothing left to
-                        // GATE. `pending_landing_for` stops seeing a landing the instant
+                        // GATE. the `pending_landing` lookup stops seeing a landing the instant
                         // `record_landed` closes it - so a crash between that append and
                         // the post-merge re-gate which must follow it (or during that
                         // re-gate) leaves the identical "nothing new" git-state signature
@@ -9078,9 +9079,10 @@ impl RunCtx<'_> {
                         // would) before `UnitIntegrated` is ever emitted. Only a unit with
                         // NO landed row at all - genuinely never landed anything - keeps
                         // the true no-op short circuit.
-                        match self.landed_sha_for(&st.name, attempt) {
+                        match cached(&self.landed, &conflict_regenerate_key(&st.name, attempt)) {
                             Some((landed_pass, sha, pre_merge)) => {
-                                files = wt.committed_diff_names(&pre_merge)?;
+                                files = wt
+                                    .diff_names(&pre_merge, crate::worktree::DiffMode::MergeBase)?;
                                 already_landed = Some((landed_pass, sha, pre_merge));
                             }
                             None => return Ok(Integration::default()),
@@ -9099,7 +9101,7 @@ impl RunCtx<'_> {
                     // Recompute the ACTUAL files this already-landed merge touched from the
                     // OLDER base it merged FROM (the current base has since absorbed them,
                     // which is exactly why `changed_since_base` read empty above).
-                    files = wt.committed_diff_names(&run_tip)?;
+                    files = wt.diff_names(&run_tip, crate::worktree::DiffMode::MergeBase)?;
                     // Row 5 fix, generalized to this sibling recovery sub-path (the SAME
                     // root cause: "row 4 closed" was treated as "fully integrated" without
                     // ever consulting row 3): `Worktree::land` already fast-forwarded the
@@ -9121,7 +9123,7 @@ impl RunCtx<'_> {
                         already_landed = Some((pass, unit_tip, run_tip));
                     } else {
                         self.record_landed(&st.name, attempt, pass, &unit_tip, &run_tip)?;
-                        self.clear_pending_landing(&st.name, attempt);
+                        clear_attempt(&self.pending_landing, &st.name, attempt);
                         self.catch_up_owed_regeneration(wt, &st.name, attempt)?;
                         files = wt.changed_since_base()?;
                     }
@@ -9189,7 +9191,7 @@ impl RunCtx<'_> {
         // `land` actually succeeds, same as any other resumed pass.
         let (commit, pre_merge) = if let Some((landed_pass, unit_tip, run_tip)) = already_landed {
             self.record_landed(&st.name, attempt, landed_pass, &unit_tip, &run_tip)?;
-            self.clear_pending_landing(&st.name, attempt);
+            clear_attempt(&self.pending_landing, &st.name, attempt);
             (unit_tip, run_tip)
         } else {
             let mut retry = 0u32;
@@ -9306,7 +9308,7 @@ impl RunCtx<'_> {
                             &retry.to_string(),
                             &regen_sha,
                         )?;
-                        self.clear_regenerate_pending(&st.name, attempt);
+                        clear_attempt(&self.conflict_regenerate_pending, &st.name, attempt);
                         lock = self.integrate_mu.lock().unwrap();
                         // Loop back: the next pass's `merge_into_worktree` picks up the follow-up
                         // regenerate commit just made and fast-forwards it too, this time with
@@ -9349,7 +9351,7 @@ impl RunCtx<'_> {
                             let regen_sha =
                                 self.regenerate_conflicted_paths(wt, &st.name, &all_regenerable)?;
                             self.record_regenerate_commit(&st.name, attempt, &episode, &regen_sha)?;
-                            self.clear_regenerate_pending(&st.name, attempt);
+                            clear_attempt(&self.conflict_regenerate_pending, &st.name, attempt);
                             lock = self.integrate_mu.lock().unwrap();
                             continue;
                         }
@@ -9954,7 +9956,7 @@ impl RunCtx<'_> {
     /// Round 5 fix for sdet-u88c1r4-pending-landing-hides-owed-regeneration: the shared
     /// catch-up mutation a resumed [`Self::integrate_and_emit`] call runs when it discovers
     /// row 4 (landing) is ALREADY closed - by either of its own two recovery sub-paths,
-    /// [`Self::pending_landing_for`] returning `None` (an earlier attempt's land AND its own
+    /// the [`pending_landing`](RunCtx::pending_landing) lookup returning `None` (an earlier attempt's land AND its own
     /// after-record both completed) or returning `Some` (the land completed for real but only
     /// its after-record was still open, now finished by the caller just before this runs) -
     /// while [`Self::regenerate_pending_for`] still names paths nobody ever regenerated for
@@ -9989,7 +9991,15 @@ impl RunCtx<'_> {
         }
         let regen_sha = self.regenerate_conflicted_paths(wt, unit, &owed)?;
         self.record_regenerate_commit(unit, attempt, &format!("resume-{regen_sha}"), &regen_sha)?;
-        self.clear_regenerate_pending(unit, attempt);
+        // Clear the LIVE (in-process) pending entry now the regeneration ran - as after every
+        // regenerate_conflicted_paths call. Without it `regenerate_pending_for` would keep
+        // reporting the same paths owed forever THIS process (the durable log marker itself
+        // is deliberately never retracted - re-running the regenerate command on an
+        // already-regenerated, unchanged tree is an established idempotent no-op, see
+        // `u88c1-nothing-to-commit-guard-justified` - so a resumed process re-doing it once
+        // more is harmless), spinning `integrate_and_emit`'s own loop forever on a `Merged`
+        // outcome that never stops looking "owed".
+        clear_attempt(&self.conflict_regenerate_pending, unit, attempt);
         Ok(true)
     }
 
@@ -9997,62 +10007,11 @@ impl RunCtx<'_> {
     /// for `unit`'s conflict-resolution episode at `attempt` - see
     /// [`conflict_regenerate_pending_from_log`] and [`RunCtx::conflict_regenerate_pending`].
     fn regenerate_pending_for(&self, unit: &str, attempt: u32) -> Vec<String> {
-        self.conflict_regenerate_pending
-            .lock()
-            .unwrap()
-            .get(&conflict_regenerate_key(unit, attempt))
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Clear the LIVE (in-process) pending-regenerate entry for `unit`'s episode at
-    /// `attempt` once [`Self::regenerate_conflicted_paths`] has actually run for it -
-    /// called right after every such call. Without this, [`Self::regenerate_pending_for`]
-    /// would keep reporting the same paths owed forever THIS process (the durable log
-    /// marker itself is deliberately never retracted - re-running the regenerate command
-    /// on an already-regenerated, unchanged tree is an established idempotent no-op, see
-    /// `u88c1-nothing-to-commit-guard-justified` - so a resumed process re-doing it once
-    // more is harmless), spinning [`Self::integrate_and_emit`]'s own loop forever on a
-    /// `Merged` outcome that never stops looking "owed".
-    fn clear_regenerate_pending(&self, unit: &str, attempt: u32) {
-        self.conflict_regenerate_pending
-            .lock()
-            .unwrap()
-            .remove(&conflict_regenerate_key(unit, attempt));
-    }
-
-    /// The `(pass, unit_tip, run_tip)` of `unit`'s durably-recorded landing-intent at `attempt`
-    /// not yet matched by a landed record, if any (round 4 fix - see
-    /// [`RunCtx::pending_landing`]'s own doc for the crash window this closes).
-    fn pending_landing_for(&self, unit: &str, attempt: u32) -> Option<(u32, String, String)> {
-        self.pending_landing
-            .lock()
-            .unwrap()
-            .get(&conflict_regenerate_key(unit, attempt))
-            .cloned()
-    }
-
-    /// Clear the LIVE pending-landing entry for `unit`'s `attempt` once
-    /// [`Self::record_landed`] has closed it out - mirrors
-    /// [`Self::clear_regenerate_pending`] exactly.
-    fn clear_pending_landing(&self, unit: &str, attempt: u32) {
-        self.pending_landing
-            .lock()
-            .unwrap()
-            .remove(&conflict_regenerate_key(unit, attempt));
-    }
-
-    /// The `(pass, sha, pre_merge)` of `unit`'s durably-recorded `integrate-landed` row at
-    /// `attempt`, if any (spec 103, criterion 3 - RE-GATE WHAT LANDED; see [`landed_from_log`]'s
-    /// own doc for the crash window this closes: a resumed call whose landing-intent is
-    /// already matched, closed, and gone from [`Self::pending_landing_for`] can still recover
-    /// what actually landed from here, never guessing from live git state alone).
-    fn landed_sha_for(&self, unit: &str, attempt: u32) -> Option<(u32, String, String)> {
-        self.landed
-            .lock()
-            .unwrap()
-            .get(&conflict_regenerate_key(unit, attempt))
-            .cloned()
+        cached(
+            &self.conflict_regenerate_pending,
+            &conflict_regenerate_key(unit, attempt),
+        )
+        .unwrap_or_default()
     }
 
     /// [`Self::regenerate_pending_for`] unioned with `fresh` (this round's own regenerable
@@ -10251,9 +10210,9 @@ impl RunCtx<'_> {
     /// [`Self::record_landing_intent`]'s before-record brackets. `pre_merge` (spec 103,
     /// criterion 3) is the run branch's tip BEFORE this landing - the SAME value the paired
     /// `integrate-landing-intent` recorded as `run_tip` - carried here too so a LATER resume,
-    /// after `pending_landing_for` has stopped seeing this landing (matched, no longer
+    /// after the `pending_landing` lookup has stopped seeing this landing (matched, no longer
     /// pending), can still recover both the landed sha AND the pre-landing tip from this row
-    /// alone via [`Self::landed_sha_for`], never from live process state.
+    /// alone via [`landed`](RunCtx::landed), never from live process state.
     fn record_landed(
         &self,
         unit: &str,
@@ -10322,7 +10281,12 @@ impl RunCtx<'_> {
     ) -> Result<(), Error> {
         let id = spawn_retry_id(&st.name, ROLE_IMPLEMENTER, attempt, retry);
         if !self.reserve_spawn(&id) {
-            return Err(budget_refused(&st.name, "implementer", &st.agent));
+            return Err(spawn_halt(
+                SpawnHalt::BudgetRefused,
+                &st.name,
+                "implementer",
+                &st.agent,
+            ));
         }
         let agent_def = self.cfg.agents.get(&st.agent).ok_or_else(|| {
             Error(format!(
@@ -10410,7 +10374,7 @@ impl RunCtx<'_> {
     /// is removed from the live `stages` once expanded). The planner is told this id so
     /// its refinements assign the same implementer. Empty when there is no template.
     fn implementer_agent(&self) -> String {
-        fan_out_template_name(&self.cfg.workflow.stages)
+        first_stage_named(&self.cfg.workflow.stages, is_fan_out_template)
             .and_then(|name| {
                 self.cfg
                     .workflow
@@ -11299,7 +11263,7 @@ impl RunCtx<'_> {
     /// identical list a live window already recorded. Empty when the workflow has no
     /// fan-out template.
     fn template_gates(&self) -> Vec<String> {
-        fan_out_template_name(&self.cfg.workflow.stages)
+        first_stage_named(&self.cfg.workflow.stages, is_fan_out_template)
             .and_then(|name| self.cfg.workflow.stages.get(&name))
             .map(|st| st.gates.clone())
             .unwrap_or_default()
@@ -13496,25 +13460,33 @@ fn is_fan_out(st: &Stage) -> bool {
     st.agent.is_empty() && (!st.agents.is_empty() || st.strategy.eq_ignore_ascii_case("fan-out"))
 }
 
+/// The name of the FIRST stage (in stable BTreeMap order) `shape` matches, or None. Two
+/// shapes it finds:
+///
+/// - [`is_fan_out_template`]: the implement TEMPLATE stage the conductor expands into one
+///   per-criterion unit (the deterministic decomposition baseline). There is normally exactly
+///   one; None when the workflow has no fan-out implementer template (a non-decomposing
+///   workflow), in which case the conductor synthesizes no baseline units and the no-spec
+///   path is unchanged.
+/// - [`is_producer`]: the (first) `produces` planner stage - baseline units depend on it so
+///   they run only AFTER the planner has had its chance to refine the DAG.
+fn first_stage_named(
+    stages: &BTreeMap<String, Stage>,
+    shape: fn(&Stage) -> bool,
+) -> Option<String> {
+    stages
+        .iter()
+        .find(|(_, st)| shape(st))
+        .map(|(name, _)| name.clone())
+}
+
 /// Whether a stage is shaped like the implement fan-out TEMPLATE: it names an `agent`,
 /// sets `strategy: fan-out` ("one implementer per ready unit"), and does NOT `produces`
-/// a DAG (it is a worker, not the planner). Pulled out of [`fan_out_template_name`] so
+/// a DAG (it is a worker, not the planner). Pulled out of [`first_stage_named`] so
 /// `rigger validate`'s [`ungated_fan_out_templates`] advisory checks the EXACT same
 /// shape the runtime decomposition matches - one predicate, never a second guess at it.
 fn is_fan_out_template(st: &Stage) -> bool {
     !st.agent.is_empty() && st.strategy.eq_ignore_ascii_case("fan-out") && st.produces.is_empty()
-}
-
-/// The implement TEMPLATE stage the conductor expands into one per-criterion unit
-/// (the deterministic decomposition baseline). There is normally exactly one; the
-/// FIRST in stable (BTreeMap) order is chosen. Returns its name, or None when the
-/// workflow has no fan-out implementer template (a non-decomposing workflow), in which
-/// case the conductor synthesizes no baseline units and the no-spec path is unchanged.
-fn fan_out_template_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
-    stages
-        .iter()
-        .find(|(_, st)| is_fan_out_template(st))
-        .map(|(name, _)| name.clone())
 }
 
 /// NO UNGATED FAN-OUT TEMPLATE advisory (spec 103, criterion 2): names every fan-out
@@ -13653,15 +13625,6 @@ fn stale_downstream_units(
     stale
 }
 
-/// The name of the (first) `produces` planner stage, if any: baseline units depend on
-/// it so they run only AFTER the planner has had its chance to refine the DAG.
-fn producer_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
-    stages
-        .iter()
-        .find(|(_, st)| is_producer(st))
-        .map(|(name, _)| name.clone())
-}
-
 /// The name of the plan-critique gate stage, if the workflow wires one (Unit 1, spec
 /// 10). The gate is recognized by ROLE, not by a hard-coded name: it is the review-only
 /// stage (no `agent` - it critiques the DAG, it does not implement) that carries an
@@ -13671,7 +13634,7 @@ fn producer_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
 /// mistaken for it. Returns None when the workflow has no producer or no such gate, so
 /// a non-decomposing or ungated workflow runs exactly as before.
 fn critique_gate_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
-    let producer = producer_name(stages)?;
+    let producer = first_stage_named(stages, is_producer)?;
     stages
         .iter()
         .find(|(_, st)| {
@@ -13842,7 +13805,7 @@ fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option
 /// (it names no baseline criterion, by definition), so it can never match a
 /// `fanout_criteria` entry the loop above resolves against - it is checked separately,
 /// against whichever template `fanout_template_gates` tracks (a run tracks at most
-/// one, per [`fan_out_template_name`]'s single `.find`), so it is unambiguous which
+/// one, per [`first_stage_named`]'s single `.find`), so it is unambiguous which
 /// template's gates it was meant to inherit.
 ///
 /// Criterion 1 owns gate INHERITANCE (`harvest_proposed`'s union of a proposal's gates
@@ -14070,6 +14033,104 @@ mod tests {
     use crate::gate::ExecRunner;
     use std::path::Path;
 
+    /// Shared test doubles and case bodies for this module's same-shaped tests.
+    mod support {
+        use super::*;
+
+        /// How many times `id` appears in a driver's spawn-call log.
+        pub(super) fn occurrences(log: &Mutex<Vec<String>>, id: &str) -> usize {
+            log.lock().unwrap().iter().filter(|c| *c == id).count()
+        }
+
+        /// A test double's recorded values so far.
+        pub(super) fn snapshot<T: Clone>(recorded: &Mutex<T>) -> T {
+            recorded.lock().unwrap().clone()
+        }
+
+        /// A stage map's observable shape - `(id, needs, coverage, criterion_id)` per stage -
+        /// for comparing two DAGs (`Stage` has no `PartialEq`).
+        pub(super) fn stage_shape(
+            stages: &BTreeMap<String, Stage>,
+        ) -> Vec<(String, Vec<String>, String, String)> {
+            stages
+                .iter()
+                .map(|(k, s)| {
+                    (
+                        k.clone(),
+                        s.needs.clone(),
+                        s.coverage.clone(),
+                        s.criterion_id.clone(),
+                    )
+                })
+                .collect()
+        }
+
+        /// A `Projection` double: counts per-EVENT folds (`apply`), records the size of every
+        /// per-BATCH fold (`apply_batch`), serves `graph` as every subgraph, and resolves no
+        /// mention.
+        #[derive(Default)]
+        pub(super) struct SpyGraph {
+            pub(super) graph: Graph,
+            pub(super) per_event: AtomicU32,
+            pub(super) batch_folds: Mutex<Vec<usize>>,
+        }
+
+        impl Projection for SpyGraph {
+            fn apply(&self, _e: &Event) -> Result<(), contextgraph::Error> {
+                self.per_event.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn apply_batch(&self, events: &[Event]) -> Result<(), contextgraph::Error> {
+                self.batch_folds.lock().unwrap().push(events.len());
+                Ok(())
+            }
+            fn subgraph(&self, _s: &[String], _d: i64) -> Result<Graph, contextgraph::Error> {
+                Ok(self.graph.clone())
+            }
+            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
+                Ok(None)
+            }
+        }
+    }
+    use support::*;
+
+    /// Implements `EventStore`'s read and subscribe methods for a wrapper store by delegating
+    /// each to its `inner` store unchanged - the wrappers below differ only in `append`.
+    macro_rules! delegate_event_store_reads {
+        () => {
+            fn read_stream(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+                dir: Direction,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_stream(stream, from, dir)
+            }
+            fn read_all(
+                &self,
+                from: crate::eventstore::Position,
+                dir: Direction,
+                filter: &Filter,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_all(from, dir, filter)
+            }
+            fn subscribe_all(
+                &self,
+                from: crate::eventstore::Position,
+                filter: &Filter,
+            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+                self.inner.subscribe_all(from, filter)
+            }
+            fn subscribe_stream(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+                self.inner.subscribe_stream(stream, from)
+            }
+        };
+    }
+
     // ---- FAILURE CLASS (spec 104 criterion 5): pure functions, moved here with the code
     // they test (adj-u104c5 REQUIRED FIX 3) ----
 
@@ -14162,7 +14223,7 @@ mod tests {
     #[test]
     fn recorded_gate_outcome_reads_the_latest_gate_run_verdict_per_unit() {
         // A `GateVerdict` keyed to a unit's gate RUN - the exact shape `emit_gate_verdict`
-        // records (`{unit}/gate:{gate}#{attempt}` via `gate_verdict_key`).
+        // records (`{unit}/gate:{gate}#{attempt}` via `gate_key`).
         fn verdict(unit: &str, gate: &str, attempt: u32, pass: bool) -> Event {
             Event::new(
                 contextgraph::TYPE_GATE_VERDICT,
@@ -14171,7 +14232,10 @@ mod tests {
                 }))
                 .unwrap(),
             )
-            .with_meta(META_REPLAY_KEY, gate_verdict_key(unit, attempt, gate))
+            .with_meta(
+                META_REPLAY_KEY,
+                gate_key(GateKey::Verdict, unit, attempt, gate),
+            )
         }
 
         // No recorded gate run yet -> None (the unit's gates have not run).
@@ -14236,7 +14300,7 @@ mod tests {
             }))
             .unwrap(),
         )
-        .with_meta(META_REPLAY_KEY, gate_skip_key("u3", 0, "test"));
+        .with_meta(META_REPLAY_KEY, gate_key(GateKey::Skip, "u3", 0, "test"));
         let artifact = Event::new(
             contextgraph::TYPE_GATE_VERDICT,
             serde_json::to_vec(&json!({ "gate": "build", "pass": true, "artifact": "src/a.rs" }))
@@ -15629,17 +15693,6 @@ mod tests {
         /// `~retry{n}` respawn ids the conductor minted for a degenerate reviewer).
         fn spawn_ids(&self) -> Vec<String> {
             self.spawn_ids.lock().unwrap().clone()
-        }
-
-        /// How many times the named agent was spawned this run (Gap-18 tests count a
-        /// degenerate reviewer's original spawn + its bounded respawns).
-        fn spawn_count(&self, agent_id: &str) -> usize {
-            self.call_order
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|id| *id == agent_id)
-                .count()
         }
 
         /// Whether the named agent was spawned at all this run (resume tests assert an
@@ -17739,20 +17792,6 @@ mod tests {
             .unwrap();
         }
 
-        fn shape(stages: &BTreeMap<String, Stage>) -> Vec<(String, Vec<String>, String, String)> {
-            stages
-                .iter()
-                .map(|(k, s)| {
-                    (
-                        k.clone(),
-                        s.needs.clone(),
-                        s.coverage.clone(),
-                        s.criterion_id.clone(),
-                    )
-                })
-                .collect()
-        }
-
         let integrated: HashSet<String> = HashSet::new();
         let terminal: HashSet<String> = HashSet::new();
 
@@ -17809,8 +17848,8 @@ mod tests {
         }
 
         assert_eq!(
-            shape(&stages_live),
-            shape(&stages_resume),
+            stage_shape(&stages_live),
+            stage_shape(&stages_resume),
             "a live incremental fold (one harvest_proposed call per event) must yield \
              the SAME surviving stage set as a resume's single pre-wave catch-up call \
              over the identical, fully pre-populated history"
@@ -17901,20 +17940,6 @@ mod tests {
                 .with_meta(META_SPAWN, spawn)],
             )
             .unwrap();
-        }
-
-        fn shape(stages: &BTreeMap<String, Stage>) -> Vec<(String, Vec<String>, String, String)> {
-            stages
-                .iter()
-                .map(|(k, s)| {
-                    (
-                        k.clone(),
-                        s.needs.clone(),
-                        s.coverage.clone(),
-                        s.criterion_id.clone(),
-                    )
-                })
-                .collect()
         }
 
         let integrated: HashSet<String> = HashSet::new();
@@ -18009,8 +18034,8 @@ mod tests {
         assert!(stages_live.contains_key("u-new"));
 
         assert_eq!(
-            shape(&stages_live),
-            shape(&stages_resume),
+            stage_shape(&stages_live),
+            stage_shape(&stages_resume),
             "the live incremental fold and the resume's one-shot catch-up over the \
              identical legacy-then-identified history must agree exactly"
         );
@@ -21407,7 +21432,7 @@ mod tests {
         const UNIT: &str = "gc";
         const GATE: &str = "g@h1";
         let started_key = format!("{UNIT}/started");
-        let verdict_key = gate_verdict_key(UNIT, 0, GATE);
+        let verdict_key = gate_key(GateKey::Verdict, UNIT, 0, GATE);
 
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
@@ -21564,61 +21589,7 @@ mod tests {
                 self.appends.lock().unwrap().push(events.len());
                 self.inner.append(stream, expected, events)
             }
-            fn read_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-                dir: Direction,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_stream(stream, from, dir)
-            }
-            fn read_all(
-                &self,
-                from: crate::eventstore::Position,
-                dir: Direction,
-                filter: &Filter,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_all(from, dir, filter)
-            }
-            fn subscribe_all(
-                &self,
-                from: crate::eventstore::Position,
-                filter: &Filter,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_all(from, filter)
-            }
-            fn subscribe_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_stream(stream, from)
-            }
-        }
-
-        // A graph spy: counts per-EVENT folds (`apply`) and records the size of every per-BATCH fold
-        // (`apply_batch`), so the test can prove the ingest folds a file's whole batch in ONE
-        // `apply_batch` call and NEVER an `apply` per event.
-        #[derive(Default)]
-        struct CountingGraph {
-            per_event: AtomicU32,
-            batch_folds: SpyMutex<Vec<usize>>,
-        }
-        impl Projection for CountingGraph {
-            fn apply(&self, _e: &Event) -> Result<(), contextgraph::Error> {
-                self.per_event.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }
-            fn apply_batch(&self, events: &[Event]) -> Result<(), contextgraph::Error> {
-                self.batch_folds.lock().unwrap().push(events.len());
-                Ok(())
-            }
-            fn subgraph(&self, _s: &[String], _d: i64) -> Result<Graph, contextgraph::Error> {
-                Ok(Graph::default())
-            }
-            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
-                Ok(None)
-            }
+            delegate_event_store_reads!();
         }
 
         // K source files, each a MULTI-EVENT batch: `defN` (a CodeEntityExtracted) and `useN` which
@@ -21642,7 +21613,7 @@ mod tests {
             inner: &inner,
             appends: SpyMutex::new(Vec::new()),
         };
-        let graph = CountingGraph::default();
+        let graph = SpyGraph::default();
         let driver = Stub::new();
         let grounder = StubGrounder {
             by_query: HashMap::new(),
@@ -23948,7 +23919,7 @@ mod tests {
 
         // The adjudicator was spawned exactly twice: the degenerate original + one retry.
         assert_eq!(
-            driver.spawn_count("judge"),
+            occurrences(&driver.call_order, "judge"),
             2,
             "the degenerate adjudicator is respawned exactly once before it returns a verdict"
         );
@@ -23981,7 +23952,7 @@ mod tests {
             "a degenerate-then-recovered review must not escalate the unit"
         );
         // The implementer ran exactly once - no remediation re-implement.
-        assert_eq!(driver.spawn_count("worker"), 1);
+        assert_eq!(occurrences(&driver.call_order, "worker"), 1);
     }
 
     #[test]
@@ -24318,14 +24289,14 @@ mod tests {
         // The implementer ran exactly once - the mismatch halts rather than looping the
         // unit back through re-implement remediation.
         assert_eq!(
-            driver.spawn_count("worker"),
+            occurrences(&driver.call_order, "worker"),
             1,
             "the mismatch halts the run; the unit is not re-implemented"
         );
         // The adjudicator is NOT respawned: this is a substantive (non-degenerate) result,
         // distinct from the Gap-18 empty-result respawn path.
         assert_eq!(
-            driver.spawn_count("judge"),
+            occurrences(&driver.call_order, "judge"),
             1,
             "a non-degenerate result carrying an emit-only verdict is not respawned"
         );
@@ -24573,7 +24544,7 @@ mod tests {
         run(&cfg, &deps).expect("the review proceeds once the degenerate lens recovers");
 
         assert_eq!(
-            driver.spawn_count("sdet"),
+            occurrences(&driver.call_order, "sdet"),
             2,
             "the degenerate lens is respawned exactly once"
         );
@@ -24631,7 +24602,7 @@ mod tests {
         // The lens was spawned EXACTLY ONCE - its empty stdout was not misread as degenerate
         // (no respawn), because it emitted a ReviewFinding.
         assert_eq!(
-            driver.spawn_count("sdet"),
+            occurrences(&driver.call_order, "sdet"),
             1,
             "a lens that emitted a ReviewFinding is not degenerate on an empty stdout"
         );
@@ -24709,7 +24680,7 @@ mod tests {
 
         // The adjudicator was spawned exactly THREE times: the original + two respawns.
         assert_eq!(
-            driver.spawn_count("judge"),
+            occurrences(&driver.call_order, "judge"),
             3,
             "the respawn bound is two: original + 2 respawns, then halt"
         );
@@ -24751,7 +24722,7 @@ mod tests {
             "a degenerate-reviewer halt must emit no per-unit lesson (no misattribution)"
         );
         // The implementer ran exactly once - the halt did not restart the unit lifecycle.
-        assert_eq!(driver.spawn_count("worker"), 1);
+        assert_eq!(occurrences(&driver.call_order, "worker"), 1);
     }
 
     #[test]
@@ -26417,7 +26388,7 @@ mod tests {
         // TWO deterministic candidate implementers were spawned in one speculation group
         // - budget accounting counts BOTH candidate spawns.
         assert_eq!(
-            driver.spawn_count("worker"),
+            occurrences(&driver.call_order, "worker"),
             2,
             "K=2 parks two parallel implementer candidates (budget counts both)"
         );
@@ -26472,7 +26443,7 @@ mod tests {
         // Only the WINNING candidate is reviewed - the cancelled candidate never reaches
         // the review tiers (first-green-wins stops at the winner).
         assert_eq!(
-            driver.spawn_count("adj"),
+            occurrences(&driver.call_order, "adj"),
             1,
             "only the winning candidate is adjudicated; the loser is cancelled un-reviewed"
         );
@@ -26506,7 +26477,7 @@ mod tests {
         run(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
 
         assert_eq!(
-            driver.spawn_count("worker"),
+            occurrences(&driver.call_order, "worker"),
             1,
             "budget 1 admits exactly one candidate; the second is refused over budget"
         );
@@ -26543,7 +26514,7 @@ mod tests {
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
         assert_eq!(
-            driver.spawn_count("worker"),
+            occurrences(&driver.call_order, "worker"),
             1,
             "speculation off runs exactly one implementer candidate"
         );
@@ -27125,7 +27096,7 @@ mod tests {
             "lane 0 crashed but the surviving sibling lane 1 still wins and integrates"
         );
         assert_eq!(
-            driver.spawn_count("worker"),
+            occurrences(&driver.call_order, "worker"),
             2,
             "BOTH candidate implementers were spawned - the crash did not abort the group"
         );
@@ -27196,7 +27167,7 @@ mod tests {
             "a candidate that fails the exhaustive integrate door cannot land - the unit escalates"
         );
         assert_eq!(
-            driver.spawn_count("adj"),
+            occurrences(&driver.call_order, "adj"),
             2,
             "BOTH candidates passed their narrowed gates and reached (and were approved by) the \
              adjudicator; only the exhaustive door bit them"
@@ -28728,36 +28699,7 @@ mod tests {
             }
             self.inner.append(stream, expected, events)
         }
-        fn read_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-            dir: Direction,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_stream(stream, from, dir)
-        }
-        fn read_all(
-            &self,
-            from: crate::eventstore::Position,
-            dir: Direction,
-            filter: &Filter,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_all(from, dir, filter)
-        }
-        fn subscribe_all(
-            &self,
-            from: crate::eventstore::Position,
-            filter: &Filter,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_all(from, filter)
-        }
-        fn subscribe_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_stream(stream, from)
-        }
+        delegate_event_store_reads!();
     }
 
     #[test]
@@ -30792,7 +30734,7 @@ mod tests {
             "a new spawn beyond the folded count is refused"
         );
         assert!(
-            c.budget_broke(),
+            c.budget_broke.load(Ordering::SeqCst),
             "refusing a new over-budget spawn trips the breaker"
         );
     }
@@ -32171,9 +32113,6 @@ mod tests {
                 envs: Mutex::new(Vec::new()),
             }
         }
-        fn envs(&self) -> Vec<Vec<(String, String)>> {
-            self.envs.lock().unwrap().clone()
-        }
     }
     impl AgentDriver for EnvRecordingDriver {
         fn spawn(
@@ -32244,7 +32183,7 @@ mod tests {
             let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
             let target = crate::worktree::unit_cache_sibling(&unit_worktree_dir(&scratch, "solo"))
                 .expect("a unit worktree dir must derive a cache sibling");
-            (runner.build_envs(), driver.envs(), target)
+            (snapshot(&runner.build_envs), snapshot(&driver.envs), target)
         }
 
         // A real, actually-creatable cache dir (spec 65 unit 2, NO SILENT DEGRADE:
@@ -34507,7 +34446,7 @@ mod tests {
         // already fast-forwarded the run branch onto the unit's own tip and durably recorded
         // the landing (`record_landed`, the `integrate-landed` row), but crashed before the
         // post-merge re-gate that must follow it ever ran. On resume, `changed_since_base`
-        // reads empty (the content is already on the run branch) and `pending_landing_for`
+        // reads empty (the content is already on the run branch) and the `pending_landing` lookup
         // finds nothing PENDING (the landed row already exists, matching whatever intent
         // preceded it) - so the resumed call must not mistake "nothing left to land" for
         // "nothing left to gate": it must resolve `commit` from the durably-recorded landed
@@ -34625,7 +34564,7 @@ mod tests {
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
 
         let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let postmerge_key = postmerge_gate_verdict_key("s", 0, "ok");
+        let postmerge_key = gate_key(GateKey::PostMergeVerdict, "s", 0, "ok");
         assert!(
             events
                 .iter()
@@ -36231,7 +36170,7 @@ mod tests {
         );
 
         assert_eq!(
-            driver.spawn_count("a"),
+            occurrences(&driver.call_order, "a"),
             (REVIEWER_RESPAWN_BOUND + 1) as usize,
             "the degenerate lens must exhaust its original spawn plus every respawn"
         );
@@ -37807,9 +37746,6 @@ mod tests {
         fn mutants_dirs(&self) -> Vec<String> {
             self.mutants_dirs.lock().unwrap().clone()
         }
-        fn build_envs(&self) -> Vec<Vec<(String, String)>> {
-            self.build_envs.lock().unwrap().clone()
-        }
         fn store_fences(&self) -> Vec<String> {
             self.store_fences.lock().unwrap().clone()
         }
@@ -38642,23 +38578,6 @@ mod tests {
         // A `Projection` double returning the addendum 6.2 tiered subgraph for combat.rs, so the
         // wiring is exercised over a discriminating multi-tier edge set (a real 29a fold scopes a
         // reference to its own file, so it cannot produce a cross-file INFERRED target to split on).
-        struct FixedGraph(Graph);
-        impl Projection for FixedGraph {
-            fn apply(&self, _e: &crate::eventstore::Event) -> Result<(), contextgraph::Error> {
-                Ok(())
-            }
-            fn subgraph(
-                &self,
-                _seed: &[String],
-                _depth: i64,
-            ) -> Result<Graph, contextgraph::Error> {
-                Ok(self.0.clone())
-            }
-            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
-                Ok(None)
-            }
-        }
-
         // A grep grounder over a temp tree whose only match seeds the traversal on combat.rs.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("combat.rs"), "fn combat_step() {}\n").unwrap();
@@ -38673,7 +38592,10 @@ mod tests {
         let cfg = Config::default();
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let graph = FixedGraph(confidence_tier_fixture());
+        let graph = SpyGraph {
+            graph: confidence_tier_fixture(),
+            ..Default::default()
+        };
 
         // The grep radius alone (graph: None) is the fallback floor: just the seed file.
         let base_deps = Deps {
@@ -40346,15 +40268,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_compensated_unit_re_gates_its_re_implemented_tree_not_the_condemned_verdict() {
-        // spec 12, unit 4 (the reverse gear's RE-VERIFY half): a compensated unit re-enters at
-        // an ADVANCED attempt, so its re-implemented tree runs the gate under a FRESH
-        // (unit, attempt, gate) key instead of REPLAYING the condemned pass's verdict. Without
-        // the attempt advance the unit re-enters at attempt 0 and the content-BLIND exact-key
-        // replay answers the gate from the condemned green - the gate COMMAND never runs on the
-        // re-implemented code (a live false green). Proven by the gate-run count: unit-a's gate
-        // `ga` must run TWICE (once per implemented tree), not once.
+    /// The shared case body for the reverse gear's RE-VERIFY half (spec 12, unit 4): unit-b
+    /// condemns unit-a, whose `driver` implements distinct content per tree; unit-a must
+    /// re-integrate its re-implemented tree, its gate `ga` must RUN `ga_runs` times (never
+    /// replaying a condemned verdict), and the re-run verdict must be recorded under the fresh
+    /// `regate_key` as a real gate RUN (no cache-hit / skip citation).
+    fn assert_compensated_unit_re_gates(
+        driver: &dyn AgentDriver,
+        ga_runs: usize,
+        runs_why: &str,
+        regate_key: &str,
+        regate_why: &str,
+    ) {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
@@ -40387,11 +40312,10 @@ mod tests {
             .insert("unit-b".into(), mk("unit-b", "gb", vec!["unit-a".into()]));
 
         let store = Store::open(":memory:").unwrap();
-        let driver = CompRegateDriver;
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             store: &store,
-            driver: &driver,
+            driver,
             gates: &runner,
             repo: repo_path.clone(),
             grounder: None,
@@ -40407,29 +40331,37 @@ mod tests {
         );
         assert_eq!(rs.units["unit-b"].status, ledger::Status::Integrated);
 
-        // The crux: `ga` RAN on BOTH of unit-a's trees. Under the stale-replay bug it runs once
-        // (attempt 0) and the re-implemented tree replays that green without re-running.
-        let ga_runs = runner.calls().into_iter().filter(|c| c == "ga").count();
-        assert_eq!(
-            ga_runs, 2,
-            "unit-a's gate must RE-RUN on the re-implemented tree, not replay the condemned attempt-0 verdict; ga runs={ga_runs}"
-        );
+        let runs = runner.calls().into_iter().filter(|c| c == "ga").count();
+        assert_eq!(runs, ga_runs, "{runs_why}; ga runs={runs}");
 
-        // And the re-run verdict is recorded under the ADVANCED attempt key, a real gate RUN
-        // (no cache-hit / skip citation) on the re-implemented tree.
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let regate = events.iter().any(|e| {
-            e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some("unit-a/gate:ga#1")
+            e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(regate_key)
                 && !e.meta.contains_key(META_CACHE_HIT)
                 && serde_json::from_slice::<Value>(&e.data)
                     .ok()
                     .and_then(|v| v.get("skipped").and_then(Value::as_bool))
                     != Some(true)
         });
-        assert!(
-            regate,
-            "the re-implemented tree records a fresh gate:ga#1 RUN verdict (not a replay/cache-hit/skip)"
-        );
+        assert!(regate, "{regate_why}");
+    }
+
+    crate::test_cases! {
+            // spec 12, unit 4 (the reverse gear's RE-VERIFY half): a compensated unit re-enters at
+            // an ADVANCED attempt, so its re-implemented tree runs the gate under a FRESH
+            // (unit, attempt, gate) key instead of REPLAYING the condemned pass's verdict. Without
+            // the attempt advance the unit re-enters at attempt 0 and the content-BLIND exact-key
+            // replay answers the gate from the condemned green - the gate COMMAND never runs on the
+            // re-implemented code (a live false green). Proven by the gate-run count: unit-a's gate
+            // `ga` must run TWICE (once per implemented tree), not once.
+        a_compensated_unit_re_gates_its_re_implemented_tree_not_the_condemned_verdict:
+            assert_compensated_unit_re_gates(
+                &CompRegateDriver,
+                2,
+                "unit-a's gate must RE-RUN on the re-implemented tree, not replay the condemned attempt-0 verdict",
+                "unit-a/gate:ga#1",
+                "the re-implemented tree records a fresh gate:ga#1 RUN verdict (not a replay/cache-hit/skip)",
+            );
     }
 
     /// A driver for the reverse-gear re-gate test on the REMEDIATED lifecycle (spec 12,
@@ -40489,105 +40421,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_compensated_unit_that_remediated_before_integrating_re_gates_at_a_fresh_key() {
-        // spec 12, unit 4 (the reverse gear's RE-VERIFY half on the REMEDIATED lifecycle - the
-        // blocking regression sdet-s12u4-reentry-collides-with-prior-lifecycle-attempt-key /
-        // adv-s12u4-collision-proven-by-run): unit-a REJECTS its own attempt 0 and only approves
-        // on attempt 1, so it integrates having ALREADY recorded a green gate verdict at
-        // attempt 1. When unit-b then condemns it, the reverse gear must re-enter it ONE PAST
-        // its HIGH-WATER attempt (attempt 2) - NOT at attempt 1 where its OWN prior remediation
-        // already recorded a green. Advancing only compensation-count+1 over the run-start
-        // prior_attempts snapshot (=0 in-run) lands it back on attempt 1, where the
-        // content-BLIND exact-key replay answers the re-implemented tree from the condemned
-        // green and the gate COMMAND never runs (a live false green). Proven by the gate-run
-        // count: unit-a's gate `ga` must run THREE times (attempt 0, the attempt-1
-        // re-implementation, and the attempt-2 reverse-gear re-implementation), not two.
-        //
-        // The zero-remediation sibling (a_compensated_unit_re_gates_its_re_implemented_tree_...)
-        // only drives unit-a approving its first pass, so a fixed +1 advance passes it; this
-        // case is the mutation-distinguishing one it missed.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        // Distinct gates per unit so a gate-run count is attributable to one unit.
-        cfg.workflow.gates.insert("ga".into(), gate_def("true"));
-        cfg.workflow.gates.insert("gb".into(), gate_def("true"));
-        let panel = crate::config::ReviewPanel {
-            lenses: vec!["lens".into()],
-            adjudicator: "judge".into(),
-            ..Default::default()
-        };
-        let mk = |name: &str, gate: &str, needs: Vec<String>| Stage {
-            name: name.into(),
-            agent: "worker".into(),
-            gates: vec![gate.into()],
-            on_pass: "merge".into(),
-            needs,
-            review: panel.clone(),
-            ..Default::default()
-        };
-        cfg.workflow
-            .stages
-            .insert("unit-a".into(), mk("unit-a", "ga", vec![]));
-        cfg.workflow
-            .stages
-            .insert("unit-b".into(), mk("unit-b", "gb", vec!["unit-a".into()]));
-
-        let store = Store::open(":memory:").unwrap();
-        let driver = CompRegateRemediatedDriver;
-        let runner = RecordingRunner::new(&[]);
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        assert_eq!(
-            rs.units["unit-a"].status,
-            ledger::Status::Integrated,
-            "unit-a re-integrates its re-implemented tree after the rollback"
-        );
-        assert_eq!(rs.units["unit-b"].status, ledger::Status::Integrated);
-
-        // The crux: `ga` RAN on ALL THREE of unit-a's trees (attempt 0, the attempt-1
-        // re-implementation, and the reverse-gear attempt-2 re-implementation). Under the
-        // stale-key collision it runs only twice - the reverse-gear re-entry lands on attempt 1
-        // and replays unit-a's OWN prior-remediation green without re-running the command.
-        let ga_runs = runner.calls().into_iter().filter(|c| c == "ga").count();
-        assert_eq!(
-            ga_runs, 3,
-            "unit-a's gate must RE-RUN on the re-implemented tree at a FRESH attempt key, not \
-             replay the attempt-1 green its own prior remediation recorded; ga runs={ga_runs}"
-        );
-
-        // And the reverse-gear verdict is recorded under the HIGH-WATER-advanced attempt key
-        // (`#2`, one past the attempt-1 green), a real gate RUN (no cache-hit / skip citation).
-        // A `#1` re-run here would be the collision: that key was already green from unit-a's
-        // own remediation.
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let regate = events.iter().any(|e| {
-            e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some("unit-a/gate:ga#2")
-                && !e.meta.contains_key(META_CACHE_HIT)
-                && serde_json::from_slice::<Value>(&e.data)
-                    .ok()
-                    .and_then(|v| v.get("skipped").and_then(Value::as_bool))
-                    != Some(true)
-        });
-        assert!(
-            regate,
-            "the reverse-gear re-implemented tree records a fresh gate:ga#2 RUN verdict at the \
-             high-water-advanced key (not a replay/cache-hit/skip, and not a colliding #1)"
-        );
+    crate::test_cases! {
+            // spec 12, unit 4 (the reverse gear's RE-VERIFY half on the REMEDIATED lifecycle - the
+            // blocking regression sdet-s12u4-reentry-collides-with-prior-lifecycle-attempt-key /
+            // adv-s12u4-collision-proven-by-run): unit-a REJECTS its own attempt 0 and only approves
+            // on attempt 1, so it integrates having ALREADY recorded a green gate verdict at
+            // attempt 1. When unit-b then condemns it, the reverse gear must re-enter it ONE PAST
+            // its HIGH-WATER attempt (attempt 2) - NOT at attempt 1 where its OWN prior remediation
+            // already recorded a green. Advancing only compensation-count+1 over the run-start
+            // prior_attempts snapshot (=0 in-run) lands it back on attempt 1, where the
+            // content-BLIND exact-key replay answers the re-implemented tree from the condemned
+            // green and the gate COMMAND never runs (a live false green). Proven by the gate-run
+            // count: unit-a's gate `ga` must run THREE times (attempt 0, the attempt-1
+            // re-implementation, and the attempt-2 reverse-gear re-implementation), not two.
+            //
+            // The zero-remediation sibling (a_compensated_unit_re_gates_its_re_implemented_tree_...)
+            // only drives unit-a approving its first pass, so a fixed +1 advance passes it; this
+            // case is the mutation-distinguishing one it missed.
+        a_compensated_unit_that_remediated_before_integrating_re_gates_at_a_fresh_key:
+            assert_compensated_unit_re_gates(
+                &CompRegateRemediatedDriver,
+                3,
+                "unit-a's gate must RE-RUN on the re-implemented tree at a FRESH attempt key, not \
+                 replay the attempt-1 green its own prior remediation recorded",
+                "unit-a/gate:ga#2",
+                "the reverse-gear re-implemented tree records a fresh gate:ga#2 RUN verdict at the \
+                 high-water-advanced key (not a replay/cache-hit/skip, and not a colliding #1)",
+            );
     }
 
     /// A driver for the crash-resume compensation test (spec 12, unit 4): unit-a's implementer
@@ -41309,36 +41169,7 @@ mod tests {
             }
             self.inner.append(stream, expected, events)
         }
-        fn read_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-            dir: Direction,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_stream(stream, from, dir)
-        }
-        fn read_all(
-            &self,
-            from: crate::eventstore::Position,
-            dir: Direction,
-            filter: &Filter,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_all(from, dir, filter)
-        }
-        fn subscribe_all(
-            &self,
-            from: crate::eventstore::Position,
-            filter: &Filter,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_all(from, filter)
-        }
-        fn subscribe_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_stream(stream, from)
-        }
+        delegate_event_store_reads!();
     }
 
     #[test]
@@ -43714,7 +43545,7 @@ mod tests {
         // (2) It was spawned PER CANDIDATE (once per lane), so WHICHEVER candidate wins ships with
         // periphery tests its gates judged - not only lane 0. Two candidates => two sdet spawns.
         assert_eq!(
-            driver.spawn_count(ROLE_SDET_AUTHOR),
+            occurrences(&driver.call_order, ROLE_SDET_AUTHOR),
             2,
             "the sdet-author spawns once per candidate (K=2), so any winner ships tested"
         );
@@ -44284,29 +44115,17 @@ mod tests {
                 planner_prompts: Mutex::new(Vec::new()),
             }
         }
-        /// A driver whose adjudicator REJECTS the DAG (models a rule 7/8 ownership or
-        /// open-disposition defect the gate must catch), then approves the revised DAG.
-        fn rejecting(plan_emits: Vec<(String, Value)>) -> Self {
+        /// A driver whose adjudicator REJECTS the DAG. With `always` false it rejects the
+        /// first DAG (models a rule 7/8 ownership or open-disposition defect the gate must
+        /// catch), then approves the revised DAG; with `always` true it NEVER approves
+        /// (models an unresolvable rule 7/8 defect): the planner re-plans to the retry bound
+        /// and the gate escalates.
+        fn rejecting(plan_emits: Vec<(String, Value)>, always: bool) -> Self {
             CritiqueDriver {
-                reject_dag: true,
+                reject_dag: !always,
+                reject_always: always,
                 ..Self::new(plan_emits)
             }
-        }
-        /// A driver whose adjudicator NEVER approves (models an unresolvable rule 7/8
-        /// defect): the planner re-plans to the retry bound and the gate escalates.
-        fn always_rejecting(plan_emits: Vec<(String, Value)>) -> Self {
-            CritiqueDriver {
-                reject_always: true,
-                ..Self::new(plan_emits)
-            }
-        }
-        fn count(&self, id: &str) -> usize {
-            self.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|c| *c == id)
-                .count()
         }
     }
     impl AgentDriver for CritiqueDriver {
@@ -44422,16 +44241,16 @@ mod tests {
         // The fan-out released: the overlapping units run (the partitioner serializes them
         // into separate batches, so they integrate cleanly).
         assert!(
-            driver.count("worker") >= 1,
+            occurrences(&driver.calls, "worker") >= 1,
             "the fan-out must release on approve; worker ran {}x",
-            driver.count("worker")
+            occurrences(&driver.calls, "worker")
         );
         // No re-plan: an approve on the first pass means the planner runs exactly once.
         assert_eq!(
-            driver.count("planner"),
+            occurrences(&driver.calls, "planner"),
             1,
             "no reject means no re-plan; planner ran {}x",
-            driver.count("planner")
+            occurrences(&driver.calls, "planner")
         );
     }
 
@@ -44504,7 +44323,7 @@ mod tests {
         std::fs::write(dir.path().join("alpha.rs"), format!("// {crit}\n")).unwrap();
         let cfg = critique_cfg();
         let st = Store::open(":memory:").unwrap();
-        let driver = CritiqueDriver::rejecting(Vec::new());
+        let driver = CritiqueDriver::rejecting(Vec::new(), false);
         let grep = crate::grounder::Grep {
             root: dir.path().to_string_lossy().into_owned(),
         };
@@ -44521,9 +44340,9 @@ mod tests {
 
         // The reject fed back to the planner (re-plan), then the revised DAG approved.
         assert!(
-            driver.count("planner") > 1,
+            occurrences(&driver.calls, "planner") > 1,
             "a rule 7/8 reject must feed back to the planner; planner ran {}x",
-            driver.count("planner")
+            occurrences(&driver.calls, "planner")
         );
         assert_eq!(
             rs.units["plan-critique"].status,
@@ -44569,20 +44388,20 @@ mod tests {
             "a clean DAG approves and the gate integrates (review-only, no artifact)"
         );
         assert_eq!(
-            driver.count("planner"),
+            occurrences(&driver.calls, "planner"),
             1,
             "no reject means no re-plan; the planner runs exactly once"
         );
         // The gate really reviewed the DAG (the adjudicator rendered the approve).
         assert!(
-            driver.count("judge") >= 1,
+            occurrences(&driver.calls, "judge") >= 1,
             "the gate must run the adjudicator to render its verdict, not approve trivially"
         );
         // The fan-out released: the implementer ran for each baseline unit.
         assert!(
-            driver.count("worker") >= 2,
+            occurrences(&driver.calls, "worker") >= 2,
             "the fan-out releases on approve; worker ran {}x",
-            driver.count("worker")
+            occurrences(&driver.calls, "worker")
         );
     }
 
@@ -44999,7 +44818,7 @@ mod tests {
             ledger::Status::Integrated
         );
         assert!(
-            d1.count("judge") >= 1,
+            occurrences(&d1.calls, "judge") >= 1,
             "the first run must run the adjudicator"
         );
 
@@ -45016,12 +44835,12 @@ mod tests {
         };
         let rs2 = run(&cfg, &deps2).unwrap();
         assert_eq!(
-            d2.count("judge"),
+            occurrences(&d2.calls, "judge"),
             0,
             "a resolved gate must NOT re-spawn its adjudicator on resume"
         );
         assert_eq!(
-            d2.count("planner"),
+            occurrences(&d2.calls, "planner"),
             0,
             "a resumed run over a settled DAG must not re-run the planner"
         );
@@ -45085,7 +44904,7 @@ mod tests {
         // Run 1: the gate escalates (an unresolvable rule 7/8 defect - modelled by an
         // always-rejecting adjudicator, since blast-radius overlap no longer rejects); the
         // fan-out is held (no worker runs).
-        let d1 = CritiqueDriver::always_rejecting(split());
+        let d1 = CritiqueDriver::rejecting(split(), true);
         let deps1 = Deps {
             store: &st,
             driver: &d1,
@@ -45109,7 +44928,7 @@ mod tests {
             "a plan-critique gate reject must be stamped 'reject'"
         );
         assert_eq!(
-            d1.count("worker"),
+            occurrences(&d1.calls, "worker"),
             0,
             "run 1: no implementer runs while the gate is unresolved; calls: {:?}",
             d1.calls.lock().unwrap()
@@ -45129,7 +44948,7 @@ mod tests {
         let _ = run(&cfg, &deps2).unwrap();
         // The resume short-circuit correctly does NOT re-run the gate...
         assert_eq!(
-            d2.count("judge"),
+            occurrences(&d2.calls, "judge"),
             0,
             "resume: an already-resolved (escalated) gate must not re-spawn its adjudicator"
         );
@@ -45138,7 +44957,7 @@ mod tests {
         // window's proposals (needs:[]) as READY and the pre-gate wave runs them BEFORE
         // the terminal-hold arm ever fires.
         assert_eq!(
-            d2.count("worker"),
+            occurrences(&d2.calls, "worker"),
             0,
             "resume: the fan-out must stay HELD over an ESCALATED gate; workers ran: {:?}",
             d2.calls.lock().unwrap()
@@ -45191,13 +45010,13 @@ mod tests {
             "a disjoint decomposition approves and the gate integrates"
         );
         assert_eq!(
-            driver.count("planner"),
+            occurrences(&driver.calls, "planner"),
             1,
             "no reject means no re-plan; the planner runs exactly once"
         );
         // The proposed units - held behind the gate by the fix - release on approve.
         assert_eq!(
-            driver.count("worker"),
+            occurrences(&driver.calls, "worker"),
             2,
             "an approve releases the PROPOSED fan-out units; workers ran: {:?}",
             driver.calls.lock().unwrap()
@@ -45228,10 +45047,13 @@ mod tests {
         // The planner re-emits the SAME id on the re-plan (a refinement, the spec-31
         // path): change 1 folds it in place, so the revised DAG has one unit per
         // criterion and the second critique approves.
-        let driver = CritiqueDriver::rejecting(vec![(
-            TYPE_UNIT_PROPOSED.to_string(),
-            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[],"gates":["ok"]}),
-        )]);
+        let driver = CritiqueDriver::rejecting(
+            vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[],"gates":["ok"]}),
+            )],
+            false,
+        );
         let deps = Deps {
             store: &st,
             driver: &driver,
@@ -45245,7 +45067,7 @@ mod tests {
 
         // The reject drove a re-plan: the planner ran twice (initial + re-emit).
         assert_eq!(
-            driver.count("planner"),
+            occurrences(&driver.calls, "planner"),
             2,
             "a plan-critique reject must re-plan; the planner runs its initial + re-emit prompt"
         );
@@ -45290,14 +45112,6 @@ mod tests {
                 plan_emits,
                 calls: Mutex::new(Vec::new()),
             }
-        }
-        fn count(&self, id: &str) -> usize {
-            self.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|c| *c == id)
-                .count()
         }
     }
     impl AgentDriver for ParkingGateDriver {
@@ -45371,7 +45185,7 @@ mod tests {
         };
         run(&cfg, &deps1).unwrap();
         assert_eq!(
-            d1.count("worker"),
+            occurrences(&d1.calls, "worker"),
             0,
             "run 1: no implementer runs while the gate is mid-review; calls: {:?}",
             d1.calls.lock().unwrap()
@@ -45391,7 +45205,7 @@ mod tests {
         };
         run(&cfg, &deps2).unwrap();
         assert_eq!(
-            d2.count("worker"),
+            occurrences(&d2.calls, "worker"),
             0,
             "resume: the fan-out must stay HELD while the gate is mid-review; workers: {:?}",
             d2.calls.lock().unwrap()
@@ -45437,7 +45251,7 @@ mod tests {
         run(&cfg, &deps).unwrap();
 
         assert!(
-            driver.count("adversary") >= 1,
+            occurrences(&driver.calls, "adversary") >= 1,
             "the adversary must actually have been spawned (and parked), or this test proves nothing; calls: {:?}",
             driver.calls.lock().unwrap()
         );

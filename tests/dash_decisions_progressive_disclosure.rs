@@ -7,7 +7,7 @@
 //! This runs OUTSIDE the crate, over the library's PUBLIC surface (`rigger::dash::serve_on`), and
 //! crosses the REAL loopback HTTP socket the operator's browser actually hits. The implementer's
 //! inside-out unit test in `dash.rs` greps `live_page()` IN-PROCESS: it is structurally blind to
-//! the serve path (the `route` dispatch of `GET /` -> `Response::html(200, live_page())` and the
+//! the serve path (the `route` dispatch of `GET /` -> `Response::rendered(200, HTML_CONTENT_TYPE, live_page())` and the
 //! HTTP framing the socket delivers). This layer proves the SERVED root page - the bytes a client
 //! receives from the public `serve` entrypoint - carries the c4 progressive-disclosure decisions
 //! region end-to-end, not merely that the in-process template string does.

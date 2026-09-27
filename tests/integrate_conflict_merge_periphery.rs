@@ -2087,6 +2087,35 @@ struct FailAppendContaining<'a> {
     needle: &'static str,
 }
 
+/// Implements `EventStore`'s read and subscribe methods for a fault-injecting wrapper store by
+/// delegating each to its `inner` store unchanged - the wrappers below differ only in `append`.
+macro_rules! delegate_event_store_reads {
+    () => {
+        fn read_stream(
+            &self,
+            stream: &str,
+            from: Revision,
+            dir: Direction,
+        ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
+            self.inner.read_stream(stream, from, dir)
+        }
+        fn read_all(
+            &self,
+            from: Position,
+            dir: Direction,
+            filter: &Filter,
+        ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
+            self.inner.read_all(from, dir, filter)
+        }
+        fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, EsError> {
+            self.inner.subscribe_all(from, filter)
+        }
+        fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, EsError> {
+            self.inner.subscribe_stream(stream, from)
+        }
+    };
+}
+
 impl EventStore for FailAppendContaining<'_> {
     fn append(
         &self,
@@ -2105,28 +2134,7 @@ impl EventStore for FailAppendContaining<'_> {
         }
         self.inner.append(stream, expected, events)
     }
-    fn read_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-        dir: Direction,
-    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
-        self.inner.read_stream(stream, from, dir)
-    }
-    fn read_all(
-        &self,
-        from: Position,
-        dir: Direction,
-        filter: &Filter,
-    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
-        self.inner.read_all(from, dir, filter)
-    }
-    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, EsError> {
-        self.inner.subscribe_all(from, filter)
-    }
-    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, EsError> {
-        self.inner.subscribe_stream(stream, from)
-    }
+    delegate_event_store_reads!();
 }
 
 /// Whether `events` carries a `TYPE_UNIT_STATUS` marker whose `status` field equals `status` -
@@ -2704,7 +2712,9 @@ impl AgentDriver for ConfinedConflictDriver {
     }
 }
 
-fn confined_cfg(repo_path: &str) -> Config {
+/// Shared config for the confined and mixed regeneration fixtures: one regenerate rule on
+/// `gen.txt`, room for the one conflict-resolution retry each drives.
+fn regenerating_cfg(repo_path: &str) -> Config {
     let mut cfg = Config::default();
     // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
     // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
@@ -2741,7 +2751,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
     {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let cfg = confined_cfg(&repo_path);
+        let cfg = regenerating_cfg(&repo_path);
         let store = Store::open(":memory:").unwrap();
         let driver = ConfinedConflictDriver {
             repo: repo_path.clone(),
@@ -2824,7 +2834,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
     {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let cfg = confined_cfg(&repo_path);
+        let cfg = regenerating_cfg(&repo_path);
         let store = Store::open(":memory:").unwrap();
         let driver = ConfinedConflictDriver {
             repo: repo_path.clone(),
@@ -3194,35 +3204,6 @@ impl AgentDriver for MixedConflictThenResolveDriver {
     }
 }
 
-/// Shared config for both round 5 fixtures: one regenerate rule on `gen.txt`, room for the
-/// one conflict-resolution retry each drives.
-fn mixed_cfg(repo_path: &str) -> Config {
-    let mut cfg = Config::default();
-    // Spec 89, criterion 2 relocated the scratch/worktree DEFAULT off the fixture's own
-    // repo tree onto a machine-wide `<cache-home>/rigger/<encoded repo>` root, so a fixture
-    // that leaves `defaults.workdir` unconfigured now shares that ONE real location with
-    // every other concurrently-running fixture and agent on the machine - a real conductor
-    // run this file drives in-process creates real git worktrees there, and an unrelated
-    // process's residue/reap scan over that same shared root can legitimately (from its own
-    // logic's view) remove a live one mid-test. Nesting the workdir back inside THIS
-    // fixture's own unique repo tempdir restores the pre-relocation isolation (unique per
-    // test, cleaned up when `repo` drops) without depending on any shared machine state.
-    cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
-    cfg.workflow.defaults.max_retries = 3;
-    cfg.workflow.regenerate = vec![RegenerateRule {
-        paths: vec!["gen.txt".into()],
-        run: "printf 'REGENERATED\\n' > gen.txt".into(),
-    }];
-    cfg.agents.insert("worker".into(), agent("worker"));
-    cfg.agents.insert("lens".into(), agent("lens"));
-    cfg.agents.insert("judge".into(), agent("judge"));
-    cfg.workflow.gates.insert("g".into(), gate_def("exit 0"));
-    cfg.workflow
-        .stages
-        .insert("unit-a".into(), mk_stage("unit-a", "g"));
-    cfg
-}
-
 /// Round 5, the `None`-arm boundary (`sdet-u88c1r4-pending-landing-hides-owed-regeneration`'s
 /// own repro shape): row 4 (landing) closes for real AND its after-record lands too (no store
 /// failure anywhere) - but row 3's regeneration command itself fails right after, an ordinary
@@ -3234,7 +3215,7 @@ fn a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_wh
 ) {
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
-    let cfg = mixed_cfg(&repo_path);
+    let cfg = regenerating_cfg(&repo_path);
     let store = Store::open(":memory:").unwrap();
     let driver = MixedConflictThenResolveDriver {
         repo: repo_path.clone(),
@@ -3348,7 +3329,7 @@ fn a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_wh
 fn a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume() {
     let repo = init_repo();
     let repo_path = repo.path().to_str().unwrap().to_string();
-    let cfg = mixed_cfg(&repo_path);
+    let cfg = regenerating_cfg(&repo_path);
     let store = Store::open(":memory:").unwrap();
     let driver = MixedConflictThenResolveDriver {
         repo: repo_path.clone(),
@@ -3519,28 +3500,7 @@ impl EventStore for MoveRunTipOnFirstLandingIntent<'_> {
         }
         self.inner.append(stream, expected, events)
     }
-    fn read_stream(
-        &self,
-        stream: &str,
-        from: Revision,
-        dir: Direction,
-    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
-        self.inner.read_stream(stream, from, dir)
-    }
-    fn read_all(
-        &self,
-        from: Position,
-        dir: Direction,
-        filter: &Filter,
-    ) -> Result<Vec<rigger::eventstore::Event>, EsError> {
-        self.inner.read_all(from, dir, filter)
-    }
-    fn subscribe_all(&self, from: Position, filter: &Filter) -> Result<Subscription, EsError> {
-        self.inner.subscribe_all(from, filter)
-    }
-    fn subscribe_stream(&self, stream: &str, from: Revision) -> Result<Subscription, EsError> {
-        self.inner.subscribe_stream(stream, from)
-    }
+    delegate_event_store_reads!();
 }
 
 /// Drives `land`'s newly-typed race-detection contract, and the whole conductor retry loop

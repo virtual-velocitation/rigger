@@ -2,7 +2,7 @@
 //! unit unit-10-a-test-proves-authoritative-mode, covering the seam the existing periphery
 //! coverage leaves untested: the CONSUMER side.
 //!
-//! `resolved_model()` (src/spawn.rs) and its `rigger result --meta` -> `conductor.rs`
+//! `meta_str(META_RESOLVED_MODEL)` (src/spawn.rs) and its `rigger result --meta` -> `conductor.rs`
 //! ->persisted-green-event write path are already proven at two real seams (the CLI/replay
 //! driver in `tests/cli.rs` and the workflow driver in
 //! `tests/workflow_driver_resolved_model_periphery.rs`): a spawn with no metadata omits the

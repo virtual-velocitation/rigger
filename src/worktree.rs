@@ -11,6 +11,37 @@ use crate::eventstore::Event;
 #[error("worktree: {0}")]
 pub struct Error(pub String);
 
+/// Which `git diff` range [`Worktree::diff_names`] compares `from` against `HEAD` with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffMode {
+    /// The committed three-dot diff (`from...HEAD`), anchored on the merge-base of `from`
+    /// and `HEAD` - the shared primitive [`Worktree::changed_since_base`] calls with `from` =
+    /// the run branch's CURRENT tip, and the one a resumed
+    /// `RunCtx::integrate_and_emit` uses to recompute the SAME fact against an OLDER `from`
+    /// (round 4, spec 88 criterion 1) - the tip a durably-recorded landing-intent named -
+    /// when `changed_since_base` itself would see nothing: by the time that resume runs, the
+    /// run branch has ALREADY fast-forward-absorbed everything this worktree has, so a fresh
+    /// diff against its CURRENT tip is empty even though real, unrecorded work landed.
+    ///
+    /// Three-dot is the RIGHT choice there: `from` is a branch that may have DIVERGED (other
+    /// units merged into it meanwhile), so anchoring on its merge-base with `HEAD` reports
+    /// only changes new to THIS branch, never unrelated commits that landed on `from` in the
+    /// meantime. Do not use it for a same-branch residue check - see [`DiffMode::Direct`].
+    MergeBase,
+    /// The direct two-dot diff (`from..HEAD`, NOT merge-base-anchored) - a straight
+    /// tree-to-tree comparison of the two shas, regardless of whether either is an ancestor
+    /// of the other. This is for naming residue on `from`'s OWN branch
+    /// (`guard_review_round_tree`, spec 103 criterion 6): `from` there is `round_start_sha`, a
+    /// sha this SAME worktree's tip already passed through, so the files that actually
+    /// differ are whatever the current tree adds on top of it - even in the non-ancestor
+    /// shape (a reviewer's own tooling force-pushing or amending the branch is exactly the
+    /// protocol break this guard exists to catch), where a three-dot diff would instead
+    /// anchor on their merge-base and pull in unrelated files that already differed at
+    /// `from`, over-reporting the round's own residue
+    /// (sdet-u103c6-committed-diff-names-triple-dot-non-ancestor).
+    Direct,
+}
+
 /// An isolated git worktree for one unit of work.
 pub struct Worktree {
     pub dir: String,
@@ -730,20 +761,23 @@ impl Worktree {
         // and a three-dot diff from the merge-base reports only THIS branch's own
         // changes, never the unrelated commits that landed meanwhile.
         let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
-        let mut paths = self.committed_diff_names(&base)?;
+        let mut paths = self.diff_names(&base, DiffMode::MergeBase)?;
         paths.extend(self.changed_files()?);
         paths.sort();
         paths.dedup();
         Ok(paths)
     }
 
-    /// Shared `git diff --name-only <range>` primitive: runs the diff, then parses,
-    /// sorts and de-duplicates the name-only output. [`Self::committed_diff_names`] and
-    /// [`Self::diff_names_since`] are both thin range constructors over this one parser,
-    /// so the two diff MODES they choose between (merge-base-anchored three-dot vs a
-    /// direct two-dot tree comparison) never drift the line-parsing logic apart.
-    fn diff_names(&self, range: &str) -> Result<Vec<String>, Error> {
-        let out = git(&self.dir, &["diff", "--name-only", range])?;
+    /// The diff between `from` and this worktree's current `HEAD`, name-only, sorted and
+    /// de-duplicated, in the [`DiffMode`] the caller names: runs one `git diff --name-only
+    /// <range>` and parses its output, so the two diff MODES (merge-base-anchored three-dot
+    /// vs a direct two-dot tree comparison) never drift the line-parsing logic apart.
+    pub fn diff_names(&self, from: &str, mode: DiffMode) -> Result<Vec<String>, Error> {
+        let range = match mode {
+            DiffMode::MergeBase => format!("{from}...HEAD"),
+            DiffMode::Direct => format!("{from}..HEAD"),
+        };
+        let out = git(&self.dir, &["diff", "--name-only", &range])?;
         let mut paths: Vec<String> = out
             .lines()
             .map(|l| l.trim())
@@ -753,44 +787,6 @@ impl Worktree {
         paths.sort();
         paths.dedup();
         Ok(paths)
-    }
-
-    /// The committed (three-dot, merge-base-anchored) diff between `from` and this
-    /// worktree's current `HEAD`, name-only, sorted and de-duplicated - the shared
-    /// primitive [`Self::changed_since_base`] calls with `from` = the run branch's
-    /// CURRENT tip. Exposed separately (round 4, spec 88 criterion 1) for a resumed
-    /// [`RunCtx::integrate_and_emit`] to recompute the SAME fact against an OLDER `from` -
-    /// the tip a durably-recorded landing-intent named - when `changed_since_base` itself
-    /// would see nothing: by the time that resume runs, the run branch has ALREADY
-    /// fast-forward-absorbed everything this worktree has, so a fresh diff against its
-    /// CURRENT tip is empty even though real, unrecorded work landed.
-    ///
-    /// Three-dot is the RIGHT choice here: `from` is a branch that may have DIVERGED
-    /// (other units merged into it meanwhile), so anchoring on its merge-base with
-    /// `HEAD` reports only changes new to THIS branch, never unrelated commits that
-    /// landed on `from` in the meantime. Do not reuse this for a same-branch residue
-    /// check - see [`Self::diff_names_since`] below.
-    pub fn committed_diff_names(&self, from: &str) -> Result<Vec<String>, Error> {
-        self.diff_names(&format!("{from}...HEAD"))
-    }
-
-    /// The direct (two-dot, NOT merge-base-anchored) diff between `from` and this
-    /// worktree's current `HEAD`, name-only, sorted and de-duplicated - a straight
-    /// tree-to-tree comparison of the two shas, regardless of whether either is an
-    /// ancestor of the other.
-    ///
-    /// Unlike [`Self::committed_diff_names`] (three-dot, merge-base-anchored - the right
-    /// choice when `from` is a possibly-diverged BASE branch), this is for naming residue
-    /// on `from`'s OWN branch (`guard_review_round_tree`, spec 103 criterion 6): `from`
-    /// there is `round_start_sha`, a sha this SAME worktree's tip already passed through,
-    /// so the files that actually differ are whatever the current tree adds on top of
-    /// it - even in the non-ancestor shape (a reviewer's own tooling force-pushing or
-    /// amending the branch is exactly the protocol break this guard exists to catch),
-    /// where a three-dot diff would instead anchor on their merge-base and pull in
-    /// unrelated files that already differed at `from`, over-reporting the round's own
-    /// residue (sdet-u103c6-committed-diff-names-triple-dot-non-ancestor).
-    pub fn diff_names_since(&self, from: &str) -> Result<Vec<String>, Error> {
-        self.diff_names(&format!("{from}..HEAD"))
     }
 
     /// Every commit already made on this worktree's branch that the run branch's

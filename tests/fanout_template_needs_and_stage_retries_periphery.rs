@@ -204,31 +204,31 @@ fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
     )
 }
 
-/// A real, isolated (git-worktree-backed) worker agent - no `isolation: none` - so its
-/// stage's `on_pass: merge` reaches a genuine git merge onto the run branch. Mirrors
-/// `tests/cli.rs`'s `write_reviewless_git_unit_workflow`'s own agent file.
-fn write_git_worker_agent(root: &Path) {
+/// Write the `worker` agent file with `isolation` frontmatter lines (each ending in `\n`):
+///
+/// - [`GIT_WORKER`]: a real, isolated (git-worktree-backed) worker - no `isolation: none` -
+///   so its stage's `on_pass: merge` reaches a genuine git merge onto the run branch.
+///   Mirrors `tests/cli.rs`'s `write_reviewless_git_unit_workflow`'s own agent file.
+/// - [`REPOLESS_WORKER`]: a repo-less (`isolation: none`) worker for the offline escalation
+///   scenarios, which never need a real worktree. Mirrors `tests/cli.rs`'s
+///   `write_failing_gate_escalating_workflow`'s own agent file.
+fn write_worker_agent(root: &Path, isolation: &str) {
     let agents = root.join(".rigger").join("agents");
     std::fs::create_dir_all(&agents).unwrap();
     std::fs::write(
         agents.join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+        format!(
+            "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n{isolation}---\nDo the unit.\n"
+        ),
     )
     .unwrap();
 }
 
-/// A repo-less (`isolation: none`) worker agent for the offline escalation scenarios,
-/// which never need a real worktree. Mirrors `tests/cli.rs`'s
-/// `write_failing_gate_escalating_workflow`'s own agent file.
-fn write_repoless_worker_agent(root: &Path) {
-    let agents = root.join(".rigger").join("agents");
-    std::fs::create_dir_all(&agents).unwrap();
-    std::fs::write(
-        agents.join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nisolation: none\n---\nDo the unit.\n",
-    )
-    .unwrap();
-}
+/// The git-worktree-backed worker's (empty) isolation frontmatter.
+const GIT_WORKER: &str = "";
+
+/// The repo-less worker's isolation frontmatter.
+const REPOLESS_WORKER: &str = "isolation: none\n";
 
 // -----------------------------------------------------------------------------------------
 // Rule 1, gap 3/4 (happy path): a `needs: [implement]` stage becomes ready, through the
@@ -247,7 +247,7 @@ fn write_repoless_worker_agent(root: &Path) {
 fn checkin_becomes_ready_only_once_both_real_fanout_baseline_units_have_integrated() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_git_worker_agent(root);
+    write_worker_agent(root, GIT_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         r#"name: fanouttemplateneedstest
@@ -368,7 +368,7 @@ stages:
 fn checkin_never_becomes_ready_when_its_only_fanout_member_escalates_instead_of_integrating() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_repoless_worker_agent(root);
+    write_worker_agent(root, REPOLESS_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         r#"name: fanouttemplateescalationtest
@@ -707,10 +707,10 @@ fn write_split_criterion_spec(root: &Path) {
 /// `baseline_units`), `checkin` (`needs: [implement]`, the edge under test). One agent id
 /// ("worker", real git isolation) plays every role - the planner's own real actions here
 /// are driven by the TEST's calls to `rigger emit`/`rigger result`, never by an LLM, so a
-/// single agent identity suffices exactly as it does for `write_git_worker_agent`'s other
+/// single agent identity suffices exactly as it does for `write_worker_agent(.., GIT_WORKER)`'s other
 /// callers above.
 fn write_split_fanout_workflow(root: &Path) {
-    write_git_worker_agent(root);
+    write_worker_agent(root, GIT_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         r#"name: fanoutrealsplittest
@@ -1250,7 +1250,7 @@ fn checkin_integrates_after_a_same_id_refine_is_later_superseded_by_a_distinct_p
 fn a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_repoless_worker_agent(root);
+    write_worker_agent(root, REPOLESS_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         r#"name: stagemaxretrieslowertest
@@ -1308,7 +1308,7 @@ stages:
 fn a_stages_own_max_retries_yaml_key_raises_the_effective_bound_above_a_lower_default() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_repoless_worker_agent(root);
+    write_worker_agent(root, REPOLESS_WORKER);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         r#"name: stagemaxretriesraisetest
