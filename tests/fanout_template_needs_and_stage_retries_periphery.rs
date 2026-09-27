@@ -100,10 +100,9 @@ use std::path::Path;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
 use common::cli::temp_repoless_project;
+use common::fixtures::{unit_proposal, ProposingPlannerDriver};
 use common::git::temp_git_project_with_commit;
-use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
-};
+use rigger::conductor::{run, Deps};
 use rigger::config::{AgentDef, Config, Gate, Stage};
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
@@ -367,58 +366,6 @@ stages:
 // cycle for the SUPERSEDING unit, not merely an in-memory `Stub` answering synchronously.
 // -----------------------------------------------------------------------------------------
 
-/// A two-role `AgentDriver`, over the crate's PUBLIC trait (never `conductor.rs`'s private
-/// `Stub`): `planner` emits ONE real `UnitProposed` through the SAME `emit` closure a live
-/// planner agent's `rigger_emit` calls are wired to, proposing `proposed_id` for
-/// `criterion` under a DIFFERENT id than the deterministic baseline `baseline_units` would
-/// otherwise have synthesized for it - the designed spec-18/72 supersede path. Every other
-/// (`worker`) spawn writes one real, unit-named file into its real, isolated worktree, so
-/// its stage's `on_pass: merge` (or the equally-eligible unset default - `integrates`,
-/// `src/conductor.rs`, treats empty `on_pass` as merge too) lands a genuine git commit
-/// rather than a no-op.
-struct RealGitSupersedingPlannerDriver {
-    proposed_id: String,
-    criterion: String,
-}
-
-impl AgentDriver for RealGitSupersedingPlannerDriver {
-    fn spawn(
-        &self,
-        agent: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if agent.id == "planner" {
-            emit(
-                TYPE_UNIT_PROPOSED,
-                json!({
-                    "id": self.proposed_id,
-                    "agent": "worker",
-                    "criterion": self.criterion,
-                    "gates": ["ok"],
-                }),
-            )?;
-            return Ok(AgentResult {
-                output: "proposed a refinement".into(),
-                resolved_model: String::new(),
-            });
-        }
-        if !opts.dir.is_empty() {
-            let file = format!(
-                "{}/{}.rs",
-                opts.dir,
-                opts.unit.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
-            );
-            std::fs::write(file, "pub fn done() {}\n").unwrap();
-        }
-        Ok(AgentResult {
-            output: "ok".into(),
-            resolved_model: String::new(),
-        })
-    }
-}
-
 /// Proves the round-2 fix (`fanout_criteria` resolving a needs edge by each criterion's
 /// LIVE `stages` owner, never a frozen unit-id snapshot) end to end through a REAL git
 /// repo: `checkin` (`needs: [implement]`) must still integrate once the SUPERSEDING unit
@@ -490,9 +437,9 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
     let superseding_id = "planner-refines-the-auth-module";
 
     let store = Store::open(":memory:").unwrap();
-    let driver = RealGitSupersedingPlannerDriver {
-        proposed_id: superseding_id.to_string(),
-        criterion: crit_a.to_string(),
+    let driver = ProposingPlannerDriver {
+        proposals: vec![unit_proposal(superseding_id, crit_a, &["ok"])],
+        output: "proposed a refinement",
     };
     let deps = Deps {
         store: &store,

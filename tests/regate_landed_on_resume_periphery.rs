@@ -49,8 +49,8 @@ mod common;
 use common::fixtures::count_status_marker;
 use common::fixtures::has_status_marker;
 use common::fixtures::mk_stage;
-use common::fixtures::review_or_adjudicate;
 use common::fixtures::workflow_cfg;
+use common::fixtures::A_WORK_DRIVER;
 use common::git::git_commit_all;
 use common::git::git_stdout;
 use common::git::temp_git_project_with_commit;
@@ -72,26 +72,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// branch it seeds without depending on the crate leaking its own worktree-dir layout too.
 fn unit_branch(unit_id: &str) -> String {
     format!("rigger/u/{unit_id}")
-}
-
-/// An ordinary, conflict-free single-unit implementer: writes `a.rs` and nothing else. Mirrors
-/// `tests/integrate_conflict_merge_periphery.rs::SimpleWorkDriver`.
-struct SimpleWorkDriver;
-
-impl AgentDriver for SimpleWorkDriver {
-    fn spawn(
-        &self,
-        _a: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if opts.id.contains("/implementer#") {
-            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
-            return Ok(AgentResult::default());
-        }
-        Ok(review_or_adjudicate(opts))
-    }
 }
 
 /// A driver that fails the test the instant ANY role is spawned - GAP 1's own proof that a
@@ -199,7 +179,7 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_
     let cfg = base_cfg(&repo_path);
 
     let store = Store::open(":memory:").unwrap();
-    let driver = SimpleWorkDriver;
+    let driver = A_WORK_DRIVER;
     {
         let failing_store = FailAfterContaining {
             inner: &store,

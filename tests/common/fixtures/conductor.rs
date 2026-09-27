@@ -63,6 +63,12 @@ pub struct WriteAndApprove {
     pub body: &'static str,
 }
 
+/// The ordinary, conflict-free unit driver: the implementer writes `a.rs`, the review approves.
+pub const A_WORK_DRIVER: WriteAndApprove = WriteAndApprove {
+    file: "a.rs",
+    body: "A_WORK\n",
+};
+
 impl AgentDriver for WriteAndApprove {
     fn spawn(
         &self,
@@ -197,5 +203,91 @@ impl AgentDriver for NoopDriver {
             output: String::new(),
             resolved_model: String::new(),
         })
+    }
+}
+
+/// A planner's `UnitProposed` payload: `worker` builds unit `id` for `criterion`, naming `gates` -
+/// omitted from the wire entirely when empty, like a real planner that never learned about gates
+/// (`#[serde(default)] gates` on the conductor's decode side, so an absent key and an empty
+/// array decode identically).
+pub fn unit_proposal(id: &str, criterion: &str, gates: &[&str]) -> serde_json::Value {
+    let mut body = serde_json::json!({ "id": id, "agent": "worker", "criterion": criterion });
+    if !gates.is_empty() {
+        body["gates"] = serde_json::json!(gates);
+    }
+    body
+}
+
+/// A driver whose `planner` emits each of `proposals` as a `UnitProposed` (all landing in the
+/// store before the run's next harvest reads them) and reports `output`, while every other
+/// (`worker`) spawn writes one real, unit-named file into its worktree, when it has one, so its
+/// stage's merge lands a genuine commit rather than a no-op.
+pub struct ProposingPlannerDriver {
+    pub proposals: Vec<serde_json::Value>,
+    pub output: &'static str,
+}
+
+impl AgentDriver for ProposingPlannerDriver {
+    fn spawn(
+        &self,
+        agent: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if agent.id == "planner" {
+            for proposal in &self.proposals {
+                emit(rigger::conductor::TYPE_UNIT_PROPOSED, proposal.clone())?;
+            }
+            return Ok(AgentResult {
+                output: self.output.into(),
+                resolved_model: String::new(),
+            });
+        }
+        if !opts.dir.is_empty() {
+            let file = format!(
+                "{}/{}.rs",
+                opts.dir,
+                opts.unit.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
+            );
+            std::fs::write(file, "pub fn done() {}\n").unwrap();
+        }
+        Ok(AgentResult {
+            output: "ok".into(),
+            resolved_model: String::new(),
+        })
+    }
+}
+
+/// A driver whose implementer writes `file` (`A_WORK`) in its own worktree - committing
+/// normally - but plants a FIFO at that SAME path directly in `repo`'s working tree, so landing
+/// the unit (which must check `file` out there) is refused NON-content; reviewers answer through
+/// [`review_or_adjudicate`].
+pub struct FifoAtLandingDriver {
+    pub repo: String,
+    pub file: &'static str,
+}
+
+impl AgentDriver for FifoAtLandingDriver {
+    fn spawn(
+        &self,
+        _a: &AgentDef,
+        _prompt: &str,
+        opts: &SpawnOpts,
+        _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
+    ) -> Result<AgentResult, Error> {
+        if opts.id.contains("/implementer#") {
+            std::fs::write(Path::new(&opts.dir).join(self.file), "A_WORK\n").unwrap();
+            assert!(
+                std::process::Command::new("mkfifo")
+                    .arg(Path::new(&self.repo).join(self.file))
+                    .status()
+                    .unwrap()
+                    .success(),
+                "test setup: mkfifo must succeed"
+            );
+            return Ok(AgentResult::default());
+        }
+        Ok(review_or_adjudicate(opts))
     }
 }

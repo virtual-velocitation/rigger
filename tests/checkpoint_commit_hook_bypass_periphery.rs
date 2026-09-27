@@ -34,7 +34,7 @@
 mod common;
 
 use common::fixtures::mk_stage;
-use common::fixtures::WriteAndApprove;
+use common::fixtures::A_WORK_DRIVER;
 use common::fixtures::{repo_with_refusing_hook, workflow_cfg};
 use rigger::conductor::{run, Deps};
 use rigger::eventstore::sqlite::Store;
@@ -58,10 +58,7 @@ fn a_pre_gate_attempt_commit_bypasses_an_installed_refusing_hook() {
     cfg.workflow.defaults.workdir = format!("{repo_path}/.rigger-test-scratch");
 
     let store = Store::open(":memory:").unwrap();
-    let driver = WriteAndApprove {
-        file: "a.rs",
-        body: "A_WORK\n",
-    };
+    let driver = A_WORK_DRIVER;
     let deps = Deps {
         store: &store,
         driver: &driver,

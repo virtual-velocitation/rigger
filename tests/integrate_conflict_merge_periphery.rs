@@ -163,7 +163,7 @@
 //!   the after-record lands exactly once, never duplicated.
 //! - Row 1's mutation|after-record boundary,
 //!   `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`: an
-//!   ordinary, conflict-free single-unit merge (`SimpleWorkDriver`) - `merge_into_worktree`
+//!   ordinary, conflict-free single-unit merge (`A_WORK_DRIVER`) - `merge_into_worktree`
 //!   itself succeeds for real (a genuine commit lands on the unit's OWN branch) - paired with a
 //!   `FailAppendContaining` case refusing `integrate-merge-outcome` specifically, proving the
 //!   merge commit's on-disk effect survives the after-record's own append failure and a resumed
@@ -193,7 +193,7 @@
 //!   landing-intent record survives that failure.
 //! - Row 4's mutation|after-record boundary,
 //!   `a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record`: the same
-//!   ordinary conflict-free `SimpleWorkDriver` unit as row 1's after-record fixture -
+//!   ordinary conflict-free `A_WORK_DRIVER` unit as row 1's after-record fixture -
 //!   `Worktree::land` itself succeeds for real (the run branch's own working tree gets the
 //!   merge commit) - paired with `FailAppendContaining` refusing `integrate-landed`
 //!   specifically, proving the land's on-disk effect survives the after-record's own append
@@ -235,7 +235,7 @@
 //!   catches row 3 up for real, and a THIRD `run()` observation (the on-disk content) confirms
 //!   the regenerated output shipped, never the placeholder.
 //!
-//! Neither of GAP 9's own row-4 fixtures can catch this (both use `SimpleWorkDriver` - no
+//! Neither of GAP 9's own row-4 fixtures can catch this (both use `A_WORK_DRIVER` - no
 //! conflict, no owed regeneration ever in play), and GAP 9's row-3 fixture never exercises the
 //! entry-level fast path at all (its failures land before `files.is_empty()` can ever be true
 //! on a resumed call). This is the accounting this file's own header promises: a re-read of the
@@ -273,6 +273,8 @@ use common::fixtures::gate_def;
 use common::fixtures::has_status_marker;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
+use common::fixtures::FifoAtLandingDriver;
+use common::fixtures::A_WORK_DRIVER;
 use common::git::git_commit_all;
 use common::git::git_stdout;
 use common::git::temp_git_project_with_commit;
@@ -2141,40 +2143,6 @@ fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
     drop(repo);
 }
 
-/// Call 1's driver for the row-4 fixture: writes `a.rs` for real in the unit's own worktree (no
-/// conflict at all - `Worktree::merge_into_worktree` resolves cleanly, rows 1-3 complete
-/// normally) but plants a stray FIFO at that SAME path directly in `self.deps.repo`'s own
-/// working tree - so `Worktree::land`'s `git merge --no-edit` (which must check `a.rs` out
-/// there for the first time) is refused NON-content, reached only AFTER row 4's landing-intent
-/// before-record already landed.
-struct Row4LandCrashDriver {
-    repo: String,
-}
-
-impl AgentDriver for Row4LandCrashDriver {
-    fn spawn(
-        &self,
-        _a: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if opts.id.contains("/implementer#") {
-            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
-            assert!(
-                Command::new("mkfifo")
-                    .arg(Path::new(&self.repo).join("a.rs"))
-                    .status()
-                    .unwrap()
-                    .success(),
-                "test setup: mkfifo must succeed"
-            );
-            return Ok(AgentResult::default());
-        }
-        Ok(review_or_adjudicate(opts))
-    }
-}
-
 #[test]
 #[cfg(unix)]
 fn a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4() {
@@ -2201,8 +2169,9 @@ fn a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4() {
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
 
     let store = Store::open(":memory:").unwrap();
-    let driver = Row4LandCrashDriver {
+    let driver = FifoAtLandingDriver {
         repo: repo_path.clone(),
+        file: "a.rs",
     };
     {
         let deps = Deps {
@@ -2751,29 +2720,6 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
     }
 }
 
-/// An ordinary, conflict-free single-unit implementer: writes `a.rs` and nothing else, no
-/// sibling ever touches the run branch. Shared by the row 1 and row 4 mutation|after-record
-/// fixtures below - both need `Worktree::merge_into_worktree`/`Worktree::land` to succeed for
-/// REAL (a genuine git mutation lands) with no conflict anywhere, so the only thing that can
-/// crash is the specific after-record append `FailAppendContaining` targets.
-struct SimpleWorkDriver;
-
-impl AgentDriver for SimpleWorkDriver {
-    fn spawn(
-        &self,
-        _a: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if opts.id.contains("/implementer#") {
-            std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
-            return Ok(AgentResult::default());
-        }
-        Ok(review_or_adjudicate(opts))
-    }
-}
-
 /// Row 1's mutation|after-record boundary: `Worktree::merge_into_worktree` itself succeeds for
 /// real (a genuine merge commit lands on the unit's OWN branch, `conflicting_paths()` stays
 /// empty throughout) but the SPECIFIC append that would durably record
@@ -2807,7 +2753,7 @@ fn a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_reco
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
 
     let store = Store::open(":memory:").unwrap();
-    let driver = SimpleWorkDriver;
+    let driver = A_WORK_DRIVER;
     {
         let failing_store = FailAppendContaining {
             inner: &store,
@@ -2917,7 +2863,7 @@ fn a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
 
     let store = Store::open(":memory:").unwrap();
-    let driver = SimpleWorkDriver;
+    let driver = A_WORK_DRIVER;
     {
         let failing_store = FailAppendContaining {
             inner: &store,
@@ -3004,7 +2950,7 @@ fn a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record
 // ordinary regenerate-command failure right after the land is enough, no crash required),
 // the unit was reported `Integrated` while the durable `conflict_regenerate_pending` marker
 // sat orphaned and the `accept_incoming` placeholder shipped permanently. Neither of GAP 9's
-// own row-4 fixtures above can catch this: both use `SimpleWorkDriver` - no conflict, no
+// own row-4 fixtures above can catch this: both use `A_WORK_DRIVER` - no conflict, no
 // owed regeneration ever in play. These two fixtures drive the row-4-closed-but-row-3-owed
 // shape through EACH of the fast path's two recovery sub-paths - `pending_landing_for`
 // returning `None` (row 4's after-record already landed too) and returning `Some` (row 4's
@@ -3373,7 +3319,7 @@ fn a_run_tip_moved_under_the_landing_window_is_recorded_and_retried_to_a_clean_l
         repo: repo_path.clone(),
         fired: Mutex::new(false),
     };
-    let driver = SimpleWorkDriver;
+    let driver = A_WORK_DRIVER;
     let deps = Deps {
         store: &moving_store,
         driver: &driver,

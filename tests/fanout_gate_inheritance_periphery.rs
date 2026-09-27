@@ -59,16 +59,14 @@
 
 mod common;
 use common::fixtures::{fan_out_stage, plan_stage, workflow_cfg};
+use common::fixtures::{unit_proposal, ProposingPlannerDriver};
 use common::git::temp_git_project_with_commit;
 
-use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, TYPE_UNIT_PROPOSED,
-};
-use rigger::config::{AgentDef, Config};
+use rigger::conductor::{run, Deps};
+use rigger::config::Config;
 use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger;
-use serde_json::{json, Value};
 
 /// A real, single-criterion fan-out workflow: one `plan` stage feeding one `implement`
 /// fan-out template that declares gate `ok` (`run: "true"`, always passes) - and a SECOND
@@ -85,56 +83,6 @@ fn base_cfg(repo: &std::path::Path) -> Config {
     // cache-home default.
     cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
     cfg
-}
-
-/// A planner driver whose one `UnitProposed` emit supersedes `criterion` with a unit named
-/// `proposed_id`, naming exactly `proposal_gates` in its own `gates` field (omitted from
-/// the wire entirely when empty, mirroring a real planner that never learned about gates -
-/// `#[serde(default)] gates: Vec<String>` on the conductor's decode side, so an absent key
-/// and an empty array decode identically). The `worker` role writes one real file into its
-/// real worktree so `on_pass: merge` has something to merge.
-struct SupersedingPlannerDriver {
-    proposed_id: String,
-    criterion: String,
-    proposal_gates: Vec<String>,
-}
-
-impl AgentDriver for SupersedingPlannerDriver {
-    fn spawn(
-        &self,
-        agent: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if agent.id == "planner" {
-            let mut body = json!({
-                "id": self.proposed_id,
-                "agent": "worker",
-                "criterion": self.criterion,
-            });
-            if !self.proposal_gates.is_empty() {
-                body["gates"] = json!(self.proposal_gates);
-            }
-            emit(TYPE_UNIT_PROPOSED, body)?;
-            return Ok(AgentResult {
-                output: "proposed a refinement".into(),
-                resolved_model: String::new(),
-            });
-        }
-        if !opts.dir.is_empty() {
-            let file = format!(
-                "{}/{}.rs",
-                opts.dir,
-                opts.unit.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
-            );
-            std::fs::write(file, "pub fn done() {}\n").unwrap();
-        }
-        Ok(AgentResult {
-            output: "ok".into(),
-            resolved_model: String::new(),
-        })
-    }
 }
 
 /// GATE INHERITANCE's central production claim: a planner proposal that supersedes a
@@ -156,10 +104,9 @@ fn a_gateless_supersede_of_a_fanout_baseline_still_runs_the_templates_gate_for_r
     let superseding_id = "planner-refines-the-auth-module";
 
     let store = Store::open(":memory:").unwrap();
-    let driver = SupersedingPlannerDriver {
-        proposed_id: superseding_id.to_string(),
-        criterion: crit_a.to_string(),
-        proposal_gates: Vec::new(),
+    let driver = ProposingPlannerDriver {
+        proposals: vec![unit_proposal(superseding_id, crit_a, &[])],
+        output: "proposed a refinement",
     };
     let deps = Deps {
         store: &store,
@@ -205,10 +152,9 @@ fn a_supersede_naming_its_own_gate_unions_it_onto_the_templates_gate_for_real() 
     let superseding_id = "planner-refines-the-auth-module";
 
     let store = Store::open(":memory:").unwrap();
-    let driver = SupersedingPlannerDriver {
-        proposed_id: superseding_id.to_string(),
-        criterion: crit_a.to_string(),
-        proposal_gates: vec!["extra".to_string()],
+    let driver = ProposingPlannerDriver {
+        proposals: vec![unit_proposal(superseding_id, crit_a, &["extra"])],
+        output: "proposed a refinement",
     };
     let deps = Deps {
         store: &store,
@@ -241,64 +187,6 @@ fn a_supersede_naming_its_own_gate_unions_it_onto_the_templates_gate_for_real() 
     );
 }
 
-/// A planner driver whose one `spawn()` call emits TWO `UnitProposed` events for the SAME
-/// id before returning - the first superseding the baseline with no `gates` named (hits the
-/// INSERT site), the second re-emitted under the identical id naming `extra` (hits the
-/// EXISTING-STAGE refine site, `existing.gates = union_gates(&existing.gates, &u.gates)` -
-/// a different source line from the one `SupersedingPlannerDriver` above exercises). Both
-/// land in the store before the run's next `harvest_proposed` pass ever reads it, exactly
-/// mirroring the implementer's own pure-fold refine fixture's event order.
-struct RefiningPlannerDriver {
-    proposed_id: String,
-    criterion: String,
-}
-
-impl AgentDriver for RefiningPlannerDriver {
-    fn spawn(
-        &self,
-        agent: &AgentDef,
-        _prompt: &str,
-        opts: &SpawnOpts,
-        emit: &dyn Fn(&str, Value) -> Result<(), Error>,
-    ) -> Result<AgentResult, Error> {
-        if agent.id == "planner" {
-            emit(
-                TYPE_UNIT_PROPOSED,
-                json!({
-                    "id": self.proposed_id,
-                    "agent": "worker",
-                    "criterion": self.criterion,
-                }),
-            )?;
-            emit(
-                TYPE_UNIT_PROPOSED,
-                json!({
-                    "id": self.proposed_id,
-                    "agent": "worker",
-                    "criterion": self.criterion,
-                    "gates": ["extra"],
-                }),
-            )?;
-            return Ok(AgentResult {
-                output: "proposed, then refined by id".into(),
-                resolved_model: String::new(),
-            });
-        }
-        if !opts.dir.is_empty() {
-            let file = format!(
-                "{}/{}.rs",
-                opts.dir,
-                opts.unit.replace(|c: char| !c.is_ascii_alphanumeric(), "_")
-            );
-            std::fs::write(file, "pub fn done() {}\n").unwrap();
-        }
-        Ok(AgentResult {
-            output: "ok".into(),
-            resolved_model: String::new(),
-        })
-    }
-}
-
 /// GATE INHERITANCE's third named shape: a SAME-ID REFINE. The refine's own `extra` gate
 /// must union onto the EXISTING stage's already-templated gate list (`existing.gates =
 /// union_gates(&existing.gates, &u.gates)`) rather than overwrite it - a source line
@@ -314,9 +202,12 @@ fn a_same_id_refine_unions_its_own_gate_onto_the_already_templated_list_for_real
     let refined_id = "planner-refines-the-auth-module";
 
     let store = Store::open(":memory:").unwrap();
-    let driver = RefiningPlannerDriver {
-        proposed_id: refined_id.to_string(),
-        criterion: crit_a.to_string(),
+    let driver = ProposingPlannerDriver {
+        proposals: vec![
+            unit_proposal(refined_id, crit_a, &[]),
+            unit_proposal(refined_id, crit_a, &["extra"]),
+        ],
+        output: "proposed, then refined by id",
     };
     let deps = Deps {
         store: &store,
