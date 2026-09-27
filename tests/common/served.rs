@@ -92,6 +92,91 @@ pub fn get_raw(target: &str) -> Vec<u8> {
     raw
 }
 
+/// Start the dash on a FRESH ephemeral loopback port - `graph_provider` behind its lazy
+/// whole-graph provider (`/api/graph` reads it), `poll_graph` behind its state-poll provider -
+/// and fetch `GET path` once, returning the raw HTTP response, or `None` on a genuine
+/// socket-level failure.
+///
+/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. That is
+/// load-bearing: releasing it first would leave the port free for the whole handoff window, so a
+/// sibling test's `bind(0)` in the same binary could be handed it; one `serve` then wins the
+/// re-bind and the loser's client CONNECTS SUCCESSFULLY to it and reads the OTHER test's fixture -
+/// a content failure no connect-error retry can see, reddening only on a loaded machine. Owning
+/// the port from `bind` through `serve_on` closes that window by construction: a response returned
+/// here is always this attempt's own server's.
+pub fn try_fetch_over<G>(path: &str, graph_provider: G, poll_graph: Graph) -> Option<String>
+where
+    G: Fn(Option<&str>) -> Graph + Send + 'static,
+{
+    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
+    let addr = listener.local_addr().ok()?;
+
+    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
+        Ok((Vec::new(), poll_graph.clone(), Vec::new(), HashMap::new()))
+    };
+    let calls_provider =
+        |_: Option<&str>, _: &[String], _: Direction, _: i64, _: &str| CallGraph::default();
+    let instances_provider = Vec::new;
+    // A detached server thread: `serve_on` loops until the process ends; we drive one request.
+    std::thread::spawn(move || {
+        let _ = dash::serve_on(
+            listener,
+            provider,
+            graph_provider,
+            calls_provider,
+            instances_provider,
+            3,
+            "rigger-run",
+            "origin/main",
+        );
+    });
+
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    let mut client = loop {
+        match TcpStream::connect(addr) {
+            Ok(s) => break s,
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => return None,
+        }
+    };
+    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    if client.write_all(req.as_bytes()).is_err() {
+        return None;
+    }
+    let mut resp = String::new();
+    match client.read_to_string(&mut resp) {
+        Ok(_) => Some(resp),
+        Err(_) => None,
+    }
+}
+
+/// Fetch through `attempt` over a real loopback socket, RETRYING the whole port handoff on a
+/// socket-level transient. Each attempt owns its own port (see [`try_fetch_over`]), so a retry
+/// never returns another server's response; `what` names the request in the failure.
+pub fn fetch_with_retry(what: &str, attempt: impl Fn() -> Option<String>) -> String {
+    for _ in 0..200 {
+        if let Some(resp) = attempt() {
+            return resp;
+        }
+    }
+    panic!(
+        "the dash server never served {what} over the real socket after many fresh-port attempts"
+    );
+}
+
+/// A whole-graph provider serving `graph` for every instance.
+pub fn graph_provider_of(graph: Graph) -> impl Fn(Option<&str>) -> Graph + Send + 'static {
+    move |_instance: Option<&str>| graph.clone()
+}
+
+/// `GET path` over a real loopback socket against a dash whose whole-graph and state-poll
+/// providers both serve `graph`.
+pub fn fetch_served(path: &str, graph: &Graph) -> String {
+    fetch_with_retry(path, || {
+        try_fetch_over(path, graph_provider_of(graph.clone()), graph.clone())
+    })
+}
+
 /// A raw HTTP response split into its header block and its body bytes.
 pub fn split_response(raw: &[u8]) -> (&str, &[u8]) {
     let sep = b"\r\n\r\n";

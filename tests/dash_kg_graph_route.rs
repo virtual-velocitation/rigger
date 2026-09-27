@@ -34,6 +34,7 @@ use common::fixtures::star_graph;
 use common::fixtures::summarized_node as node;
 use common::fixtures::tool_available;
 use common::served::body_of;
+use common::served::fetch_served;
 use common::served::page_script;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY,
@@ -57,90 +58,6 @@ fn fixture_graph() -> Graph {
             edge("d1", "c1", REL_REFERENCES, TIER_INFERRED),
         ],
     }
-}
-
-/// Start `serve` on a FRESH ephemeral loopback port, fetch `GET <path>` once against a fixture-graph
-/// provider, and return the raw HTTP response - or `None` on a genuine socket-level failure.
-///
-/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. That is
-/// load-bearing, not tidiness: the earlier shape (bind port 0, read the port, DROP the listener, let
-/// `serve` re-bind it) left the port free for the whole handoff window, so a sibling test's `bind(0)`
-/// in this same binary could be handed the port this attempt had just released. One `serve` then won
-/// the re-bind and the loser's client CONNECTED SUCCESSFULLY to it, reading a well-formed `200` whose
-/// body was the OTHER test's fixture graph - a CONTENT failure the connect-error retry could not see
-/// and the caller's assertions then read as a defect in the route (observed under parallel load as
-/// `find(id == "hub")` on a node list that never held a hub). Owning the port from `bind` through
-/// `serve_on` closes that window by construction: no other binder can be handed a port this process
-/// never released, so a response returned here is always this attempt's own server's.
-fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let addr = listener.local_addr().ok()?;
-
-    // The `/api/graph` route now reads through the SEPARATE lazy graph provider (spec 45,
-    // criterion 1), NOT the polled tuple's graph, so the fixture graph is what `graph_provider`
-    // yields; the polled provider still carries a run-seeded slice for the state poll (unused here).
-    let graph_provider = {
-        let graph = graph.clone();
-        move |_instance: Option<&str>| -> Graph { graph.clone() }
-    };
-    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), graph.clone(), Vec::new(), HashMap::new()))
-    };
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
-    let instances_provider = Vec::new;
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    // The port is already bound and listening, so this connect succeeds on its first pass; the budget
-    // survives only as a guard against a scheduler stall between the bind and the first accept.
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    };
-
-    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    if client.write_all(req.as_bytes()).is_err() {
-        return None;
-    }
-    let mut resp = String::new();
-    match client.read_to_string(&mut resp) {
-        Ok(_) => Some(resp),
-        Err(_) => None,
-    }
-}
-
-/// Drive the hand-rolled dash server over a REAL loopback socket and fetch `GET <path>`, RETRYING on
-/// a socket-level transient (see [`try_fetch_served`], which owns its port from `bind` through
-/// `serve_on` so an attempt can never return another server's response). Each attempt is independent,
-/// so the guard is deterministic without weakening what it proves.
-fn fetch_served(path: &str, graph: &Graph) -> String {
-    for _ in 0..200 {
-        if let Some(resp) = try_fetch_served(path, graph.clone()) {
-            return resp;
-        }
-    }
-    panic!(
-        "the dash server never served {path} over the real socket after many fresh-port attempts"
-    );
 }
 
 /// The SERVED `/api/graph` route returns the seeded neighborhood as tier-tagged JSON over the real
@@ -1597,7 +1514,7 @@ fn the_served_graph_route_reads_the_lazy_provider_only_and_never_on_the_state_po
 
     // One serve instance drives THREE sequential requests, retried whole on a socket-level transient
     // - with fresh spy state per attempt so a lost attempt never leaks a count into the next try. The
-    // bound listener is HANDED to `serve_on` for the same reason [`try_fetch_served`] does it: a port
+    // bound listener is HANDED to `serve_on` for the same reason [`try_fetch_over`] does it: a port
     // this attempt never releases cannot be re-bound by a sibling test, so the counts read here are
     // always this attempt's own spy's.
     let attempt = || -> Option<(String, usize, String, usize, String, usize)> {

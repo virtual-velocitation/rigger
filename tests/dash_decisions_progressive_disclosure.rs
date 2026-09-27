@@ -23,109 +23,27 @@
 
 mod common;
 
-use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 use common::fixtures::tool_available;
 use common::served::page_script;
+use common::served::{fetch_with_retry, graph_provider_of, try_fetch_over};
 use rigger::contextgraph::Graph;
-use rigger::dash::{self, DashInputs};
-
-/// Start the dash server on a FRESH ephemeral loopback port and fetch `GET /` once, returning the
-/// raw HTTP response - or `None` on a genuine socket-level failure.
-///
-/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. That is
-/// load-bearing, not tidiness: the earlier shape (bind port 0, read the port, DROP the listener, let
-/// `serve` re-bind it) left the port free for the whole handoff window, so a sibling test's `bind(0)`
-/// in this same binary could be handed the port this attempt had just released. One `serve` then won
-/// the re-bind and the loser's client CONNECTED SUCCESSFULLY to it, reading a well-formed response
-/// that was the OTHER test's fixture - a CONTENT failure no connect-error retry can see, reddening
-/// only on a loaded machine. Owning the port from `bind` through `serve_on` closes that window by
-/// construction: no other binder can be handed a port this process never released, so a response
-/// returned here is always this attempt's own server's.
-fn try_fetch_served_root_page() -> Option<String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let addr = listener.local_addr().ok()?;
-
-    // The root page never reads the provider; a trivial empty-inputs provider satisfies `serve`'s
-    // `Fn() -> Result<DashInputs, String>` bound, and an empty graph provider its `Fn() -> Graph`
-    // bound (spec 45, criterion 1: the lazy `/api/graph` provider, never consulted for the page).
-    let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), Graph::default(), Vec::new(), HashMap::new()))
-    };
-    let graph_provider = |_instance: Option<&str>| Graph::default();
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
-    let instances_provider = Vec::new;
-
-    // A detached server thread: `serve_on` loops until the process ends; we drive one request. The
-    // port is already bound and listening, so nothing here can lose it to another binder.
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    // The port is already bound and listening, so this connect succeeds on its first pass; the
-    // budget survives only as a guard against a scheduler stall between the bind and the first
-    // accept.
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    };
-
-    // Drive one request. A write/read error here is a genuine socket-level failure, not another
-    // server answering: this attempt holds the port. The server answers `Connection: close`, so a
-    // clean `read_to_string` reads to EOF.
-    if client
-        .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
-        .is_err()
-    {
-        return None;
-    }
-    let mut resp = String::new();
-    match client.read_to_string(&mut resp) {
-        Ok(_) => Some(resp),
-        Err(_) => None,
-    }
-}
+use rigger::dash::{self};
 
 /// Drive the hand-rolled dash server over a REAL loopback socket through the public `serve_on`
 /// entrypoint and fetch `GET /` (the root page), returning the full raw HTTP response (status line
 /// + headers + body).
 ///
-/// This RETRIES on a socket-level transient (see [`try_fetch_served_root_page`], which owns its port
+/// This RETRIES on a socket-level transient (see [`try_fetch_over`], which owns its port
 /// from `bind` through `serve_on` so an attempt can never return another server's response). Each
 /// attempt is independent, so the guard is deterministic without weakening what it proves (the
 /// served bytes over the real socket): a cleanly-served response is returned to the caller's
 /// assertions unchanged, so a genuine content regression still fails.
 fn fetch_served_root_page() -> String {
-    for _ in 0..200 {
-        if let Some(resp) = try_fetch_served_root_page() {
-            return resp;
-        }
-    }
-    panic!(
-        "the dash server never served GET / over the real socket after many fresh-port attempts"
-    );
+    fetch_with_retry("GET /", || {
+        try_fetch_over("/", graph_provider_of(Graph::default()), Graph::default())
+    })
 }
 
 /// The SERVED root page carries the c4 progressive-disclosure decisions region over the real HTTP
