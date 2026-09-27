@@ -9,14 +9,40 @@
 use std::collections::BTreeSet;
 
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Graph, Projection, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED};
+use rigger::contextgraph::{
+    Graph, Projection, META_ACTOR, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+};
 use rigger::eventstore::Event;
 
 /// Fold one `type_` event carrying `json` onto `p` at log position `pos`.
 pub fn apply_json(p: &Projector, pos: u64, type_: &str, json: serde_json::Value) {
+    apply_json_as(p, pos, type_, json, None);
+}
+
+/// Fold one `type_` event from its raw on-log JSON at `pos`, optionally stamping the acting
+/// persona in `META_ACTOR` (the metadata the conductor puts on every real emit). Folding the raw
+/// JSON - not an in-crate payload struct - pins the contract the log actually carries. `apply`
+/// returns `Err` on a fold failure, so a successful call is itself evidence the payload folded.
+pub fn apply_json_as(
+    p: &Projector,
+    pos: u64,
+    type_: &str,
+    json: serde_json::Value,
+    actor: Option<&str>,
+) {
     let mut e = Event::new(type_, serde_json::to_vec(&json).unwrap());
     e.position = pos;
+    if let Some(a) = actor {
+        e.meta.insert(META_ACTOR.to_string(), a.to_string());
+    }
     p.apply(&e).unwrap();
+}
+
+/// Fold one `type_` event carrying `json` onto `p` at the position after `*pos`, advancing
+/// `*pos` to it - the public event API a real run folds through, one position per event.
+pub fn apply_next_json(p: &Projector, pos: &mut u64, type_: &str, json: serde_json::Value) {
+    *pos += 1;
+    apply_json(p, *pos, type_, json);
 }
 
 /// Fold one definition (spec 29a): the file node, the `<file>::<name>` entity node (carrying the
