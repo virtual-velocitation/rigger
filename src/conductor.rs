@@ -2359,9 +2359,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
     // this template declared" (the invariant violation).
     let mut fanout_template_gates: HashMap<String, Vec<String>> = HashMap::new();
     if !deps.criteria.is_empty() {
-        if let Some(template_name) = fan_out_template_name(&stages) {
+        if let Some(template_name) = first_stage_named(&stages, is_fan_out_template) {
             let template = stages.remove(&template_name).expect("template just found");
-            let producer = producer_name(&stages);
+            let producer = first_stage_named(&stages, is_producer);
             let units = baseline_units(&template, &deps.criteria, producer.as_deref());
             fanout_criteria.insert(
                 template_name.clone(),
@@ -2485,7 +2485,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
             } else if terminal.contains(&gate) {
                 fan_out_released = false;
             } else {
-                let plan = producer_name(&stages)
+                let plan = first_stage_named(&stages, is_producer)
                     .expect("a critique gate is detected only when a producer exists");
                 match ctx.run_plan_critique_gate(
                     &gate,
@@ -10374,7 +10374,7 @@ impl RunCtx<'_> {
     /// is removed from the live `stages` once expanded). The planner is told this id so
     /// its refinements assign the same implementer. Empty when there is no template.
     fn implementer_agent(&self) -> String {
-        fan_out_template_name(&self.cfg.workflow.stages)
+        first_stage_named(&self.cfg.workflow.stages, is_fan_out_template)
             .and_then(|name| {
                 self.cfg
                     .workflow
@@ -11263,7 +11263,7 @@ impl RunCtx<'_> {
     /// identical list a live window already recorded. Empty when the workflow has no
     /// fan-out template.
     fn template_gates(&self) -> Vec<String> {
-        fan_out_template_name(&self.cfg.workflow.stages)
+        first_stage_named(&self.cfg.workflow.stages, is_fan_out_template)
             .and_then(|name| self.cfg.workflow.stages.get(&name))
             .map(|st| st.gates.clone())
             .unwrap_or_default()
@@ -13460,25 +13460,33 @@ fn is_fan_out(st: &Stage) -> bool {
     st.agent.is_empty() && (!st.agents.is_empty() || st.strategy.eq_ignore_ascii_case("fan-out"))
 }
 
+/// The name of the FIRST stage (in stable BTreeMap order) `shape` matches, or None. Two
+/// shapes it finds:
+///
+/// - [`is_fan_out_template`]: the implement TEMPLATE stage the conductor expands into one
+///   per-criterion unit (the deterministic decomposition baseline). There is normally exactly
+///   one; None when the workflow has no fan-out implementer template (a non-decomposing
+///   workflow), in which case the conductor synthesizes no baseline units and the no-spec
+///   path is unchanged.
+/// - [`is_producer`]: the (first) `produces` planner stage - baseline units depend on it so
+///   they run only AFTER the planner has had its chance to refine the DAG.
+fn first_stage_named(
+    stages: &BTreeMap<String, Stage>,
+    shape: fn(&Stage) -> bool,
+) -> Option<String> {
+    stages
+        .iter()
+        .find(|(_, st)| shape(st))
+        .map(|(name, _)| name.clone())
+}
+
 /// Whether a stage is shaped like the implement fan-out TEMPLATE: it names an `agent`,
 /// sets `strategy: fan-out` ("one implementer per ready unit"), and does NOT `produces`
-/// a DAG (it is a worker, not the planner). Pulled out of [`fan_out_template_name`] so
+/// a DAG (it is a worker, not the planner). Pulled out of [`first_stage_named`] so
 /// `rigger validate`'s [`ungated_fan_out_templates`] advisory checks the EXACT same
 /// shape the runtime decomposition matches - one predicate, never a second guess at it.
 fn is_fan_out_template(st: &Stage) -> bool {
     !st.agent.is_empty() && st.strategy.eq_ignore_ascii_case("fan-out") && st.produces.is_empty()
-}
-
-/// The implement TEMPLATE stage the conductor expands into one per-criterion unit
-/// (the deterministic decomposition baseline). There is normally exactly one; the
-/// FIRST in stable (BTreeMap) order is chosen. Returns its name, or None when the
-/// workflow has no fan-out implementer template (a non-decomposing workflow), in which
-/// case the conductor synthesizes no baseline units and the no-spec path is unchanged.
-fn fan_out_template_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
-    stages
-        .iter()
-        .find(|(_, st)| is_fan_out_template(st))
-        .map(|(name, _)| name.clone())
 }
 
 /// NO UNGATED FAN-OUT TEMPLATE advisory (spec 103, criterion 2): names every fan-out
@@ -13635,7 +13643,7 @@ fn producer_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
 /// mistaken for it. Returns None when the workflow has no producer or no such gate, so
 /// a non-decomposing or ungated workflow runs exactly as before.
 fn critique_gate_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
-    let producer = producer_name(stages)?;
+    let producer = first_stage_named(stages, is_producer)?;
     stages
         .iter()
         .find(|(_, st)| {
@@ -13806,7 +13814,7 @@ fn coverage_gap(stages: &BTreeMap<String, Stage>, criteria: &[String]) -> Option
 /// (it names no baseline criterion, by definition), so it can never match a
 /// `fanout_criteria` entry the loop above resolves against - it is checked separately,
 /// against whichever template `fanout_template_gates` tracks (a run tracks at most
-/// one, per [`fan_out_template_name`]'s single `.find`), so it is unambiguous which
+/// one, per [`first_stage_named`]'s single `.find`), so it is unambiguous which
 /// template's gates it was meant to inherit.
 ///
 /// Criterion 1 owns gate INHERITANCE (`harvest_proposed`'s union of a proposal's gates
