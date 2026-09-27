@@ -205,19 +205,26 @@ fn scan_with_starttime(base: &Path) -> Vec<ScanEntry> {
         .collect()
 }
 
-/// The process start time from `/proc/<pid>/stat` field 22 (`starttime`, clock ticks since
-/// boot) - the TOCTOU witness [`scan_with_starttime`] records and [`signal_if_unchanged`]
-/// re-reads immediately before signalling. Field 22 is located from the LAST `)` in the
-/// line rather than by naive whitespace-splitting, because field 2 (`comm`, the process
-/// name in parens) may itself contain spaces or parens. `None` when the process has already
-/// exited or `/proc` is unavailable.
-fn pid_starttime(pid: u32) -> Option<u64> {
+/// The ONE `/proc/<pid>/stat` parser: the `index`-th (0-based) whitespace-separated field
+/// AFTER `comm` - `0` is the state, `19` the start time (see `proc(5)`). Fields are located
+/// from the LAST `)` in the line rather than by naive whitespace-splitting, because field 2
+/// (`comm`, the process name in parens) may itself contain spaces or parens. `None` when the
+/// process has already exited, `/proc` is unavailable, or the line has no such field.
+pub(crate) fn stat_field_after_comm(pid: u32, index: usize) -> Option<String> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let after_comm = stat.rsplit_once(')')?.1;
+    after_comm.split_whitespace().nth(index).map(String::from)
+}
+
+/// The process start time from `/proc/<pid>/stat` field 22 (`starttime`, clock ticks since
+/// boot) - the TOCTOU witness [`scan_with_starttime`] records and [`signal_if_unchanged`]
+/// re-reads immediately before signalling. `None` when the process has already exited or
+/// `/proc` is unavailable.
+fn pid_starttime(pid: u32) -> Option<u64> {
     // Fields after `comm`, 1-indexed: state, ppid, pgrp, session, tty_nr, tpgid, flags,
     // minflt, cminflt, majflt, cmajflt, utime, stime, cutime, cstime, priority, nice,
     // num_threads, itrealvalue, starttime - the 20th, so index 19 (0-based).
-    after_comm.split_whitespace().nth(19)?.parse().ok()
+    stat_field_after_comm(pid, 19)?.parse().ok()
 }
 
 /// `pid`'s parent pid from `/proc/<pid>/status`'s `PPid:` field. `None` when the process is

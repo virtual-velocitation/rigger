@@ -610,17 +610,11 @@ fn pid_holding_port(port: u16) -> Option<u32> {
 /// The single-character process state of `pid` from `/proc/<pid>/stat` - `R` running, `S`
 /// sleeping, `D` uninterruptible sleep, `T` stopped by job control, `t` stopped under a
 /// tracer, `Z` zombie, and so on (see `proc(5)`). Parses the same field layout every
-/// `/proc/<pid>/stat` reader in this codebase already relies on (`pid (comm) state ...`, split
-/// AFTER the last `)` since `comm` may itself embed spaces or parens) - `std`-only, no `libc`.
-/// `None` when the pid is gone or `/proc` is unreadable - a graceful degrade, never a guess.
+/// `/proc/<pid>/stat` reader in this codebase relies on, through the one parser
+/// [`crate::reap::stat_field_after_comm`] - `std`-only, no `libc`. `None` when the pid is
+/// gone or `/proc` is unreadable - a graceful degrade, never a guess.
 fn process_state(pid: u32) -> Option<char> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat.rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .next()?
-        .chars()
-        .next()
+    crate::reap::stat_field_after_comm(pid, 0)?.chars().next()
 }
 
 /// Render the HELD-PORT DIAGNOSIS (spec 62, criterion 3) for a bind failure at `addr`, given
