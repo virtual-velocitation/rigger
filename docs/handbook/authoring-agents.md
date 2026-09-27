@@ -70,6 +70,22 @@ A review panel needs *diverse lenses*, not redundant ones. Give each lens one la
 
 The adversary must stay strict to stay useful. Calibrate it in one direction only: it may refute a lens finding as overreach solely when the finding is out of lane, describes an unreachable state, or is factually wrong on cited evidence. "Minor" or "inconvenient" never qualify. A softened adversary is worse than none - it launders defects as reviewed.
 
+## Injecting instructions
+
+Some rules apply to every agent regardless of its role: how code is shaped, how it is tested, what counts as done. Copying them into each persona drifts the moment one copy is edited, and an imported agent arrives without them. Rigger therefore composes every spawned agent's system prompt in layers:
+
+```text
+persona  +  built-in instructions  +  operator instructions  +  communication discipline
+```
+
+**The built-in layer** ships inside the binary and reaches every agent Rigger spawns, including an agent with an empty body. It is the engineering law every change is held to: Clean Architecture, SOLID, DRY, KISS, YAGNI, TDD and BDD where a behavior is operator-facing, one pass by excellence, and the rule that a surviving mutant is always a failure. Its source is `src/instructions/engineering-principles.md`; no configuration removes it.
+
+**The operator layer** is every `*.md` file in `.rigger/instructions/`, appended in filename order after the built-ins, each under a `## <file stem>` heading. Use a numeric prefix (`10-house.md`, `20-team.md`) to control the order. `rigger init` scaffolds the directory with a `README.md` that explains it; the README itself is never injected. Put project-wide house rules here instead of into personas, and keep each persona about its role.
+
+**Reading the composed layers.** `rigger instructions` prints exactly what your agents are held to: the built-in law first, then each operator file by name, or `(none)` when the directory holds no instruction files. `rigger prime` opens every session with a one-line summary of the layers in force.
+
+**The definition pin.** Operator instruction files are part of a run's definition, alongside `workflow.yml` and the agent files. Editing one while a run is live changes the definition hash, and the next step halts as a definition drift. Edit instructions between runs, or continue deliberately with `--rebase-definition`.
+
 ## Starting from an existing collection
 
 You do not have to write a fleet from scratch. [agency-agents](https://github.com/msitarzewski/agency-agents) (MIT) is a collection of 200+ specialized agent definitions - engineering, testing, security, design, and a dozen other divisions - in the same Markdown-with-YAML-frontmatter shape Rigger reads. To adopt one:
