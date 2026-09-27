@@ -97,6 +97,23 @@ pub fn table_declares_key(manifest: &str, header: &str, key: &str) -> bool {
     })
 }
 
+/// Every `.rs` file strictly under `dir`, recursively, appended to `out` in sorted (deterministic)
+/// order regardless of readdir order; an unreadable `dir` contributes nothing.
+pub fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            collect_rs_files(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
 /// Call `visit` with the path and text of every `.rs` file under `dir`, recursively.
 pub fn for_each_rs_file(dir: &Path, visit: &mut dyn FnMut(&Path, &str)) {
     let entries = match std::fs::read_dir(dir) {
@@ -112,5 +129,18 @@ pub fn for_each_rs_file(dir: &Path, visit: &mut dyn FnMut(&Path, &str)) {
                 .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
             visit(&path, &text);
         }
+    }
+}
+
+/// The production source of the CLI composition root (`src/main.rs`), with the trailing
+/// `#[cfg(test)] mod tests { ... }` unit-test module stripped: a rule that governs SHIPPING code
+/// must not count the test code that legitimately opens throwaway stores and projections
+/// directly. Falls back to the whole source when the marker is absent, so a future reshaping
+/// never makes a scan pass by silently scanning nothing.
+pub fn production_main_rs() -> String {
+    let src = repo_text("src/main.rs");
+    match src.find("#[cfg(test)]\nmod tests {") {
+        Some(cut) => src[..cut].to_string(),
+        None => src,
     }
 }

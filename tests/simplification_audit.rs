@@ -100,6 +100,9 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod common;
+use common::repo::collect_rs_files;
+
 use serde::{Deserialize, Serialize};
 
 /// Spec 90 criterion 2's line-free content identity, reused rather than a second open-coded
@@ -2127,27 +2130,6 @@ const ADVERSARIAL_SAMPLE_SIZE: usize = 30;
 /// own file-count growth from perturbing a criterion-2-owned artifact at all"). A citation-guard
 /// rewrite by this criterion can now never perturb another criterion's owned artifact again.
 const ADVERSARIAL_SAMPLE_EXCLUDED_FILE: &str = "tests/prioritized_plan_citation_periphery.rs";
-
-/// Every `.rs` file strictly under `dir`, recursively, appended to `out`, in deterministic
-/// (sorted) finding order - mirrors `tests/no_os_kill_audit.rs::collect_rs_files`'s own
-/// precedent (kept as this criterion's own copy: spec 85 "WHAT THIS SPEC DOES NOT DO... no test
-/// consolidation" forbids reaching into that file to share it, and the duplication this creates
-/// is itself exactly the kind of thing THIS catalog is built to find and list, section 5's own
-/// concern to consolidate).
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
-}
 
 // -----------------------------------------------------------------------------------------
 // THE TOKENIZER

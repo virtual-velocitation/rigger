@@ -27,40 +27,17 @@
 
 mod common;
 
+use common::cli::courier_project;
 use common::cli::run_stream_identity;
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, EventStore};
 use rigger::progress::{self, StopFailure};
 use rigger::run::META_RUN_ID;
-
-/// A throwaway project the compiled binary accepts as a courier target: its own git repo
-/// (so the store's project identity resolves normally) and an INITIALIZED event log - a
-/// courier refuses to fabricate one from a cwd with no existing store (spec 05). Mirrors
-/// `courier_registry_refresh_periphery.rs::courier_project` exactly - the established
-/// shape every courier periphery suite builds its fixture project the same way.
-fn courier_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a temp project");
-    let root = dir.path();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
-    Store::open(
-        rigger_dir
-            .join("events.db")
-            .to_str()
-            .expect("a utf-8 store path"),
-    )
-    .expect("the event log initializes");
-    dir
-}
 
 fn run_rigger(root: &Path, args: &[&str]) -> Output {
     common::rigger_courier()

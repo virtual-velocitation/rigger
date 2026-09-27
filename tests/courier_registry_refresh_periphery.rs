@@ -16,43 +16,22 @@
 //! registry's own idle-window judgment (`is_stale`) already considers aged out, with no driver
 //! and no heartbeat thread involved at all.
 
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::path::Path;
+use std::process::Output;
 use std::time::Duration;
 
-use rigger::eventstore::sqlite::Store;
-use rigger::registry::{self, Instance, DEFAULT_IDLE_MS};
+use rigger::registry::{self, DEFAULT_IDLE_MS};
 
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+use common::cli::courier_project;
+use common::cli::registry_entries;
 use common::RestoreEnvVars;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;
 use courier_registry::assert_ok;
-
-/// A throwaway project the compiled binary accepts as a courier target: its own git repo (so the
-/// store's project identity resolves normally) and an INITIALIZED event log - a courier refuses
-/// to fabricate one from a cwd with no existing store (spec 05).
-fn courier_project() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("a temp project");
-    let root = dir.path();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
-    let rigger_dir = root.join(".rigger");
-    std::fs::create_dir_all(&rigger_dir).expect("create .rigger");
-    Store::open(
-        rigger_dir
-            .join("events.db")
-            .to_str()
-            .expect("a utf-8 store path"),
-    )
-    .expect("the event log initializes");
-    dir
-}
 
 /// Run `rigger <args...>` in `root` through the COMPILED binary, with the machine-global
 /// registry redirected into the CALLER-OWNED `state_home` - shared across several calls within
@@ -67,29 +46,6 @@ fn run_rigger(root: &Path, state_home: &Path, args: &[&str]) -> Output {
         .env("XDG_STATE_HOME", state_home)
         .output()
         .expect("the rigger binary runs")
-}
-
-/// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
-/// a raw directory read, so a test can see exactly what a courier wrote without depending on
-/// `read_live`'s pruning (which mutates the directory as a side effect of reading it).
-fn registry_entries(state_home: &Path) -> Vec<(PathBuf, Instance)> {
-    let dir = registry::instances_dir(state_home);
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        if let Ok(body) = std::fs::read(&path) {
-            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
-                out.push((path, inst));
-            }
-        }
-    }
-    out
 }
 
 /// EACH of the three courier commands - `progress`, `emit`, `result` - refreshes the project's

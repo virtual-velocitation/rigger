@@ -9,6 +9,7 @@ use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use rigger::registry::{self, Instance};
 
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
 pub fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {
@@ -63,6 +64,37 @@ pub fn temp_rigger_project() -> tempfile::TempDir {
     let dir = temp_project();
     seed_rigger_dir(dir.path());
     dir
+}
+
+/// A [`temp_project`] carrying an empty `.rigger/events.db` ([`seed_store`]) - the store a prior
+/// run would have created, which every store-opening courier requires before it appends.
+pub fn temp_store_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    seed_store(dir.path());
+    dir
+}
+
+/// A throwaway project the compiled binary accepts as a courier target: its own git repo (so the
+/// store's project identity resolves normally) and an event log already INITIALIZED through
+/// `Store::open` - a courier refuses to fabricate one from a cwd with no existing store (spec 05).
+pub fn courier_project() -> tempfile::TempDir {
+    let dir = temp_rigger_project();
+    let db = dir.path().join(".rigger").join("events.db");
+    Store::open(db.to_str().expect("a utf-8 store path")).expect("the event log initializes");
+    dir
+}
+
+/// A throwaway git project with a committer identity and one empty commit, so a base ref like
+/// `HEAD` resolves (a [`temp_project`] only `git init`s, leaving HEAD unborn).
+pub fn temp_git_project_with_commit() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("create temp project");
+    super::git::init_repo(dir.path());
+    dir
+}
+
+/// A throwaway project dir that is NOT a git repo.
+pub fn temp_repoless_project() -> tempfile::TempDir {
+    tempfile::tempdir().expect("create temp project")
 }
 
 /// `rigger emit <typ> <json>` in `root`, asserting it succeeds.
@@ -259,4 +291,120 @@ pub fn write_workflow(root: &Path, name: &str, block: &str) {
          {block}"
     );
     std::fs::write(rigger.join("workflow.yml"), workflow).expect("write workflow.yml");
+}
+
+/// Seed `root` with a reviewless single-stage workflow named `name`: one `worker` agent, one
+/// always-passing core gate, and `on_pass: merge` - the smallest workflow whose unit reaches the
+/// git integration path.
+pub fn write_reviewless_git_unit_workflow(root: &Path, name: &str) {
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    std::fs::write(
+        rigger.join("agents").join("worker.md"),
+        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    )
+    .unwrap();
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"name: {name}
+defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: {{ run: "true", kind: core }}
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+"#
+        ),
+    )
+    .unwrap();
+}
+
+/// Seed `<root>/.rigger/events.db` with rows in `project`'s run stream whose position order and
+/// revision order DISAGREE (spec 71's corruption signature) by inserting directly - bypassing the
+/// store's own always-increasing revision assignment, the only way to reach this shape. Three
+/// rows land in this insertion (position) order: revision 5, then 1, then 2 - distinct values
+/// (satisfying `UNIQUE(stream, revision)`, the on-disk shape a write into a compaction-opened
+/// revision hole leaves) where positions 2 and 3 both carry a revision at or below the running
+/// maximum (5). Each row is stamped `recorded_at` (and `valid_from`).
+pub fn seed_order_signature(root: &Path, project: &str, recorded_at: i64) {
+    let rigger_dir = root.join(".rigger");
+    std::fs::create_dir_all(&rigger_dir).unwrap();
+    let db = rigger_dir.join("events.db");
+    // Open through the real store first, so the schema is laid down exactly as the binary
+    // itself would lay it down.
+    Store::open(db.to_str().unwrap()).unwrap();
+    let stream = format!(
+        "{}{}",
+        Namespaced::prefix_for(project),
+        rigger::conductor::STREAM
+    );
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    for revision in [5i64, 1, 2] {
+        conn.execute(
+            "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+             VALUES (?1, 'Seed', ?2, X'7b7d', '{}', ?3, ?3, ?4)",
+            rusqlite::params![stream, format!("seed-{revision}"), recorded_at, revision],
+        )
+        .unwrap();
+    }
+}
+
+/// The reclaimed byte count a `rigger reset` report states right after `marker` (`... <marker>N
+/// byte(s) ...`), or `None` when the report carries no such clause.
+pub fn reported_reclaimed_bytes(report: &str, marker: &str) -> Option<u64> {
+    let start = report.find(marker)? + marker.len();
+    let rest = &report[start..];
+    let end = rest.find(" byte(s)")?;
+    rest[..end].trim().parse().ok()
+}
+
+/// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
+/// a raw directory read, so a test sees exactly what the binary wrote without depending on
+/// `read_live`'s pruning (which mutates the directory as a side effect of reading it).
+pub fn registry_entries(state_home: &Path) -> Vec<(std::path::PathBuf, Instance)> {
+    let dir = registry::instances_dir(state_home);
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(body) = std::fs::read(&path) {
+            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
+                out.push((path, inst));
+            }
+        }
+    }
+    out
+}
+
+/// Whether `events` carries a `TYPE_UNIT_STATUS` marker whose `status` field equals `status`.
+pub fn has_status_marker(events: &[Event], status: &str) -> bool {
+    events.iter().any(|e| {
+        e.type_ == rigger::ledger::TYPE_UNIT_STATUS
+            && String::from_utf8_lossy(&e.data).contains(&format!("\"status\":\"{status}\""))
+    })
+}
+
+/// In a build WITHOUT the `symbols` feature (the light `--no-default-features` lane), `graph
+/// --show` cannot derive a located entity's body extent (no extraction grammar is linked), so it
+/// must degrade to the site header plus an explicit extent-unavailable note and NO line-numbered
+/// body - never a hand-rolled lexer that would mis-read the grammars the graph ingests.
+pub fn assert_light_lane_extent_note(out: &str) {
+    assert!(
+        out.contains("code-extraction grammar") || out.contains("`symbols` feature"),
+        "the light lane names the missing extraction grammar in the extent note; got:\n{out}"
+    );
+    assert!(
+        !out.contains(" | ") && body_line_count(out) == 0,
+        "the light lane prints NO line-numbered body (extent unavailable); got:\n{out}"
+    );
 }

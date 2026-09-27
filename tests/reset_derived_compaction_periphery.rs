@@ -82,6 +82,7 @@
 mod common;
 
 use common::cli::keyed;
+use common::cli::reported_reclaimed_bytes;
 use common::cli::run_rigger;
 use common::cli::temp_rigger_project;
 use rigger::contextgraph::sqlite::Projector;
@@ -4040,23 +4041,6 @@ fn a_prune_that_shed_rows_explains_itself_the_way_the_shipped_documents_do() {
 // - no `-wal` still holding the frames the number already counted as reclaimed.
 // ---------------------------------------------------------------------------------------
 
-/// The byte count out of the report's measured-reclamation clause: `reclaimed <n> byte(s) on
-/// disk`.
-fn reported_reclaimed_bytes(out: &str) -> u64 {
-    let marker = "reclaimed ";
-    let at = out
-        .find(marker)
-        .unwrap_or_else(|| panic!("the report must carry a measured reclamation; got {out:?}"))
-        + marker.len();
-    let rest = &out[at..];
-    let end = rest
-        .find(" byte(s) on disk")
-        .unwrap_or_else(|| panic!("the reclamation must be reported in bytes; got {out:?}"));
-    rest[..end]
-        .parse()
-        .unwrap_or_else(|e| panic!("the reclamation must be a number ({e}); got {out:?}"))
-}
-
 /// Bytes of `path` on disk, or 0 when it does not exist - the `-wal` is deleted on a clean close.
 fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
@@ -4094,7 +4078,8 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
 
     let pages_after = pragma_i64(&db, "page_count");
     let on_disk_after = file_len(&db) + file_len(&wal);
-    let reclaimed = reported_reclaimed_bytes(&out);
+    let reclaimed = reported_reclaimed_bytes(&out, "reclaimed ")
+        .unwrap_or_else(|| panic!("the report must carry a measured reclamation; got {out:?}"));
     assert!(
         pages_after < pages_before,
         "the compaction must actually shrink the log, or the figure below is a claim about \

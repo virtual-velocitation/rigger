@@ -19,17 +19,12 @@
 
 mod common;
 
-use std::collections::HashMap;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::time::{Duration, Instant};
-
 use common::fixtures::summarized_node as node;
 use common::served::body_of;
+use common::served::try_fetch_served;
 use rigger::contextgraph::{
     Edge, Graph, KIND_DECISION, KIND_FILE, KIND_LESSON, REL_ABOUT, REL_GOVERNS, TIER_INFERRED,
 };
-use rigger::dash::{self, DashInputs};
 
 fn edge(from: &str, to: &str, rel: &str) -> Edge {
     Edge {
@@ -40,71 +35,6 @@ fn edge(from: &str, to: &str, rel: &str) -> Edge {
         valid_to: None, // live
         source: 0,
         tier: TIER_INFERRED.to_string(),
-    }
-}
-
-/// Start the dash server on a FRESH ephemeral loopback port with two DISTINCT graphs - `whole_graph`
-/// behind the lazy whole-graph provider (`/api/graph` reads it) and `poll_graph` behind the
-/// state-poll provider (every `/api/*` request rides it) - fetch `GET <path>` once, and return the
-/// raw HTTP response, or `None` on a genuine socket-level failure.
-///
-/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound. Releasing it
-/// first would leave the port free for the whole handoff window, so a sibling test's `bind(0)` in
-/// this same binary could be handed it; one `serve` then wins the re-bind and the loser's client
-/// CONNECTS SUCCESSFULLY to it and reads the OTHER test's fixture - a content failure no
-/// connect-error retry can see, reddening only on a loaded machine. Owning the port from `bind`
-/// through `serve_on` closes that window by construction.
-fn try_fetch_served(path: &str, whole_graph: Graph, poll_graph: Graph) -> Option<String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let addr = listener.local_addr().ok()?;
-
-    // `/api/graph` reads through the SEPARATE lazy whole-graph provider (spec 45 c1); the state poll
-    // reads its own, run-seeded graph. Give them DIFFERENT graphs so the served explain endpoint's
-    // SOURCE is discriminated: whatever crosses the wire proves which provider it read.
-    let graph_provider = {
-        let g = whole_graph.clone();
-        move |_instance: Option<&str>| -> Graph { g.clone() }
-    };
-    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), poll_graph.clone(), Vec::new(), HashMap::new()))
-    };
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
-    let instances_provider = Vec::new;
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    };
-
-    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    if client.write_all(req.as_bytes()).is_err() {
-        return None;
-    }
-    let mut resp = String::new();
-    match client.read_to_string(&mut resp) {
-        Ok(_) => Some(resp),
-        Err(_) => None,
     }
 }
 

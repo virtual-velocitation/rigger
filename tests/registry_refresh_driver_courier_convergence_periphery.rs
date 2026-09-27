@@ -22,12 +22,12 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use rigger::registry::{self, Instance};
-
 // The compiled `rigger` binary under test is located at RUNTIME by the shared authority in
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+
+use common::cli::registry_entries;
 #[path = "common/courier_registry.rs"]
 mod courier_registry;
 use courier_registry::assert_ok;
@@ -107,30 +107,6 @@ fn run_rigger(cwd: &Path, state_home: &Path, args: &[&str]) -> Output {
         .env_remove("KURRENTDB_CONN")
         .output()
         .expect("the rigger binary runs")
-}
-
-/// Every registry entry under `state_home`, decoded through `Instance`'s own (de)serialization -
-/// mirrors the identically purposed helper in every sibling registry-refresh suite (each
-/// periphery suite owns its own small fixture helpers rather than sharing test-only code
-/// across files).
-fn registry_entries(state_home: &Path) -> Vec<(std::path::PathBuf, Instance)> {
-    let dir = registry::instances_dir(state_home);
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        if let Ok(body) = std::fs::read(&path) {
-            if let Ok(inst) = serde_json::from_slice::<Instance>(&body) {
-                out.push((path, inst));
-            }
-        }
-    }
-    out
 }
 
 /// THE CONVERGENCE CLAIM: a real `rigger step` (driver path, `register_run_instance`) followed

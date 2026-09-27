@@ -30,6 +30,9 @@ use rigger::eventstore::Event;
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
+#[cfg(not(feature = "symbols"))]
+use common::cli::assert_light_lane_extent_note;
+
 use common::cli::run_stream_identity;
 use common::cli::seed_rigger_dir;
 use common::cli::temp_project;
@@ -65,23 +68,6 @@ fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u
     let mut e = Event::new(TYPE_CODE_ENTITY_EXTRACTED, payload.into_bytes());
     e.position = pos;
     p.apply(&e).unwrap();
-}
-
-/// In a build WITHOUT the `symbols` feature (the light `--no-default-features` lane), the show
-/// surface cannot derive a body extent (no extraction grammar is linked), so a located entity
-/// degrades to the site header plus an explicit extent-unavailable note and NO line-numbered body -
-/// the honesty contract the fix requires for a feature lane that cannot derive the extent, in place
-/// of a hand-rolled lexer that would mis-read the very grammars the graph ingests.
-#[cfg(not(feature = "symbols"))]
-fn assert_light_lane_extent_note(out: &str) {
-    assert!(
-        out.contains("code-extraction grammar") || out.contains("`symbols` feature"),
-        "the light lane names the missing extraction grammar in the extent note; got:\n{out}"
-    );
-    assert!(
-        !out.contains(" | "),
-        "the light lane prints NO line-numbered body (extent unavailable); got:\n{out}"
-    );
 }
 
 #[test]

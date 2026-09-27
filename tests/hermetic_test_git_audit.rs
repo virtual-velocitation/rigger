@@ -43,6 +43,7 @@
 
 mod common;
 
+use common::repo::collect_rs_files;
 use common::repo::repo_text;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -328,23 +329,6 @@ fn a_test_commit_succeeds_with_the_fixed_identity_and_no_gpg_invocation_under_th
         "the committed author/committer must be the runner's fixed identity, not the hostile \
          global config's"
     );
-}
-
-/// Every `.rs` file strictly under `dir`, recursively, appended to `out`, deterministically
-/// ordered.
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
 }
 
 /// Criterion 4: the two literal tokens the runner's OWN signing-suppression mechanism owns

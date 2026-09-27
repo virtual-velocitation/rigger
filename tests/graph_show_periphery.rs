@@ -49,6 +49,8 @@ use rigger::eventstore::Event;
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
 
+#[cfg(not(feature = "symbols"))]
+use common::cli::assert_light_lane_extent_note;
 use common::cli::body_line_count;
 use common::cli::open_graph;
 use common::cli::seed_rigger_dir;
@@ -100,27 +102,6 @@ fn seed_def_lang(
 /// Seed a Rust code-entity definition (the common case). Delegates to [`seed_def_lang`].
 fn seed_def(p: &Projector, pos: u64, file: &str, name: &str, kind: &str, line: u32) {
     seed_def_lang(p, pos, file, name, kind, line, "rust");
-}
-
-/// In a build WITHOUT the `symbols` feature (the light `--no-default-features` lane), a located
-/// entity's body extent cannot be derived (no grammar is linked). The show surface must degrade to
-/// the site header plus an explicit extent-unavailable note and NO body - never a hand-rolled lexer
-/// that would mis-read the grammars the graph ingests. Asserts exit-success, the note, and no body.
-#[cfg(not(feature = "symbols"))]
-fn assert_light_lane_extent_note(out: &str, ok: bool) {
-    assert!(
-        ok,
-        "a located entity in the light lane still EXITS SUCCESS (a note, never an error); got:\n{out}"
-    );
-    assert!(
-        out.contains("code-extraction grammar") || out.contains("`symbols` feature"),
-        "the light lane names the missing extraction grammar in the extent note; got:\n{out}"
-    );
-    assert_eq!(
-        body_line_count(out),
-        0,
-        "the light lane prints NO line-numbered body (extent unavailable); got:\n{out}"
-    );
 }
 
 /// NONE face: an unknown query is not an error. The show surface prints a one-line not-found note
@@ -327,7 +308,11 @@ fn graph_show_light_lane_degrades_to_extent_unavailable_note() {
         "the located site header is printed in the light lane; got:\n{out}"
     );
     // ...and the body degrades to the explicit extent-unavailable note, never a silent truncation.
-    assert_light_lane_extent_note(&out, ok);
+    assert!(
+        ok,
+        "a located entity in the light lane still EXITS SUCCESS (a note, never an error); got:\n{out}"
+    );
+    assert_light_lane_extent_note(&out);
     // The real body line is never shown without the grammar (no silent partial body).
     assert!(
         !out.contains("let body = 1"),

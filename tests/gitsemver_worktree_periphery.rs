@@ -48,6 +48,7 @@ mod common;
 mod gitsemver;
 
 use common::fixtures::tool_available;
+use common::git::tagged_gitsemver_repo;
 use std::path::Path;
 use std::process::Command;
 
@@ -92,28 +93,6 @@ fn git_output(root: &Path, args: &[&str]) -> String {
         .to_string()
 }
 
-/// Build a fixture git repository at `root`: the same committed `go-gitsemver.yml`
-/// (`mode: Mainline`, `tag-prefix: v`) as this repo's own root, an initial commit tagged
-/// `v1.0.0`, then one more plain commit - enough history for a real derivation to
-/// succeed, so a failure to derive from the worktree built off it can only be attributed
-/// to the worktree indirection, never to thin fixture history.
-fn fixture_repo(root: &Path) {
-    git(root, &["init", "-q"]);
-    git(root, &["config", "user.email", "t@example.com"]);
-    git(root, &["config", "user.name", "t"]);
-    std::fs::write(
-        root.join("go-gitsemver.yml"),
-        "mode: Mainline\ntag-prefix: v\n",
-    )
-    .expect("write fixture go-gitsemver.yml");
-    git(root, &["add", "go-gitsemver.yml"]);
-    git(root, &["commit", "-q", "-m", "chore: initial"]);
-    git(root, &["tag", "v1.0.0"]);
-    std::fs::write(root.join("file.txt"), "second\n").expect("write fixture file");
-    git(root, &["add", "file.txt"]);
-    git(root, &["commit", "-q", "-m", "docs: update the readme"]);
-}
-
 #[test]
 fn a_linked_worktree_derives_its_own_diverged_head_not_primarys() {
     if !tool_available("go-gitsemver", "version") {
@@ -121,7 +100,7 @@ fn a_linked_worktree_derives_its_own_diverged_head_not_primarys() {
         return;
     }
     let primary_dir = tempfile::tempdir().unwrap();
-    fixture_repo(primary_dir.path());
+    tagged_gitsemver_repo(primary_dir.path(), "docs: update the readme");
 
     // The version derived directly from the primary checkout, at the commit the worktree
     // will be created from below - the reference point the worktree-derived version must

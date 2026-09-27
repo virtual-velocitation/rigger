@@ -31,22 +31,6 @@ use std::process::Command;
 // server adapter never touch a projection path. Always on - no container required.
 // =======================================================================================
 
-/// The production source of the CLI composition root (`src/main.rs`), with the trailing
-/// `#[cfg(test)] mod tests { ... }` unit-test module stripped. The projection boundary rule
-/// governs SHIPPING code: test code legitimately opens throwaway sqlite projections directly,
-/// and must not be scanned as a command's construction path.
-fn production_main_rs() -> String {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("read src/main.rs");
-    match src.find("#[cfg(test)]\nmod tests {") {
-        // Everything before the unit-test module (which runs to EOF). Falls back to the whole
-        // source when the marker is absent, so a future reshaping never makes this scan pass by
-        // silently scanning nothing.
-        Some(cut) => src[..cut].to_string(),
-        None => src,
-    }
-}
-
 /// The code portion of a production line: the text before any trailing `//` line comment, and
 /// empty for a whole-line comment. Prose that MENTIONS a projection beside `resolve_store` is
 /// harmless; only CODE that couples them is a defect, so the structural scan looks at code only.
@@ -127,6 +111,8 @@ fn the_graph_and_progress_projections_open_via_the_local_sqlite_constructors() {
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
+
+use common::repo::production_main_rs;
 
 /// The project identity the binary resolves for `root` (the git top-level basename, or the
 /// tracked `.rigger/project.id`) - the identity that namespaces the LOCAL progress projection,

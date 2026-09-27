@@ -88,36 +88,13 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
+use common::cli::temp_git_project_with_commit;
+use common::cli::write_reviewless_git_unit_workflow;
 use common::git::git_ok;
 use common::git::init_repo;
 use rigger::spawn::SpawnEvent;
 use std::path::Path;
 use std::process::Command;
-
-/// A throwaway git project with a real commit, so `rigger step`'s run-branch anchoring (a base
-/// ref like `HEAD` must resolve) works. Mirrors `tests/cli.rs`'s identical helper.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let _ = Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(root)
-        .status();
-    for args in [
-        &["config", "user.email", "t@example.com"][..],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .status()
-            .expect("git must be runnable")
-            .success();
-        assert!(ok, "git {args:?} must succeed while seeding the repo");
-    }
-    dir
-}
 
 /// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success.
 fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
@@ -152,38 +129,6 @@ fn seed_events(root: &Path, events: Vec<rigger::eventstore::Event>) {
             .append(rigger::conductor::STREAM, ExpectedRevision::Any, &[event])
             .unwrap();
     }
-}
-
-/// A single reviewless git-backed unit stage - mirrors `tests/cli.rs`'s identical
-/// `write_reviewless_git_unit_workflow`. Its only purpose here is to give `rigger step` a
-/// real workflow to bootstrap a run (and the `rigger-run` branch) against; the units this file
-/// actually tests (`fenced`, `hung`) are manufactured directly as foreign worktrees/events,
-/// exactly as `tests/cli.rs`'s `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_
-/// reclaims_a_dead_ancestor_leftover` already does for its own "leftover-orphan" branch.
-fn write_reviewless_git_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"name: fencetest
-defaults:
-  grounder: nop
-  budget: 60
-gates:
-  ok: { run: "true", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: merge
-"#,
-    )
-    .unwrap();
 }
 
 /// Spec 83, criterion 1 (THE FENCE), driven at the real binary boundary across THREE separate
@@ -227,7 +172,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_reviewless_git_unit_workflow(root, "fencetest");
 
     // Step 1: bootstraps the store and the `rigger-run` branch, and parks the workflow's own
     // "solo" implementer (unrelated to the two foreign units this test actually probes).
@@ -510,7 +455,7 @@ fn gc_integrated_branches_removing_evidence_reaches_real_stderr_for_a_still_regi
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_reviewless_git_unit_workflow(root, "fencetest");
 
     // Step 1: bootstraps the store and the `rigger-run` branch; unrelated to `settled`, which
     // this test manufactures directly, exactly like `fenced`/`hung` above.

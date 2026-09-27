@@ -10,7 +10,8 @@ use std::collections::BTreeSet;
 
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
-    Graph, Projection, META_ACTOR, TYPE_CODE_ENTITY_EXTRACTED, TYPE_EDGE_INFERRED,
+    Graph, Projection, KIND_COMMUNITY, META_ACTOR, REL_IN_COMMUNITY, TYPE_CODE_ENTITY_EXTRACTED,
+    TYPE_EDGE_INFERRED,
 };
 use rigger::eventstore::Event;
 
@@ -126,4 +127,25 @@ pub fn live_node_ids(g: &Graph, kind: &str) -> Vec<String> {
         .collect();
     ids.sort();
     ids
+}
+
+/// A deterministic snapshot of the whole community layer read over the PUBLIC surface: every
+/// `KIND_COMMUNITY` node (id, kind, ordered attrs) and every LIVE `IN_COMMUNITY` edge (from, to),
+/// sorted, one tab-separated row each. Two derivations of the same assignment set must produce
+/// byte-identical snapshots.
+pub fn community_snapshot(g: &Graph) -> Vec<String> {
+    let mut rows: Vec<String> = Vec::new();
+    for n in &g.nodes {
+        if n.kind == KIND_COMMUNITY {
+            // `attrs` is a `BTreeMap`, so its Debug is key-ordered and byte-stable.
+            rows.push(format!("node\t{}\t{}\t{:?}", n.id, n.kind, n.attrs));
+        }
+    }
+    for e in &g.edges {
+        if e.rel == REL_IN_COMMUNITY {
+            rows.push(format!("edge\t{}\t{}", e.from, e.to));
+        }
+    }
+    rows.sort();
+    rows
 }

@@ -23,8 +23,7 @@ mod common;
 
 use common::cli::run_rigger_envs;
 use common::cli::seed_run_events;
-use common::cli::seed_store;
-use common::cli::temp_project;
+use common::cli::temp_store_project;
 use common::git::git_out;
 use rigger::registry::{self, Instance, StoreIdentity};
 use std::path::Path;
@@ -33,16 +32,6 @@ use std::process::Command;
 // ---------------------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------------------
-
-/// A throwaway git project with an already-seeded `.rigger/events.db` - standing in for the
-/// store a prior `rigger run`/`step` would have created. `require_store_dir` (which every
-/// courier, `reset` included, resolves through) refuses to fabricate a fresh store from an
-/// uninitialized `.rigger`, so a test that drives `reset` must establish one first.
-fn temp_store_project() -> tempfile::TempDir {
-    let dir = temp_project();
-    seed_store(dir.path());
-    dir
-}
 
 /// The row count of the seeded event log, so a refused compaction can be proven to have pruned
 /// NOTHING - the guard may only refuse, never partially act.

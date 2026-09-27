@@ -87,22 +87,11 @@ use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
 use common::cli::seed_run_events;
+use common::cli::temp_git_project_with_commit;
 use common::git::git_ok;
 use common::git::git_out;
 use std::path::Path;
 use std::process::Command;
-
-/// A throwaway git project with a real commit, so `HEAD` resolves for `git worktree add`
-/// and the run's base ref is real. Mirrors `tests/cli.rs`'s `temp_git_project_with_commit`.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create temp project");
-    let root = dir.path();
-    git_ok(root, &["init", "-q"]);
-    git_ok(root, &["config", "user.email", "t@example.com"]);
-    git_ok(root, &["config", "user.name", "t"]);
-    git_ok(root, &["commit", "--allow-empty", "-q", "-m", "init"]);
-    dir
-}
 
 /// Scaffold a single, real-worktree implementer unit named "solo": one gate (`ok`, always
 /// green), no review tier, `on_pass: none` (verified but never merged - the minimal shape

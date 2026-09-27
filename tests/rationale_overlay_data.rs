@@ -17,17 +17,14 @@
 
 mod common;
 
-use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::time::{Duration, Instant};
+use std::collections::BTreeMap;
 
 use common::served::body_of;
+use common::served::try_fetch_served;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_FILE, KIND_FINDING,
     KIND_HANDBOOK_RULE, KIND_LESSON, REL_ABOUT, REL_GOVERNS, REL_SUPERSEDES, TIER_INFERRED,
 };
-use rigger::dash::{self, DashInputs};
 
 /// The fixture served graph. `shared.rs` carries four live rationale leaves - two decisions
 /// (`da`, `dz`), a finding (`a-find`, laid out so a wrong id-only sort would float it first), and a
@@ -93,74 +90,11 @@ fn rationale_graph() -> Graph {
     }
 }
 
-/// Start the dash server on a FRESH ephemeral loopback port, fetch `GET <path>` once against a
-/// fixture-graph provider, and return the raw HTTP response - or `None` on a genuine socket-level
-/// failure.
-///
-/// The listener this attempt binds is HANDED to `serve_on`, never dropped and re-bound - the same
-/// ownership `dash_kg_graph_route` documents. Releasing it first would leave the port free for the
-/// whole handoff window, so a sibling test's `bind(0)` in this same binary could be handed it; one
-/// `serve` then wins the re-bind and the loser's client CONNECTS SUCCESSFULLY to it and reads the
-/// OTHER test's fixture - a content failure no connect-error retry can see, reddening only on a
-/// loaded machine. Owning the port from `bind` through `serve_on` closes that window by construction.
-fn try_fetch_served(path: &str, graph: Graph) -> Option<String> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let addr = listener.local_addr().ok()?;
-
-    // `/api/graph` reads through the SEPARATE lazy graph provider (spec 45 c1), so the fixture graph
-    // is what `graph_provider` yields; the polled provider carries a run-seeded slice (unused here).
-    let graph_provider = {
-        let graph = graph.clone();
-        move |_instance: Option<&str>| -> Graph { graph.clone() }
-    };
-    let provider = move |_instance: Option<&str>| -> Result<DashInputs, String> {
-        Ok((Vec::new(), graph.clone(), Vec::new(), HashMap::new()))
-    };
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
-    let instances_provider = Vec::new;
-    std::thread::spawn(move || {
-        let _ = dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    };
-
-    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    if client.write_all(req.as_bytes()).is_err() {
-        return None;
-    }
-    let mut resp = String::new();
-    match client.read_to_string(&mut resp) {
-        Ok(_) => Some(resp),
-        Err(_) => None,
-    }
-}
-
 /// Drive the hand-rolled dash server over a REAL loopback socket and fetch `GET <path>`, RETRYING the
 /// whole port handoff on a connection-level transient (see [`try_fetch_served`]).
 fn fetch_served(path: &str, graph: &Graph) -> String {
     for _ in 0..200 {
-        if let Some(resp) = try_fetch_served(path, graph.clone()) {
+        if let Some(resp) = try_fetch_served(path, graph.clone(), graph.clone()) {
             return resp;
         }
     }

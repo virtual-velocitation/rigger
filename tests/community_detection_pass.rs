@@ -21,32 +21,12 @@ use std::collections::BTreeMap;
 
 use rigger::community::{self, Coupling, DEFAULT_RESOLUTION};
 use rigger::contextgraph::sqlite::Projector;
-use rigger::contextgraph::{Graph, Projection, KIND_COMMUNITY, REL_IN_COMMUNITY};
+use rigger::contextgraph::Projection;
 use rigger::eventstore::Event;
 
 #[path = "common/graph_fold.rs"]
 mod graph_fold;
-use graph_fold::seed_two_subsystems;
-
-/// A deterministic snapshot of the whole community layer read over the PUBLIC surface: every
-/// `KIND_COMMUNITY` node (id, kind, ordered attrs) and every LIVE `IN_COMMUNITY` edge (from, to),
-/// sorted. Two derivations of the same assignment set must produce byte-identical snapshots.
-fn community_snapshot(g: &Graph) -> Vec<String> {
-    let mut rows: Vec<String> = Vec::new();
-    for n in &g.nodes {
-        if n.kind == KIND_COMMUNITY {
-            let attrs: BTreeMap<&String, &String> = n.attrs.iter().collect();
-            rows.push(format!("node {}|{}|{attrs:?}", n.id, n.kind));
-        }
-    }
-    for e in &g.edges {
-        if e.rel == REL_IN_COMMUNITY {
-            rows.push(format!("edge {} -{}-> {}", e.from, e.rel, e.to));
-        }
-    }
-    rows.sort();
-    rows
-}
+use graph_fold::{community_snapshot, seed_two_subsystems};
 
 /// Run the pass on a projector seeded with the coupling graph, returning (assignment, the recorded
 /// community events positioned onto the log after the seed).

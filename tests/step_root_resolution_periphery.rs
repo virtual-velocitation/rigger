@@ -134,63 +134,10 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
+use common::cli::temp_git_project_with_commit;
+use common::cli::write_reviewless_git_unit_workflow;
 use std::path::Path;
 use std::process::Command;
-
-/// A throwaway git project with a real commit, so a base ref resolves and `ensure_run_
-/// branch` can anchor - mirrors `tests/cli.rs`'s identical `temp_git_project_with_commit`.
-fn temp_git_project_with_commit() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let ok = |args: &[&str]| {
-        Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .status()
-            .expect("git must be runnable")
-            .success()
-    };
-    assert!(ok(&["init", "-q"]), "git init must succeed");
-    assert!(
-        ok(&["config", "user.email", "t@example.com"]),
-        "git config must succeed"
-    );
-    assert!(ok(&["config", "user.name", "t"]), "git config must succeed");
-    assert!(
-        ok(&["commit", "--allow-empty", "-q", "-m", "init"]),
-        "git commit must succeed"
-    );
-    dir
-}
-
-/// The minimal reviewless, git-isolated single-unit workflow - mirrors `tests/cli.rs`'s
-/// identical `write_reviewless_git_unit_workflow`: an always-passing gate and `on_pass:
-/// merge`, the shape that reaches a real `ensure_run_branch` anchor without needing a
-/// review panel.
-fn write_reviewless_git_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"name: terminalintegratetest
-defaults:
-  grounder: nop
-  budget: 60
-gates:
-  ok: { run: "true", kind: core }
-stages:
-  solo:
-    agent: worker
-    gates: [ok]
-    on_pass: merge
-"#,
-    )
-    .unwrap();
-}
 
 /// The branch `HEAD` currently names in `root` (e.g. "main", "master", or whatever `git
 /// init`'s configured default is on this machine) - read BEFORE the rogue step runs so the
@@ -264,7 +211,7 @@ fn step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_encl
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_reviewless_git_unit_workflow(root, "terminalintegratetest");
 
     let before_branch = current_branch(root);
     assert!(
@@ -274,7 +221,7 @@ fn step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_encl
 
     let scratch = root.join("scratchroot");
     let fixture = scratch.join("nested-fixture");
-    write_reviewless_git_unit_workflow(&fixture);
+    write_reviewless_git_unit_workflow(&fixture, "terminalintegratetest");
 
     let (_out, err, ok) = run_rigger_envs(
         &fixture,
@@ -332,7 +279,7 @@ fn step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_eve
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_reviewless_git_unit_workflow(root, "terminalintegratetest");
     let before_root_branch = current_branch(root);
 
     let other_dir = temp_git_project_with_commit();
@@ -408,7 +355,7 @@ fn step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_eve
 fn step_run_and_workflow_via_a_symlinked_main_tree_are_not_refused() {
     let dir = temp_git_project_with_commit();
     let real_root = dir.path();
-    write_reviewless_git_unit_workflow(real_root);
+    write_reviewless_git_unit_workflow(real_root, "terminalintegratetest");
 
     let link_parent = tempfile::tempdir().expect("create a parent dir for the symlink");
     let via_symlink = link_parent.path().join("via-symlink");

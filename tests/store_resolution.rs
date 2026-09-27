@@ -20,26 +20,6 @@ use std::process::Command;
 // Structural single-authority: the sqlite event-log constructor lives at exactly one site.
 // ---------------------------------------------------------------------------------------
 
-/// The production source of the CLI composition root (`src/main.rs`), with the trailing
-/// `#[cfg(test)] mod tests { ... }` unit-test module stripped. The single-authority rule
-/// governs SHIPPING code: test code legitimately opens throwaway sqlite stores (`:memory:`,
-/// temp files) directly, and must not be counted as a command's construction path.
-fn production_main_rs() -> String {
-    let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
-        .expect("read src/main.rs");
-    strip_unit_test_module(&src)
-}
-
-/// Everything before the file's `#[cfg(test)]\nmod tests {` marker (the unit tests are the
-/// final block of `src/main.rs`, running to EOF). Falls back to the whole source when the
-/// marker is absent, so a future reshaping of the tests never makes this scan silently pass.
-fn strip_unit_test_module(src: &str) -> String {
-    match src.find("#[cfg(test)]\nmod tests {") {
-        Some(cut) => src[..cut].to_string(),
-        None => src.to_string(),
-    }
-}
-
 /// The nearest enclosing top-level function for source line `idx` (0-based): the last line
 /// at or above it that opens a top-level `fn` (column 0). The event-log construction lives in
 /// a top-level function, so this resolves which one owns a given `Store::open`.
@@ -143,6 +123,7 @@ fn the_single_resolver_exists_and_the_old_per_command_helper_is_retired() {
 mod common;
 
 use common::cli::run_stream_identity;
+use common::repo::production_main_rs;
 
 /// Boot a single-node insecure KurrentDB in a container and return (container, conn). Returns
 /// `None` - so the caller skips cleanly - when no container runtime is reachable, exactly as
