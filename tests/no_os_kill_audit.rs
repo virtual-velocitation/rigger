@@ -37,7 +37,10 @@
 //! the gate's own command carries no literal instance of what it forbids.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+mod common;
+use common::repo::collect_rs_files;
 
 #[path = "common/source_audit.rs"]
 mod source_audit;
@@ -270,22 +273,6 @@ fn sanctioned_hits(line: &str) -> Vec<&'static str> {
         hits.push("format! shaped to build a negative-pid argument");
     }
     hits
-}
-
-/// Every `.rs` file strictly under `dir`, recursively, appended to `out`.
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-    entries.sort(); // deterministic finding order regardless of readdir order
-    for path in entries {
-        if path.is_dir() {
-            collect_rs_files(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
 }
 
 /// Scan every `.rs` file under `root/src` and `root/tests`, deterministically ordered by

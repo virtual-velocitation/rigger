@@ -56,6 +56,7 @@
 mod common;
 
 use common::served::body_of;
+use common::served::try_fetch_served;
 
 // ---- the Done-when, end to end via the public API (symbols lane only) ----------------------
 
@@ -776,78 +777,11 @@ fn a_reference_free_tests_dir_files_first_extraction_creates_nothing_and_leaves_
 
 // ---- the SERVED /api/graph?card= wire contract (both lanes) --------------------------------
 
-/// Start `serve` on a fresh ephemeral loopback port, fetch `GET <path>` once against a fixture-graph
-/// provider, and return the raw HTTP response - or `None` on a genuine socket-level failure. Mirrors
-/// `dash_kg_graph_route.rs::try_fetch_served` verbatim - the established per-file duplication
-/// convention for this class of served-route periphery test in this codebase (each `tests/*.rs`
-/// integration test compiles as its own independent crate, so the harness plumbing cannot be shared
-/// via a plain `use`). See that file's own doc for why the listener is handed to `serve_on` rather
-/// than dropped and re-bound.
-fn try_fetch_served(path: &str, graph: rigger::contextgraph::Graph) -> Option<String> {
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::time::{Duration, Instant};
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
-    let addr = listener.local_addr().ok()?;
-
-    let graph_provider = {
-        let graph = graph.clone();
-        move |_instance: Option<&str>| -> rigger::contextgraph::Graph { graph.clone() }
-    };
-    let provider = move |_instance: Option<&str>| -> Result<rigger::dash::DashInputs, String> {
-        Ok((
-            Vec::new(),
-            graph.clone(),
-            Vec::new(),
-            std::collections::HashMap::new(),
-        ))
-    };
-    let calls_provider =
-        |_: Option<&str>, _: &[String], _: rigger::contextgraph::Direction, _: i64, _: &str| {
-            rigger::contextgraph::CallGraph::default()
-        };
-    let instances_provider = Vec::new;
-    std::thread::spawn(move || {
-        let _ = rigger::dash::serve_on(
-            listener,
-            provider,
-            graph_provider,
-            calls_provider,
-            instances_provider,
-            3,
-            "rigger-run",
-            "origin/main",
-        );
-    });
-
-    let deadline = Instant::now() + Duration::from_millis(1500);
-    let mut client = loop {
-        match TcpStream::connect(addr) {
-            Ok(s) => break s,
-            Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    };
-
-    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
-    if client.write_all(req.as_bytes()).is_err() {
-        return None;
-    }
-    let mut resp = String::new();
-    match client.read_to_string(&mut resp) {
-        Ok(_) => Some(resp),
-        Err(_) => None,
-    }
-}
-
 /// Drive the hand-rolled dash server over a REAL loopback socket and fetch `GET <path>`, retrying on
 /// a socket-level transient. Mirrors `dash_kg_graph_route.rs::fetch_served` verbatim.
 fn fetch_served(path: &str, graph: &rigger::contextgraph::Graph) -> String {
     for _ in 0..200 {
-        if let Some(resp) = try_fetch_served(path, graph.clone()) {
+        if let Some(resp) = try_fetch_served(path, graph.clone(), graph.clone()) {
             return resp;
         }
     }
