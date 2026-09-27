@@ -566,7 +566,7 @@ pub fn unit_of_gate_key(key: &str) -> Option<&str> {
 }
 
 /// The ATTEMPT ordinal a gate-run key ran under, recovered from the `{unit}/gate:{gate}#{attempt}`
-/// grammar [`gate_verdict_key`] mints. Distinct attempts are distinct gate runs (a
+/// grammar [`gate_key`] mints. Distinct attempts are distinct gate runs (a
 /// re-implementation re-gates), so the gate-outcome read ([`recorded_gate_outcome`]) uses this to
 /// aggregate only the LATEST attempt's per-gate verdicts. Parsing the ordinal off the suffix AFTER
 /// `/gate:` (never the whole key) keeps a `#` anywhere in the unit portion from being mis-read as
@@ -3101,7 +3101,7 @@ struct RunCtx<'a> {
     replayed_generations: Mutex<HashMap<String, (String, HashSet<String>)>>,
     /// The recorded gate verdicts keyed by their replay key -> `(pass, evidence)`, seeded
     /// ONCE at run start from the prior log's `GateVerdict` events and extended as this
-    /// process records new verdicts. [`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)
+    /// process records new verdicts. [`cached`] over [`gate_verdicts`](RunCtx::gate_verdicts)
     /// consults this map instead of re-reading and re-scanning the whole append-only
     /// stream on every inline/deferred gate of every step (finding
     /// arch-gate-verdict-redundant-scan): gate-verdict replay is O(1) per lookup, seeded
@@ -3110,7 +3110,7 @@ struct RunCtx<'a> {
     /// The content-address cache (spec 12, unit 1): `input_digest -> (position, unit)` of
     /// each GREEN gate verdict, seeded ONCE at run start from the prior log's GateVerdicts
     /// that carry a [`META_INPUT_DIGEST`] and extended as this process records fresh greens.
-    /// [`cached_green_verdict`](RunCtx::cached_green_verdict) consults it at the ONE
+    /// [`cached`] over [`green_digests`](RunCtx::green_digests) consults it at the ONE
     /// run_gates hit-site so a gate whose `(command, tree-sha)` digest matches a prior green
     /// is answered as a logged cache-hit citing that `position` instead of re-running the
     /// command. Only GREEN verdicts enter it (a red must always re-prove), and the EARLIEST
@@ -3546,7 +3546,7 @@ impl RunCtx<'_> {
 
     /// The highest attempt at which `unit` has a recorded gate verdict in the LIVE
     /// [`gate_verdicts`](RunCtx::gate_verdicts) cache (spec 12, unit 4). The cache is keyed by
-    /// [`gate_verdict_key`] (`{unit}/gate:{gate}#{attempt}`), seeded once at run start from the
+    /// [`gate_key`] (`{unit}/gate:{gate}#{attempt}`), seeded once at run start from the
     /// prior log and extended by [`emit_gate_verdict`](RunCtx::emit_gate_verdict) as this
     /// process runs gates, so unlike the immutable `prior_attempts` snapshot it reflects an
     /// IN-RUN unit's true attempt reach. Recovers the `{unit}` segment via [`unit_of_gate_key`]
@@ -3744,7 +3744,7 @@ impl RunCtx<'_> {
     /// Log a blast-radius SKIP (spec 12, unit 3): the inner loop did not run `gid` because its
     /// `inputs:` globs miss the unit's grounded blast radius. Recorded as a `GateVerdict`
     /// carrying `skipped: true` and the reason (no new event type - the skip rides the existing
-    /// vocabulary), under the distinct [`gate_skip_key`] so it never shadows the gate-RUN key
+    /// vocabulary), under the distinct [`gate_key`] so it never shadows the gate-RUN key
     /// the exhaustive integrate pass records, and with NO content digest so it never seeds the
     /// cache. The metrics fold excludes `skipped` verdicts exactly as it excludes the
     /// integrate-time artifact bookkeeping, so a skip is never counted as a gate pass. Keyed so
@@ -3784,8 +3784,8 @@ impl RunCtx<'_> {
 
     /// Emit a gate's `GateVerdict` under its replay `key`, stamping its content address and
     /// caching its outcome so both the exact-key replay
-    /// ([`recorded_gate_verdict`](RunCtx::recorded_gate_verdict)) and the content-address
-    /// cache ([`cached_green_verdict`](RunCtx::cached_green_verdict)) can answer a later
+    /// ([`cached`] over [`gate_verdicts`](RunCtx::gate_verdicts)) and the content-address
+    /// cache ([`cached`] over [`green_digests`](RunCtx::green_digests)) can answer a later
     /// gate without re-running the command. The append and the two cache inserts are paired
     /// here so they can never drift.
     ///
@@ -9956,7 +9956,7 @@ impl RunCtx<'_> {
     /// Round 5 fix for sdet-u88c1r4-pending-landing-hides-owed-regeneration: the shared
     /// catch-up mutation a resumed [`Self::integrate_and_emit`] call runs when it discovers
     /// row 4 (landing) is ALREADY closed - by either of its own two recovery sub-paths,
-    /// [`Self::pending_landing_for`] returning `None` (an earlier attempt's land AND its own
+    /// the [`pending_landing`](RunCtx::pending_landing) lookup returning `None` (an earlier attempt's land AND its own
     /// after-record both completed) or returning `Some` (the land completed for real but only
     /// its after-record was still open, now finished by the caller just before this runs) -
     /// while [`Self::regenerate_pending_for`] still names paths nobody ever regenerated for
@@ -13625,15 +13625,6 @@ fn stale_downstream_units(
     stale
 }
 
-/// The name of the (first) `produces` planner stage, if any: baseline units depend on
-/// it so they run only AFTER the planner has had its chance to refine the DAG.
-fn producer_name(stages: &BTreeMap<String, Stage>) -> Option<String> {
-    stages
-        .iter()
-        .find(|(_, st)| is_producer(st))
-        .map(|(name, _)| name.clone())
-}
-
 /// The name of the plan-critique gate stage, if the workflow wires one (Unit 1, spec
 /// 10). The gate is recognized by ROLE, not by a hard-coded name: it is the review-only
 /// stage (no `agent` - it critiques the DAG, it does not implement) that carries an
@@ -14042,6 +14033,104 @@ mod tests {
     use crate::gate::ExecRunner;
     use std::path::Path;
 
+    /// Shared test doubles and case bodies for this module's same-shaped tests.
+    mod support {
+        use super::*;
+
+        /// How many times `id` appears in a driver's spawn-call log.
+        pub(super) fn occurrences(log: &Mutex<Vec<String>>, id: &str) -> usize {
+            log.lock().unwrap().iter().filter(|c| *c == id).count()
+        }
+
+        /// A test double's recorded values so far.
+        pub(super) fn snapshot<T: Clone>(recorded: &Mutex<T>) -> T {
+            recorded.lock().unwrap().clone()
+        }
+
+        /// A stage map's observable shape - `(id, needs, coverage, criterion_id)` per stage -
+        /// for comparing two DAGs (`Stage` has no `PartialEq`).
+        pub(super) fn stage_shape(
+            stages: &BTreeMap<String, Stage>,
+        ) -> Vec<(String, Vec<String>, String, String)> {
+            stages
+                .iter()
+                .map(|(k, s)| {
+                    (
+                        k.clone(),
+                        s.needs.clone(),
+                        s.coverage.clone(),
+                        s.criterion_id.clone(),
+                    )
+                })
+                .collect()
+        }
+
+        /// A `Projection` double: counts per-EVENT folds (`apply`), records the size of every
+        /// per-BATCH fold (`apply_batch`), serves `graph` as every subgraph, and resolves no
+        /// mention.
+        #[derive(Default)]
+        pub(super) struct SpyGraph {
+            pub(super) graph: Graph,
+            pub(super) per_event: AtomicU32,
+            pub(super) batch_folds: Mutex<Vec<usize>>,
+        }
+
+        impl Projection for SpyGraph {
+            fn apply(&self, _e: &Event) -> Result<(), contextgraph::Error> {
+                self.per_event.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+            fn apply_batch(&self, events: &[Event]) -> Result<(), contextgraph::Error> {
+                self.batch_folds.lock().unwrap().push(events.len());
+                Ok(())
+            }
+            fn subgraph(&self, _s: &[String], _d: i64) -> Result<Graph, contextgraph::Error> {
+                Ok(self.graph.clone())
+            }
+            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
+                Ok(None)
+            }
+        }
+    }
+    use support::*;
+
+    /// Implements `EventStore`'s read and subscribe methods for a wrapper store by delegating
+    /// each to its `inner` store unchanged - the wrappers below differ only in `append`.
+    macro_rules! delegate_event_store_reads {
+        () => {
+            fn read_stream(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+                dir: Direction,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_stream(stream, from, dir)
+            }
+            fn read_all(
+                &self,
+                from: crate::eventstore::Position,
+                dir: Direction,
+                filter: &Filter,
+            ) -> Result<Vec<Event>, crate::eventstore::Error> {
+                self.inner.read_all(from, dir, filter)
+            }
+            fn subscribe_all(
+                &self,
+                from: crate::eventstore::Position,
+                filter: &Filter,
+            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+                self.inner.subscribe_all(from, filter)
+            }
+            fn subscribe_stream(
+                &self,
+                stream: &str,
+                from: crate::eventstore::Revision,
+            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
+                self.inner.subscribe_stream(stream, from)
+            }
+        };
+    }
+
     // ---- FAILURE CLASS (spec 104 criterion 5): pure functions, moved here with the code
     // they test (adj-u104c5 REQUIRED FIX 3) ----
 
@@ -14134,7 +14223,7 @@ mod tests {
     #[test]
     fn recorded_gate_outcome_reads_the_latest_gate_run_verdict_per_unit() {
         // A `GateVerdict` keyed to a unit's gate RUN - the exact shape `emit_gate_verdict`
-        // records (`{unit}/gate:{gate}#{attempt}` via `gate_verdict_key`).
+        // records (`{unit}/gate:{gate}#{attempt}` via `gate_key`).
         fn verdict(unit: &str, gate: &str, attempt: u32, pass: bool) -> Event {
             Event::new(
                 contextgraph::TYPE_GATE_VERDICT,
@@ -15604,17 +15693,6 @@ mod tests {
         /// `~retry{n}` respawn ids the conductor minted for a degenerate reviewer).
         fn spawn_ids(&self) -> Vec<String> {
             self.spawn_ids.lock().unwrap().clone()
-        }
-
-        /// How many times the named agent was spawned this run (Gap-18 tests count a
-        /// degenerate reviewer's original spawn + its bounded respawns).
-        fn spawn_count(&self, agent_id: &str) -> usize {
-            self.call_order
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|id| *id == agent_id)
-                .count()
         }
 
         /// Whether the named agent was spawned at all this run (resume tests assert an
@@ -17714,20 +17792,6 @@ mod tests {
             .unwrap();
         }
 
-        fn shape(stages: &BTreeMap<String, Stage>) -> Vec<(String, Vec<String>, String, String)> {
-            stages
-                .iter()
-                .map(|(k, s)| {
-                    (
-                        k.clone(),
-                        s.needs.clone(),
-                        s.coverage.clone(),
-                        s.criterion_id.clone(),
-                    )
-                })
-                .collect()
-        }
-
         let integrated: HashSet<String> = HashSet::new();
         let terminal: HashSet<String> = HashSet::new();
 
@@ -17784,8 +17848,8 @@ mod tests {
         }
 
         assert_eq!(
-            shape(&stages_live),
-            shape(&stages_resume),
+            stage_shape(&stages_live),
+            stage_shape(&stages_resume),
             "a live incremental fold (one harvest_proposed call per event) must yield \
              the SAME surviving stage set as a resume's single pre-wave catch-up call \
              over the identical, fully pre-populated history"
@@ -17876,20 +17940,6 @@ mod tests {
                 .with_meta(META_SPAWN, spawn)],
             )
             .unwrap();
-        }
-
-        fn shape(stages: &BTreeMap<String, Stage>) -> Vec<(String, Vec<String>, String, String)> {
-            stages
-                .iter()
-                .map(|(k, s)| {
-                    (
-                        k.clone(),
-                        s.needs.clone(),
-                        s.coverage.clone(),
-                        s.criterion_id.clone(),
-                    )
-                })
-                .collect()
         }
 
         let integrated: HashSet<String> = HashSet::new();
@@ -17984,8 +18034,8 @@ mod tests {
         assert!(stages_live.contains_key("u-new"));
 
         assert_eq!(
-            shape(&stages_live),
-            shape(&stages_resume),
+            stage_shape(&stages_live),
+            stage_shape(&stages_resume),
             "the live incremental fold and the resume's one-shot catch-up over the \
              identical legacy-then-identified history must agree exactly"
         );
@@ -21539,61 +21589,7 @@ mod tests {
                 self.appends.lock().unwrap().push(events.len());
                 self.inner.append(stream, expected, events)
             }
-            fn read_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-                dir: Direction,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_stream(stream, from, dir)
-            }
-            fn read_all(
-                &self,
-                from: crate::eventstore::Position,
-                dir: Direction,
-                filter: &Filter,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_all(from, dir, filter)
-            }
-            fn subscribe_all(
-                &self,
-                from: crate::eventstore::Position,
-                filter: &Filter,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_all(from, filter)
-            }
-            fn subscribe_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_stream(stream, from)
-            }
-        }
-
-        // A graph spy: counts per-EVENT folds (`apply`) and records the size of every per-BATCH fold
-        // (`apply_batch`), so the test can prove the ingest folds a file's whole batch in ONE
-        // `apply_batch` call and NEVER an `apply` per event.
-        #[derive(Default)]
-        struct CountingGraph {
-            per_event: AtomicU32,
-            batch_folds: SpyMutex<Vec<usize>>,
-        }
-        impl Projection for CountingGraph {
-            fn apply(&self, _e: &Event) -> Result<(), contextgraph::Error> {
-                self.per_event.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }
-            fn apply_batch(&self, events: &[Event]) -> Result<(), contextgraph::Error> {
-                self.batch_folds.lock().unwrap().push(events.len());
-                Ok(())
-            }
-            fn subgraph(&self, _s: &[String], _d: i64) -> Result<Graph, contextgraph::Error> {
-                Ok(Graph::default())
-            }
-            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
-                Ok(None)
-            }
+            delegate_event_store_reads!();
         }
 
         // K source files, each a MULTI-EVENT batch: `defN` (a CodeEntityExtracted) and `useN` which
@@ -21617,7 +21613,7 @@ mod tests {
             inner: &inner,
             appends: SpyMutex::new(Vec::new()),
         };
-        let graph = CountingGraph::default();
+        let graph = SpyGraph::default();
         let driver = Stub::new();
         let grounder = StubGrounder {
             by_query: HashMap::new(),
@@ -23923,7 +23919,7 @@ mod tests {
 
         // The adjudicator was spawned exactly twice: the degenerate original + one retry.
         assert_eq!(
-            driver.spawn_count("judge"),
+            occurrences(&driver.call_order, "judge"),
             2,
             "the degenerate adjudicator is respawned exactly once before it returns a verdict"
         );
@@ -23956,7 +23952,7 @@ mod tests {
             "a degenerate-then-recovered review must not escalate the unit"
         );
         // The implementer ran exactly once - no remediation re-implement.
-        assert_eq!(driver.spawn_count("worker"), 1);
+        assert_eq!(occurrences(&driver.call_order, "worker"), 1);
     }
 
     #[test]
@@ -24293,14 +24289,14 @@ mod tests {
         // The implementer ran exactly once - the mismatch halts rather than looping the
         // unit back through re-implement remediation.
         assert_eq!(
-            driver.spawn_count("worker"),
+            occurrences(&driver.call_order, "worker"),
             1,
             "the mismatch halts the run; the unit is not re-implemented"
         );
         // The adjudicator is NOT respawned: this is a substantive (non-degenerate) result,
         // distinct from the Gap-18 empty-result respawn path.
         assert_eq!(
-            driver.spawn_count("judge"),
+            occurrences(&driver.call_order, "judge"),
             1,
             "a non-degenerate result carrying an emit-only verdict is not respawned"
         );
@@ -24548,7 +24544,7 @@ mod tests {
         run(&cfg, &deps).expect("the review proceeds once the degenerate lens recovers");
 
         assert_eq!(
-            driver.spawn_count("sdet"),
+            occurrences(&driver.call_order, "sdet"),
             2,
             "the degenerate lens is respawned exactly once"
         );
@@ -24606,7 +24602,7 @@ mod tests {
         // The lens was spawned EXACTLY ONCE - its empty stdout was not misread as degenerate
         // (no respawn), because it emitted a ReviewFinding.
         assert_eq!(
-            driver.spawn_count("sdet"),
+            occurrences(&driver.call_order, "sdet"),
             1,
             "a lens that emitted a ReviewFinding is not degenerate on an empty stdout"
         );
@@ -24684,7 +24680,7 @@ mod tests {
 
         // The adjudicator was spawned exactly THREE times: the original + two respawns.
         assert_eq!(
-            driver.spawn_count("judge"),
+            occurrences(&driver.call_order, "judge"),
             3,
             "the respawn bound is two: original + 2 respawns, then halt"
         );
@@ -24726,7 +24722,7 @@ mod tests {
             "a degenerate-reviewer halt must emit no per-unit lesson (no misattribution)"
         );
         // The implementer ran exactly once - the halt did not restart the unit lifecycle.
-        assert_eq!(driver.spawn_count("worker"), 1);
+        assert_eq!(occurrences(&driver.call_order, "worker"), 1);
     }
 
     #[test]
@@ -26392,7 +26388,7 @@ mod tests {
         // TWO deterministic candidate implementers were spawned in one speculation group
         // - budget accounting counts BOTH candidate spawns.
         assert_eq!(
-            driver.spawn_count("worker"),
+            occurrences(&driver.call_order, "worker"),
             2,
             "K=2 parks two parallel implementer candidates (budget counts both)"
         );
@@ -26447,7 +26443,7 @@ mod tests {
         // Only the WINNING candidate is reviewed - the cancelled candidate never reaches
         // the review tiers (first-green-wins stops at the winner).
         assert_eq!(
-            driver.spawn_count("adj"),
+            occurrences(&driver.call_order, "adj"),
             1,
             "only the winning candidate is adjudicated; the loser is cancelled un-reviewed"
         );
@@ -26481,7 +26477,7 @@ mod tests {
         run(&cfg, &deps).expect("a tripped budget halts the run, it does not error");
 
         assert_eq!(
-            driver.spawn_count("worker"),
+            occurrences(&driver.call_order, "worker"),
             1,
             "budget 1 admits exactly one candidate; the second is refused over budget"
         );
@@ -26518,7 +26514,7 @@ mod tests {
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
         assert_eq!(
-            driver.spawn_count("worker"),
+            occurrences(&driver.call_order, "worker"),
             1,
             "speculation off runs exactly one implementer candidate"
         );
@@ -27100,7 +27096,7 @@ mod tests {
             "lane 0 crashed but the surviving sibling lane 1 still wins and integrates"
         );
         assert_eq!(
-            driver.spawn_count("worker"),
+            occurrences(&driver.call_order, "worker"),
             2,
             "BOTH candidate implementers were spawned - the crash did not abort the group"
         );
@@ -27171,7 +27167,7 @@ mod tests {
             "a candidate that fails the exhaustive integrate door cannot land - the unit escalates"
         );
         assert_eq!(
-            driver.spawn_count("adj"),
+            occurrences(&driver.call_order, "adj"),
             2,
             "BOTH candidates passed their narrowed gates and reached (and were approved by) the \
              adjudicator; only the exhaustive door bit them"
@@ -28703,36 +28699,7 @@ mod tests {
             }
             self.inner.append(stream, expected, events)
         }
-        fn read_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-            dir: Direction,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_stream(stream, from, dir)
-        }
-        fn read_all(
-            &self,
-            from: crate::eventstore::Position,
-            dir: Direction,
-            filter: &Filter,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_all(from, dir, filter)
-        }
-        fn subscribe_all(
-            &self,
-            from: crate::eventstore::Position,
-            filter: &Filter,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_all(from, filter)
-        }
-        fn subscribe_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_stream(stream, from)
-        }
+        delegate_event_store_reads!();
     }
 
     #[test]
@@ -32146,9 +32113,6 @@ mod tests {
                 envs: Mutex::new(Vec::new()),
             }
         }
-        fn envs(&self) -> Vec<Vec<(String, String)>> {
-            self.envs.lock().unwrap().clone()
-        }
     }
     impl AgentDriver for EnvRecordingDriver {
         fn spawn(
@@ -32219,7 +32183,7 @@ mod tests {
             let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
             let target = crate::worktree::unit_cache_sibling(&unit_worktree_dir(&scratch, "solo"))
                 .expect("a unit worktree dir must derive a cache sibling");
-            (runner.build_envs(), driver.envs(), target)
+            (snapshot(&runner.build_envs), snapshot(&driver.envs), target)
         }
 
         // A real, actually-creatable cache dir (spec 65 unit 2, NO SILENT DEGRADE:
@@ -36206,7 +36170,7 @@ mod tests {
         );
 
         assert_eq!(
-            driver.spawn_count("a"),
+            occurrences(&driver.call_order, "a"),
             (REVIEWER_RESPAWN_BOUND + 1) as usize,
             "the degenerate lens must exhaust its original spawn plus every respawn"
         );
@@ -37782,9 +37746,6 @@ mod tests {
         fn mutants_dirs(&self) -> Vec<String> {
             self.mutants_dirs.lock().unwrap().clone()
         }
-        fn build_envs(&self) -> Vec<Vec<(String, String)>> {
-            self.build_envs.lock().unwrap().clone()
-        }
         fn store_fences(&self) -> Vec<String> {
             self.store_fences.lock().unwrap().clone()
         }
@@ -38617,23 +38578,6 @@ mod tests {
         // A `Projection` double returning the addendum 6.2 tiered subgraph for combat.rs, so the
         // wiring is exercised over a discriminating multi-tier edge set (a real 29a fold scopes a
         // reference to its own file, so it cannot produce a cross-file INFERRED target to split on).
-        struct FixedGraph(Graph);
-        impl Projection for FixedGraph {
-            fn apply(&self, _e: &crate::eventstore::Event) -> Result<(), contextgraph::Error> {
-                Ok(())
-            }
-            fn subgraph(
-                &self,
-                _seed: &[String],
-                _depth: i64,
-            ) -> Result<Graph, contextgraph::Error> {
-                Ok(self.0.clone())
-            }
-            fn resolve(&self, _m: &str) -> Result<Option<String>, contextgraph::Error> {
-                Ok(None)
-            }
-        }
-
         // A grep grounder over a temp tree whose only match seeds the traversal on combat.rs.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("combat.rs"), "fn combat_step() {}\n").unwrap();
@@ -38648,7 +38592,10 @@ mod tests {
         let cfg = Config::default();
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
-        let graph = FixedGraph(confidence_tier_fixture());
+        let graph = SpyGraph {
+            graph: confidence_tier_fixture(),
+            ..Default::default()
+        };
 
         // The grep radius alone (graph: None) is the fallback floor: just the seed file.
         let base_deps = Deps {
@@ -40321,15 +40268,18 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_compensated_unit_re_gates_its_re_implemented_tree_not_the_condemned_verdict() {
-        // spec 12, unit 4 (the reverse gear's RE-VERIFY half): a compensated unit re-enters at
-        // an ADVANCED attempt, so its re-implemented tree runs the gate under a FRESH
-        // (unit, attempt, gate) key instead of REPLAYING the condemned pass's verdict. Without
-        // the attempt advance the unit re-enters at attempt 0 and the content-BLIND exact-key
-        // replay answers the gate from the condemned green - the gate COMMAND never runs on the
-        // re-implemented code (a live false green). Proven by the gate-run count: unit-a's gate
-        // `ga` must run TWICE (once per implemented tree), not once.
+    /// The shared case body for the reverse gear's RE-VERIFY half (spec 12, unit 4): unit-b
+    /// condemns unit-a, whose `driver` implements distinct content per tree; unit-a must
+    /// re-integrate its re-implemented tree, its gate `ga` must RUN `ga_runs` times (never
+    /// replaying a condemned verdict), and the re-run verdict must be recorded under the fresh
+    /// `regate_key` as a real gate RUN (no cache-hit / skip citation).
+    fn assert_compensated_unit_re_gates(
+        driver: &dyn AgentDriver,
+        ga_runs: usize,
+        runs_why: &str,
+        regate_key: &str,
+        regate_why: &str,
+    ) {
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
@@ -40362,11 +40312,10 @@ mod tests {
             .insert("unit-b".into(), mk("unit-b", "gb", vec!["unit-a".into()]));
 
         let store = Store::open(":memory:").unwrap();
-        let driver = CompRegateDriver;
         let runner = RecordingRunner::new(&[]);
         let deps = Deps {
             store: &store,
-            driver: &driver,
+            driver,
             gates: &runner,
             repo: repo_path.clone(),
             grounder: None,
@@ -40382,29 +40331,37 @@ mod tests {
         );
         assert_eq!(rs.units["unit-b"].status, ledger::Status::Integrated);
 
-        // The crux: `ga` RAN on BOTH of unit-a's trees. Under the stale-replay bug it runs once
-        // (attempt 0) and the re-implemented tree replays that green without re-running.
-        let ga_runs = runner.calls().into_iter().filter(|c| c == "ga").count();
-        assert_eq!(
-            ga_runs, 2,
-            "unit-a's gate must RE-RUN on the re-implemented tree, not replay the condemned attempt-0 verdict; ga runs={ga_runs}"
-        );
+        let runs = runner.calls().into_iter().filter(|c| c == "ga").count();
+        assert_eq!(runs, ga_runs, "{runs_why}; ga runs={runs}");
 
-        // And the re-run verdict is recorded under the ADVANCED attempt key, a real gate RUN
-        // (no cache-hit / skip citation) on the re-implemented tree.
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         let regate = events.iter().any(|e| {
-            e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some("unit-a/gate:ga#1")
+            e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(regate_key)
                 && !e.meta.contains_key(META_CACHE_HIT)
                 && serde_json::from_slice::<Value>(&e.data)
                     .ok()
                     .and_then(|v| v.get("skipped").and_then(Value::as_bool))
                     != Some(true)
         });
-        assert!(
-            regate,
-            "the re-implemented tree records a fresh gate:ga#1 RUN verdict (not a replay/cache-hit/skip)"
-        );
+        assert!(regate, "{regate_why}");
+    }
+
+    test_cases! {
+            // spec 12, unit 4 (the reverse gear's RE-VERIFY half): a compensated unit re-enters at
+            // an ADVANCED attempt, so its re-implemented tree runs the gate under a FRESH
+            // (unit, attempt, gate) key instead of REPLAYING the condemned pass's verdict. Without
+            // the attempt advance the unit re-enters at attempt 0 and the content-BLIND exact-key
+            // replay answers the gate from the condemned green - the gate COMMAND never runs on the
+            // re-implemented code (a live false green). Proven by the gate-run count: unit-a's gate
+            // `ga` must run TWICE (once per implemented tree), not once.
+        a_compensated_unit_re_gates_its_re_implemented_tree_not_the_condemned_verdict =>
+            assert_compensated_unit_re_gates(
+                &CompRegateDriver,
+                2,
+                "unit-a's gate must RE-RUN on the re-implemented tree, not replay the condemned attempt-0 verdict",
+                "unit-a/gate:ga#1",
+                "the re-implemented tree records a fresh gate:ga#1 RUN verdict (not a replay/cache-hit/skip)",
+            );
     }
 
     /// A driver for the reverse-gear re-gate test on the REMEDIATED lifecycle (spec 12,
@@ -40464,105 +40421,33 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_compensated_unit_that_remediated_before_integrating_re_gates_at_a_fresh_key() {
-        // spec 12, unit 4 (the reverse gear's RE-VERIFY half on the REMEDIATED lifecycle - the
-        // blocking regression sdet-s12u4-reentry-collides-with-prior-lifecycle-attempt-key /
-        // adv-s12u4-collision-proven-by-run): unit-a REJECTS its own attempt 0 and only approves
-        // on attempt 1, so it integrates having ALREADY recorded a green gate verdict at
-        // attempt 1. When unit-b then condemns it, the reverse gear must re-enter it ONE PAST
-        // its HIGH-WATER attempt (attempt 2) - NOT at attempt 1 where its OWN prior remediation
-        // already recorded a green. Advancing only compensation-count+1 over the run-start
-        // prior_attempts snapshot (=0 in-run) lands it back on attempt 1, where the
-        // content-BLIND exact-key replay answers the re-implemented tree from the condemned
-        // green and the gate COMMAND never runs (a live false green). Proven by the gate-run
-        // count: unit-a's gate `ga` must run THREE times (attempt 0, the attempt-1
-        // re-implementation, and the attempt-2 reverse-gear re-implementation), not two.
-        //
-        // The zero-remediation sibling (a_compensated_unit_re_gates_its_re_implemented_tree_...)
-        // only drives unit-a approving its first pass, so a fixed +1 advance passes it; this
-        // case is the mutation-distinguishing one it missed.
-        let repo = init_repo();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.agents.insert("lens".into(), agent("lens"));
-        cfg.agents.insert("judge".into(), agent("judge"));
-        // Distinct gates per unit so a gate-run count is attributable to one unit.
-        cfg.workflow.gates.insert("ga".into(), gate_def("true"));
-        cfg.workflow.gates.insert("gb".into(), gate_def("true"));
-        let panel = crate::config::ReviewPanel {
-            lenses: vec!["lens".into()],
-            adjudicator: "judge".into(),
-            ..Default::default()
-        };
-        let mk = |name: &str, gate: &str, needs: Vec<String>| Stage {
-            name: name.into(),
-            agent: "worker".into(),
-            gates: vec![gate.into()],
-            on_pass: "merge".into(),
-            needs,
-            review: panel.clone(),
-            ..Default::default()
-        };
-        cfg.workflow
-            .stages
-            .insert("unit-a".into(), mk("unit-a", "ga", vec![]));
-        cfg.workflow
-            .stages
-            .insert("unit-b".into(), mk("unit-b", "gb", vec!["unit-a".into()]));
-
-        let store = Store::open(":memory:").unwrap();
-        let driver = CompRegateRemediatedDriver;
-        let runner = RecordingRunner::new(&[]);
-        let deps = Deps {
-            store: &store,
-            driver: &driver,
-            gates: &runner,
-            repo: repo_path.clone(),
-            grounder: None,
-            graph: None,
-            criteria: Vec::new(),
-        };
-        let rs = run(&cfg, &deps).unwrap();
-
-        assert_eq!(
-            rs.units["unit-a"].status,
-            ledger::Status::Integrated,
-            "unit-a re-integrates its re-implemented tree after the rollback"
-        );
-        assert_eq!(rs.units["unit-b"].status, ledger::Status::Integrated);
-
-        // The crux: `ga` RAN on ALL THREE of unit-a's trees (attempt 0, the attempt-1
-        // re-implementation, and the reverse-gear attempt-2 re-implementation). Under the
-        // stale-key collision it runs only twice - the reverse-gear re-entry lands on attempt 1
-        // and replays unit-a's OWN prior-remediation green without re-running the command.
-        let ga_runs = runner.calls().into_iter().filter(|c| c == "ga").count();
-        assert_eq!(
-            ga_runs, 3,
-            "unit-a's gate must RE-RUN on the re-implemented tree at a FRESH attempt key, not \
-             replay the attempt-1 green its own prior remediation recorded; ga runs={ga_runs}"
-        );
-
-        // And the reverse-gear verdict is recorded under the HIGH-WATER-advanced attempt key
-        // (`#2`, one past the attempt-1 green), a real gate RUN (no cache-hit / skip citation).
-        // A `#1` re-run here would be the collision: that key was already green from unit-a's
-        // own remediation.
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let regate = events.iter().any(|e| {
-            e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some("unit-a/gate:ga#2")
-                && !e.meta.contains_key(META_CACHE_HIT)
-                && serde_json::from_slice::<Value>(&e.data)
-                    .ok()
-                    .and_then(|v| v.get("skipped").and_then(Value::as_bool))
-                    != Some(true)
-        });
-        assert!(
-            regate,
-            "the reverse-gear re-implemented tree records a fresh gate:ga#2 RUN verdict at the \
-             high-water-advanced key (not a replay/cache-hit/skip, and not a colliding #1)"
-        );
+    test_cases! {
+            // spec 12, unit 4 (the reverse gear's RE-VERIFY half on the REMEDIATED lifecycle - the
+            // blocking regression sdet-s12u4-reentry-collides-with-prior-lifecycle-attempt-key /
+            // adv-s12u4-collision-proven-by-run): unit-a REJECTS its own attempt 0 and only approves
+            // on attempt 1, so it integrates having ALREADY recorded a green gate verdict at
+            // attempt 1. When unit-b then condemns it, the reverse gear must re-enter it ONE PAST
+            // its HIGH-WATER attempt (attempt 2) - NOT at attempt 1 where its OWN prior remediation
+            // already recorded a green. Advancing only compensation-count+1 over the run-start
+            // prior_attempts snapshot (=0 in-run) lands it back on attempt 1, where the
+            // content-BLIND exact-key replay answers the re-implemented tree from the condemned
+            // green and the gate COMMAND never runs (a live false green). Proven by the gate-run
+            // count: unit-a's gate `ga` must run THREE times (attempt 0, the attempt-1
+            // re-implementation, and the attempt-2 reverse-gear re-implementation), not two.
+            //
+            // The zero-remediation sibling (a_compensated_unit_re_gates_its_re_implemented_tree_...)
+            // only drives unit-a approving its first pass, so a fixed +1 advance passes it; this
+            // case is the mutation-distinguishing one it missed.
+        a_compensated_unit_that_remediated_before_integrating_re_gates_at_a_fresh_key =>
+            assert_compensated_unit_re_gates(
+                &CompRegateRemediatedDriver,
+                3,
+                "unit-a's gate must RE-RUN on the re-implemented tree at a FRESH attempt key, not \
+                 replay the attempt-1 green its own prior remediation recorded",
+                "unit-a/gate:ga#2",
+                "the reverse-gear re-implemented tree records a fresh gate:ga#2 RUN verdict at the \
+                 high-water-advanced key (not a replay/cache-hit/skip, and not a colliding #1)",
+            );
     }
 
     /// A driver for the crash-resume compensation test (spec 12, unit 4): unit-a's implementer
@@ -41284,36 +41169,7 @@ mod tests {
             }
             self.inner.append(stream, expected, events)
         }
-        fn read_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-            dir: Direction,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_stream(stream, from, dir)
-        }
-        fn read_all(
-            &self,
-            from: crate::eventstore::Position,
-            dir: Direction,
-            filter: &Filter,
-        ) -> Result<Vec<Event>, crate::eventstore::Error> {
-            self.inner.read_all(from, dir, filter)
-        }
-        fn subscribe_all(
-            &self,
-            from: crate::eventstore::Position,
-            filter: &Filter,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_all(from, filter)
-        }
-        fn subscribe_stream(
-            &self,
-            stream: &str,
-            from: crate::eventstore::Revision,
-        ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-            self.inner.subscribe_stream(stream, from)
-        }
+        delegate_event_store_reads!();
     }
 
     #[test]
@@ -43689,7 +43545,7 @@ mod tests {
         // (2) It was spawned PER CANDIDATE (once per lane), so WHICHEVER candidate wins ships with
         // periphery tests its gates judged - not only lane 0. Two candidates => two sdet spawns.
         assert_eq!(
-            driver.spawn_count(ROLE_SDET_AUTHOR),
+            occurrences(&driver.call_order, ROLE_SDET_AUTHOR),
             2,
             "the sdet-author spawns once per candidate (K=2), so any winner ships tested"
         );
@@ -44259,29 +44115,17 @@ mod tests {
                 planner_prompts: Mutex::new(Vec::new()),
             }
         }
-        /// A driver whose adjudicator REJECTS the DAG (models a rule 7/8 ownership or
-        /// open-disposition defect the gate must catch), then approves the revised DAG.
-        fn rejecting(plan_emits: Vec<(String, Value)>) -> Self {
+        /// A driver whose adjudicator REJECTS the DAG. With `always` false it rejects the
+        /// first DAG (models a rule 7/8 ownership or open-disposition defect the gate must
+        /// catch), then approves the revised DAG; with `always` true it NEVER approves
+        /// (models an unresolvable rule 7/8 defect): the planner re-plans to the retry bound
+        /// and the gate escalates.
+        fn rejecting(plan_emits: Vec<(String, Value)>, always: bool) -> Self {
             CritiqueDriver {
-                reject_dag: true,
+                reject_dag: !always,
+                reject_always: always,
                 ..Self::new(plan_emits)
             }
-        }
-        /// A driver whose adjudicator NEVER approves (models an unresolvable rule 7/8
-        /// defect): the planner re-plans to the retry bound and the gate escalates.
-        fn always_rejecting(plan_emits: Vec<(String, Value)>) -> Self {
-            CritiqueDriver {
-                reject_always: true,
-                ..Self::new(plan_emits)
-            }
-        }
-        fn count(&self, id: &str) -> usize {
-            self.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|c| *c == id)
-                .count()
         }
     }
     impl AgentDriver for CritiqueDriver {
@@ -44397,16 +44241,16 @@ mod tests {
         // The fan-out released: the overlapping units run (the partitioner serializes them
         // into separate batches, so they integrate cleanly).
         assert!(
-            driver.count("worker") >= 1,
+            occurrences(&driver.calls, "worker") >= 1,
             "the fan-out must release on approve; worker ran {}x",
-            driver.count("worker")
+            occurrences(&driver.calls, "worker")
         );
         // No re-plan: an approve on the first pass means the planner runs exactly once.
         assert_eq!(
-            driver.count("planner"),
+            occurrences(&driver.calls, "planner"),
             1,
             "no reject means no re-plan; planner ran {}x",
-            driver.count("planner")
+            occurrences(&driver.calls, "planner")
         );
     }
 
@@ -44479,7 +44323,7 @@ mod tests {
         std::fs::write(dir.path().join("alpha.rs"), format!("// {crit}\n")).unwrap();
         let cfg = critique_cfg();
         let st = Store::open(":memory:").unwrap();
-        let driver = CritiqueDriver::rejecting(Vec::new());
+        let driver = CritiqueDriver::rejecting(Vec::new(), false);
         let grep = crate::grounder::Grep {
             root: dir.path().to_string_lossy().into_owned(),
         };
@@ -44496,9 +44340,9 @@ mod tests {
 
         // The reject fed back to the planner (re-plan), then the revised DAG approved.
         assert!(
-            driver.count("planner") > 1,
+            occurrences(&driver.calls, "planner") > 1,
             "a rule 7/8 reject must feed back to the planner; planner ran {}x",
-            driver.count("planner")
+            occurrences(&driver.calls, "planner")
         );
         assert_eq!(
             rs.units["plan-critique"].status,
@@ -44544,20 +44388,20 @@ mod tests {
             "a clean DAG approves and the gate integrates (review-only, no artifact)"
         );
         assert_eq!(
-            driver.count("planner"),
+            occurrences(&driver.calls, "planner"),
             1,
             "no reject means no re-plan; the planner runs exactly once"
         );
         // The gate really reviewed the DAG (the adjudicator rendered the approve).
         assert!(
-            driver.count("judge") >= 1,
+            occurrences(&driver.calls, "judge") >= 1,
             "the gate must run the adjudicator to render its verdict, not approve trivially"
         );
         // The fan-out released: the implementer ran for each baseline unit.
         assert!(
-            driver.count("worker") >= 2,
+            occurrences(&driver.calls, "worker") >= 2,
             "the fan-out releases on approve; worker ran {}x",
-            driver.count("worker")
+            occurrences(&driver.calls, "worker")
         );
     }
 
@@ -44974,7 +44818,7 @@ mod tests {
             ledger::Status::Integrated
         );
         assert!(
-            d1.count("judge") >= 1,
+            occurrences(&d1.calls, "judge") >= 1,
             "the first run must run the adjudicator"
         );
 
@@ -44991,12 +44835,12 @@ mod tests {
         };
         let rs2 = run(&cfg, &deps2).unwrap();
         assert_eq!(
-            d2.count("judge"),
+            occurrences(&d2.calls, "judge"),
             0,
             "a resolved gate must NOT re-spawn its adjudicator on resume"
         );
         assert_eq!(
-            d2.count("planner"),
+            occurrences(&d2.calls, "planner"),
             0,
             "a resumed run over a settled DAG must not re-run the planner"
         );
@@ -45060,7 +44904,7 @@ mod tests {
         // Run 1: the gate escalates (an unresolvable rule 7/8 defect - modelled by an
         // always-rejecting adjudicator, since blast-radius overlap no longer rejects); the
         // fan-out is held (no worker runs).
-        let d1 = CritiqueDriver::always_rejecting(split());
+        let d1 = CritiqueDriver::rejecting(split(), true);
         let deps1 = Deps {
             store: &st,
             driver: &d1,
@@ -45084,7 +44928,7 @@ mod tests {
             "a plan-critique gate reject must be stamped 'reject'"
         );
         assert_eq!(
-            d1.count("worker"),
+            occurrences(&d1.calls, "worker"),
             0,
             "run 1: no implementer runs while the gate is unresolved; calls: {:?}",
             d1.calls.lock().unwrap()
@@ -45104,7 +44948,7 @@ mod tests {
         let _ = run(&cfg, &deps2).unwrap();
         // The resume short-circuit correctly does NOT re-run the gate...
         assert_eq!(
-            d2.count("judge"),
+            occurrences(&d2.calls, "judge"),
             0,
             "resume: an already-resolved (escalated) gate must not re-spawn its adjudicator"
         );
@@ -45113,7 +44957,7 @@ mod tests {
         // window's proposals (needs:[]) as READY and the pre-gate wave runs them BEFORE
         // the terminal-hold arm ever fires.
         assert_eq!(
-            d2.count("worker"),
+            occurrences(&d2.calls, "worker"),
             0,
             "resume: the fan-out must stay HELD over an ESCALATED gate; workers ran: {:?}",
             d2.calls.lock().unwrap()
@@ -45166,13 +45010,13 @@ mod tests {
             "a disjoint decomposition approves and the gate integrates"
         );
         assert_eq!(
-            driver.count("planner"),
+            occurrences(&driver.calls, "planner"),
             1,
             "no reject means no re-plan; the planner runs exactly once"
         );
         // The proposed units - held behind the gate by the fix - release on approve.
         assert_eq!(
-            driver.count("worker"),
+            occurrences(&driver.calls, "worker"),
             2,
             "an approve releases the PROPOSED fan-out units; workers ran: {:?}",
             driver.calls.lock().unwrap()
@@ -45203,10 +45047,13 @@ mod tests {
         // The planner re-emits the SAME id on the re-plan (a refinement, the spec-31
         // path): change 1 folds it in place, so the revised DAG has one unit per
         // criterion and the second critique approves.
-        let driver = CritiqueDriver::rejecting(vec![(
-            TYPE_UNIT_PROPOSED.to_string(),
-            json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[],"gates":["ok"]}),
-        )]);
+        let driver = CritiqueDriver::rejecting(
+            vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id":"u-a","agent":"worker","criterion":criterion,"needs":[],"gates":["ok"]}),
+            )],
+            false,
+        );
         let deps = Deps {
             store: &st,
             driver: &driver,
@@ -45220,7 +45067,7 @@ mod tests {
 
         // The reject drove a re-plan: the planner ran twice (initial + re-emit).
         assert_eq!(
-            driver.count("planner"),
+            occurrences(&driver.calls, "planner"),
             2,
             "a plan-critique reject must re-plan; the planner runs its initial + re-emit prompt"
         );
@@ -45265,14 +45112,6 @@ mod tests {
                 plan_emits,
                 calls: Mutex::new(Vec::new()),
             }
-        }
-        fn count(&self, id: &str) -> usize {
-            self.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|c| *c == id)
-                .count()
         }
     }
     impl AgentDriver for ParkingGateDriver {
@@ -45346,7 +45185,7 @@ mod tests {
         };
         run(&cfg, &deps1).unwrap();
         assert_eq!(
-            d1.count("worker"),
+            occurrences(&d1.calls, "worker"),
             0,
             "run 1: no implementer runs while the gate is mid-review; calls: {:?}",
             d1.calls.lock().unwrap()
@@ -45366,7 +45205,7 @@ mod tests {
         };
         run(&cfg, &deps2).unwrap();
         assert_eq!(
-            d2.count("worker"),
+            occurrences(&d2.calls, "worker"),
             0,
             "resume: the fan-out must stay HELD while the gate is mid-review; workers: {:?}",
             d2.calls.lock().unwrap()
@@ -45412,7 +45251,7 @@ mod tests {
         run(&cfg, &deps).unwrap();
 
         assert!(
-            driver.count("adversary") >= 1,
+            occurrences(&driver.calls, "adversary") >= 1,
             "the adversary must actually have been spawned (and parked), or this test proves nothing; calls: {:?}",
             driver.calls.lock().unwrap()
         );
