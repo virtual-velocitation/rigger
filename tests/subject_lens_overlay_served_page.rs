@@ -29,53 +29,10 @@
 
 mod common;
 
-use std::process::Command;
-
 use common::fixtures::tool_available;
+use common::served::run_node_harness;
+use common::served::vm_harness;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page (the same slice the viz test drives).
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
-
-/// Spawn `node` on a self-contained vm harness (a complete node program that reads the served page
-/// script from `argv[2]` and drives it under a DOM shim), asserting it exits 0 and prints `ok_token`.
-/// Shared by every runtime guard in this file so the node-spawn boilerplate lives once.
-fn run_node_harness(harness_src: &str, ok_token: &str) {
-    let page = dash::live_page();
-    let script = page_script(&page);
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the runtime harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, harness_src).expect("write the runtime harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served client seam");
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.success(),
-        "the runtime harness must drive the client seam, but node failed:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-    assert!(
-        stdout.contains(ok_token),
-        "the runtime harness must confirm '{ok_token}':\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
-    );
-}
 
 /// The SERVED root page SHIPS the client seam (spec 55 c4): the subject-sticky lens control, the
 /// re-projection fetch + renderer, the rationale-overlay toggle, and the overlay data path - each
@@ -537,25 +494,6 @@ const fetch = function(url){
 const setTimeout = function(){ return 0; };
 "#;
 
-/// Assemble a complete node vm program: the shared shim, then the served page script (read from
-/// `argv[2]`), then the per-test driver - the same three-part composition the primary seam harness
-/// uses, parameterized on the driver so each additive guard is one focused node program.
-fn build_additive_harness(driver: &str) -> String {
-    const TEMPLATE: &str = r##""use strict";
-const vm = require("vm");
-const fs = require("fs");
-const pageScript = fs.readFileSync(process.argv[2], "utf8");
-const SHIM = String.raw`__ADDITIVE_SHIM__`;
-const DRIVER = String.raw`__ADDITIVE_DRIVER__`;
-const sandbox = { console: console, process: process };
-vm.createContext(sandbox);
-vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-additive-harness.js" });
-"##;
-    TEMPLATE
-        .replace("__ADDITIVE_SHIM__", ADDITIVE_SHIM)
-        .replace("__ADDITIVE_DRIVER__", driver)
-}
-
 /// Driver: a NEIGHBORHOOD rationale-badge click EXPANDS and does NOT re-seed. It renders the real
 /// neighborhood (overlay on) so the badge appears inside the node's `data-seed` div, PARSES the served
 /// bytes into a faithful mini-DOM (real parent links, `closest()` a true ancestor walk), then fires the
@@ -777,7 +715,11 @@ fn a_neighborhood_rationale_badge_click_expands_and_does_not_reseed() {
         return;
     }
     run_node_harness(
-        &build_additive_harness(BADGE_NO_RESEED_DRIVER),
+        &vm_harness(
+            ADDITIVE_SHIM,
+            BADGE_NO_RESEED_DRIVER,
+            "dash-additive-harness.js",
+        ),
         "OK badge-click-expands-no-reseed",
     );
 }
@@ -797,7 +739,11 @@ fn the_drill_view_is_byte_identical_with_the_overlay_off() {
         return;
     }
     run_node_harness(
-        &build_additive_harness(DRILL_OVERLAY_OFF_DRIVER),
+        &vm_harness(
+            ADDITIVE_SHIM,
+            DRILL_OVERLAY_OFF_DRIVER,
+            "dash-additive-harness.js",
+        ),
         "OK drill-overlay-off-byte-identical",
     );
 }

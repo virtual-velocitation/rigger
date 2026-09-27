@@ -28,19 +28,8 @@ mod common;
 use std::process::Command;
 
 use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
 
 /// STRUCTURAL: the served page SHIPS the separation mechanism and wires it into the force path of the
 /// SVG emitter. Bound to the c1 mechanism (the exact function names + the `if (!opts.layout)` force

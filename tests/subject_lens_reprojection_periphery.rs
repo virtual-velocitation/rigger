@@ -28,15 +28,14 @@
 
 mod common;
 
-use std::collections::HashMap;
-
 use common::fixtures::edge;
 use common::fixtures::plain;
+use common::served::served_json;
 use rigger::contextgraph::{
     Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
     REL_REALIZES, TIER_EXTRACTED, TIER_INFERRED,
 };
-use rigger::dash::{reproject, route, Cluster, ClusterEdge, Lens, UnresolvedMember};
+use rigger::dash::{reproject, Cluster, ClusterEdge, Lens, UnresolvedMember};
 
 // The fixture concept the whole test re-grains, and its two coupling communities.
 const CONCEPT: &str = "concept/1/0";
@@ -236,7 +235,10 @@ fn concept_files_regrain_resolves_bare_members_to_their_defining_files() {
 #[test]
 fn the_served_graph_route_reprojects_a_seed_under_a_lens() {
     // --- seed + lens=code via the route: the concept's community re-grain ---
-    let code = served_json("/api/graph?seed=concept%2F1%2F0&lens=code&resolution=1");
+    let code = served_json(
+        &reproj_graph(),
+        "/api/graph?seed=concept%2F1%2F0&lens=code&resolution=1",
+    );
     let keys: Vec<&str> = code["clusters"]
         .as_array()
         .expect("clusters array")
@@ -255,7 +257,10 @@ fn the_served_graph_route_reprojects_a_seed_under_a_lens() {
     );
 
     // --- seed + lens=files via the route: distinct defining files + the unresolved sidecar ---
-    let files = served_json("/api/graph?seed=concept%2F1%2F0&lens=files");
+    let files = served_json(
+        &reproj_graph(),
+        "/api/graph?seed=concept%2F1%2F0&lens=files",
+    );
     let file_keys: Vec<&str> = files["clusters"]
         .as_array()
         .expect("clusters array")
@@ -274,7 +279,7 @@ fn the_served_graph_route_reprojects_a_seed_under_a_lens() {
     );
 
     // --- COMPOSITION ABSENT: a seed with NO lens is the seeded neighborhood, not a re-projection ---
-    let neighborhood = served_json("/api/graph?seed=concept%2F1%2F0");
+    let neighborhood = served_json(&reproj_graph(), "/api/graph?seed=concept%2F1%2F0");
     assert_eq!(
         neighborhood["seed"].as_str(),
         Some(CONCEPT),
@@ -305,28 +310,4 @@ fn file_bucket(file: &str) -> Cluster {
         kind: KIND_CODE_ENTITY.to_string(),
         label: None,
     }
-}
-
-/// Drive the public `route` for `GET <target>` over the fixture and parse the body as JSON.
-fn served_json(target: &str) -> serde_json::Value {
-    let graph = reproj_graph();
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        &graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {target} must be served 200 (the re-projection route never errors on a live graph)"
-    );
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
 }

@@ -221,7 +221,7 @@ fn clustered_overview_under_files_lens_carries_an_accurate_empty_state_when_the_
     );
 
     // Every code entity here IS a bare cross-file placeholder with ZERO matching definitions
-    // anywhere in the graph (no `ce(...)` real definition exists at all) - unresolvable honestly, so
+    // anywhere in the graph (no real code-entity definition exists at all) - unresolvable honestly, so
     // the fold still admits nothing even though `KIND_CODE_ENTITY` nodes exist. (A real definition
     // would fold under its own file regardless of whether it also candidates for some OTHER bare
     // placeholder's ambiguous resolution - that shape is a different, already-covered test:

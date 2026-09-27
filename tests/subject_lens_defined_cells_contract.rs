@@ -19,14 +19,15 @@
 //!    the serialized body carries NONE of their keys - byte-identical to the pre-criterion-2 shape a
 //!    files or full-derived cell already emitted - and the body is deterministic across re-projections.
 
-use std::collections::HashMap;
+mod common;
 
+use common::served::served_json;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, REL_CALLS, REL_IN_COMMUNITY,
     REL_REALIZES,
 };
 use rigger::dash::{
-    reproject, route, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
+    reproject, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
     REPROJECT_NO_CONCEPT,
 };
 
@@ -81,26 +82,6 @@ fn concepts_lens() -> Lens {
 /// The bucket keys a re-projection rendered, in order.
 fn keys(re: &rigger::dash::Reprojection) -> Vec<&str> {
     re.clusters.iter().map(|c| c.key.as_str()).collect()
-}
-
-/// Drive the public `route` for `GET <target>` over `graph` and parse the body as JSON.
-fn served_json(graph: &Graph, target: &str) -> serde_json::Value {
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(resp.status, 200, "GET {target} must be served 200");
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
 }
 
 const WIDE_CONCEPT: &str = "concept/2/0";

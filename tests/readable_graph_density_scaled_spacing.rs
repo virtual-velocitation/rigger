@@ -34,19 +34,8 @@ mod common;
 use std::process::Command;
 
 use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
 
 /// STRUCTURAL: the served page SHIPS the density-spread lever AND wires the radius/label accessors
 /// into the force layout, so the scaling governs the actual force-laid views. Bound to the c2

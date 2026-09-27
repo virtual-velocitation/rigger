@@ -32,19 +32,8 @@ mod common;
 use std::process::Command;
 
 use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
 
 /// The SERVED root page SHIPS the directed-call layered render (spec 52 c5): the server-`layer`-keyed
 /// left-to-right layout with a within-layer barycenter sweep, the SVG arrowhead marker that draws

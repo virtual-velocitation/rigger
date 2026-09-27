@@ -26,19 +26,8 @@ mod common;
 use std::process::Command;
 
 use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
 
 /// The SERVED root page SHIPS the whole-graph exploration viz (spec 42 c5): the deterministic
 /// force layout, the SVG emit (`<circle>`/`<line>`/`<text>`), the overview + drill renderers, the

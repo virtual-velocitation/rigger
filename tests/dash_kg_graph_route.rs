@@ -31,6 +31,8 @@ use std::time::{Duration, Instant};
 use common::fixtures::chain_graph;
 use common::fixtures::star_graph;
 use common::fixtures::tool_available;
+use common::served::body_of;
+use common::served::page_script;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY,
     REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
@@ -155,13 +157,6 @@ fn fetch_served(path: &str, graph: &Graph) -> String {
     panic!(
         "the dash server never served {path} over the real socket after many fresh-port attempts"
     );
-}
-
-/// Split a raw HTTP response into its body (everything past the header terminator).
-fn body_of(resp: &str) -> &str {
-    resp.split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .expect("a served response body")
 }
 
 /// The SERVED `/api/graph` route returns the seeded neighborhood as tier-tagged JSON over the real
@@ -297,18 +292,6 @@ fn the_served_root_page_ships_the_kg_panel_and_select_to_seed_wiring() {
         !page[r..render_end].contains("kgpanel"),
         "render() must NOT touch the KG panel, so an operator's selection survives the live poll"
     );
-}
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
 }
 
 /// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN select-to-seed path: it

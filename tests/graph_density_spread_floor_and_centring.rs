@@ -31,22 +31,9 @@
 
 mod common;
 
-use std::process::Command;
-
 use common::fixtures::tool_available;
+use common::served::run_page_harness;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
 
 /// The head of the node-vm harness: a minimal DOM shim so the page's top-level wiring
 /// (`el(...).addEventListener`, `loadKgOverview()`) does not throw, then the opening of the driver's
@@ -90,31 +77,6 @@ const sandbox = { console: console };
 vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-density-spread-harness.js" });
 "##;
-
-/// Splice `driver` (a JS body, no backticks / no `${...}`) into the harness, run it against the served
-/// page's script under node, and return (success, stdout, stderr). The caller asserts on the sentinel
-/// the driver prints so a silent early return can never masquerade as a pass.
-fn run_driver(page: &str, driver: &str) -> (bool, String, String) {
-    let script = page_script(page);
-    let harness = format!("{HARNESS_HEAD}{driver}{HARNESS_TAIL}");
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the density-spread harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, &harness).expect("write the density-spread harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served layout");
-    (
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
-}
 
 /// STRUCTURAL: the served page wires the LAYERED call-DAG path (`opts.layout`) with the BARE 4-arg
 /// `forceLayout` signature - no radius/label accessors - so that path never density-scales. This is the
@@ -184,7 +146,10 @@ fn the_spread_factor_floors_at_one_off_the_dense_path() {
         return;
     }
     let page = dash::live_page();
-    let (ok, stdout, stderr) = run_driver(&page, DRIVER_SPREAD_FLOOR);
+    let (ok, stdout, stderr) = run_page_harness(
+        &page,
+        &format!("{HARNESS_HEAD}{}{HARNESS_TAIL}", DRIVER_SPREAD_FLOOR),
+    );
     assert!(
         ok && stdout.contains("OK spread-floor"),
         "kgSpread must floor at 1 off the dense path:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
@@ -259,7 +224,10 @@ fn the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_i
         return;
     }
     let page = dash::live_page();
-    let (ok, stdout, stderr) = run_driver(&page, DRIVER_BACKCOMPAT_PANEL);
+    let (ok, stdout, stderr) = run_page_harness(
+        &page,
+        &format!("{HARNESS_HEAD}{}{HARNESS_TAIL}", DRIVER_BACKCOMPAT_PANEL),
+    );
     assert!(
         ok && stdout.contains("OK backcompat-panel"),
         "the bare 4-arg layout must stay panel-sized while the accessor path grows past it:\n--- \
@@ -323,7 +291,10 @@ fn the_enlarged_canvas_is_centred_on_the_panel_middle() {
         return;
     }
     let page = dash::live_page();
-    let (ok, stdout, stderr) = run_driver(&page, DRIVER_CENTRED_CANVAS);
+    let (ok, stdout, stderr) = run_page_harness(
+        &page,
+        &format!("{HARNESS_HEAD}{}{HARNESS_TAIL}", DRIVER_CENTRED_CANVAS),
+    );
     assert!(
         ok && stdout.contains("OK centred-canvas"),
         "the enlarged canvas must be centred on the panel middle:\n--- stdout ---\n{stdout}\n--- \

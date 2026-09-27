@@ -25,11 +25,14 @@
 //! tests are not feature-gated and run in both - the fold and the read they exercise are always
 //! compiled.
 
+mod common;
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
+use common::served::body_of;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::contextgraph::{
     Graph, Projection, REL_CONTAINS, REL_GOVERNS, TYPE_CODE_ENTITY_EXTRACTED, TYPE_DECISION_MADE,
@@ -323,13 +326,6 @@ fn fetch_whole_served(graph_db: &str, identity: &str, path: &str) -> String {
     panic!(
         "the dash server never served {path} over the real socket after many fresh-port attempts"
     );
-}
-
-/// The body (everything past the header terminator) of a raw HTTP response.
-fn body_of(resp: &str) -> &str {
-    resp.split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .expect("a served response body")
 }
 
 /// Integration (spec 45, criterion 2) over the REAL serve socket: on a never-built repo (a graph.db

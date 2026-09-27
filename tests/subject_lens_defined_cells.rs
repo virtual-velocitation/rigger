@@ -30,14 +30,15 @@
 //! REPROJECT_NO_CONCEPT}`), so they guard the exact public boundary the served panel consumes, and
 //! drive the served `route` end-to-end.
 
-use std::collections::HashMap;
+mod common;
 
+use common::served::served_json;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, REL_CALLS,
     REL_CONTAINS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
-    reproject, route, Cluster, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
+    reproject, Cluster, ClusterEdge, Lens, CLUSTER_RENDER_BUDGET, REPROJECT_NO_COMMUNITY,
     REPROJECT_NO_CONCEPT,
 };
 
@@ -98,26 +99,6 @@ fn kind_bucket(count: usize) -> Cluster {
         kind: KIND_CODE_ENTITY.to_string(),
         label: None,
     }
-}
-
-/// Drive the public `route` for `GET <target>` over `graph` and parse the body as JSON.
-fn served_json(graph: &Graph, target: &str) -> serde_json::Value {
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(resp.status, 200, "GET {target} must be served 200");
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
 }
 
 // --- THE EMPTY CELL: a derived lens with no membership carries the documented message ---------------

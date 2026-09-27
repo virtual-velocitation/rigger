@@ -30,6 +30,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::contextgraph::Graph;
 use rigger::dash::{self, DashInputs};
 
@@ -312,18 +313,6 @@ const sandbox = { console: console };
 vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-render-harness.js" });
 "##;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
 
 /// RUNTIME guard for spec 30 c4's charter: a decision the operator expands must stay open across the
 /// 1.5s live poll so a multi-KB reasoning body can actually be READ in the primary `rigger dash`

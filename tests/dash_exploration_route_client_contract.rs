@@ -38,14 +38,15 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use common::fixtures::plain;
+use common::served::served_json;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, REL_IN_COMMUNITY, REL_REFERENCES,
     TIER_EXTRACTED, TIER_INFERRED,
 };
-use rigger::dash::{route, CLUSTER_RENDER_BUDGET, GOD_NODE_DEGREE_THRESHOLD};
+use rigger::dash::{CLUSTER_RENDER_BUDGET, GOD_NODE_DEGREE_THRESHOLD};
 
 /// The two coupling communities the fixture folds into at the default resolution grain (`"1"`), so a
 /// `?lens=code` request needs no explicit `resolution=` parameter.
@@ -126,39 +127,13 @@ fn exploration_graph() -> Graph {
     Graph { nodes, edges }
 }
 
-/// Drive the public `route` for a `GET <path>` over the fixture graph and parse the JSON body. `route`
-/// is the exact body-builder `serve` ships (serve delegates to it), so the field contract this pins is
-/// byte-identical to what the browser receives; the c4 socket test already covers the framing seam.
-fn served_body(path: &str) -> serde_json::Value {
-    let graph = exploration_graph();
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        path,
-        &[],
-        &graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {path} must be served 200 (the exploration route never errors on a live graph)"
-    );
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {path} body must be valid JSON: {e}"))
-}
-
 /// The served OVERVIEW body (`GET /api/graph?lens=code`) carries EVERY field `renderKgOverview` reads:
 /// `clusters[].{key,count,kind}` (label / size / colour), `total` (the headline node count), and
 /// `edges[].{from,to,weight}` (the cross-cluster lines, thickness by weight). Each is asserted to a
 /// concrete value bound to the fixture, so a renamed / dropped key reddens here.
 #[test]
 fn the_served_overview_route_carries_every_field_the_c5_overview_viz_reads() {
-    let ov = served_body("/api/graph?lens=code");
+    let ov = served_json(&exploration_graph(), "/api/graph?lens=code");
 
     // It is the OVERVIEW shape, not a neighborhood: no `nodes` key (the drill / seed views carry that).
     assert!(
@@ -258,7 +233,10 @@ fn the_served_overview_route_carries_every_field_the_c5_overview_viz_reads() {
 fn the_served_drill_route_carries_every_field_the_c5_drill_viz_reads() {
     // The `/` in the community key arrives percent-encoded, exactly as the page's
     // encodeURIComponent emits it; the route decodes it back to the fold key.
-    let nb = served_body("/api/graph?cluster=community%2F1%2F0&lens=code");
+    let nb = served_json(
+        &exploration_graph(),
+        "/api/graph?cluster=community%2F1%2F0&lens=code",
+    );
 
     // `seed`: the drill echoes the decoded cluster key (the panel titles "cluster <key>").
     assert_eq!(

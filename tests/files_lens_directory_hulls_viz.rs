@@ -33,19 +33,8 @@ mod common;
 use std::process::Command;
 
 use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
 
 /// A DOM shim + test driver (JavaScript) that RUNS the served page's OWN renderers under node's built-in
 /// `vm` (no npm, hermetic). It drives `renderKgOverview` directly against a fixture `ClusterOverview` (no

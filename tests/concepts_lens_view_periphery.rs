@@ -47,18 +47,21 @@
 
 mod common;
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::process::Command;
 
 use common::fixtures::edge;
 use common::fixtures::plain;
 use common::fixtures::tool_available;
+use common::served::page_script;
+use common::served::served;
+use common::served::served_json;
 use rigger::contextgraph::{
     Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS,
     REL_REALIZES, REL_REFERENCES, TIER_INFERRED,
 };
 use rigger::dash::{
-    cluster_detail, clustered_overview, route, Cluster, ClusterEdge, Lens, CONCEPTS_LENS_UNDERIVED,
+    cluster_detail, clustered_overview, Cluster, ClusterEdge, Lens, CONCEPTS_LENS_UNDERIVED,
     DEFAULT_CONCEPT_RESOLUTION,
 };
 
@@ -493,39 +496,6 @@ fn the_serialized_drill_skips_the_shared_marker_off_every_non_shared_node() {
     );
 }
 
-/// Drive the public `route` for `GET <target>` over the lens fixture and return the raw `Response`.
-/// `route` is the exact body-builder `serve` ships (serve delegates to it), so this drives the lens
-/// selector through the SAME `query_param` + `percent_decode` + `Lens::from_query` wiring the browser
-/// hits - the seam the in-process folds never exercise.
-fn served(target: &str) -> rigger::dash::Response {
-    let graph = lens_graph();
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        &graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {target} must be served 200 (the lens route never errors on a live graph)"
-    );
-    resp
-}
-
-/// Parse a served body as JSON.
-fn served_json(target: &str) -> serde_json::Value {
-    let resp = served(target);
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
-}
-
 /// THE SERVED `/api/graph` ROUTE threads the `lens=concepts` / `resolution=` selector END-TO-END into
 /// BOTH the overview and the drill - the integration seam the in-process folds never cover:
 ///   * `?lens=concepts` folds the overview by concept, carrying the concept `label`;
@@ -540,7 +510,7 @@ fn served_json(target: &str) -> serde_json::Value {
 #[test]
 fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
     // --- CONCEPTS overview via the route: concept-bucketed, labelled ---
-    let ov = served_json("/api/graph?lens=concepts&resolution=1");
+    let ov = served_json(&lens_graph(), "/api/graph?lens=concepts&resolution=1");
     let keys: Vec<&str> = ov["clusters"]
         .as_array()
         .expect("clusters array")
@@ -567,14 +537,17 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
 
     // An EMPTY resolution defaults to grain 1: the body is identical to the explicit-grain request.
     assert_eq!(
-        served("/api/graph?lens=concepts&resolution=").body,
-        served("/api/graph?lens=concepts&resolution=1").body,
+        served(&lens_graph(), "/api/graph?lens=concepts&resolution=").body,
+        served(&lens_graph(), "/api/graph?lens=concepts&resolution=1").body,
         "an empty resolution= defaults to the same derived grain as resolution=1"
     );
 
     // --- CONCEPTS drill via the route: the lens reaches the cluster= branch AND the shared marker
     // rides the served wire ---
-    let drill = served_json("/api/graph?lens=concepts&cluster=concept/1/0");
+    let drill = served_json(
+        &lens_graph(),
+        "/api/graph?lens=concepts&cluster=concept/1/0",
+    );
     assert_eq!(
         drill["seed"].as_str(),
         Some(C0),
@@ -607,7 +580,7 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
     );
 
     // --- UNDERIVED grain via the route: the empty_state prompt, never a 500 ---
-    let underived = served_json("/api/graph?lens=concepts&resolution=2");
+    let underived = served_json(&lens_graph(), "/api/graph?lens=concepts&resolution=2");
     assert_eq!(
         underived["empty_state"].as_str(),
         Some(CONCEPTS_LENS_UNDERIVED),
@@ -615,21 +588,21 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
     );
 
     // --- BACK-COMPAT: absent / files / hostile lens are all the byte-identical spec-42 default ---
-    let default = served("/api/graph").body;
+    let default = served(&lens_graph(), "/api/graph").body;
     assert_eq!(
-        served("/api/graph?lens=files").body,
+        served(&lens_graph(), "/api/graph?lens=files").body,
         default,
         "an explicit lens=files is byte-identical to the lens-absent default"
     );
     assert_eq!(
-        served("/api/graph?lens=bogus").body,
+        served(&lens_graph(), "/api/graph?lens=bogus").body,
         default,
         "a hostile lens=bogus falls back byte-identical to the default (never a 500)"
     );
     // The files default is genuinely NOT the concepts view (proves the comparison above is meaningful).
     assert_ne!(
         default,
-        served("/api/graph?lens=concepts&resolution=1").body,
+        served(&lens_graph(), "/api/graph?lens=concepts&resolution=1").body,
         "the concepts lens actually changes the served body (the back-compat equality is not vacuous)"
     );
 }
@@ -646,18 +619,6 @@ fn the_served_graph_route_threads_the_concepts_lens_into_overview_and_drill() {
 // siblings carry NONE of those. A negative control (a drill with no shared member) renders zero
 // markers, so the marker is CONDITIONED on `n.shared`, never blanket-applied. This is the proof the
 // wire-shape tests structurally cannot make: dropping `renderKgDrill`'s shared branch reddens it.
-
-/// Extract the single inline `<script>` body from the served page (the JS the browser runs).
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
 
 /// A DOM shim + driver (JavaScript) that RUNS the served page's OWN `renderKgDrill` under node's
 /// built-in `vm`. It drills a hand-built CONCEPTS neighborhood in which exactly one member realizes

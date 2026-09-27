@@ -25,22 +25,9 @@
 
 mod common;
 
-use std::process::Command;
-
 use common::fixtures::tool_available;
+use common::served::run_page_harness;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
 
 /// The head of the node-vm harness: a minimal DOM shim so the page's top-level wiring
 /// (`el(...).addEventListener`, `loadKgOverview()`) does not throw, then the opening of the driver's
@@ -84,31 +71,6 @@ const sandbox = { console: console };
 vm.createContext(sandbox);
 vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "dash-collision-harness.js" });
 "##;
-
-/// Splice `driver` (a JS body, no backticks / no `${...}`) into the harness, run it against the served
-/// page's script under node, and return (success, stdout, stderr). The caller asserts on the sentinel
-/// the driver prints so a silent early return can never masquerade as a pass.
-fn run_driver(page: &str, driver: &str) -> (bool, String, String) {
-    let script = page_script(page);
-    let harness = format!("{HARNESS_HEAD}{driver}{HARNESS_TAIL}");
-
-    let dir = tempfile::tempdir().expect("a scratch dir for the collision-body harness");
-    let harness_path = dir.path().join("harness.js");
-    let script_path = dir.path().join("page-script.js");
-    std::fs::write(&harness_path, &harness).expect("write the collision-body harness");
-    std::fs::write(&script_path, script).expect("write the served page script");
-
-    let out = Command::new("node")
-        .arg(&harness_path)
-        .arg(&script_path)
-        .output()
-        .expect("spawn node to drive the served layout");
-    (
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
-}
 
 /// The collision body (`kgNodeBody`, built from `kgLabelDims`) encloses the circle PLUS the label box:
 /// a long label widens the body horizontally beyond the bare circle, the label box hangs BELOW the
@@ -216,7 +178,10 @@ fn the_collision_body_encloses_the_circle_and_its_label() {
     }
 
     let page = dash::live_page();
-    let (ok, stdout, stderr) = run_driver(&page, DRIVER_COLLISION_BODY);
+    let (ok, stdout, stderr) = run_page_harness(
+        &page,
+        &format!("{HARNESS_HEAD}{}{HARNESS_TAIL}", DRIVER_COLLISION_BODY),
+    );
     assert!(
         ok,
         "the collision body must enclose the circle plus its label box, but the runtime harness \
@@ -243,7 +208,10 @@ fn the_separation_pass_resolves_coincident_nodes_deterministically() {
     }
 
     let page = dash::live_page();
-    let (ok, stdout, stderr) = run_driver(&page, DRIVER_TIEBREAK);
+    let (ok, stdout, stderr) = run_page_harness(
+        &page,
+        &format!("{HARNESS_HEAD}{}{HARNESS_TAIL}", DRIVER_TIEBREAK),
+    );
     assert!(
         ok,
         "the separation pass must resolve coincident nodes deterministically and no-op below two \

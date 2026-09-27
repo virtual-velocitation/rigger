@@ -55,6 +55,8 @@
 
 mod common;
 
+use common::served::body_of;
+
 // ---- the Done-when, end to end via the public API (symbols lane only) ----------------------
 
 /// A fixture independent of the implementer's own (`product_fn`/`unused_fn`/`helper`): a product
@@ -842,14 +844,6 @@ fn fetch_served(path: &str, graph: &rigger::contextgraph::Graph) -> String {
     panic!(
         "the dash server never served {path} over the real socket after many fresh-port attempts"
     );
-}
-
-/// Split a raw HTTP response into its body (everything past the header terminator). Mirrors
-/// `dash_kg_graph_route.rs::body_of` verbatim.
-fn body_of(resp: &str) -> &str {
-    resp.split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .expect("a served response body")
 }
 
 /// A minimal graph with one PROVEN code entity (`proven_by`/`proof_evidence` attrs already folded)

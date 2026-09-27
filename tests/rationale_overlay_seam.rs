@@ -25,6 +25,7 @@ use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 use common::fixtures::summarized_node as node;
+use common::served::body_of;
 use rigger::contextgraph::{
     Edge, Graph, KIND_DECISION, KIND_FILE, KIND_LESSON, REL_ABOUT, REL_GOVERNS, TIER_INFERRED,
 };
@@ -118,15 +119,6 @@ fn fetch_served(path: &str, whole_graph: &Graph, poll_graph: &Graph) -> String {
     panic!(
         "the dash server never served {path} over the real socket after many fresh-port attempts"
     );
-}
-
-/// Split a raw HTTP response into its body (everything past the header terminator). `Response::json`
-/// frames the body as the exact JSON bytes with `Content-Length` and no trailing newline, so the body
-/// this returns is byte-identical to the serialized batch.
-fn body_of(resp: &str) -> &str {
-    resp.split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .expect("a served response body")
 }
 
 /// The served `/api/graph?explain=` overlay reads the LAZY WHOLE-GRAPH provider, NEVER the state poll.

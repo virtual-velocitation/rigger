@@ -24,16 +24,15 @@
 
 mod common;
 
-use std::collections::HashMap;
-
 use common::fixtures::plain;
+use common::served::served_json;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_DECISION, KIND_FILE,
     REL_CONTAINS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES,
 };
 use rigger::dash::{
-    reproject, route, Cluster, Lens, UnresolvedMember, REPROJECT_FILES_UNRESOLVED,
-    REPROJECT_NO_COMMUNITY, REPROJECT_NO_CONCEPT,
+    reproject, Cluster, Lens, UnresolvedMember, REPROJECT_FILES_UNRESOLVED, REPROJECT_NO_COMMUNITY,
+    REPROJECT_NO_CONCEPT,
 };
 
 // --- fixture helpers ----------------------------------------------------------------------------
@@ -109,29 +108,6 @@ fn bucket(key: &str, count: usize, label: Option<&str>) -> Cluster {
         kind: KIND_CODE_ENTITY.to_string(),
         label: label.map(str::to_string),
     }
-}
-
-/// Drive the public `route` for `GET <target>` over `graph` and parse the body as JSON.
-fn served_json(graph: &Graph, target: &str) -> serde_json::Value {
-    let liveness: HashMap<String, u64> = HashMap::new();
-    let resp = route(
-        "GET",
-        target,
-        &[],
-        graph,
-        &[],
-        &liveness,
-        0,
-        "rigger-run",
-        "origin/main",
-        &[],
-    );
-    assert_eq!(
-        resp.status, 200,
-        "GET {target} must be served 200 (the re-projection route never errors on a live graph)"
-    );
-    serde_json::from_slice(&resp.body)
-        .unwrap_or_else(|e| panic!("the served {target} body must be valid JSON: {e}"))
 }
 
 // --- the LENS axis: the Concepts fold, on a COMMUNITY subject --------------------------------------

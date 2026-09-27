@@ -43,19 +43,8 @@ mod common;
 use std::process::Command;
 
 use common::fixtures::tool_available;
+use common::served::page_script;
 use rigger::dash;
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
-}
 
 /// STRUCTURAL: the served page SHIPS the declutter authority AND wires it live. Bound to the c3
 /// mechanism (the exact function names, the accessor-carrying `kgVisibleLabels(` call in the zoom path,

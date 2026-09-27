@@ -30,11 +30,12 @@ mod common;
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::process::Command;
-use std::time::Duration;
 
 use common::fixtures::tool_available;
+use common::served::connect_with_retry;
+use common::served::page_script;
 use rigger::contextgraph::Graph;
 use rigger::dash::{self, DashInputs};
 use rigger::eventstore::Event;
@@ -102,16 +103,6 @@ fn served_state(events: Vec<Event>) -> Value {
     );
     let body = resp.split("\r\n\r\n").nth(1).expect("a response body");
     serde_json::from_str(body).expect("the /api/state body parses as JSON")
-}
-
-fn connect_with_retry(addr: SocketAddr) -> TcpStream {
-    for _ in 0..200 {
-        if let Ok(s) = TcpStream::connect(addr) {
-            return s;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("the dash server never became reachable on {addr}");
 }
 
 /// Spec 38, criterion 3: the ready-to-release handoff crosses the real `/api/state` socket
@@ -215,18 +206,6 @@ fn release_ready_carries_a_multi_unit_count_across_the_wire() {
         rr["pr_command"],
         "git push origin rigger-run:pr/r1\ngh pr create --base main --head pr/r1"
     );
-}
-
-/// Extract the single inline `<script>` body from the served page.
-fn page_script(page: &str) -> &str {
-    let open = page
-        .find("<script>")
-        .expect("the served page carries a <script>")
-        + "<script>".len();
-    let close = page
-        .find("</script>")
-        .expect("the served page closes its <script>");
-    &page[open..close]
 }
 
 /// A DOM shim + test driver (JavaScript source) that RUNS the served page's own `render()` over a
