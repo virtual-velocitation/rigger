@@ -34,6 +34,19 @@ use crate::failure;
 #[cfg(test)]
 use std::time::Duration;
 
+/// Refuse a RETIRED workflow key that still carries a value: a key nothing reads any more
+/// fails loudly, naming the key, why it was retired and the line to delete, rather than
+/// silently no-op'ing a setting the operator believes is still wired. An absent key passes.
+fn reject_retired_key(value: &str, key: &str, line: &str, why: &str) -> Result<(), Error> {
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    Err(err(format!(
+        "the workflow key `{key}` is retired ({why}): delete {line} from your workflow.yml \
+         (config key: {key})"
+    )))
+}
+
 /// Load reads agent definitions from <dir>/.rigger/agents/*.md and the workflow
 /// from <dir>/.rigger/workflow.yml, then validates referential and structural
 /// integrity.
@@ -258,31 +271,22 @@ impl Config {
         // The top-level workflow `name` key is retired: nothing ever read it, so a workflow that
         // still sets it fails loudly at the exact line to delete rather than carrying a setting
         // the operator believes does something.
-        if !wf.name.trim().is_empty() {
-            return Err(err(
-                "the workflow key `name` is retired (nothing reads it): delete the `name:` line \
-                 from your workflow.yml (config key: name)"
-                    .to_string(),
-            ));
-        }
+        reject_retired_key(&wf.name, "name", "the `name:` line", "nothing reads it")?;
         // `build.mutation` schema retirement (spec 91): the per-round mutation-efficacy
         // switch spec 73 introduced is superseded by the `checkin` stage's own `mutation`
         // gate, which runs the sweep ONCE at check-in through the ordinary gate pipeline
         // rather than a build-config toggle re-probed every implementer round. ANY explicit
-        // value - `on`, `off`, anything - is a run-start config error naming this spec, so a
-        // workflow authored against the retired switch fails LOUDLY at the exact key that no
-        // longer does anything, rather than silently no-op'ing a setting the operator
-        // believes is still wired. Absent (the common case, and every workflow committed
-        // before either switch existed) is unaffected.
-        if !wf.build.mutation.trim().is_empty() {
-            return Err(err(
-                "build.mutation is retired (spec 91): mutation testing now runs once, at a \
-                 workflow's own `checkin` stage via a `mutation` gate, never per implementer \
-                 round. Remove build.mutation from your workflow.yml (config key: \
-                 build.mutation). See specs/91-mutation-runs-once-at-the-check-in-seam.md"
-                    .to_string(),
-            ));
-        }
+        // value - `on`, `off`, anything - is a run-start config error naming this spec.
+        // Absent (the common case, and every workflow committed before either switch existed)
+        // is unaffected.
+        reject_retired_key(
+            &wf.build.mutation,
+            "build.mutation",
+            "the `mutation:` line under `build:`",
+            "spec 91: mutation testing now runs once, at a workflow's own `checkin` stage via a \
+             `mutation` gate, never per implementer round - see \
+             specs/91-mutation-runs-once-at-the-check-in-seam.md",
+        )?;
         // The mutation gate's enabled-but-absent refusal (spec 91, MOVED from the retired
         // `build.mutation` switch above, GATES-LIST-DRIVEN): a workflow that DECLARES a gate
         // named `mutation` requires `cargo-mutants` resolvable on PATH at run start - the
