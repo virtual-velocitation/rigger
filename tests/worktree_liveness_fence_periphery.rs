@@ -88,7 +88,7 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
-use common::cli::write_reviewless_git_unit_workflow;
+use common::cli::{write_workflow_fixture, REVIEWLESS_GIT_UNIT_WORKFLOW};
 use common::git::git_answer;
 use common::git::git_ok;
 use common::git::init_repo;
@@ -159,7 +159,7 @@ fn step_worktree_sweep_discriminates_in_flight_hung_and_terminal_spawns_across_r
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     // Step 1: bootstraps the store and the `rigger-run` branch, and parks the workflow's own
     // "solo" implementer (unrelated to the two foreign units this test actually probes).
@@ -442,7 +442,7 @@ fn gc_integrated_branches_removing_evidence_reaches_real_stderr_for_a_still_regi
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     // Step 1: bootstraps the store and the `rigger-run` branch; unrelated to `settled`, which
     // this test manufactures directly, exactly like `fenced`/`hung` above.

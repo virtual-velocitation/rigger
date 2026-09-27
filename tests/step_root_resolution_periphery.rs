@@ -134,7 +134,7 @@ mod common;
 
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
-use common::cli::write_reviewless_git_unit_workflow;
+use common::cli::{write_workflow_fixture, REVIEWLESS_GIT_UNIT_WORKFLOW};
 use common::git::git_out;
 use common::git::temp_git_project_with_commit;
 use rigger::worktree::branch_exists;
@@ -185,7 +185,7 @@ fn step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_encl
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     let before_branch = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
     assert!(
@@ -195,7 +195,7 @@ fn step_refuses_the_one_root_mismatch_but_must_not_have_already_mutated_the_encl
 
     let scratch = root.join("scratchroot");
     let fixture = scratch.join("nested-fixture");
-    write_reviewless_git_unit_workflow(&fixture);
+    write_workflow_fixture(&fixture, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     let (_out, err, ok) = run_rigger_envs(
         &fixture,
@@ -253,7 +253,7 @@ fn step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_eve
 ) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
     let before_root_branch = git_out(root, &["rev-parse", "--abbrev-ref", "HEAD"]);
 
     let other_dir = temp_git_project_with_commit();
@@ -329,7 +329,7 @@ fn step_refuses_when_the_scratch_root_belongs_to_a_different_real_repository_eve
 fn step_run_and_workflow_via_a_symlinked_main_tree_are_not_refused() {
     let dir = temp_git_project_with_commit();
     let real_root = dir.path();
-    write_reviewless_git_unit_workflow(real_root);
+    write_workflow_fixture(real_root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     let link_parent = tempfile::tempdir().expect("create a parent dir for the symlink");
     let via_symlink = link_parent.path().join("via-symlink");

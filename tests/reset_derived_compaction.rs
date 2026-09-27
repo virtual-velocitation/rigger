@@ -22,8 +22,8 @@
 
 mod common;
 
-use common::cli::event_log;
 use common::cli::keyed;
+use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::run_stream_identity;
@@ -138,7 +138,7 @@ fn doc_link(from: &str, to: &str, rel: &str) -> Vec<u8> {
 ///   - `src/b.rs` at two content generations: a superseded generation's key is still a DISTINCT
 ///     key, so its latest recording survives the prune.
 fn seed_bloated_log(root: &Path) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
 
     let mut events: Vec<Event> = Vec::with_capacity(ROUNDS * 4 + 8);
@@ -231,7 +231,7 @@ fn seed_bloated_log(root: &Path) {
     }
 
     // Fold the WAL into the main file so a size measured right after seeding is the real one.
-    let conn = rusqlite::Connection::open(event_log(root)).unwrap();
+    let conn = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
     conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
         .unwrap();
 }
@@ -252,10 +252,10 @@ fn reset_derived_keeps_the_latest_recording_of_every_replay_key_and_prunes_every
     let root = dir.path();
     seed_bloated_log(root);
 
-    let before = rows(&event_log(root));
+    let before = rows(&rigger_file(root, "events.db"));
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
-    let after = rows(&event_log(root));
+    let after = rows(&rigger_file(root, "events.db"));
 
     // For every derived replay key, exactly ONE row survives, and it is the row the log recorded
     // LAST - the file's current recording, never a superseded one.
@@ -307,10 +307,10 @@ fn reset_derived_preserves_every_non_derived_event_and_every_keyless_derived_eve
     let root = dir.path();
     seed_bloated_log(root);
 
-    let before = rows(&event_log(root));
+    let before = rows(&rigger_file(root, "events.db"));
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
-    let after = rows(&event_log(root));
+    let after = rows(&rigger_file(root, "events.db"));
 
     // Byte-for-byte, in order: every column of every non-derived row is unchanged, INCLUDING its
     // global position and its per-stream revision. The compaction moves the store's revision
@@ -380,10 +380,10 @@ fn reset_derived_compacts_a_log_whose_history_predates_the_minted_project_identi
          reproduce the shape it exists for"
     );
 
-    let before = rows(&event_log(root));
+    let before = rows(&rigger_file(root, "events.db"));
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
-    let after = rows(&event_log(root));
+    let after = rows(&rigger_file(root, "events.db"));
 
     assert!(
         after.len() < before.len(),
@@ -422,7 +422,7 @@ fn reset_derived_shrinks_the_log_on_disk_and_reports_the_rows_per_type_and_the_b
     let root = dir.path();
     seed_bloated_log(root);
 
-    let db = event_log(root);
+    let db = rigger_file(root, "events.db");
     let before_bytes = std::fs::metadata(&db).unwrap().len();
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
@@ -544,7 +544,7 @@ fn fold_snapshot(events: &[Event], project: &str, path: &Path) -> (Vec<String>, 
 }
 
 fn read_log(root: &Path) -> Vec<Event> {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     store
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
@@ -623,7 +623,7 @@ fn a_compacted_log_folds_to_the_same_live_graph_reads_clean_and_still_accepts_ap
     // AND IT IS STILL A STORE. The prune leaves gaps in the stream's revisions, so a store that
     // derived its revision cursor from the surviving ROW COUNT would reissue a revision the stream
     // still holds and fail the `UNIQUE(stream, revision)` index on the very next append.
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &id);
     store
         .append(
@@ -703,7 +703,7 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
     let dir = temp_rigger_project();
     let root = dir.path();
     seed_bloated_log(root);
-    let db_before = rows(&event_log(root)).len();
+    let db_before = rows(&rigger_file(root, "events.db")).len();
 
     // Deleting rows and reclaiming the file is a mechanic of the embedded log. Configured for the
     // server-backed store, `--derived` must FAIL - never silently report a prune that did not
@@ -752,7 +752,7 @@ fn reset_derived_on_a_backend_that_cannot_compact_fails_loudly_naming_the_backen
 
     // And it must be a REFUSAL, not a half-done prune: the local log is untouched.
     assert_eq!(
-        rows(&event_log(root)).len(),
+        rows(&rigger_file(root, "events.db")).len(),
         db_before,
         "a refused compaction must leave the log exactly as it was"
     );

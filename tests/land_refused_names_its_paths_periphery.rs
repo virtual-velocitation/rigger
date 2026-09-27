@@ -22,8 +22,8 @@ use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
 use common::fixtures::scratch_cfg;
 use common::fixtures::FifoAtLandingDriver;
-use common::git::git_stdout;
 use common::git::temp_git_project_with_commit;
+use common::git::trimmed_stdout;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config};
 use rigger::contextgraph;
@@ -148,14 +148,17 @@ fn a_land_refused_for_local_changes_names_the_blocking_path_and_charges_no_attem
 
     // The unit's own branch keeps exactly its own real work - untouched by the refused
     // landing, still a clean fast-forward candidate once the stray content is cleared.
-    let branch_log = git_stdout(&repo_path, &["log", "--oneline", "rigger/u/unit-a"]);
+    let branch_log = trimmed_stdout(&run_git(
+        &repo_path,
+        &["log", "--oneline", "rigger/u/unit-a"],
+    ));
     assert_eq!(
         branch_log.lines().count(),
         2,
         "unit-a's branch must carry exactly its base commit plus its own one real commit; \
          got:\n{branch_log}"
     );
-    let a_content = git_stdout(&repo_path, &["show", "rigger/u/unit-a:new.txt"]);
+    let a_content = trimmed_stdout(&run_git(&repo_path, &["show", "rigger/u/unit-a:new.txt"]));
     assert_eq!(
         a_content, "A_WORK",
         "unit-a's own real work survives on its branch"

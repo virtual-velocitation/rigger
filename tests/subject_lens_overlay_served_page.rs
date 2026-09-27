@@ -31,8 +31,8 @@ mod common;
 
 use common::fixtures::tool_available;
 use common::served::node_harness_passes;
-use common::served::run_node_harness;
 use common::served::vm_harness;
+use common::served::{run_node_harness, SERVED_CLIENT_SEAM};
 use rigger::dash;
 
 /// The SERVED root page SHIPS the client seam (spec 55 c4): the subject-sticky lens control, the
@@ -414,7 +414,11 @@ fn the_client_seam_dispatches_subject_sticky_lens_and_additive_overlay() {
         return;
     }
 
-    run_node_harness(SEAM_HARNESS, "OK subject-lens-and-overlay-seam-drives");
+    run_node_harness(
+        SEAM_HARNESS,
+        "OK subject-lens-and-overlay-seam-drives",
+        SERVED_CLIENT_SEAM,
+    );
 }
 
 // ---------------------------------------------------------------------------------------------------

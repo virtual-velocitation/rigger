@@ -65,7 +65,7 @@ fn succeeded(out: Output, args: &[&str]) -> Output {
 }
 
 /// `out`'s stdout, lossily decoded and trimmed.
-fn trimmed_stdout(out: &Output) -> String {
+pub fn trimmed_stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
@@ -91,16 +91,6 @@ pub fn git_ok_with_identity(dir: impl AsRef<Path>, args: &[&str]) -> Output {
 /// The trimmed stdout of a `git -C <dir> <args...>` that must succeed.
 pub fn git_out(dir: impl AsRef<Path>, args: &[&str]) -> String {
     trimmed_stdout(&git_ok(dir, args))
-}
-
-/// The trimmed stdout of a [`git_ok_with_identity`] run.
-pub fn git_out_with_identity(dir: impl AsRef<Path>, args: &[&str]) -> String {
-    trimmed_stdout(&git_ok_with_identity(dir, args))
-}
-
-/// The trimmed stdout of `git -C <dir> <args...>`, whatever its exit status.
-pub fn git_stdout(dir: impl AsRef<Path>, args: &[&str]) -> String {
-    trimmed_stdout(&run_git(dir, args))
 }
 
 /// The trimmed stdout of `git -C <dir> <args...>` when it succeeds with a non-empty answer, or

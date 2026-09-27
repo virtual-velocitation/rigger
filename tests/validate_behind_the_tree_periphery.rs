@@ -58,7 +58,7 @@ use common::cli::run_rigger;
 use common::cli::temp_rigger_project;
 use common::fixtures::tool_available;
 use common::git::git_ok_with_identity;
-use common::git::git_out_with_identity;
+use common::git::trimmed_stdout;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -72,7 +72,10 @@ use std::process::Command;
 /// worktree, in which case `--git-common-dir` already resolves to the shared primary `.git`.
 fn source_objects_dir() -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let common_dir = git_out_with_identity(manifest_dir, &["rev-parse", "--git-common-dir"]);
+    let common_dir = trimmed_stdout(&git_ok_with_identity(
+        manifest_dir,
+        &["rev-parse", "--git-common-dir"],
+    ));
     let common_dir = PathBuf::from(common_dir);
     let common_dir = if common_dir.is_absolute() {
         common_dir
@@ -143,8 +146,8 @@ fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
     .expect("write fixture go-gitsemver.yml");
 
     git_ok_with_identity(root, &["add", "-A"]);
-    let tree = git_out_with_identity(root, &["write-tree"]);
-    let child = git_out_with_identity(
+    let tree = trimmed_stdout(&git_ok_with_identity(root, &["write-tree"]));
+    let child = trimmed_stdout(&git_ok_with_identity(
         root,
         &[
             "commit-tree",
@@ -154,7 +157,7 @@ fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
             "-m",
             "chore: import scaffold",
         ],
-    );
+    ));
     git_ok_with_identity(root, &["update-ref", "HEAD", &child]);
     git_ok_with_identity(root, &["tag", "v0.9.0", &child]);
     Some(())

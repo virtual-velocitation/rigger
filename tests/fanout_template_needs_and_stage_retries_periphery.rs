@@ -113,10 +113,10 @@ use serde_json::{json, Value};
 ///
 /// - [`GIT_WORKER`]: a real, isolated (git-worktree-backed) worker - no `isolation: none` -
 ///   so its stage's `on_pass: merge` reaches a genuine git merge onto the run branch.
-///   Mirrors `tests/cli.rs`'s `write_reviewless_git_unit_workflow`'s own agent file.
+///   Mirrors `tests/common/cli.rs`'s `REVIEWLESS_GIT_UNIT_WORKFLOW`'s own agent file.
 /// - [`REPOLESS_WORKER`]: a repo-less (`isolation: none`) worker for the offline escalation
 ///   scenarios, which never need a real worktree. Mirrors `tests/cli.rs`'s
-///   `write_failing_gate_escalating_workflow`'s own agent file.
+///   `FAILING_GATE_ESCALATING_WORKFLOW`'s own agent file.
 fn write_worker_agent(root: &Path, isolation: &str) {
     let agents = root.join(".rigger").join("agents");
     std::fs::create_dir_all(&agents).unwrap();
@@ -1107,7 +1107,7 @@ rigger::test_cases! {
     a_stages_own_max_retries_yaml_key_lowers_the_effective_bound_below_a_higher_default:
         a_stages_own_max_retries_bounds_the_attempts(5, 1);
     /// `defaults.max_retries: 1` (which alone would escalate on the first failed attempt, per
-    /// `write_failing_gate_escalating_workflow`'s own established shape in `tests/cli.rs`) but
+    /// `FAILING_GATE_ESCALATING_WORKFLOW`'s own established shape in `tests/cli.rs`) but
     /// the stage itself sets `max_retries: 3` - the unit must survive TWO failed attempts,
     /// escalating only on the third. Proves the YAML-parsed stage-level key genuinely RAISES
     /// the effective bound above a lower run default, through the real remediation loop's

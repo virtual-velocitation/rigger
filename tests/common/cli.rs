@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rigger::config::RIGGER_DIR;
 use rigger::contextgraph::sqlite::Projector;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
@@ -34,8 +35,12 @@ pub fn courier_project() -> tempfile::TempDir {
 /// to exists.
 pub fn init_event_log(root: &Path) {
     seed_rigger_dir(root);
-    Store::open(event_log(root).to_str().expect("a utf-8 store path"))
-        .expect("the event log initializes");
+    Store::open(
+        rigger_file(root, "events.db")
+            .to_str()
+            .expect("a utf-8 store path"),
+    )
+    .expect("the event log initializes");
 }
 
 /// A [`temp_project`] with a commit identity configured and an empty `.rigger/` directory: its
@@ -61,14 +66,10 @@ pub fn temp_repoless_project() -> tempfile::TempDir {
     tempfile::tempdir().expect("create temp project")
 }
 
-/// Where the embedded sqlite event log lives for a project rooted at `root`.
-pub fn event_log(root: &Path) -> PathBuf {
-    root.join(".rigger").join("events.db")
-}
-
-/// Where the graph projection lives for a project rooted at `root`.
-pub fn graph_db(root: &Path) -> PathBuf {
-    root.join(".rigger").join("graph.db")
+/// Where the file `name` (the `events.db` event log, the `graph.db` projection, ...) lives under
+/// the state directory of a project rooted at `root`.
+pub fn rigger_file(root: &Path, name: &str) -> PathBuf {
+    root.join(RIGGER_DIR).join(name)
 }
 
 /// Run `rigger <args...>` in `cwd` and return (stdout, stderr, success).
@@ -194,7 +195,7 @@ pub fn run_stream_identity(root: &Path) -> String {
 pub fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
     let rigger_dir = root.join(".rigger");
     std::fs::create_dir_all(&rigger_dir).unwrap();
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     for &(ty, body) in events {
         store
@@ -209,7 +210,7 @@ pub fn seed_run_events(root: &Path, events: &[(&str, &str)]) {
 
 /// Every event in `root`'s namespaced run stream, oldest first.
 pub fn read_run_events(root: &Path) -> Vec<Event> {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     store
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
@@ -219,7 +220,7 @@ pub fn read_run_events(root: &Path) -> Vec<Event> {
 /// The graph projection of `root`'s own `.rigger/graph.db`, under its run-stream identity.
 pub fn open_graph(root: &Path) -> Projector {
     let id = run_stream_identity(root);
-    Projector::open(graph_db(root).to_str().unwrap(), &id).unwrap()
+    Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id).unwrap()
 }
 
 /// The number of numbered source lines (`<n> | <text>`) in a `rigger graph --show` body.
@@ -292,7 +293,7 @@ pub const DUP_KEY: &str = "gc/src/a.rs@h1#0";
 /// Append [`DUP_ROUNDS`] re-extractions of the same [`code_entity`] under [`DUP_KEY`] to
 /// `root`'s run stream - derived duplicates a reset is expected to compact.
 pub fn seed_derived_duplicates(root: &Path) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events = Vec::with_capacity(DUP_ROUNDS);
     for r in 0..DUP_ROUNDS {
@@ -318,6 +319,20 @@ pub const UNISOLATED_WORKER: &str =
 /// The `worker` agent definition on the default, git-backed isolation.
 pub const ISOLATED_WORKER: &str =
     "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n";
+
+/// A one-agent workflow fixture: the `worker` agent's definition and the `workflow.yml` body
+/// that drives it. Each test file names its fixtures as constants of this type and writes them
+/// with [`write_workflow_fixture`].
+pub struct WorkflowFixture {
+    pub worker: &'static str,
+    pub body: &'static str,
+}
+
+/// Scaffold `root/.rigger` from `fixture`: its worker as `agents/worker.md` and its body as
+/// `workflow.yml`.
+pub fn write_workflow_fixture(root: &Path, fixture: &WorkflowFixture) {
+    write_scaffold(root, &[("worker", fixture.worker)], fixture.body);
+}
 
 /// Scaffold `root/.rigger`: each `(id, definition)` of `agents` as `agents/<id>.md`, and
 /// `workflow` as its `workflow.yml`.
@@ -386,7 +401,7 @@ pub fn assert_selected_server(out: &Output, root: &Path, why: &str) {
         "{why}: a server selection must not fall back to the local sqlite walk-up; stderr:\n{stderr}"
     );
     assert!(
-        !event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "{why}: a server selection must NOT fabricate a local .rigger/events.db"
     );
 }
@@ -406,7 +421,7 @@ pub fn assert_selected_sqlite(out: &Output, root: &Path, why: &str) {
          never a server connect; stderr:\n{stderr}"
     );
     assert!(
-        !event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "{why}: the refuse-to-fabricate guard must leave no local events.db behind"
     );
 }
@@ -414,17 +429,9 @@ pub fn assert_selected_sqlite(out: &Output, root: &Path, why: &str) {
 /// Seed `root` with a reviewless single-stage workflow: one `worker` agent, one always-passing
 /// core gate, and `on_pass: merge` - the smallest workflow whose unit reaches the git integration
 /// path.
-pub fn write_reviewless_git_unit_workflow(root: &Path) {
-    let rigger = root.join(".rigger");
-    std::fs::create_dir_all(rigger.join("agents")).unwrap();
-    std::fs::write(
-        rigger.join("agents").join("worker.md"),
-        "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
-    )
-    .unwrap();
-    std::fs::write(
-        rigger.join("workflow.yml"),
-        r#"defaults:
+pub const REVIEWLESS_GIT_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo the unit.\n",
+    body: r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -435,9 +442,7 @@ stages:
     gates: [ok]
     on_pass: merge
 "#,
-    )
-    .unwrap();
-}
+};
 
 /// Seed `<root>/.rigger/events.db` with rows in `project`'s run stream whose position order and
 /// revision order DISAGREE (spec 71's corruption signature) by inserting directly - bypassing the

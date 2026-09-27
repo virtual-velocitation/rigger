@@ -41,11 +41,10 @@
 //! proves the WORKFLOW driver's wire-to-store path, the one round 1 found dead.
 
 mod common;
-use common::cli::{write_scaffold, UNISOLATED_WORKER};
+use common::cli::{write_workflow_fixture, WorkflowFixture, UNISOLATED_WORKER};
 use common::git::temp_git_project_with_commit;
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
 use std::process::{ChildStderr, ChildStdin, Stdio};
 use std::time::{Duration, Instant};
 
@@ -59,13 +58,10 @@ use rigger::eventstore::{Direction, Event, EventStore, Filter};
 /// unambiguous target and never races a second unit's spawn. `on_pass: none` and
 /// `isolation: none` keep the fixture gate/worktree-free, matching every other
 /// `rigger step`/`serve` fixture in this suite family.
-fn write_one_stage_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", UNISOLATED_WORKER)],
-        "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
-    );
-}
+const ONE_STAGE_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+};
 
 /// Send one JSON-RPC 2.0 request line to `stdin` and return the parsed response line read
 /// back from `stdout` - the plain newline-delimited protocol `mcpserver.rs::Server::run`
@@ -130,7 +126,7 @@ fn drain_stderr(stderr: Option<ChildStderr>) -> String {
 fn green_event_after_result(arguments: Value) -> Event {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_one_stage_workflow(root);
+    write_workflow_fixture(root, &ONE_STAGE_WORKFLOW);
 
     let mut child = common::rigger_courier()
         .args(["serve", "--base", "HEAD"])

@@ -29,8 +29,10 @@ use common::cli::seed_run_events;
 use common::cli::seed_store;
 use common::cli::temp_project;
 use common::cli::temp_repoless_project;
-use common::cli::write_reviewless_git_unit_workflow;
-use common::cli::{write_scaffold, ISOLATED_WORKER, UNISOLATED_WORKER};
+use common::cli::{
+    write_scaffold, write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER,
+    REVIEWLESS_GIT_UNIT_WORKFLOW, UNISOLATED_WORKER,
+};
 use common::fixtures::assert_driver_guards_a_null_step;
 use common::fixtures::pgid_of;
 use common::git::git_answer;
@@ -3512,7 +3514,7 @@ fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
 {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     let scratch = root.join("scratchroot");
 
@@ -3614,7 +3616,7 @@ struct LinkedWorktreeRefusal {
 fn assert_a_linked_worktree_refuses(verb: &str, not_before: &str) -> LinkedWorktreeRefusal {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     let wt_parent = tempfile::tempdir().expect("create a parent dir for the linked worktree");
     let wt_path = wt_parent.path().join(format!("rigger-wt-linked-{verb}"));
@@ -3750,7 +3752,7 @@ fn repo_less_serve_never_attempts_to_anchor_a_run_branch() {
 
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
     let state = tempfile::tempdir().expect("create a temp XDG_STATE_HOME");
 
     let mut child = common::rigger_courier()
@@ -3797,7 +3799,7 @@ fn repo_less_serve_never_attempts_to_anchor_a_run_branch() {
 fn step_refuses_before_sweeping_when_the_stores_root_and_gits_toplevel_disagree() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     let scratch = root.join("scratchroot");
     let tmp = scratch.to_str().unwrap();
@@ -3820,7 +3822,7 @@ fn step_refuses_before_sweeping_when_the_stores_root_and_gits_toplevel_disagree(
     // A git-less FIXTURE nested INSIDE that same scratch root (u87c3's exact shape), with its
     // OWN store and config but no `.git` of its own.
     let fixture = scratch.join("nested-fixture");
-    write_reviewless_git_unit_workflow(&fixture);
+    write_workflow_fixture(&fixture, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     let (_out2, err2, ok2) = run_rigger_envs(&fixture, &["step"], &[("RIGGER_TMPDIR", tmp)]);
     assert!(
@@ -4398,11 +4400,9 @@ fn native_driver_drains_in_flight_workers_before_a_loud_stop() {
 /// never merge (`on_pass: none`). This is the minimal shape that drives `rigger step`
 /// into parking a disjoint two-unit wave, offline and deterministic (no model, no git
 /// worktrees - the worker's `isolation: none`).
-fn write_two_stage_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", UNISOLATED_WORKER)],
-        r#"defaults:
+const TWO_STAGE_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 60
 stages:
@@ -4413,17 +4413,14 @@ stages:
     agent: worker
     on_pass: none
 "#,
-    );
-}
+};
 
-/// Like [`write_two_stage_workflow`] but with a spawn budget of ONE: two independent units
+/// Like [`TWO_STAGE_WORKFLOW`] but with a spawn budget of ONE: two independent units
 /// are ready in the first wave, so exactly one implementer spawn is admitted and parked and
 /// the other is refused - tripping the breaker so `rigger step` reports a halt (Gap 13).
-fn write_budget_one_two_stage_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", UNISOLATED_WORKER)],
-        r#"defaults:
+const BUDGET_ONE_TWO_STAGE_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 1
 stages:
@@ -4434,8 +4431,7 @@ stages:
     agent: worker
     on_pass: none
 "#,
-    );
-}
+};
 
 /// `rigger step` advances the run one frontier and prints the newly parked spawn WAVE
 /// plus a `done` flag as JSON. Two ready units with disjoint blast radii park their
@@ -4445,7 +4441,7 @@ stages:
 fn step_prints_a_disjoint_two_spawn_wave_then_reports_done() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // Step 1: both independent units are ready in one wave, so both park their
     // implementer spawns together - a two-spawn wave, and the run is not done.
@@ -4913,16 +4909,14 @@ fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_wo
     );
 }
 
-/// The escalating twin of [`write_reviewless_git_unit_workflow`]: identical shape, but
+/// The escalating twin of [`REVIEWLESS_GIT_UNIT_WORKFLOW`]: identical shape, but
 /// `defaults.max_retries: 1` means `safety::remediate(0, 1)` escalates on the FIRST failed
 /// attempt (`bounded_then_escalates` in `src/safety.rs` pins that arithmetic), so a single
 /// crashed implementer spawn - never a park - is enough to drive the unit terminal without
 /// ever integrating.
-fn write_reviewless_git_escalating_unit_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", ISOLATED_WORKER)],
-        r#"defaults:
+const REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 1
@@ -4934,8 +4928,7 @@ stages:
     gates: [ok]
     on_pass: merge
 "#,
-    );
-}
+};
 
 /// Step 1 of a single-unit (`solo`) git-backed run: the unit is ready, so its implementer
 /// parks - and the real, git-backed isolation creates the unit's own durable worktree right
@@ -4990,7 +4983,7 @@ fn assert_the_solo_worktree_is_reclaimed(root: &Path, wt_dir: &Path, outcome: &s
 fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     // Step 1: the unit is ready, so its implementer parks - the real, git-backed isolation
     // means the unit's own durable worktree is created right here, before the implementer
@@ -5057,7 +5050,7 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
 fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalation() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_escalating_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
 
     let wt_dir = park_the_solo_implementer_in_its_worktree(root);
 
@@ -5108,7 +5101,7 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
 /// does, and assert the fixpoint before returning - every `resume-unit` test below
 /// builds on this SAME real, git-backed escalated unit.
 fn escalate_solo_unit(root: &Path) {
-    write_reviewless_git_escalating_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "the first step must succeed; stderr: {err}");
     assert!(
@@ -5272,7 +5265,7 @@ fn resume_unit_refuses_an_unknown_unit() {
 fn resume_unit_refuses_a_unit_that_has_not_escalated() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_escalating_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_ESCALATING_UNIT_WORKFLOW);
     // Step 1 only: `solo` is mid-remediation (parked), never yet escalated.
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "the first step must succeed; stderr: {err}");
@@ -7243,7 +7236,7 @@ fn step_registers_the_instance_in_the_machine_global_registry() {
 
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // Redirect the machine-global state dir into a temp home, so the registry lands under the
     // test's own tree instead of the operator's real ~/.local/state.
@@ -7312,7 +7305,7 @@ fn assert_a_run_registers_a_credential_free_shared_instance(
 
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let state = tempfile::tempdir().unwrap();
     let xdg = state.path().to_str().unwrap();
 
@@ -7407,11 +7400,9 @@ rigger::test_cases! {
 /// grounder does no model work, the implementer is drained by a recorded `SpawnResult`, and
 /// `isolation: none` keeps it off git. Drives spec 19c unit 1: a run that reaches a fixpoint
 /// with an escalated unit.
-fn write_failing_gate_escalating_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", UNISOLATED_WORKER)],
-        r#"defaults:
+const FAILING_GATE_ESCALATING_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 1
@@ -7423,8 +7414,7 @@ stages:
     gates: [bad]
     on_pass: none
 "#,
-    );
-}
+};
 
 /// A single-unit workflow whose gate is under `autonomy: manual`, so the stage PAUSES for human
 /// review (§4.3) instead of running: `stage_paused_for_review` short-circuits `run_stage`, which
@@ -7433,11 +7423,9 @@ stages:
 /// the shared `terminal_and_no_live_worker` frontier+hung core reads TRUE - yet the run is
 /// manual-review-pending, i.e. NOT converged and still advancing (a human will approve+integrate
 /// on a later step). Drives spec 34 criterion 3's never-delete-live rail on a non-terminal pause.
-fn write_manual_review_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", UNISOLATED_WORKER)],
-        r#"defaults:
+const MANUAL_REVIEW_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 60
   autonomy: manual
@@ -7449,8 +7437,7 @@ stages:
     gates: [human]
     on_pass: none
 "#,
-    );
-}
+};
 
 /// Spec 19c, unit 1: a run that reaches a fixpoint with an ESCALATED unit must not
 /// masquerade as a clean completion. `rigger step` carries the escalated/unintegrated set on
@@ -7463,7 +7450,7 @@ stages:
 fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_failing_gate_escalating_workflow(root);
+    write_workflow_fixture(root, &FAILING_GATE_ESCALATING_WORKFLOW);
 
     // Step 1: the unit is ready, so its implementer parks in-flight; nothing has escalated
     // yet, so the escalated set is OMITTED from the wire.
@@ -7563,7 +7550,7 @@ fn step_carries_the_escalated_set_when_a_fixpoint_is_reached_with_a_wedged_unit(
 fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_budget_one_two_stage_workflow(root);
+    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
 
     let (out, err, ok) = run_rigger(root, &["step"]);
     // The step process itself SUCCEEDS - it prints its halt on stdout (a halt is a run
@@ -7609,7 +7596,7 @@ fn step_prints_a_budget_halt_reason_when_the_breaker_trips() {
 fn a_budget_halt_does_not_restamp_on_a_later_real_step_with_nothing_new() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_budget_one_two_stage_workflow(root);
+    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
 
     // Step 1: `a` is admitted and parks, `b` is refused - the breaker trips, crossing both
     // the budget halt and its own final-tenth threshold in the same call.
@@ -7645,7 +7632,7 @@ fn a_budget_halt_does_not_restamp_on_a_later_real_step_with_nothing_new() {
     );
 }
 
-/// Like [`write_budget_one_two_stage_workflow`] but a DEPENDENCY chain instead of two
+/// Like [`BUDGET_ONE_TWO_STAGE_WORKFLOW`] but a DEPENDENCY chain instead of two
 /// independent stages: `s2 needs s1`, so `s2` is not ready until `s1` INTEGRATES - the
 /// scenario where the budget count itself does not change on the call that genuinely
 /// halts (review u69c5 round 3, cause genuine-defect). `on_pass` is deliberately left
@@ -7653,11 +7640,9 @@ fn a_budget_halt_does_not_restamp_on_a_later_real_step_with_nothing_new() {
 /// `UnitIntegrated`, which an `on_pass: none` unit (verified-but-never-merged) never
 /// emits, so `s2` would stay blocked forever and the run would falsely converge
 /// (`done: true`, nothing pending) rather than reach the genuine halt this test drives at.
-fn write_budget_one_dependency_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", UNISOLATED_WORKER)],
-        r#"defaults:
+const BUDGET_ONE_DEPENDENCY_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 1
 stages:
@@ -7667,8 +7652,7 @@ stages:
     agent: worker
     needs: [s1]
 "#,
-    );
-}
+};
 
 /// Spec 69, criterion 5, signal 2 (BUDGET half), "once per threshold crossing" - a SECOND
 /// gap in the same signal (review u69c5 round 3, cause genuine-defect), proven ACROSS A
@@ -7685,7 +7669,7 @@ stages:
 fn a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps_on_a_real_process_boundary() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_budget_one_dependency_workflow(root);
+    write_workflow_fixture(root, &BUDGET_ONE_DEPENDENCY_WORKFLOW);
 
     // Step 1: only `s1` is ready (`s2` needs it). `s1`'s implementer parks; nothing else is
     // ready to refuse, so the budget is reached (0 -> 1) WITHOUT tripping the breaker.
@@ -7735,13 +7719,10 @@ fn a_delayed_budget_halt_after_a_dependency_unlocks_still_stamps_on_a_real_proce
 /// The single-stage liveness workflow the end-to-end tests drive: a per-role wall-clock
 /// default so the parked implementer carries a `max_wall_clock` the sweep can time out
 /// against, `isolation: none` (no worktree), and `on_pass: none` (no integrate).
-fn write_liveness_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", UNISOLATED_WORKER)],
-        "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
-    );
-}
+const LIVENESS_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: "defaults:\n  grounder: nop\n  budget: 60\n  max_wall_clock: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+};
 
 /// Agent liveness end-to-end (spec 10, unit 3): a spawn carries a `max_wall_clock` bound;
 /// when its per-spawn heartbeat marker goes STALE beyond that bound, `rigger step`
@@ -7754,7 +7735,7 @@ fn write_liveness_workflow(root: &Path) {
 fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_liveness_workflow(root);
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
 
     // Step 1: the unit is ready, so its implementer parks in-flight (no result yet). The wave
     // carries the RESOLVED marker path the worker would touch - the single authority the sweep
@@ -7879,7 +7860,7 @@ fn step_surfaces_a_hung_spawn_with_a_stale_marker_as_a_liveness_halt() {
 fn step_reclaims_a_hung_spawns_mutation_scratch_the_moment_the_sweep_records_its_fault() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_liveness_workflow(root);
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
 
     // A dedicated cache home, so XDG_CACHE_HOME never points at the operator's real ~/.cache.
     let cache_home = tempfile::tempdir().unwrap();
@@ -7971,7 +7952,7 @@ fn step_reclaims_a_hung_spawns_mutation_scratch_the_moment_the_sweep_records_its
 fn step_reclaims_a_hung_spawns_agent_scratch_the_moment_the_sweep_records_its_fault() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_liveness_workflow(root);
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
 
     // Step 1: the unit is ready, so its implementer parks in-flight (no result yet). The wave
     // carries the RESOLVED marker path the worker would touch - the single authority the
@@ -8052,13 +8033,10 @@ fn step_reclaims_a_hung_spawns_agent_scratch_the_moment_the_sweep_records_its_fa
 /// absent = 0), so the parked implementer carries NO per-spawn `max_wall_clock` and thus no
 /// marker on the wire - the exact spawn the sweep can never time out and the native driver's
 /// OUTER wall-clock is the only backstop for (spec 19c, unit 2).
-fn write_unbounded_liveness_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", UNISOLATED_WORKER)],
-        "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
-    );
-}
+const UNBOUNDED_LIVENESS_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: "defaults:\n  grounder: nop\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n",
+};
 
 /// Spec 19c, Unit 2 (a) - the SURFACING half, end-to-end in real Rust: a hung UNBOUNDED-config
 /// spawn surfaces within a bounded time. Under an unbounded default the parked implementer
@@ -8075,7 +8053,7 @@ fn write_unbounded_liveness_workflow(root: &Path) {
 fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driver() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_unbounded_liveness_workflow(root);
+    write_workflow_fixture(root, &UNBOUNDED_LIVENESS_WORKFLOW);
 
     // Step 1: the implementer parks in-flight. Being UNBOUNDED it carries NO marker path - the
     // sweep has nothing to time out, which is exactly why the driver's outer wall-clock exists.
@@ -8189,7 +8167,7 @@ fn step_surfaces_a_hung_unbounded_spawn_recorded_as_a_liveness_fault_by_the_driv
 fn step_attention_never_restamps_a_hung_unbounded_spawn_when_repo_less() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_unbounded_liveness_workflow(root);
+    write_workflow_fixture(root, &UNBOUNDED_LIVENESS_WORKFLOW);
 
     // Step 1: the implementer parks in-flight, unbounded (no marker, nothing hung yet).
     let (out, err, ok) = run_rigger(root, &["step"]);
@@ -8294,7 +8272,7 @@ fn the_hung_cursor_is_persisted_only_after_the_step_that_carries_it_is_printed()
 fn the_liveness_marker_path_follows_a_non_default_scratch_root() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_liveness_workflow(root);
+    write_workflow_fixture(root, &LIVENESS_WORKFLOW);
     // A scratch root OUTSIDE the repo - the non-default case the reject named.
     let scratch = tempfile::tempdir().unwrap();
     let scratch_path = scratch.path().to_str().unwrap().to_string();
@@ -8338,7 +8316,7 @@ fn the_liveness_marker_path_follows_a_non_default_scratch_root() {
 fn step_scopes_the_wave_to_the_current_run_and_ignores_prior_run_residue() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     seed_store(root);
 
     // A prior campaign (DIFFERENT criteria) left an aborted, still-unanswered spawn in the
@@ -8388,7 +8366,7 @@ fn step_scopes_the_wave_to_the_current_run_and_ignores_prior_run_residue() {
 fn step_reclaims_orphaned_scratch_while_sparing_the_live_worker_area() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     seed_store(root);
 
     // A controlled scratch root, so the reclaim is hermetic (mirrors the residue test).
@@ -8489,7 +8467,7 @@ fn assert_run_level_scratch_reclaimed(scratch: &Path, ctx: &str) {
 fn run_teardown_reclaims_run_level_scratch_at_an_escalation_terminal_state() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_failing_gate_escalating_workflow(root);
+    write_workflow_fixture(root, &FAILING_GATE_ESCALATING_WORKFLOW);
 
     let scratch = scratch_root_under(root);
     plant_run_level_scratch(&scratch);
@@ -8538,7 +8516,7 @@ fn run_teardown_reclaims_run_level_scratch_at_an_escalation_terminal_state() {
 fn run_teardown_reclaims_run_level_scratch_at_a_budget_halt_terminal_state() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_budget_one_two_stage_workflow(root);
+    write_workflow_fixture(root, &BUDGET_ONE_TWO_STAGE_WORKFLOW);
 
     let scratch = scratch_root_under(root);
     plant_run_level_scratch(&scratch);
@@ -8612,7 +8590,7 @@ fn assert_a_step_halts_on_definition_drift(root: &Path, scratch: &Path) {
 fn assert_the_definition_drift_teardown(a_result: &str, reclaimed: bool, why: &str) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let scratch = scratch_root_under(root);
 
     let (_out, err, ok) = step_with_scratch_root(root, &scratch);
@@ -8681,14 +8659,14 @@ rigger::test_cases! {
         );
 }
 
-/// Step 1 of a manual-review run (`write_manual_review_workflow`) over planted run-level
+/// Step 1 of a manual-review run (`MANUAL_REVIEW_WORKFLOW`) over planted run-level
 /// scratch: the manual-autonomy gate PAUSES the stage - a `ManualReview` is emitted and the unit
 /// returns pending WITHOUT parking an implementer spawn, so the frontier is empty and no spawn is
 /// hung - and, the run being manual-review-pending (not converged, still advancing), the
 /// terminal teardown SPARES every run-level shared area including the build cache. Returns the
 /// scratch root.
 fn pause_a_manual_review_over_planted_scratch(root: &Path) -> std::path::PathBuf {
-    write_manual_review_workflow(root);
+    write_workflow_fixture(root, &MANUAL_REVIEW_WORKFLOW);
     let scratch = scratch_root_under(root);
     plant_run_level_scratch(&scratch);
 
@@ -8848,7 +8826,7 @@ fn run_teardown_reclaims_run_level_scratch_after_a_manual_review_is_integrated()
 fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_survives() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_manual_review_workflow(root);
+    write_workflow_fixture(root, &MANUAL_REVIEW_WORKFLOW);
 
     // Step 1: "solo" pauses for manual review (its only gate is manual autonomy).
     let (_out, err, ok) = run_rigger(root, &["step"]);
@@ -8920,7 +8898,7 @@ fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_
 ///
 /// Mirrors the pre-existing
 /// `step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate`'s exact
-/// real-git-isolated, `on_pass: merge` shape (`write_reviewless_git_unit_workflow`), which
+/// real-git-isolated, `on_pass: merge` shape (`REVIEWLESS_GIT_UNIT_WORKFLOW`), which
 /// already proves the worktree+branch ARE reclaimed on a clean single-window integrate; this
 /// test adds a registered mutation-scratch dir to that same real teardown and asserts it is
 /// ALSO gone.
@@ -8928,7 +8906,7 @@ fn a_terminal_units_registered_mutation_scratch_is_reaped_while_a_live_siblings_
 fn a_units_registered_mutation_scratch_is_reaped_by_the_real_single_window_integrate_teardown() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_reviewless_git_unit_workflow(root);
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
 
     let scratch = root.join("scratchroot");
     let tmp = scratch.to_str().unwrap();
@@ -9017,7 +8995,7 @@ fn an_isolation_none_units_registered_mutation_scratch_is_reaped_by_the_real_sin
     let dir = temp_repoless_project();
     let root = dir.path();
     // A single `isolation: none` stage, `on_pass: none` (no merge to attempt - there is no
-    // worktree), mirroring `write_two_stage_workflow`'s own stage shape but with only ONE
+    // worktree), mirroring `TWO_STAGE_WORKFLOW`'s own stage shape but with only ONE
     // stage so no spawn-budget contention is in play.
     let rigger = root.join(".rigger");
     std::fs::create_dir_all(rigger.join("agents")).unwrap();
@@ -9108,7 +9086,7 @@ stages:
 fn a_terminal_units_mutation_scratch_reap_is_a_graceful_noop_in_a_homeless_environment() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_manual_review_workflow(root);
+    write_workflow_fixture(root, &MANUAL_REVIEW_WORKFLOW);
 
     // Step 1: "solo" pauses for manual review, exactly like the sibling test above - this
     // step keeps the test process's own real HOME, so seeding the project is unaffected.
@@ -9916,7 +9894,7 @@ fn a_step_stamps_the_run_id_on_the_run_started_and_every_event_it_emits() {
 
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     let (_out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "the step must succeed; stderr: {err}");
@@ -9977,7 +9955,7 @@ fn step_result_meta_stamps_the_resolved_model_on_the_replayed_units_events() {
 
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // Step 1: both units park their implementer spawns.
     let (out, err, ok) = run_rigger(root, &["step"]);
@@ -10075,7 +10053,7 @@ fn step_result_with_no_meta_omits_the_resolved_model_key_and_ignores_a_prose_cla
 
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // Both units park their implementer spawns.
     let (out, err, ok) = run_rigger(root, &["step"]);
@@ -10209,7 +10187,7 @@ fn step_resolves_the_model_ladders_first_rung_for_the_initial_attempt() {
 fn assert_step_rejects(args: &[&str], needle: &str) {
     let dir = temp_project();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     let (_out, err, ok) = run_rigger(root, args);
     assert!(!ok, "`rigger {}` must be a non-zero exit", args.join(" "));
@@ -10259,7 +10237,7 @@ fn assert_a_step_anchors_the_run_branch(root: &Path, base: &str, anchor_sha: &st
 fn step_accepts_base_and_anchors_the_run_branch() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let base_sha =
         git_answer(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
 
@@ -10276,7 +10254,7 @@ fn step_accepts_base_and_anchors_the_run_branch() {
 fn step_creates_run_branch_off_head_when_base_unresolvable() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let head_sha =
         git_answer(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
     let operator_branch = git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"])
@@ -10307,7 +10285,7 @@ fn step_creates_run_branch_off_head_when_base_unresolvable() {
 fn assert_no_reachable_base_is_refused(args: &[&str], label: Option<&str>) {
     let dir = temp_project();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let head_branch_before = git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
 
     let mut argv = args.to_vec();
@@ -10381,7 +10359,7 @@ rigger::test_cases! {
 fn run_eventstore_kurrentdb_reaches_the_adapter_not_a_missing_feature_dead_end() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // Drive `rigger run --eventstore kurrentdb` with NO connection string. `--base HEAD`
     // resolves in the committed repo, so the run clears its base/anchor gates and reaches
@@ -10488,7 +10466,7 @@ fn step_refuses_a_base_lacking_every_spec_path_and_proceeds_when_present() {
     // -- REFUSE: the spec's only path token is absent from the (empty) HEAD tree.
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     std::fs::write(
         root.join("absent-spec.md"),
         "# S\n\n## Done when\n\n- [ ] the file crates/foo/src/bar.rs exports Zed\n",
@@ -10531,7 +10509,7 @@ fn step_refuses_a_base_lacking_every_spec_path_and_proceeds_when_present() {
     // workflow - a DIFFERENT error), proving the base check did not refuse a correct base.
     let dir2 = temp_git_project_with_commit();
     let root2 = dir2.path();
-    write_two_stage_workflow(root2);
+    write_workflow_fixture(root2, &TWO_STAGE_WORKFLOW);
     std::fs::create_dir_all(root2.join("src")).unwrap();
     std::fs::write(root2.join("src").join("lib.rs"), "pub fn f() {}\n").unwrap();
     git_ok(root2, &["add", "src/lib.rs"]);
@@ -10569,7 +10547,7 @@ fn step_refuses_a_base_lacking_every_spec_path_and_proceeds_when_present() {
 fn step_missing_files_refusal_recovery_anchors_on_the_corrected_base() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // Two bases off the empty init commit: `wrong` lacks src/lib.rs; `right` has it.
     let init = git_answer(root, &["rev-parse", "HEAD"]).expect("the init commit resolves");
@@ -10644,7 +10622,7 @@ fn step_missing_files_refusal_recovery_anchors_on_the_corrected_base() {
 fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // First step creates + checks out rigger-run.
     let (_out, err, ok) = run_rigger(root, &["step", "--base", "HEAD"]);
@@ -10693,7 +10671,7 @@ fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
 /// runs inline (recording a `GateVerdict`), the adjudicator's verdict is supplied via a
 /// recorded `SpawnResult`, and `on_pass: none` means the verified+reviewed unit never
 /// tries to merge (no git). The implementer and adjudicator spawns are parked by the
-/// replay driver and drained by recorded results, exactly like `write_two_stage_workflow`.
+/// replay driver and drained by recorded results, exactly like `TWO_STAGE_WORKFLOW`.
 fn write_gated_reviewed_workflow(root: &Path) {
     write_scaffold(
         root,
@@ -13051,7 +13029,7 @@ fn validate_footprint_worktrees_and_per_unit_caches_measure_real_dead_and_live_e
 fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     let dir = temp_project();
     let root = dir.path();
-    write_two_stage_workflow(root); // a loadable config so validate reaches the advisories
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW); // a loadable config so validate reaches the advisories
 
     // A controlled scratch root (hermetic, like the residue test) with a child process whose
     // cwd is strictly inside it - the exact leak spec 23 surfaces.
@@ -14057,7 +14035,7 @@ fn project_identity_survives_a_directory_rename() {
 fn step_migrates_legacy_history_to_the_minted_identity() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     seed_store(root);
 
     // Pre-spec-09 history: a DecisionMade recorded BEFORE any project.id exists lands under
@@ -14110,7 +14088,7 @@ fn step_migrates_legacy_history_to_the_minted_identity() {
 fn validate_warns_when_the_project_id_is_absent_and_is_silent_after_minting() {
     let dir = temp_project();
     let root = dir.path();
-    write_two_stage_workflow(root); // a loadable config so `rigger validate` reaches the advisories
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW); // a loadable config so `rigger validate` reaches the advisories
 
     // No project.id yet: validate WARNS (still exit 0) that identity falls back to the basename.
     let (out, err, ok) = run_rigger(root, &["validate"]);
@@ -14153,7 +14131,7 @@ fn edit_worker_prompt(root: &Path, new_body: &str) {
 fn a_pinned_run_whose_definition_drifted(new_prompt: &str) -> tempfile::TempDir {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let (_out, err, ok) = run_rigger(root, &["step"]);
     assert!(
         ok,
@@ -20062,7 +20040,7 @@ fn run_step_dash_enabled(root: &Path, dash_port: u16) -> (String, String) {
 fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     // This run's ephemeral singleton port: BOTH steps below share it (they model one run's
     // successive steps, which must find the one dash the first started), and it is never 7420.
     let dash_port = free_loopback_port();
@@ -20145,7 +20123,7 @@ fn step_auto_starts_one_persistent_dash_and_a_second_step_starts_none() {
 fn step_dash_binds_exactly_the_rigger_dash_port_override() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     // The override the real binary must honor at the bind: an ephemeral loopback port, never 7420.
     let dash_port = free_loopback_port();
 
@@ -20222,7 +20200,7 @@ fn step_dash_binds_exactly_the_rigger_dash_port_override() {
 fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_never_confirms() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // Hold the target port ourselves: the spawned `rigger dash --port <p>` child can never bind
     // it, so it can never confirm serving - the bind-never-confirms shape at the real binary.
@@ -20311,7 +20289,7 @@ fn step_writes_no_dash_marker_and_leaves_a_stale_one_untouched_when_the_bind_nev
 fn assert_step_self_heals_a_stale_marker(marker_pid: u32) {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let dash_port = free_loopback_port();
     let stale_port = free_loopback_port();
 
@@ -20405,7 +20383,7 @@ rigger::test_cases! {
 fn step_losing_a_real_singleton_race_records_the_winners_pid_not_its_own_dead_childs() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let dash_port = free_loopback_port();
 
     // The WINNER: a real, serving `rigger dash` fully up BEFORE the step ever spawns its own -
@@ -20469,7 +20447,7 @@ fn step_losing_a_race_against_a_pid_header_less_winner_records_a_sentinel_marker
 
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // The WINNER stand-in: answers the dash header (so the race resolves cleanly) but never the
     // pid header (so the serving pid can never be attributed) - simulating a pre-round-2 or
@@ -20548,7 +20526,7 @@ fn step_against_a_pid_header_less_winner_is_idempotent_across_two_consecutive_st
 
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     let connections = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&connections);
@@ -20690,7 +20668,7 @@ fn dash_serving_pid_on_reports_a_real_separately_compiled_dashs_own_pid() {
 fn step_honors_the_rigger_no_dash_opt_out() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // `run_rigger` sets RIGGER_NO_DASH=1 for exactly this reason.
     let (out, err, ok) = run_rigger(root, &["step"]);
@@ -20737,7 +20715,7 @@ fn step_honors_the_rigger_no_dash_opt_out() {
 fn step_honors_the_config_dash_off_opt_out() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     // Opt out via the config key alone: append `dash: off` at the top level of workflow.yml.
     append_line(&root.join(".rigger").join("workflow.yml"), "dash: off");
 
@@ -20819,7 +20797,7 @@ fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
 
     // BACK-COMPAT: the fixture's `workflow.yml` says NOTHING about the dash - exactly as every
     // config authored before this key did. It still loads AND keeps the always-on promise.
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let cfg = rigger::config_store::load(dir).expect("a workflow that omits `dash` still loads");
     assert!(
         cfg.workflow.dash_enabled(),
@@ -20839,7 +20817,7 @@ fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
         r#"dash: "no""#,
     ];
     for form in off_forms {
-        write_two_stage_workflow(root);
+        write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
         append_line(&wf_path, form);
         let cfg = rigger::config_store::load(dir).expect("a workflow with `dash` set still loads");
         assert!(
@@ -20852,7 +20830,7 @@ fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
     // BARE documented truthy counterpart to `dash: off`; `true` and the empty string are quoted.
     let on_forms: &[&str] = &["dash: on", r#"dash: "true""#, r#"dash: """#];
     for form in on_forms {
-        write_two_stage_workflow(root);
+        write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
         append_line(&wf_path, form);
         let cfg = rigger::config_store::load(dir).expect("a workflow with `dash` set still loads");
         assert!(
@@ -20892,7 +20870,7 @@ fn config_load_dash_enabled_is_the_public_opt_out_contract_and_back_compat() {
 fn a_step_started_dash_is_detached_and_outlives_its_step_process() {
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     // Both steps of this one run share the same ephemeral singleton port (never 7420).
     let dash_port = free_loopback_port();
 
@@ -22052,7 +22030,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
 
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // Run `rigger step` as its OWN process-group leader: `process_group(0)` makes the step a group
     // leader whose PGID equals its PID - the exact shape of a foreground command the courier's
@@ -23451,7 +23429,7 @@ fn rigger_workflow_yml_wires_the_checkin_stage_and_mutation_gate_with_the_spec_9
 fn watch_once_reports_a_real_steps_own_dash_after_the_step_process_has_long_since_exited() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     let dash_port = free_loopback_port();
 
     // A real `rigger step`: this project's FIRST step, so `ensure_run_dashboard` runs on the
@@ -23979,7 +23957,7 @@ enum ReminderPid {
 fn unborn_project_with_spec(name: &str, body: &str) -> tempfile::TempDir {
     let dir = temp_project();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     std::fs::create_dir_all(root.join("specs")).unwrap();
     std::fs::write(root.join("specs").join(name), body).unwrap();
     dir
@@ -24213,7 +24191,7 @@ rigger::test_cases! {
 fn run_with_no_spec_path_never_mentions_the_spec_lint() {
     let dir = temp_project();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     let (out, _err, _ok) = run_rigger(root, &["run", "--base", "origin/does-not-exist"]);
     assert!(
@@ -24305,7 +24283,7 @@ fn step_given_a_spec_path_names_the_spec_lint_on_stderr_without_corrupting_the_w
 fn step_with_no_spec_path_never_mentions_the_spec_lint() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "the step must succeed; stderr: {err}");
@@ -24406,7 +24384,7 @@ fn workflow_reminder_prints_despite_env_naming_a_foreign_pid() {
 fn assert_the_fresh_notice_prints(driver: &str, on_stdout: bool) {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
     std::fs::write(
         root.join(".rigger").join("workflow.yml"),
         "defaults:\n  grounder: totally-bogus-grounder-xyz\n  budget: 60\nstages:\n  a:\n    agent: worker\n    on_pass: none\n  b:\n    agent: worker\n    on_pass: none\n",
@@ -24724,7 +24702,7 @@ fn step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_pre
 
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     // The predecessor: a real, genuinely serving `rigger dash`, stopped, on the SAME port the
     // step's own always-on ensure will target below.
@@ -25005,7 +24983,7 @@ fn step_leaves_a_non_addrinuse_bind_error_unenriched() {
 
     let proj = temp_git_project_with_commit();
     let root = proj.path();
-    write_two_stage_workflow(root);
+    write_workflow_fixture(root, &TWO_STAGE_WORKFLOW);
 
     let (out, err) = run_step_dash_enabled(root, 1);
 

@@ -17,7 +17,7 @@
 mod common;
 
 use common::cli::emit;
-use common::cli::event_log;
+use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::seed_derived_duplicates;
@@ -94,7 +94,7 @@ fn bare_reset_previews_the_migrated_stores_real_counts_when_history_predates_the
     // prefix, none under the legacy one.
     let minted_prefix = format!("proj-{minted}-");
     let legacy_prefix = format!("proj-{legacy}-");
-    let conn = rusqlite::Connection::open(event_log(root)).unwrap();
+    let conn = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
     let mut stmt = conn.prepare("SELECT DISTINCT stream FROM events").unwrap();
     let streams: Vec<String> = stmt
         .query_map([], |r| r.get(0))

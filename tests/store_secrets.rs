@@ -32,7 +32,7 @@ use std::process::Output;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::cli::event_log;
+use common::cli::rigger_file;
 use common::cli::temp_rigger_project;
 #[path = "common/store_courier.rs"]
 mod store_courier;
@@ -101,7 +101,7 @@ fn assert_server_reached_and_credentials_redacted(out: &Output, root: &Path, why
     );
     // A server selection never fabricates the local sqlite event log.
     assert!(
-        !event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "{why}: a server-configured courier must NOT create a local .rigger/events.db: {stderr}"
     );
 }

@@ -140,11 +140,10 @@ use common::cli::plant_stale_marker;
 use common::cli::run_rigger;
 use common::cli::seed_run_events;
 use common::cli::temp_repoless_project;
-use common::cli::{write_scaffold, UNISOLATED_WORKER};
+use common::cli::{write_workflow_fixture, WorkflowFixture, UNISOLATED_WORKER};
 use common::fixtures::js_declaration;
 use common::git::temp_git_project_with_commit;
 
-use std::path::Path;
 use std::process::Command;
 
 /// A single-unit workflow whose gate always PASSES and whose remediation bound
@@ -152,11 +151,9 @@ use std::process::Command;
 /// once its attempt count passes the stalled-frontier threshold of two. Offline and
 /// repo-less: `nop` grounder, `isolation: none`, `on_pass: none` (never attempts a merge, so
 /// nothing here depends on git).
-fn write_attention_progression_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", UNISOLATED_WORKER)],
-        r#"defaults:
+const ATTENTION_PROGRESSION_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 5
@@ -168,8 +165,7 @@ stages:
     gates: [ok]
     on_pass: none
 "#,
-    );
-}
+};
 
 /// Spec 69, criterion 5: worker-death-recurred and stalled-frontier, driven across FIVE
 /// separate `rigger step` subprocesses against ONE persisted on-disk store, each round
@@ -178,7 +174,7 @@ stages:
 fn recurrence_and_stalled_frontier_survive_real_process_boundaries() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_attention_progression_workflow(root);
+    write_workflow_fixture(root, &ATTENTION_PROGRESSION_WORKFLOW);
 
     // Round 1: the unit is ready, so its implementer parks fresh as attempt #0. Nothing has
     // crossed a threshold yet - not even a failure has happened - so `attention` is omitted.
@@ -371,12 +367,10 @@ fn marker_path_for_wave_item(line: &str, id: &str) -> String {
 /// hung via a planted stale marker. Both share `max_wall_clock` (so BOTH carry a
 /// `marker_path` in the wave - proving the ordering test below reads the RIGHT item's path)
 /// and `max_retries: 5` (so `u` is never escalated across the whole scenario, matching
-/// `write_attention_progression_workflow` above).
-fn write_attention_ordering_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", UNISOLATED_WORKER)],
-        r#"defaults:
+/// `ATTENTION_PROGRESSION_WORKFLOW` above).
+const ATTENTION_ORDERING_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: UNISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 60
   max_retries: 5
@@ -389,8 +383,7 @@ stages:
     agent: worker
     on_pass: none
 "#,
-    );
-}
+};
 
 /// Spec 69, criterion 5's ordering CONTRACT, proven at the REAL binary boundary (review
 /// u69c5 round 3, cause genuine-defect): `rigger step` (main.rs) computes the hung-liveness
@@ -411,7 +404,7 @@ stages:
 fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_signals() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_attention_ordering_workflow(root);
+    write_workflow_fixture(root, &ATTENTION_ORDERING_WORKFLOW);
 
     // Round 1: both independent units are ready, so both park together in one wave.
     let (out, err, ok) = run_rigger(root, &["step"]);
@@ -581,7 +574,7 @@ fn run_relay_attention(step_json: &str) -> Option<Vec<String>> {
 fn relay_attention_renders_the_real_wire_produced_by_a_real_step_process() {
     let dir = temp_repoless_project();
     let root = dir.path();
-    write_attention_progression_workflow(root);
+    write_workflow_fixture(root, &ATTENTION_PROGRESSION_WORKFLOW);
 
     let (_out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "round 1 step must succeed; stderr: {err}");

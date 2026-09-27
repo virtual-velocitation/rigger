@@ -45,7 +45,7 @@ use std::process::Output;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::cli::event_log;
+use common::cli::rigger_file;
 use common::cli::temp_rigger_project;
 #[path = "common/store_courier.rs"]
 mod store_courier;
@@ -82,7 +82,7 @@ fn a_server_selected_courier_reaches_the_server_and_never_fabricates_local_sqlit
     // The event log is the SERVER's, so no local sqlite event log is fabricated - the
     // state-fracture stays closed even with the server unreachable.
     assert!(
-        !event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "a server-configured courier must NOT create a local .rigger/events.db - that is the \
          state-fracture this criterion closes, and it must hold even when the server is down"
     );
@@ -113,7 +113,7 @@ fn a_courier_with_no_server_configured_resolves_the_local_sqlite_log() {
         "an unconfigured courier must not reach for a server backend: {stderr}"
     );
     assert!(
-        !event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "the refuse-to-fabricate guard must leave no local events.db behind: {stderr}"
     );
 }
@@ -140,7 +140,7 @@ fn an_empty_kurrentdb_conn_is_treated_as_unset_not_a_server_with_no_address() {
          {stderr}"
     );
     assert!(
-        !event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "an empty-conn courier resolves local sqlite and fabricates nothing: {stderr}"
     );
 }
@@ -200,7 +200,7 @@ fn a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
          control proving the sqlite arm takes the absent-db guard; stdout:\n{ctrl_stdout}"
     );
     assert!(
-        !event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "a read command must never fabricate a local events.db (control arm)"
     );
 
@@ -231,7 +231,7 @@ fn a_read_command_resolves_the_configured_store_not_the_local_absent_sentinel(
          against a live server; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        !event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "a server-configured read must not fabricate a local events.db either"
     );
 }

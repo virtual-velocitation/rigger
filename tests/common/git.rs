@@ -7,8 +7,8 @@ use std::path::Path;
 
 pub use super::fixtures::{
     commit_at_fixed_date, git_answer, git_commit_all, git_init_quiet, git_ok, git_ok_with_identity,
-    git_out, git_out_with_identity, git_stdout, init_repo, install_refusing_hook, run_git,
-    temp_git_project_with_commit,
+    git_out, init_repo, install_refusing_hook, run_git, temp_git_project_with_commit,
+    trimmed_stdout,
 };
 
 /// A go-gitsemver fixture repository at `root`: `go-gitsemver.yml` matching this repo's own

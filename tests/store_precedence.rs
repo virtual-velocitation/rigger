@@ -33,7 +33,7 @@ use std::process::Output;
 // `tests/common`: a path baked in at compile time goes stale the moment the target dir moves,
 // and every suite that spawns the product then dies with a bare NotFound.
 mod common;
-use common::cli::event_log;
+use common::cli::rigger_file;
 use common::cli::temp_rigger_project;
 use common::cli::{assert_selected_server, assert_selected_sqlite};
 use common::workflow_probe::write_workflow;
@@ -175,7 +175,7 @@ fn assert_bare_courier_refuses_loudly(setup: impl Fn(&Path), needles: &[&str], w
          fallback is the exact fracture this rung guards; stderr:\n{stderr}"
     );
     assert!(
-        !event_log(root).exists(),
+        !rigger_file(root, "events.db").exists(),
         "a loud failure for {what} must leave no fabricated local .rigger/events.db behind"
     );
 }

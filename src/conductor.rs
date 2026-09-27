@@ -13961,10 +13961,10 @@ mod tests {
     use crate::test_support::gate_def_inputs;
     use crate::test_support::git_ok;
     use crate::test_support::git_out;
-    use crate::test_support::git_stdout;
     use crate::test_support::has_status_marker as has_status;
     use crate::test_support::run_git;
     use crate::test_support::temp_git_project_with_commit;
+    use crate::test_support::trimmed_stdout;
     use crate::test_support::{
         assert_winner_reviewed_sha_is_round_start, speculation_regen_door_cfg,
     };
@@ -38767,7 +38767,7 @@ mod tests {
     /// The current HEAD commit hash of a git repo, for asserting a lens produced no
     /// commit.
     fn git_head(repo: &str) -> String {
-        git_stdout(repo, &["rev-parse", "HEAD"])
+        trimmed_stdout(&run_git(repo, &["rev-parse", "HEAD"]))
     }
 
     /// FIX 2: a gate runner that PASSES only when the worktree it is handed (`dir`)

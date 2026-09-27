@@ -29,7 +29,7 @@
 
 mod common;
 
-use common::cli::event_log;
+use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
@@ -76,7 +76,7 @@ fn persist_index(root: &Path, entries: &[(&str, &str)]) {
 /// project's own namespaced stream - the exact duplication `rigger reset --derived` prunes and
 /// the bloat advisory measures.
 fn seed_duplicated_key(root: &Path, rounds: usize) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events: Vec<Event> = vec![Event::new("RunStarted", b"{}".to_vec())];
     for _ in 0..rounds {
@@ -99,7 +99,7 @@ fn seed_duplicated_key(root: &Path, rounds: usize) {
 /// type's own delete only ever sees its own one row), so the bloat measurement's per-type
 /// scoping must never merge these into a false duplicate pair.
 fn seed_key_under_two_covered_types(root: &Path, key: &str) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let events = vec![
         Event::new("RunStarted", b"{}".to_vec()),
@@ -394,7 +394,7 @@ fn validate_is_silent_on_log_bloat_when_the_store_is_server_selected() {
 /// seeds a file's CURRENT content and never edits it afterward is recording a graph that agrees
 /// with the tree; editing the file afterward (without re-seeding) is what provokes disagreement.
 fn seed_graph_generation(root: &Path, file: &str) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     let mut events: Vec<Event> = vec![Event::new("RunStarted", b"{}".to_vec())];
     rigger::ingest::ingest_files_batched(root.to_str().unwrap(), &[file.to_string()], |keyed| {

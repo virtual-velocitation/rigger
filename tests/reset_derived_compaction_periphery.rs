@@ -82,10 +82,9 @@
 mod common;
 use common::git::run_git;
 
-use common::cli::event_log;
-use common::cli::graph_db;
 use common::cli::keyed;
 use common::cli::reported_reclaimed_bytes;
+use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::run_stream_identity;
 use common::cli::temp_rigger_project;
@@ -579,7 +578,7 @@ fn a_reader_holding_the_write_ahead_log_makes_the_reclamation_unmeasured_not_wro
 // ---------------------------------------------------------------------------------------
 
 fn seed_project(root: &Path, rounds: u64) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     seed_namespace(&backend, &run_stream_identity(root), rounds);
 }
 
@@ -616,7 +615,7 @@ fn the_command_prunes_and_accounts_for_exactly_the_derived_index_types_ingest_de
     let root = dir.path();
     const ROUNDS: u64 = 5;
     seed_project(root, ROUNDS);
-    let before = raw_rows(&event_log(root)).len();
+    let before = raw_rows(&rigger_file(root, "events.db")).len();
 
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
@@ -636,7 +635,7 @@ fn the_command_prunes_and_accounts_for_exactly_the_derived_index_types_ingest_de
     // And the account is TRUE: the per-type counts sum to the headline number, and that number is
     // exactly how many rows the file actually lost.
     let summed: usize = report.iter().map(|(_, n)| n).sum();
-    let after = raw_rows(&event_log(root)).len();
+    let after = raw_rows(&rigger_file(root, "events.db")).len();
     assert_eq!(
         before - after,
         summed,
@@ -1397,7 +1396,7 @@ fn seed_both_stores(root: &Path, rounds: u64) {
         ));
     }
 
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &id);
     store
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
@@ -1408,8 +1407,8 @@ fn seed_both_stores(root: &Path, rounds: u64) {
     let written = store
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
         .expect("read the seeded log back");
-    let graph =
-        Projector::open(graph_db(root).to_str().unwrap(), &id).expect("open the context graph");
+    let graph = Projector::open(rigger_file(root, "graph.db").to_str().unwrap(), &id)
+        .expect("open the context graph");
     graph.apply_batch(&written).expect("fold the seeded log");
 }
 
@@ -1447,22 +1446,22 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
         seed_both_stores(project.path(), ROUNDS);
     }
 
-    let seed_log = raw_rows(&event_log(runs_only.path()));
-    let seed_graph = graph_rows(&graph_db(runs_only.path()));
+    let seed_log = raw_rows(&rigger_file(runs_only.path(), "events.db"));
+    let seed_graph = graph_rows(&rigger_file(runs_only.path(), "graph.db"));
     assert!(
         !seed_log.is_empty() && !seed_graph.0.is_empty() && !seed_graph.1.is_empty(),
         "the seed must populate BOTH stores, or nothing below proves anything"
     );
     assert!(
-        shape(&raw_rows(&event_log(derived_only.path()))) == shape(&seed_log),
+        shape(&raw_rows(&rigger_file(derived_only.path(), "events.db"))) == shape(&seed_log),
         "the three fixtures must start from an identical log; they differ at {}",
         first_difference(
-            &row_marks(&raw_rows(&event_log(derived_only.path()))),
+            &row_marks(&raw_rows(&rigger_file(derived_only.path(), "events.db"))),
             &row_marks(&seed_log)
         )
     );
     assert_eq!(
-        graph_rows(&graph_db(derived_only.path())),
+        graph_rows(&rigger_file(derived_only.path(), "graph.db")),
         seed_graph,
         "the three fixtures must start from an identical graph"
     );
@@ -1475,7 +1474,7 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
     // reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote.
     let (out, err, ok) = run_rigger(runs_only.path(), &["reset", "--runs"]);
     assert!(ok, "reset --runs must succeed; stderr: {err}\n{out}");
-    let after_runs_log = raw_rows(&event_log(runs_only.path()));
+    let after_runs_log = raw_rows(&rigger_file(runs_only.path(), "events.db"));
     assert!(
         after_runs_log == seed_log,
         "reset --runs reports that it deletes no event, so every row must survive \
@@ -1483,7 +1482,7 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
          said: {out:?}",
         first_difference(&row_marks(&after_runs_log), &row_marks(&seed_log))
     );
-    let after_runs_graph = graph_rows(&graph_db(runs_only.path()));
+    let after_runs_graph = graph_rows(&rigger_file(runs_only.path(), "graph.db"));
     let dropped: Vec<&String> = seed_graph
         .0
         .iter()
@@ -1501,12 +1500,12 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
     let (out, err, ok) = run_rigger(derived_only.path(), &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
     assert_eq!(
-        graph_rows(&graph_db(derived_only.path())),
+        graph_rows(&rigger_file(derived_only.path(), "graph.db")),
         seed_graph,
         "the shipped guidance says the live graph is unchanged by --derived, so its live content \
          must be identical; the command said: {out:?}"
     );
-    let after_derived_log = raw_rows(&event_log(derived_only.path()));
+    let after_derived_log = raw_rows(&rigger_file(derived_only.path(), "events.db"));
     assert_eq!(
         seed_log.len() - after_derived_log.len(),
         2 * (ROUNDS as usize - 1),
@@ -1522,7 +1521,7 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
         ok,
         "reset --runs --derived must succeed; stderr: {err}\n{out}"
     );
-    let composed_log = raw_rows(&event_log(composed.path()));
+    let composed_log = raw_rows(&rigger_file(composed.path(), "events.db"));
     assert!(
         shape(&composed_log) == shape(&after_derived_log),
         "the composed reset must leave exactly the log --derived alone leaves; it differs at {}, \
@@ -1530,7 +1529,7 @@ fn each_reset_mode_sheds_only_its_own_accumulation_and_composing_them_does_exact
         first_difference(&row_marks(&composed_log), &row_marks(&after_derived_log))
     );
     assert_eq!(
-        graph_rows(&graph_db(composed.path())),
+        graph_rows(&rigger_file(composed.path(), "graph.db")),
         after_runs_graph,
         "the composed reset must leave exactly the graph --runs alone leaves; it said: {out:?}"
     );
@@ -1613,7 +1612,7 @@ fn seed_run_history_and_duplication(root: &Path, rounds: u64) {
         ));
     }
 
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let store = Namespaced::new(&backend, &run_stream_identity(root));
     store
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
@@ -1663,7 +1662,7 @@ fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_
         "the --all view must aggregate both seeded runs; got:\n{before_all}"
     );
 
-    let derived_before = derived_rows(&event_log(root));
+    let derived_before = derived_rows(&rigger_file(root, "events.db"));
     assert_eq!(
         derived_before,
         2 * ROUNDS as usize,
@@ -1675,7 +1674,7 @@ fn the_run_history_the_shipped_guidance_promises_reads_back_identically_after_a_
     // would also be satisfied by a prune that ate a run event for every duplicate it spared, which
     // is precisely the damage the equality below exists to catch.
     assert_eq!(
-        derived_rows(&event_log(root)),
+        derived_rows(&rigger_file(root, "events.db")),
         2,
         "the compaction must leave one recording per key, or the report's survival is a claim \
          about a prune that did nothing; it said: {out:?}"
@@ -1853,7 +1852,7 @@ fn append_run(root: &Path, at: &mut u64, events: &[(&str, &str)]) {
                 .with_valid_from(UNIX_EPOCH + Duration::from_secs(*at))
         })
         .collect();
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     Namespaced::new(&backend, &run_stream_identity(root))
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &staged)
         .expect("seed the run stream");
@@ -1872,7 +1871,7 @@ fn append_duplication(root: &Path, key: &str, rounds: u64, base_secs: u64) {
             )
         })
         .collect();
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     Namespaced::new(&backend, &run_stream_identity(root))
         .append(rigger::conductor::STREAM, ExpectedRevision::Any, &events)
         .expect("seed the duplication");
@@ -1963,13 +1962,13 @@ fn the_status_view_reads_a_compacted_log_exactly_as_it_read_the_bloated_one() {
     );
 
     let compact = |label: &str, expect_removed: usize| {
-        let derived_before = derived_rows(&event_log(root));
+        let derived_before = derived_rows(&rigger_file(root, "events.db"));
         let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
         assert!(
             ok,
             "reset --derived must succeed {label}; stderr: {err}\n{out}"
         );
-        let derived_after = derived_rows(&event_log(root));
+        let derived_after = derived_rows(&rigger_file(root, "events.db"));
         assert_eq!(
             derived_before - derived_after,
             expect_removed,
@@ -2083,7 +2082,7 @@ fn run_rigger_bounded(
 /// between them and the surviving tail - the arrangement that pushes the stream's row count and
 /// its revision cursor furthest apart while leaving a real, answerable spawn behind.
 fn seed_run_with_a_parked_spawn(root: &Path, rounds: u64) {
-    let backend = Store::open(event_log(root).to_str().unwrap()).unwrap();
+    let backend = Store::open(rigger_file(root, "events.db").to_str().unwrap()).unwrap();
     let project = run_stream_identity(root);
     let store = Namespaced::new(&backend, &project);
     let mut events = vec![
@@ -2150,7 +2149,7 @@ fn a_compacted_run_stream_still_answers_the_couriers_compare_and_append() {
     const ROUNDS: u64 = 5;
     seed_run_with_a_parked_spawn(root, ROUNDS);
 
-    let db = event_log(root);
+    let db = rigger_file(root, "events.db");
     let head_before = raw_rows(&db)
         .iter()
         .map(|r| r.6)
@@ -2393,7 +2392,7 @@ fn the_replay_the_shipped_guidance_names_lifts_the_same_baseline_out_of_a_compac
     );
 
     // PRECONDITION: the prune actually deletes from the stream the baseline is read from.
-    let derived_before = derived_rows(&event_log(root));
+    let derived_before = derived_rows(&rigger_file(root, "events.db"));
     assert_eq!(
         derived_before,
         2 * ROUNDS as usize,
@@ -2402,7 +2401,7 @@ fn the_replay_the_shipped_guidance_names_lifts_the_same_baseline_out_of_a_compac
     let (out, err, ok) = run_rigger(root, &["reset", "--derived"]);
     assert!(ok, "reset --derived must succeed; stderr: {err}\n{out}");
     assert_eq!(
-        derived_rows(&event_log(root)),
+        derived_rows(&rigger_file(root, "events.db")),
         2,
         "the compaction must leave one recording per key, or the baseline's survival is a claim \
          about a prune that did nothing; it said: {out:?}"
@@ -2980,7 +2979,8 @@ fn seed_project_under_the_legacy_namespace(root: &Path, rounds: u64) -> (String,
     // Seeded BEFORE the mint, so the history is filed under the basename namespace exactly as a
     // pre-identity store's is. A fixture that minted first would prove nothing about the migration.
     let legacy = run_stream_identity(root);
-    let backend = Store::open(event_log(root).to_str().unwrap()).expect("open the event log");
+    let backend =
+        Store::open(rigger_file(root, "events.db").to_str().unwrap()).expect("open the event log");
     seed_namespace(&backend, &legacy, rounds);
     drop(backend);
 
@@ -3029,8 +3029,8 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
          instead of reaching the project's store"
     );
 
-    let before_a = raw_rows(&event_log(from_root.path())).len();
-    let before_b = raw_rows(&event_log(from_worktree.path())).len();
+    let before_a = raw_rows(&rigger_file(from_root.path(), "events.db")).len();
+    let before_b = raw_rows(&rigger_file(from_worktree.path(), "events.db")).len();
     assert_eq!(
         before_a, before_b,
         "the two fixtures must start from logs of the same size"
@@ -3086,7 +3086,7 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
             before_b,
         ),
     ] {
-        let after = raw_rows(&event_log(root));
+        let after = raw_rows(&rigger_file(root, "events.db"));
         assert!(
             after.len() < before,
             "reset --derived from {where_} must actually shed rows: {before} before, {} after",
@@ -3105,11 +3105,11 @@ fn a_reset_from_a_nested_worktree_migrates_and_compacts_the_store_it_walked_up_t
 
     // The two invocations are the SAME operation: one store, one authority, two cwds.
     assert_eq!(
-        shape(&raw_rows(&event_log(from_root.path())))
+        shape(&raw_rows(&rigger_file(from_root.path(), "events.db")))
             .iter()
             .map(|r| (r.0, r.2.clone(), r.5))
             .collect::<Vec<_>>(),
-        shape(&raw_rows(&event_log(from_worktree.path())))
+        shape(&raw_rows(&rigger_file(from_worktree.path(), "events.db")))
             .iter()
             .map(|r| (r.0, r.2.clone(), r.5))
             .collect::<Vec<_>>(),
@@ -3139,7 +3139,7 @@ fn reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote(
     let legacy_ns = Namespaced::prefix_for(&legacy);
     let minted_ns = Namespaced::prefix_for(&minted);
 
-    let before = raw_rows(&event_log(project.path()));
+    let before = raw_rows(&rigger_file(project.path(), "events.db"));
     assert!(
         !rows_in(&before, &legacy_ns).is_empty() && rows_in(&before, &minted_ns).is_empty(),
         "the premise: this store's whole history is under the LEGACY namespace, which is the only \
@@ -3152,7 +3152,7 @@ fn reset_runs_alone_migrates_a_legacy_store_and_its_report_says_what_that_wrote(
     // NOTHING WAS DELETED, and nothing was renumbered or re-dated: each seeded row is still there,
     // in order, with only its stream moved into the minted namespace. That is the half of the
     // claim an operator cannot check afterwards, so it is checked here column by column.
-    let after = raw_rows(&event_log(project.path()));
+    let after = raw_rows(&rigger_file(project.path(), "events.db"));
     let carried: Vec<Row> = before
         .iter()
         .map(|r| {
@@ -3401,8 +3401,8 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
     let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 1);
-    let before = raw_rows(&event_log(root));
-    let dates_before = valid_from_by_position(&event_log(root));
+    let before = raw_rows(&rigger_file(root, "events.db"));
+    let dates_before = valid_from_by_position(&rigger_file(root, "events.db"));
     assert!(
         !before.is_empty(),
         "the fixture must hold events, or `pruned 0` would be true of an empty file instead of a \
@@ -3449,12 +3449,12 @@ fn a_log_with_nothing_to_shed_is_reported_as_the_expected_result_and_left_exactl
     // carry that did not guard on a key being recorded more than once would rewrite `valid_from`
     // on rows this prune reported it had left alone - a mutation no row count can see.
     assert_eq!(
-        raw_rows(&event_log(root)),
+        raw_rows(&rigger_file(root, "events.db")),
         before,
         "a prune that shed nothing must leave every row byte-for-byte, VACUUM included"
     );
     assert_eq!(
-        valid_from_by_position(&event_log(root)),
+        valid_from_by_position(&rigger_file(root, "events.db")),
         dates_before,
         "a prune that shed nothing must re-date nothing: the carry only ever rewrites the \
          survivor of a key that WAS recorded more than once"
@@ -3535,9 +3535,9 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     // this both runs below would honestly skip the rewrite and neither arm of the contrast would
     // be reached. Planted free pages change nothing about what the reclamation MEANS: the vacuum
     // reclaims the pages the file is not using, however they came to be free.
-    plant_free_pages(&event_log(root), 3_000);
-    let reader =
-        rusqlite::Connection::open(event_log(root)).expect("open a second connection to the log");
+    plant_free_pages(&rigger_file(root, "events.db"), 3_000);
+    let reader = rusqlite::Connection::open(rigger_file(root, "events.db"))
+        .expect("open a second connection to the log");
     reader
         .execute_batch("BEGIN")
         .expect("begin the reader's transaction");
@@ -3556,7 +3556,7 @@ fn the_command_reports_an_unmeasurable_reclamation_as_unmeasured_rather_than_as_
     // THE CONTROL. A second project seeded identically, with nobody reading it.
     let solo_dir = temp_rigger_project();
     seed_project(solo_dir.path(), ROUNDS);
-    plant_free_pages(&event_log(solo_dir.path()), 3_000);
+    plant_free_pages(&rigger_file(solo_dir.path(), "events.db"), 3_000);
     let (uncontended, err, ok) = run_rigger(solo_dir.path(), &["reset", "--derived"]);
     assert!(
         ok,
@@ -3785,7 +3785,7 @@ fn the_command_does_not_rewrite_a_file_it_has_nothing_to_reclaim_from() {
     // ONE recording per replay key - the clean log of section 18, differing from the duplicated
     // fixtures by exactly the round count.
     seed_project(root, 1);
-    let db = event_log(root);
+    let db = rigger_file(root, "events.db");
     // AND A FILE ALREADY COMPACT. The rewrite is skipped because there is nothing to reclaim, so
     // the fixture establishes that rather than assuming it: a first pass settles the file, and
     // the pass this test measures is the one after it.
@@ -3856,7 +3856,7 @@ fn the_command_reclaims_the_free_space_a_failed_reclamation_left_in_the_file() {
     // THE STATE A FAILED RECLAMATION LEAVES: the duplication is already gone (so this pass deletes
     // nothing) and the space it freed is still sitting in the file.
     seed_project(root, 1);
-    let db = event_log(root);
+    let db = rigger_file(root, "events.db");
     plant_free_pages(&db, 3_000);
 
     let pages_before = pragma_i64(&db, "page_count");
@@ -4016,7 +4016,7 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
     let dir = temp_rigger_project();
     let root = dir.path();
     seed_project(root, 4);
-    let db = event_log(root);
+    let db = rigger_file(root, "events.db");
     // ROOM TO RECLAIM. The seeded duplication is a few small rows, which can free no whole page
     // at all - a run that honestly reports zero would leave this test asserting nothing. Planted
     // free pages make the reclamation a definite figure without changing what it means: the

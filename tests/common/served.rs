@@ -304,7 +304,7 @@ pub fn run_page_harness(page: &str, harness_src: &str) -> (bool, String, String)
     )
 }
 
-/// [`run_node_harness`], skipped (loudly) when there is no `node` runtime on PATH - node is
+/// [`run_node_harness`] against the served client seam, skipped (loudly) when there is no `node` runtime on PATH - node is
 /// present on dev machines and ubuntu-latest CI, so only a machine without it skips.
 pub fn node_harness_passes(harness_src: &str, ok_token: &str) {
     node_harness_claims(harness_src, ok_token, SERVED_CLIENT_SEAM);
@@ -319,20 +319,16 @@ pub fn node_harness_claims(harness_src: &str, ok_token: &str, claim: &str) {
         );
         return;
     }
-    run_node_harness_claiming(harness_src, ok_token, claim);
+    run_node_harness(harness_src, ok_token, claim);
 }
 
 /// What a served-page runtime harness proves unless its caller names more.
-const SERVED_CLIENT_SEAM: &str = "the runtime harness must drive the served client seam";
+pub const SERVED_CLIENT_SEAM: &str = "the runtime harness must drive the served client seam";
 
 /// Run `harness_src` against the live served page, asserting node succeeds and prints
-/// `ok_token` - the sentinel that proves the driver ran to its end.
-pub fn run_node_harness(harness_src: &str, ok_token: &str) {
-    run_node_harness_claiming(harness_src, ok_token, SERVED_CLIENT_SEAM);
-}
-
-/// [`run_node_harness`] whose failure reports `claim`.
-fn run_node_harness_claiming(harness_src: &str, ok_token: &str, claim: &str) {
+/// `ok_token` - the sentinel that proves the driver ran to its end; a failure reports `claim`,
+/// what the harness proves.
+pub fn run_node_harness(harness_src: &str, ok_token: &str, claim: &str) {
     let (ok, stdout, stderr) = run_page_harness(&dash::live_page(), harness_src);
     assert!(
         ok,

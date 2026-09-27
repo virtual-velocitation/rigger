@@ -22,8 +22,7 @@
 mod common;
 
 use common::cli::emit;
-use common::cli::event_log;
-use common::cli::graph_db;
+use common::cli::rigger_file;
 use common::cli::run_rigger;
 use common::cli::seed_derived_duplicates;
 use common::cli::seed_run_events;
@@ -59,11 +58,11 @@ fn seed_one_dead_run_node(root: &Path) {
 /// Raw row counts of a store's two files, read directly (never through the command under test),
 /// so a before/after comparison proves the bare menu is read-only.
 fn store_row_counts(root: &Path) -> (i64, i64, i64) {
-    let ev = rusqlite::Connection::open(event_log(root)).unwrap();
+    let ev = rusqlite::Connection::open(rigger_file(root, "events.db")).unwrap();
     let events: i64 = ev
         .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
         .unwrap();
-    let gr = rusqlite::Connection::open(graph_db(root)).unwrap();
+    let gr = rusqlite::Connection::open(rigger_file(root, "graph.db")).unwrap();
     let nodes: i64 = gr
         .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
         .unwrap();

@@ -87,7 +87,7 @@ use common::cli::read_run_events;
 use common::cli::run_rigger;
 use common::cli::run_rigger_envs;
 use common::cli::seed_run_events;
-use common::cli::{write_scaffold, ISOLATED_WORKER};
+use common::cli::{write_workflow_fixture, WorkflowFixture, ISOLATED_WORKER};
 use common::git::git_ok;
 use common::git::git_out;
 use common::git::temp_git_project_with_commit;
@@ -99,11 +99,9 @@ use std::process::Command;
 /// that reaches a durable, inspectable unit branch without a merge or a review panel's own
 /// agents to answer). Mirrors `tests/cli.rs`'s `write_unit_review_lenses_workflow` minus its
 /// `review:` block - this file needs the unit's own durable worktree, not the review layer.
-fn write_solo_unit_workflow(root: &Path) {
-    write_scaffold(
-        root,
-        &[("worker", ISOLATED_WORKER)],
-        r#"defaults:
+const SOLO_UNIT_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: ISOLATED_WORKER,
+    body: r#"defaults:
   grounder: nop
   budget: 60
 gates:
@@ -114,8 +112,7 @@ stages:
     gates: [ok]
     on_pass: none
 "#,
-    );
-}
+};
 
 /// The DETERMINISTIC worktree dir `stage_worktree`'s `Worktree::create` derives for a unit named
 /// `unit` in `root`'s default (unconfigured) scratch root - the product's own
@@ -229,7 +226,7 @@ fn seed_and_halt_a_dispatched_spawn(
 fn a_halted_units_worktree_is_recovered_as_a_wip_commit_and_the_real_prompt_names_it() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_solo_unit_workflow(root);
+    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
 
     // Process 1 (priming, inside the helper): dispatches solo/implementer#0 for real, then
     // the agent dies mid-edit - dirtying the SAME worktree the priming step just adopted,
@@ -312,7 +309,7 @@ fn a_halted_units_worktree_is_recovered_as_a_wip_commit_and_the_real_prompt_name
 fn an_ordinary_freshly_created_worktree_never_gains_a_halt_recovery_commit_or_prompt_text() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_solo_unit_workflow(root);
+    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
 
     let (out, err, ok) = run_rigger(root, &["step"]);
     assert!(ok, "the first step must succeed; stderr: {err}");
@@ -365,7 +362,7 @@ fn an_ordinary_freshly_created_worktree_never_gains_a_halt_recovery_commit_or_pr
 fn a_declared_units_dirty_worktree_survives_the_step_start_sweep_backstops() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_solo_unit_workflow(root);
+    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
 
     let wt_dir = seed_halted_worktree(root, "solo", "halted-work.txt", "abandoned mid-edit\n");
 
@@ -431,7 +428,7 @@ fn a_declared_units_dirty_worktree_survives_the_step_start_sweep_backstops() {
 fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is_still_live() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_solo_unit_workflow(root);
+    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
 
     // Process 1 (priming, inside the helper): dispatches solo/implementer#0 for real, then
     // the agent dies mid-edit - dirtying the SAME worktree, no `rigger result` ever recorded.
@@ -511,7 +508,7 @@ fn a_dirty_tree_gets_no_wip_recovery_commit_while_a_sibling_spawn_of_the_unit_is
 fn a_dirty_tree_gets_no_wip_recovery_commit_once_the_named_spawn_already_has_a_real_result() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_solo_unit_workflow(root);
+    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
 
     // Process 1: dispatches solo/implementer#0 for real.
     let (out1, err1, ok1) = run_rigger(root, &["step"]);
@@ -760,7 +757,7 @@ fn a_resumed_reviewed_units_real_crash_frozen_merge_conflict_reaches_the_idempot
 fn an_untouched_conflict_marker_lookalike_file_never_blocks_an_unrelated_checkpoint_commit() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_solo_unit_workflow(root);
+    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
 
     // A file already committed BEFORE this unit's worktree ever branches - never edited by
     // this unit - that merely happens to contain literal conflict-marker-lookalike text (a
@@ -912,7 +909,7 @@ exec "$SDET_REAL_GIT" "$@"
 fn both_step_start_backstops_share_path_is_dirty_and_fail_closed_on_an_unreadable_status_read() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
-    write_solo_unit_workflow(root);
+    write_workflow_fixture(root, &SOLO_UNIT_WORKFLOW);
 
     let wt_dir = seed_halted_worktree(root, "solo", "halted-work.txt", "abandoned mid-edit\n");
 
