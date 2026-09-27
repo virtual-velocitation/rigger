@@ -43,37 +43,13 @@
 
 mod common;
 
-use std::path::Path;
-use std::process::{Child, Command};
+use std::process::Command;
 
 use common::fixtures::cleanup;
+use common::fixtures::sigterm_ignorer_in;
+use common::wait_until;
 use rigger::driver::replay::{mutation_scratch_path, reclaim_unit_mutation_scratch};
 use rigger::reap::processes_rooted_under;
-
-/// Spawn a long-lived process rooted at `dir` that IGNORES SIGTERM, so only a SIGKILL
-/// escalation can end it - exercising the full SIGTERM-then-SIGKILL mechanism
-/// `reap_processes_rooted_under` runs, not just a plain `sleep` a bare SIGTERM would already
-/// end. Mirrors the identical fixture in `src/reap.rs` and `src/worktree.rs`.
-fn sigterm_ignorer_in(dir: &Path) -> Child {
-    Command::new("sh")
-        .arg("-c")
-        .arg("trap '' TERM; while :; do sleep 1; done")
-        .current_dir(dir)
-        .spawn()
-        .expect("spawn a SIGTERM-ignoring fixture process")
-}
-
-/// Poll up to 5s for `pred`, matching the scan/escalation latency tolerance every sibling
-/// reap test in this tree already uses (`src/reap.rs`, `src/worktree.rs`).
-fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
-    for _ in 0..200 {
-        if pred() {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
-    false
-}
 
 #[test]
 fn reclaim_unit_mutation_scratch_reaps_a_live_process_rooted_in_its_registered_scratch_dir() {

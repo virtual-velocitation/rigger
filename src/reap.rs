@@ -694,6 +694,8 @@ fn strip_deleted_suffix(cwd: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::test_support::cleanup;
+    use crate::test_support::sigterm_ignorer_in;
+    use crate::test_support::wait_until;
     use std::process::{Child, Command as StdCommand};
 
     /// A throwaway git repo with an empty `.rigger/tmp` created inside it, so
@@ -742,32 +744,10 @@ mod tests {
             .expect("spawn sleep")
     }
 
-    /// Spawn a long-lived process rooted at `dir` that IGNORES SIGTERM, so only the SIGKILL
-    /// escalation can reap it - exercising the full SIGTERM-then-SIGKILL mechanism.
-    fn sigterm_ignorer_in(dir: &Path) -> Child {
-        StdCommand::new("sh")
-            .arg("-c")
-            .arg("trap '' TERM; while :; do sleep 1; done")
-            .current_dir(dir)
-            .spawn()
-            .expect("spawn sigterm-ignoring child")
-    }
-
     /// Poll `child.try_wait()` until the process has exited or a generous timeout elapses;
     /// returns whether it exited.
     fn wait_for_exit(child: &mut Child) -> bool {
         wait_until(|| matches!(child.try_wait(), Ok(Some(_))))
-    }
-
-    /// Poll until `pred` holds or a generous timeout elapses; returns whether it held.
-    fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
-        for _ in 0..200 {
-            if pred() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        false
     }
 
     // ---- end_child (spec 104 criterion 6, STOP): the handle-bound production reap ----

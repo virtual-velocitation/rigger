@@ -999,6 +999,7 @@ fn cap_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::wait_until_for;
 
     fn gate(autonomy: Autonomy, passes: usize) -> Gate {
         gate_with_kind(Kind::Core, autonomy, passes)
@@ -1297,20 +1298,6 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
-    /// Poll `pred` until it holds or a generous timeout elapses; returns whether it held.
-    /// Mirrors `budget::tests::wait_until` (the SAME flock-adjacent polling idiom, needed
-    /// here for the identical reason: a real kernel flock's timing is not something a
-    /// fixed sleep can pin reliably).
-    fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
-        for _ in 0..400 {
-            if pred() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        false
-    }
-
     #[test]
     fn exec_runner_holds_the_shared_build_cache_guard_lock_for_the_whole_cargo_invocation() {
         // spec 77 criterion 5 (BOUNDED SHARED CACHE): a non-empty `build_cache_guard`
@@ -1340,7 +1327,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             )
         });
         assert!(
-            wait_until(|| started.exists()),
+            wait_until_for(400, || started.exists()),
             "the gate command must start and touch its marker"
         );
         {
