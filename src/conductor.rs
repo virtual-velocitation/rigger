@@ -33987,9 +33987,9 @@ mod tests {
         }
     }
 
-    /// Find the GateVerdict recorded under `s/gate:g#{attempt}` in the log.
-    fn gate_verdict_event(events: &[Event], attempt: u32) -> &Event {
-        let key = format!("s/gate:g#{attempt}");
+    /// Find the GateVerdict recorded under `{unit}/gate:g#{attempt}` in the log.
+    fn gate_verdict_event<'a>(events: &'a [Event], unit: &str, attempt: u32) -> &'a Event {
+        let key = format!("{unit}/gate:g#{attempt}");
         events
             .iter()
             .find(|e| {
@@ -34025,8 +34025,8 @@ mod tests {
         let rs = run(&cfg, &deps).unwrap();
         assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let v0 = gate_verdict_event(&events, 0).clone();
-        let v1 = gate_verdict_event(&events, 1).clone();
+        let v0 = gate_verdict_event(&events, "s", 0).clone();
+        let v1 = gate_verdict_event(&events, "s", 1).clone();
         let digest = |v: &Event| {
             v.meta
                 .get(META_INPUT_DIGEST)
@@ -34106,8 +34106,8 @@ mod tests {
         );
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let v0 = gate_verdict_event(&events, 0);
-        let v1 = gate_verdict_event(&events, 1);
+        let v0 = gate_verdict_event(&events, "s", 0);
+        let v1 = gate_verdict_event(&events, "s", 1);
         assert_ne!(
             v0.meta.get(META_INPUT_DIGEST),
             v1.meta.get(META_INPUT_DIGEST),
@@ -35293,22 +35293,16 @@ mod tests {
 
         // (2) CACHE STOPS HITTING vs GREEN STANDS: both re-gate an identical attempt-1 tree,
         // but the stale beta re-runs (no cache-hit) while the unaffected gamma hits.
-        let verdict = |unit: &str, attempt: u32| -> &Event {
-            let key = format!("{unit}/gate:g#{attempt}");
-            events
-                .iter()
-                .find(|e| {
-                    e.type_ == contextgraph::TYPE_GATE_VERDICT
-                        && e.meta.get(META_REPLAY_KEY) == Some(&key)
-                })
-                .unwrap_or_else(|| panic!("no gate verdict recorded for {key}"))
-        };
         assert!(
-            !verdict("beta", 1).meta.contains_key(META_CACHE_HIT),
+            !gate_verdict_event(&events, "beta", 1)
+                .meta
+                .contains_key(META_CACHE_HIT),
             "beta is stale, so its attempt-1 gate RE-RAN rather than reuse its attempt-0 green"
         );
         assert!(
-            verdict("gamma", 1).meta.contains_key(META_CACHE_HIT),
+            gate_verdict_event(&events, "gamma", 1)
+                .meta
+                .contains_key(META_CACHE_HIT),
             "gamma is unaffected, so its identical attempt-1 tree still cache-hits - green stands"
         );
     }
