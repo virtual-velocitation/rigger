@@ -24825,96 +24825,55 @@ fn cmd_dash_leaves_a_non_addrinuse_bind_error_unenriched() {
     );
 }
 
-/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS), the headline scenario the spec itself names: a
-/// job-control-STOPPED predecessor keeps its listening socket bound - the kernel completed the
-/// TCP handshake into the backlog - but its process never calls `accept()` again, so a plain
-/// port probe just hangs. A real `rigger dash` is spawned, confirmed genuinely serving, then
-/// stopped with `SIGSTOP` (mirroring `crate::reap`'s own `kill(1)`-based signalling, never
-/// `libc`); a second `rigger dash` against the SAME port must fail naming the first one's pid,
-/// its STOPPED state, and the resume-or-kill remedy - never a bare `Address already in use`.
-#[test]
-fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
-    use std::io::Read;
-    use std::process::Stdio;
+/// Whether `pid` reaches the STOPPED state (`T` in `/proc/<pid>/stat`) within 2s - a little
+/// scheduling jitter after a stop signal is normal, not a defect.
+fn pid_reaches_stopped_state(pid: u32) -> bool {
     use std::time::{Duration, Instant};
 
-    if !Path::new("/proc").is_dir() {
-        return;
-    }
-
-    let root = temp_project();
-    let port = free_loopback_port();
-    let mut holder = common::rigger_courier()
-        .args(["dash", "--port", &port.to_string()])
-        .current_dir(root.path())
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn the holder `rigger dash`");
-    let holder_pid = holder.id();
-    let mut holder_out = holder.stdout.take().expect("holder dash stdout is piped");
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 1];
-        let n = holder_out.read(&mut buf).unwrap_or(0);
-        let _ = tx.send(n);
-    });
-
-    if !matches!(
-        http_get(&format!("http://127.0.0.1:{port}/")),
-        Some(body) if body.contains("rigger dash")
-    ) {
-        let _ = holder.kill();
-        let _ = holder.wait();
-        panic!("the holder `rigger dash` never came up serving on port {port}");
-    }
-
-    // SIGSTOP the holder - a real job-control stop, exactly the scenario spec 62 names. Via
-    // `common::stop_pid` (tests/common/mod.rs), the sanctioned test-side signal call - never a
-    // shelled-out `kill` (the `no-os-kill` gate's exemption is scoped to that one file, not to
-    // arbitrary shell-outs anywhere a test needs a stop signal).
-    if !common::stop_pid(holder_pid) {
-        let _ = holder.kill();
-        let _ = holder.wait();
-        panic!("failed to SIGSTOP the holder pid {holder_pid}");
-    }
-
-    // Confirm the stop actually landed (state `T` in `/proc/<pid>/stat`) before racing the
-    // second dash against it - a little scheduling jitter is normal, not a defect.
     let deadline = Instant::now() + Duration::from_secs(2);
-    let mut confirmed_stopped = false;
     while Instant::now() < deadline {
-        let state = std::fs::read_to_string(format!("/proc/{holder_pid}/stat"))
+        let state = std::fs::read_to_string(format!("/proc/{pid}/stat"))
             .ok()
             .and_then(|stat| {
                 stat.rsplit_once(')')
                     .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string))
             });
         if state.as_deref() == Some("T") {
-            confirmed_stopped = true;
-            break;
+            return true;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    if !confirmed_stopped {
-        let _ = holder.kill();
-        let _ = holder.wait();
-        panic!("the holder pid {holder_pid} never reached the STOPPED (T) state in /proc");
-    }
+    false
+}
 
-    let (out, err, ok) = run_rigger(root.path(), &["dash", "--port", &port.to_string()]);
-
-    // Reap the (still-stopped) holder BEFORE asserting so a failure never leaks a process;
-    // `Child::kill` sends SIGKILL, which terminates a stopped process unconditionally.
-    let _ = holder.kill();
-    let _ = holder.wait();
-    let _ = rx.recv_timeout(Duration::from_secs(5));
-
+/// A genuinely serving `rigger dash` in `root`, then SIGSTOPped - a real job-control stop,
+/// exactly the scenario spec 62 names - via `common::stop_pid` (tests/common/mod.rs), the
+/// sanctioned test-side signal call, never a shelled-out signal (the `no-os-kill` gate's
+/// exemption is scoped to that one file). The stop is confirmed landed before anything races
+/// the held port; dropping the holder reaps it (SIGKILL terminates a stopped process
+/// unconditionally).
+fn stopped_dash_holder(root: &Path) -> WatchedDash {
+    let holder = WatchedDash::launch(&[], None, |cmd| cmd.current_dir(root));
     assert!(
-        !ok,
-        "a second dash against a stopped holder's port must fail; stdout:\n{out}\nstderr:\n{err}"
+        holder.serving(),
+        "the holder `rigger dash` never came up serving on port {}",
+        holder.port
     );
+    let holder_pid = holder.child.id();
+    assert!(
+        common::stop_pid(holder_pid),
+        "failed to SIGSTOP the holder pid {holder_pid}"
+    );
+    assert!(
+        pid_reaches_stopped_state(holder_pid),
+        "the holder pid {holder_pid} never reached the STOPPED (T) state in /proc"
+    );
+    holder
+}
+
+/// A failed bind against a STOPPED holder's `port` gets the explicit resume-or-kill diagnosis:
+/// it names the holder's pid and the held address, and names the STOPPED state explicitly.
+fn assert_the_stopped_holder_diagnosis(err: &str, holder_pid: u32, port: u16) {
     let pid_str = holder_pid.to_string();
     assert!(
         err.contains(&pid_str),
@@ -24933,6 +24892,35 @@ fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
         lower.contains("stop"),
         "the diagnosis should name the STOPPED state explicitly; stderr:\n{err}"
     );
+}
+
+/// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS), the headline scenario the spec itself names: a
+/// job-control-STOPPED predecessor keeps its listening socket bound - the kernel completed the
+/// TCP handshake into the backlog - but its process never calls `accept()` again, so a plain
+/// port probe just hangs. A real `rigger dash` is spawned, confirmed genuinely serving, then
+/// stopped with `SIGSTOP` (mirroring `crate::reap`'s own `kill(1)`-based signalling, never
+/// `libc`); a second `rigger dash` against the SAME port must fail naming the first one's pid,
+/// its STOPPED state, and the resume-or-kill remedy - never a bare `Address already in use`.
+#[test]
+fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
+    if !Path::new("/proc").is_dir() {
+        return;
+    }
+
+    let root = temp_project();
+    let holder = stopped_dash_holder(root.path());
+    let (holder_pid, port) = (holder.child.id(), holder.port);
+
+    let (out, err, ok) = run_rigger(root.path(), &["dash", "--port", &port.to_string()]);
+
+    // Reap the (still-stopped) holder BEFORE asserting so a failure never leaks a process.
+    drop(holder);
+
+    assert!(
+        !ok,
+        "a second dash against a stopped holder's port must fail; stdout:\n{out}\nstderr:\n{err}"
+    );
+    assert_the_stopped_holder_diagnosis(&err, holder_pid, port);
 }
 
 /// Spec 62, criterion 3 (HELD-PORT DIAGNOSIS) - the PUBLIC contract of
@@ -25014,10 +25002,6 @@ fn describe_held_port_public_contract_holds_at_the_crate_boundary() {
 #[test]
 fn step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_predecessor_scenario()
 {
-    use std::io::Read;
-    use std::process::Stdio;
-    use std::time::{Duration, Instant};
-
     if !Path::new("/proc").is_dir() {
         return;
     }
@@ -25025,76 +25009,18 @@ fn step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_pre
     let proj = temp_git_project_with_commit();
     let root = proj.path();
     write_two_stage_workflow(root);
-    let dash_port = free_loopback_port();
 
-    // The predecessor: a real, genuinely serving `rigger dash` on the SAME port the step's own
-    // always-on ensure will target below.
-    let mut holder = common::rigger_courier()
-        .args(["dash", "--port", &dash_port.to_string()])
-        .current_dir(root)
-        .env_remove("RIGGER_NO_DASH")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to spawn the holder `rigger dash`");
-    let holder_pid = holder.id();
-    let mut holder_out = holder.stdout.take().expect("holder dash stdout is piped");
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = [0u8; 1];
-        let n = holder_out.read(&mut buf).unwrap_or(0);
-        let _ = tx.send(n);
-    });
-
-    if !matches!(
-        http_get(&format!("http://127.0.0.1:{dash_port}/")),
-        Some(body) if body.contains("rigger dash")
-    ) {
-        let _ = holder.kill();
-        let _ = holder.wait();
-        panic!("the holder `rigger dash` never came up serving on port {dash_port}");
-    }
-
-    // SIGSTOP the holder - a real job-control stop, exactly the scenario spec 62's Goal names.
-    // Via `common::stop_pid` (tests/common/mod.rs), the sanctioned test-side signal call.
-    if !common::stop_pid(holder_pid) {
-        let _ = holder.kill();
-        let _ = holder.wait();
-        panic!("failed to SIGSTOP the holder pid {holder_pid}");
-    }
-
-    // Confirm the stop actually landed (state `T` in `/proc/<pid>/stat`) before racing the
-    // step's own dash spawn against it.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut confirmed_stopped = false;
-    while Instant::now() < deadline {
-        let state = std::fs::read_to_string(format!("/proc/{holder_pid}/stat"))
-            .ok()
-            .and_then(|stat| {
-                stat.rsplit_once(')')
-                    .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_string))
-            });
-        if state.as_deref() == Some("T") {
-            confirmed_stopped = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    if !confirmed_stopped {
-        let _ = holder.kill();
-        let _ = holder.wait();
-        panic!("the holder pid {holder_pid} never reached the STOPPED (T) state in /proc");
-    }
+    // The predecessor: a real, genuinely serving `rigger dash`, stopped, on the SAME port the
+    // step's own always-on ensure will target below.
+    let holder = stopped_dash_holder(root);
+    let (holder_pid, dash_port) = (holder.child.id(), holder.port);
 
     // The step path's OWN always-on ensure, targeting the SAME stopped-holder's port - the
     // production seam this fix threads the diagnosis through.
     let (out, err) = run_step_dash_enabled(root, dash_port);
 
-    // Reap the (still-stopped) holder BEFORE asserting so a failure never leaks a process;
-    // `Child::kill` sends SIGKILL, which terminates a stopped process unconditionally.
-    let _ = holder.kill();
-    let _ = holder.wait();
-    let _ = rx.recv_timeout(Duration::from_secs(5));
+    // Reap the (still-stopped) holder BEFORE asserting so a failure never leaks a process.
+    drop(holder);
 
     assert!(
         out.contains(r#""wave":"#),
@@ -25102,26 +25028,9 @@ fn step_names_the_stopped_holder_when_the_step_paths_own_auto_start_hits_the_pre
          auto-start hit a stopped predecessor - headless degrade, never a blocked step; \
          stdout: {out:?} stderr: {err:?}"
     );
-    let pid_str = holder_pid.to_string();
-    assert!(
-        err.contains(&pid_str),
-        "the step path's OWN headless-degrade message must name the stopped predecessor's pid \
-         ({pid_str}), not only the generic 'could not auto-start' line; stderr:\n{err}"
-    );
-    assert!(
-        err.contains(&dash_port.to_string()),
-        "the diagnosis must always name the held address; stderr:\n{err}"
-    );
-    let lower = err.to_lowercase();
-    assert!(
-        lower.contains("resume") && lower.contains("kill"),
-        "a STOPPED predecessor must get the explicit resume-or-kill diagnosis on the step path \
-         too, not only the manual `rigger dash` CLI arm; stderr:\n{err}"
-    );
-    assert!(
-        lower.contains("stop"),
-        "the diagnosis should name the STOPPED state explicitly; stderr:\n{err}"
-    );
+    // The step path's OWN headless-degrade message names the stopped predecessor, not only the
+    // generic 'could not auto-start' line - which must still be present alongside it.
+    assert_the_stopped_holder_diagnosis(&err, holder_pid, dash_port);
     assert!(
         err.contains("could not auto-start the dashboard"),
         "the generic headless-degrade line must still be present alongside the richer \
@@ -25470,6 +25379,111 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
     );
 }
 
+/// A live `rigger mcp` stdio session over `root`: one request in, one JSON-RPC response line
+/// out - a live round trip through the real subprocess, not a batch of requests read back
+/// after the process exits.
+struct McpSession {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+    next_id: i64,
+}
+
+impl McpSession {
+    fn start(root: &Path) -> Self {
+        McpSession::start_with(root, &["mcp"])
+    }
+
+    /// A session over `rigger <args>` (a `rigger mcp` invocation) in `root`.
+    fn start_with(root: &Path, args: &[&str]) -> Self {
+        use std::process::Stdio;
+
+        let mut child = common::rigger_courier()
+            .args(args)
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn rigger mcp");
+        let stdin = child.stdin.take();
+        let stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+        McpSession {
+            child,
+            stdin,
+            stdout,
+            next_id: 0,
+        }
+    }
+
+    /// Write one raw `line` and read back the one response line it gets (`why` names the
+    /// expectation when none comes).
+    fn exchange(&mut self, line: &str, why: &str) -> String {
+        use std::io::{BufRead, Write};
+
+        let stdin = self
+            .stdin
+            .as_mut()
+            .expect("the session's stdin is still open");
+        writeln!(stdin, "{line}").unwrap();
+        stdin.flush().unwrap();
+        let mut response = String::new();
+        self.stdout.read_line(&mut response).expect(why);
+        response
+    }
+
+    /// One JSON-RPC `method` call with `params`, answered by exactly one JSON response line.
+    fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        self.next_id += 1;
+        let req = serde_json::json!({
+            "jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params
+        });
+        let line = self.exchange(&req.to_string(), "rigger mcp must answer");
+        serde_json::from_str(&line)
+            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
+    }
+
+    /// The advertised tool names, from `tools/list`.
+    fn tool_names(&mut self) -> Vec<String> {
+        let list = self.call("tools/list", serde_json::json!({}));
+        list["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    /// `rigger_peers`, polled until it reports a decision. `Sidecar::start` (spec 92,
+    /// criterion 4's `cmd_mcp`) collects the store's backlog on a background thread polling
+    /// every 50ms (src/sidecar.rs); a call issued before that thread's first poll fires sees an
+    /// empty backlog, so this polls (bounded, never a fixed sleep) instead of trusting the very
+    /// first call.
+    fn peers(&mut self) -> serde_json::Value {
+        use std::time::{Duration, Instant};
+
+        let peers_args = serde_json::json!({"name": "rigger_peers", "arguments": {}});
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut peers = self.call("tools/call", peers_args.clone());
+        while peers["result"]["structuredContent"]["decisions"]
+            .as_array()
+            .is_none_or(Vec::is_empty)
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(20));
+            peers = self.call("tools/call", peers_args.clone());
+        }
+        peers
+    }
+
+    /// Close stdin - the EOF that lets `mcpserver::Server::run`'s read loop finish and the
+    /// process exit, exactly like the shim closing its side of the pipe - and collect the exit.
+    fn finish(mut self) -> std::process::Output {
+        drop(self.stdin.take());
+        self.child.wait_with_output().expect("rigger mcp must exit")
+    }
+}
+
 /// `rigger mcp` (the command `.mcp.json` registers) answers `tools/list` with exactly
 /// `rigger_peers`/`rigger_ground`/`rigger_graph`, and each tool round-trips over real stdio
 /// against a real project: `rigger_peers` returns a decision seeded into the store,
@@ -25479,10 +25493,6 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
 /// subject).
 #[test]
 fn mcp_serves_peers_ground_and_graph_over_stdio() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
-    use std::time::{Duration, Instant};
-
     let dir = temp_project();
     let root = dir.path();
     // Pin the literal grep grounder (same helper `ground_returns_references_from_the_repo`
@@ -25499,64 +25509,21 @@ fn mcp_serves_peers_ground_and_graph_over_stdio() {
         )],
     );
 
-    let mut cmd = common::rigger_courier();
-    cmd.args(["mcp"])
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger mcp");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut mcp = McpSession::start(root);
 
-    // One request in, one JSON-RPC response line out - a live round trip through the real
-    // subprocess, not a batch of requests read back after the process exits.
-    let mut next_id = 0i64;
-    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
-        next_id += 1;
-        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
-        writeln!(stdin, "{req}").unwrap();
-        stdin.flush().unwrap();
-        let mut line = String::new();
-        stdout.read_line(&mut line).expect("rigger mcp must answer");
-        serde_json::from_str(&line)
-            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
-    };
-
-    let list = call("tools/list", serde_json::json!({}));
-    let tool_names: Vec<&str> = list["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let tool_names = mcp.tool_names();
     assert_eq!(
         tool_names,
         vec!["rigger_peers", "rigger_ground", "rigger_graph"]
     );
 
-    // `Sidecar::start` (spec 92, criterion 4's `cmd_mcp`) collects the store's backlog on a
-    // background thread polling every 50ms (src/sidecar.rs); a `rigger_peers` call issued
-    // before that thread's first poll fires sees an empty backlog. Poll (bounded, never a
-    // fixed sleep - the same discipline the recently-landed store-resolution deflake used)
-    // instead of asserting on the very first call.
-    let peers_args = serde_json::json!({"name": "rigger_peers", "arguments": {}});
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut peers = call("tools/call", peers_args.clone());
-    while peers["result"]["structuredContent"]["decisions"]
-        .as_array()
-        .is_none_or(Vec::is_empty)
-        && Instant::now() < deadline
-    {
-        std::thread::sleep(Duration::from_millis(20));
-        peers = call("tools/call", peers_args.clone());
-    }
+    let peers = mcp.peers();
     assert_eq!(
         peers["result"]["structuredContent"]["decisions"][0]["id"], "d1",
         "rigger_peers must reflect the real store; got:\n{peers}"
     );
 
-    let ground = call(
+    let ground = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_ground", "arguments": {"query": "nothing indexed yet"}}),
     );
@@ -25565,7 +25532,7 @@ fn mcp_serves_peers_ground_and_graph_over_stdio() {
         "rigger_ground must answer with a results array; got:\n{ground}"
     );
 
-    let graph = call(
+    let graph = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_graph", "arguments": {"around": "does-not-exist.rs"}}),
     );
@@ -25576,10 +25543,7 @@ fn mcp_serves_peers_ground_and_graph_over_stdio() {
          got:\n{graph}"
     );
 
-    // Closing stdin (dropping the handle) is the EOF that lets `mcpserver::Server::run`'s
-    // read loop finish and the process exit, exactly like the shim closing its side of the pipe.
-    drop(stdin);
-    let out = child.wait_with_output().expect("rigger mcp must exit");
+    let out = mcp.finish();
     assert!(
         out.status.success(),
         "rigger mcp must exit 0; stderr:\n{}",
@@ -25597,8 +25561,6 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
     use rigger::eventstore::namespace::Namespaced;
     use rigger::eventstore::sqlite::Store as SqliteStore;
     use rigger::eventstore::{Direction, EventStore};
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
 
     let dir = temp_project();
     let root = dir.path();
@@ -25608,37 +25570,9 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
     let bound_spawn = "u104-spawn-mcp/implementer#0";
     let other_spawn = "u104-launch/implementer#0";
 
-    let mut cmd = common::rigger_courier();
-    cmd.args(["mcp", "--spawn", bound_spawn])
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger mcp --spawn");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut mcp = McpSession::start_with(root, &["mcp", "--spawn", bound_spawn]);
 
-    let mut next_id = 0i64;
-    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
-        next_id += 1;
-        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
-        writeln!(stdin, "{req}").unwrap();
-        stdin.flush().unwrap();
-        let mut line = String::new();
-        stdout
-            .read_line(&mut line)
-            .expect("rigger mcp --spawn must answer");
-        serde_json::from_str(&line)
-            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
-    };
-
-    let list = call("tools/list", serde_json::json!({}));
-    let tool_names: Vec<&str> = list["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let tool_names = mcp.tool_names();
     assert_eq!(
         tool_names,
         vec![
@@ -25654,7 +25588,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
 
     // No result tool: rigger_next / rigger_result are UNDISPATCHABLE, not merely unadvertised.
     for name in ["rigger_next", "rigger_result"] {
-        let resp = call(
+        let resp = mcp.call(
             "tools/call",
             serde_json::json!({"name": name, "arguments": {}}),
         );
@@ -25665,7 +25599,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
     }
 
     // rigger_emit with no meta at all still lands stamped with the BOUND spawn.
-    let emit_ok = call(
+    let emit_ok = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_emit", "arguments": {"type": "DecisionMade", "data": {"id": "d1", "summary": "x"}}}),
     );
@@ -25675,7 +25609,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
     );
 
     // rigger_emit naming a DIFFERENT spawn is refused outright.
-    let emit_refused = call(
+    let emit_refused = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_emit", "arguments": {"type": "DecisionMade", "data": {"id": "d2"}, "meta": {"spawn": other_spawn}}}),
     );
@@ -25685,7 +25619,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
     );
 
     // rigger_progress records for the bound spawn with no spawn-naming argument.
-    let progress_ok = call(
+    let progress_ok = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_progress", "arguments": {"activity": "ran the gates"}}),
     );
@@ -25695,7 +25629,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
     );
 
     // rigger_scratch answers with a real, non-empty path under this spawn's own container.
-    let scratch = call(
+    let scratch = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_scratch", "arguments": {}}),
     );
@@ -25707,10 +25641,7 @@ fn mcp_spawn_binds_writes_and_serves_no_result_tool_over_stdio() {
         "rigger_scratch must answer a non-empty path; got:\n{scratch}"
     );
 
-    drop(stdin);
-    let out = child
-        .wait_with_output()
-        .expect("rigger mcp --spawn must exit");
+    let out = mcp.finish();
     assert!(
         out.status.success(),
         "rigger mcp --spawn must exit 0; stderr:\n{}",
@@ -25823,36 +25754,17 @@ fn mcp_rejects_a_malformed_spawn_flag_or_unexpected_arguments() {
 /// driving the real `cmd_mcp` composition, end to end, can.
 #[test]
 fn mcp_without_spawn_never_creates_the_progress_store() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
-
     let dir = temp_project();
     let root = dir.path();
     write_grounder_workflow(root, "grep");
     seed_store(root);
 
-    let mut cmd = common::rigger_courier();
-    cmd.args(["mcp"])
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger mcp");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut mcp = McpSession::start(root);
 
-    let req = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
-    writeln!(stdin, "{req}").unwrap();
-    stdin.flush().unwrap();
-    let mut line = String::new();
-    stdout.read_line(&mut line).expect("rigger mcp must answer");
-    assert!(
-        serde_json::from_str::<serde_json::Value>(&line).is_ok(),
-        "not one JSON-RPC response line: {line:?}"
-    );
+    // One real round trip (`call` panics unless it answers exactly one JSON-RPC line).
+    mcp.call("tools/list", serde_json::json!({}));
 
-    drop(stdin);
-    let out = child.wait_with_output().expect("rigger mcp must exit");
+    let out = mcp.finish();
     assert!(
         out.status.success(),
         "rigger mcp must exit 0; stderr:\n{}",
@@ -25875,38 +25787,15 @@ fn mcp_without_spawn_never_creates_the_progress_store() {
 /// the mismatch fails soft.
 #[test]
 fn mcp_without_spawn_reports_progress_and_scratch_as_unknown_tools_over_stdio() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
-
     let dir = temp_project();
     let root = dir.path();
     write_grounder_workflow(root, "grep");
     seed_store(root);
 
-    let mut cmd = common::rigger_courier();
-    cmd.args(["mcp"])
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger mcp");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-
-    let mut next_id = 0i64;
-    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
-        next_id += 1;
-        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
-        writeln!(stdin, "{req}").unwrap();
-        stdin.flush().unwrap();
-        let mut line = String::new();
-        stdout.read_line(&mut line).expect("rigger mcp must answer");
-        serde_json::from_str(&line)
-            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
-    };
+    let mut mcp = McpSession::start(root);
 
     for name in ["rigger_progress", "rigger_scratch"] {
-        let resp = call(
+        let resp = mcp.call(
             "tools/call",
             serde_json::json!({"name": name, "arguments": {"activity": "x"}}),
         );
@@ -25917,8 +25806,7 @@ fn mcp_without_spawn_reports_progress_and_scratch_as_unknown_tools_over_stdio() 
         );
     }
 
-    drop(stdin);
-    let out = child.wait_with_output().expect("rigger mcp must exit");
+    let out = mcp.finish();
     assert!(
         out.status.success(),
         "rigger mcp must survive and exit 0 after the refused calls; stderr:\n{}",
@@ -27152,35 +27040,13 @@ fn grep_guard_bounces_an_output_redirect_metacharacter_fused_grep_end_to_end() {
 /// of an agent's session.
 #[test]
 fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_arguments() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
-
     let dir = temp_project();
     let root = dir.path();
     seed_store(root);
 
-    let mut cmd = common::rigger_courier();
-    cmd.args(["mcp"])
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger mcp");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut next_id = 0i64;
-    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
-        next_id += 1;
-        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
-        writeln!(stdin, "{req}").unwrap();
-        stdin.flush().unwrap();
-        let mut line = String::new();
-        stdout.read_line(&mut line).expect("rigger mcp must answer");
-        serde_json::from_str(&line)
-            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
-    };
+    let mut mcp = McpSession::start(root);
 
-    let unknown = call(
+    let unknown = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_nope", "arguments": {}}),
     );
@@ -27196,7 +27062,7 @@ fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_argum
         "the error must name the unknown tool; got:\n{unknown}"
     );
 
-    let missing_query = call(
+    let missing_query = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_ground", "arguments": {}}),
     );
@@ -27209,7 +27075,7 @@ fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_argum
         "the error must name the missing argument; got:\n{missing_query}"
     );
 
-    let missing_selector = call(
+    let missing_selector = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_graph", "arguments": {}}),
     );
@@ -27221,14 +27087,13 @@ fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_argum
     );
 
     // The session survives every error above and keeps answering normally.
-    let list = call("tools/list", serde_json::json!({}));
+    let list = mcp.call("tools/list", serde_json::json!({}));
     assert!(
         list["result"]["tools"].is_array(),
         "the session must keep answering after error responses; got:\n{list}"
     );
 
-    drop(stdin);
-    let out = child.wait_with_output().expect("rigger mcp must exit");
+    let out = mcp.finish();
     assert!(
         out.status.success(),
         "rigger mcp must exit 0 after an error-only session; stderr:\n{}",
@@ -27247,9 +27112,6 @@ fn mcp_tool_call_edges_report_errors_for_unknown_tool_and_missing_required_argum
 /// it ever answered a single request.
 #[test]
 fn mcp_survives_a_grounder_resolution_failure_and_still_serves_peers_and_graph() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
-
     let dir = temp_project();
     let root = dir.path();
     write_grounder_workflow(root, "turbovec");
@@ -27262,35 +27124,10 @@ fn mcp_survives_a_grounder_resolution_failure_and_still_serves_peers_and_graph()
         )],
     );
 
-    let mut cmd = common::rigger_courier();
-    cmd.args(["mcp"])
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger mcp");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut next_id = 0i64;
-    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
-        next_id += 1;
-        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
-        writeln!(stdin, "{req}").unwrap();
-        stdin.flush().unwrap();
-        let mut line = String::new();
-        stdout.read_line(&mut line).expect("rigger mcp must answer");
-        serde_json::from_str(&line)
-            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
-    };
+    let mut mcp = McpSession::start(root);
 
     // The lookup surface is still exactly the three tools - unchanged by the grounder failure.
-    let list = call("tools/list", serde_json::json!({}));
-    let tool_names: Vec<&str> = list["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let tool_names = mcp.tool_names();
     assert_eq!(
         tool_names,
         vec!["rigger_peers", "rigger_ground", "rigger_graph"],
@@ -27298,24 +27135,14 @@ fn mcp_survives_a_grounder_resolution_failure_and_still_serves_peers_and_graph()
     );
 
     // rigger_peers, unrelated to grounding, still answers from the real store.
-    let peers_args = serde_json::json!({"name": "rigger_peers", "arguments": {}});
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut peers = call("tools/call", peers_args.clone());
-    while peers["result"]["structuredContent"]["decisions"]
-        .as_array()
-        .is_none_or(Vec::is_empty)
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        peers = call("tools/call", peers_args.clone());
-    }
+    let peers = mcp.peers();
     assert_eq!(
         peers["result"]["structuredContent"]["decisions"][0]["id"], "d1",
         "rigger_peers must keep answering even though the grounder failed to resolve; got:\n{peers}"
     );
 
     // rigger_graph, also unrelated to grounding, still answers honestly.
-    let graph = call(
+    let graph = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_graph", "arguments": {"around": "does-not-exist.rs"}}),
     );
@@ -27327,7 +27154,7 @@ fn mcp_survives_a_grounder_resolution_failure_and_still_serves_peers_and_graph()
 
     // rigger_ground alone reports the resolution failure - lazily, as its own tool-call error,
     // never a silently-empty results array (spec 57's never-silently-degrade contract).
-    let ground = call(
+    let ground = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_ground", "arguments": {"query": "anything"}}),
     );
@@ -27344,8 +27171,7 @@ fn mcp_survives_a_grounder_resolution_failure_and_still_serves_peers_and_graph()
         "the error must carry the real resolution failure reason; got:\n{ground}"
     );
 
-    drop(stdin);
-    let out = child.wait_with_output().expect("rigger mcp must exit");
+    let out = mcp.finish();
     assert!(
         out.status.success(),
         "rigger mcp must still exit 0 despite the grounder resolution failure; stderr:\n{}",
@@ -27359,29 +27185,16 @@ fn mcp_survives_a_grounder_resolution_failure_and_still_serves_peers_and_graph()
 /// desync the reader from the writer.
 #[test]
 fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
-
     let dir = temp_project();
     let root = dir.path();
     seed_store(root);
 
-    let mut cmd = common::rigger_courier();
-    cmd.args(["mcp"])
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger mcp");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut mcp = McpSession::start(root);
 
-    writeln!(stdin, "not valid json at all {{").unwrap();
-    stdin.flush().unwrap();
-    let mut line1 = String::new();
-    stdout
-        .read_line(&mut line1)
-        .expect("a malformed line must still get one response line");
+    let line1 = mcp.exchange(
+        "not valid json at all {",
+        "a malformed line must still get one response line",
+    );
     let resp1: serde_json::Value = serde_json::from_str(&line1)
         .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line1:?}"));
     assert_eq!(
@@ -27390,20 +27203,17 @@ fn mcp_survives_a_malformed_json_line_and_keeps_answering_afterward() {
     );
 
     let req = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
-    writeln!(stdin, "{req}").unwrap();
-    stdin.flush().unwrap();
-    let mut line2 = String::new();
-    stdout
-        .read_line(&mut line2)
-        .expect("the session must keep answering after the malformed line");
+    let line2 = mcp.exchange(
+        &req.to_string(),
+        "the session must keep answering after the malformed line",
+    );
     let resp2: serde_json::Value = serde_json::from_str(&line2).unwrap();
     assert!(
         resp2["result"]["tools"].is_array(),
         "a well-formed request right after a malformed one must still succeed; got:\n{line2}"
     );
 
-    drop(stdin);
-    let out = child.wait_with_output().expect("rigger mcp must exit");
+    let out = mcp.finish();
     assert!(out.status.success());
 }
 
@@ -27419,8 +27229,6 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
     use rigger::contextgraph::sqlite::Projector;
     use rigger::contextgraph::{Projection, TYPE_CODE_ENTITY_EXTRACTED};
     use rigger::eventstore::Event;
-    use std::io::{BufRead, BufReader, Write};
-    use std::process::Stdio;
 
     let dir = temp_project();
     let root = dir.path();
@@ -27438,28 +27246,9 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
         p.apply(&e).unwrap();
     }
 
-    let mut cmd = common::rigger_courier();
-    cmd.args(["mcp"])
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn rigger mcp");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut next_id = 0i64;
-    let mut call = |method: &str, params: serde_json::Value| -> serde_json::Value {
-        next_id += 1;
-        let req = serde_json::json!({"jsonrpc": "2.0", "id": next_id, "method": method, "params": params});
-        writeln!(stdin, "{req}").unwrap();
-        stdin.flush().unwrap();
-        let mut line = String::new();
-        stdout.read_line(&mut line).expect("rigger mcp must answer");
-        serde_json::from_str(&line)
-            .unwrap_or_else(|e| panic!("not one JSON-RPC response line ({e}): {line:?}"))
-    };
+    let mut mcp = McpSession::start(root);
 
-    let found = call(
+    let found = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_graph", "arguments": {"show": "frobnicate"}}),
     );
@@ -27473,7 +27262,7 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
     assert_eq!(structured["site"]["line"], 7);
     assert_eq!(structured["site"]["kind"], "fn");
 
-    let missing = call(
+    let missing = mcp.call(
         "tools/call",
         serde_json::json!({"name": "rigger_graph", "arguments": {"show": "does-not-exist"}}),
     );
@@ -27482,8 +27271,7 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
         "an unresolved show query must answer honestly none, never error; got:\n{missing}"
     );
 
-    drop(stdin);
-    let out = child.wait_with_output().expect("rigger mcp must exit");
+    let out = mcp.finish();
     assert!(out.status.success());
 }
 
