@@ -47,22 +47,29 @@ fn an_absent_workflow_is_no_opinion_not_an_error() {
     );
 }
 
-#[test]
-fn a_present_store_block_deserializes_backend_and_url() {
-    let (_tmp, dir) = rigger_dir();
-    write_workflow(
-        &dir,
-        "store:\n  backend: kurrentdb\n  url: \"kurrentdb://config-host:2113?tls=false\"\n",
-    );
-    let cfg = read_store_config(&dir).expect("a present store: block must parse");
-    assert_eq!(cfg.backend, "kurrentdb", "the backend is read verbatim");
-    assert_eq!(
-        cfg.url, "kurrentdb://config-host:2113?tls=false",
-        "the non-secret url is read verbatim"
-    );
-}
-
 rigger::test_cases! {
+    a_present_store_block_deserializes_backend_and_url: assert_probe_reads(
+        read_store_config,
+        "store:\n  backend: kurrentdb\n  url: \"kurrentdb://config-host:2113?tls=false\"\n",
+        StoreConfig {
+            backend: "kurrentdb".into(),
+            url: "kurrentdb://config-host:2113?tls=false".into(),
+        },
+        "a present store: block must parse, reading the backend and the non-secret url verbatim",
+    );
+    // The reader parses ONLY the store: key through its throwaway probe; a workflow full of
+    // stages/gates/agents/defaults that the bare courier has no need for must not make its store
+    // resolution depend on - or fail on - any of them. The store block is still extracted exactly.
+    unrelated_workflow_keys_are_ignored_by_the_lightweight_probe: assert_probe_reads(
+        read_store_config,
+        "defaults:\n  max_wall_clock: 900\nstages: []\ngates: {}\nstore:\n  backend: sqlite\n",
+        StoreConfig {
+            backend: "sqlite".into(),
+            url: String::new(),
+        },
+        "unrelated keys must not break the store probe: the store block is extracted past them \
+         and an omitted url defaults, unaffected by the surrounding keys",
+    );
     // Back-compat: a legacy config predating the store: key still reads clean as no-opinion, so an
     // existing project is unaffected by the new rung.
     a_workflow_without_a_store_key_reads_as_the_default:
@@ -81,27 +88,6 @@ rigger::test_cases! {
             StoreConfig::default(),
             "empty backend and url must parse, as no-opinion (the default)",
         );
-}
-
-#[test]
-fn unrelated_workflow_keys_are_ignored_by_the_lightweight_probe() {
-    // The reader parses ONLY the store: key through its throwaway probe; a workflow full of
-    // stages/gates/agents/defaults that the bare courier has no need for must not make its store
-    // resolution depend on - or fail on - any of them. The store block is still extracted exactly.
-    let (_tmp, dir) = rigger_dir();
-    write_workflow(
-        &dir,
-        "defaults:\n  max_wall_clock: 900\nstages: []\ngates: {}\nstore:\n  backend: sqlite\n",
-    );
-    let cfg = read_store_config(&dir).expect("unrelated keys must not break the store probe");
-    assert_eq!(
-        cfg.backend, "sqlite",
-        "the store block is extracted past the unrelated keys"
-    );
-    assert!(
-        cfg.url.is_empty(),
-        "an omitted url defaults, unaffected by the surrounding keys"
-    );
 }
 
 #[test]

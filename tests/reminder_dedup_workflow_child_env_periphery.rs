@@ -75,33 +75,47 @@ fn parse_report(report: &str) -> (String, String) {
     (sentinel, ppid)
 }
 
-/// No inbound sentinel: `cmd_workflow` must still stamp a genuine own-pid value on the
-/// spawned child - the stamped value must equal the child's own real direct parent pid
-/// (i.e. `rigger workflow`'s own pid), not be absent or some unrelated value.
-#[cfg(unix)]
-#[test]
-fn workflow_stamps_its_own_pid_on_the_spawned_child_with_no_inbound_sentinel() {
+/// Runs `rigger workflow` over the pid-reporting stub - handing it `inbound_sentinel` as
+/// `RIGGER_SPEC_LINT_REMINDER_PID` when given - which must fail (`fails_why`), and returns the
+/// sentinel its spawned child saw, that child's real parent pid, and the raw report.
+fn workflow_child_report(
+    inbound_sentinel: Option<&str>,
+    fails_why: &str,
+) -> (String, String, String) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let stub = root.join("node-stub.sh");
     let out = root.join("report.txt");
     write_pid_reporting_stub(&stub, &out);
 
-    let status = rigger_courier()
+    let mut workflow = rigger_courier();
+    workflow
         .args(["workflow", "specs/42-widgets.md"])
         .current_dir(root)
         .env("RIGGER_SHIM", &stub)
-        .env("RIGGER_NODE", &stub)
-        .status()
-        .expect("failed to spawn rigger workflow");
-    assert!(
-        !status.success(),
-        "the stub always exits non-zero, so `rigger workflow` must surface that as a failure"
-    );
+        .env("RIGGER_NODE", &stub);
+    if let Some(pid) = inbound_sentinel {
+        workflow.env("RIGGER_SPEC_LINT_REMINDER_PID", pid);
+    }
+    let status = workflow.status().expect("failed to spawn rigger workflow");
+    assert!(!status.success(), "{fails_why}");
 
     let report = std::fs::read_to_string(&out)
         .unwrap_or_else(|e| panic!("the stub must run and write {}: {e}", out.display()));
     let (sentinel, ppid) = parse_report(&report);
+    (sentinel, ppid, report)
+}
+
+/// No inbound sentinel: `cmd_workflow` must still stamp a genuine own-pid value on the
+/// spawned child - the stamped value must equal the child's own real direct parent pid
+/// (i.e. `rigger workflow`'s own pid), not be absent or some unrelated value.
+#[cfg(unix)]
+#[test]
+fn workflow_stamps_its_own_pid_on_the_spawned_child_with_no_inbound_sentinel() {
+    let (sentinel, ppid, report) = workflow_child_report(
+        None,
+        "the stub always exits non-zero, so `rigger workflow` must surface that as a failure",
+    );
     assert!(
         !sentinel.is_empty(),
         "cmd_workflow must stamp SOME pid on the spawned child's env; got: {report:?}"
@@ -122,28 +136,11 @@ fn workflow_stamps_its_own_pid_on_the_spawned_child_with_no_inbound_sentinel() {
 #[cfg(unix)]
 #[test]
 fn workflow_still_stamps_a_fresh_own_pid_on_the_child_even_when_its_own_reminder_was_suppressed() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path();
-    let stub = root.join("node-stub.sh");
-    let out = root.join("report.txt");
-    write_pid_reporting_stub(&stub, &out);
-
     // This test process is `rigger workflow`'s real direct OS parent, so naming its own pid
     // here suppresses `rigger workflow`'s own reminder print.
     let own_pid = std::process::id().to_string();
-    let status = rigger_courier()
-        .args(["workflow", "specs/42-widgets.md"])
-        .current_dir(root)
-        .env("RIGGER_SHIM", &stub)
-        .env("RIGGER_NODE", &stub)
-        .env("RIGGER_SPEC_LINT_REMINDER_PID", &own_pid)
-        .status()
-        .expect("failed to spawn rigger workflow");
-    assert!(!status.success(), "the stub always exits non-zero");
-
-    let report = std::fs::read_to_string(&out)
-        .unwrap_or_else(|e| panic!("the stub must run and write {}: {e}", out.display()));
-    let (sentinel, ppid) = parse_report(&report);
+    let (sentinel, ppid, report) =
+        workflow_child_report(Some(&own_pid), "the stub always exits non-zero");
     assert_eq!(
         sentinel, ppid,
         "even when its OWN reminder is suppressed, `rigger workflow` must still stamp a \

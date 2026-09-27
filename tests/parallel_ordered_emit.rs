@@ -69,13 +69,7 @@ fn map_ordered_public_boundary_preserves_order_visits_once_and_fans_out() {
 /// observable the byte-identical contract is defined over - by driving a PUBLIC ingest entry point.
 #[cfg(feature = "symbols")]
 fn drive_default(root: &str) -> (Vec<(String, String, Vec<u8>)>, rigger::ingest::IngestStats) {
-    let mut seq: Vec<(String, String, Vec<u8>)> = Vec::new();
-    let stats = rigger::ingest::ingest_project_batched(root, |batch| {
-        for (key, ev) in batch {
-            seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
-        }
-    });
-    (seq, stats)
+    record_emitted(|on_batch| rigger::ingest::ingest_project_batched(root, on_batch))
 }
 
 #[cfg(feature = "symbols")]
@@ -83,8 +77,19 @@ fn drive_paced(
     root: &str,
     workers: usize,
 ) -> (Vec<(String, String, Vec<u8>)>, rigger::ingest::IngestStats) {
+    record_emitted(|on_batch| rigger::ingest::ingest_project_batched_paced(root, workers, on_batch))
+}
+
+/// Runs `ingest`, recording every `(key, type, payload)` it hands its batch callback in emit
+/// order, alongside the stats it returns.
+#[cfg(feature = "symbols")]
+fn record_emitted(
+    ingest: impl FnOnce(
+        &mut dyn FnMut(&[(String, &rigger::eventstore::Event)]),
+    ) -> rigger::ingest::IngestStats,
+) -> (Vec<(String, String, Vec<u8>)>, rigger::ingest::IngestStats) {
     let mut seq: Vec<(String, String, Vec<u8>)> = Vec::new();
-    let stats = rigger::ingest::ingest_project_batched_paced(root, workers, |batch| {
+    let stats = ingest(&mut |batch| {
         for (key, ev) in batch {
             seq.push((key.to_string(), ev.type_.clone(), ev.data.clone()));
         }
