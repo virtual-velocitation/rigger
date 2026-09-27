@@ -56,16 +56,17 @@ fn seed_store(root: &Path) {
     std::fs::File::create(event_log(root)).unwrap();
 }
 
-/// The shared gate build cache's resolved path for a `temp_project()` with no `defaults.workdir`
-/// override: `<default scratch root>/cargo-target` (spec 89, criterion 2 - the default
-/// scratch root itself no longer nests inside the repo's own `.rigger`; see
-/// [`common::default_scratch_root`]).
-fn shared_cache_dir(root: &Path) -> PathBuf {
-    common::default_scratch_root(root).join("cargo-target")
-}
+/// The shared gate build cache's entry name under the default scratch root.
+const SHARED_CACHE: &str = "cargo-target";
 
-fn guard_path(root: &Path) -> PathBuf {
-    common::default_scratch_root(root).join("cargo-target.lock")
+/// The shared cache's guard lock file's entry name under the default scratch root.
+const CACHE_GUARD: &str = "cargo-target.lock";
+
+/// `entry`'s resolved path under the default scratch root of a `temp_project()` with no
+/// `defaults.workdir` override (spec 89, criterion 2 - the default scratch root itself no
+/// longer nests inside the repo's own `.rigger`; see [`common::default_scratch_root`]).
+fn scratch_entry(root: &Path, entry: &str) -> PathBuf {
+    common::default_scratch_root(root).join(entry)
 }
 
 fn write_file(path: &Path, bytes: &[u8]) {
@@ -114,7 +115,7 @@ fn reset_build_cache_deletes_a_real_populated_cache_and_reports_its_bytes() {
     let project = temp_project();
     let root = project.path();
     seed_store(root);
-    let cache = shared_cache_dir(root);
+    let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("a.rlib"), &[0u8; 5_000]);
     write_file(&cache.join("debug").join("b.rlib"), &[0u8; 2_500]);
     let bytes = dir_bytes(&cache);
@@ -173,7 +174,10 @@ fn reset_build_cache_composes_with_runs_and_derived_in_either_order() {
     let project = temp_project();
     let root = project.path();
     seed_store(root);
-    write_file(&shared_cache_dir(root).join("x.rlib"), &[0u8; 10]);
+    write_file(
+        &scratch_entry(root, SHARED_CACHE).join("x.rlib"),
+        &[0u8; 10],
+    );
     let (out, err, ok) = run_rigger(root, &["reset", "--runs", "--build-cache", "--derived"]);
     assert!(
         ok,
@@ -184,13 +188,16 @@ fn reset_build_cache_composes_with_runs_and_derived_in_either_order() {
         "each mode's own report line must appear: {out:?}"
     );
     assert!(
-        !shared_cache_dir(root).exists(),
+        !scratch_entry(root, SHARED_CACHE).exists(),
         "the composed call must still reclaim the cache"
     );
 
     // The reverse order, against a freshly re-seeded cache, must succeed identically -
     // composition is order-independent.
-    write_file(&shared_cache_dir(root).join("y.rlib"), &[0u8; 10]);
+    write_file(
+        &scratch_entry(root, SHARED_CACHE).join("y.rlib"),
+        &[0u8; 10],
+    );
     let (_out, err, ok) = run_rigger(root, &["reset", "--build-cache", "--runs"]);
     assert!(
         ok,
@@ -223,7 +230,7 @@ fn reset_build_cache_is_not_dropped_when_composed_with_derived_on_a_server_backe
     let project = temp_project();
     let root = project.path();
     seed_store(root);
-    let cache = shared_cache_dir(root);
+    let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("x.rlib"), &[0u8; 16]);
 
     let mut cmd = common::rigger_courier();
@@ -269,9 +276,9 @@ fn reset_build_cache_refuses_rather_than_waits_while_a_build_holds_the_guard() {
     let project = temp_project();
     let root = project.path();
     seed_store(root);
-    let cache = shared_cache_dir(root);
+    let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);
-    let guard = guard_path(root);
+    let guard = scratch_entry(root, CACHE_GUARD);
     std::fs::create_dir_all(guard.parent().unwrap()).unwrap();
     std::fs::write(&guard, b"").unwrap();
 
@@ -354,9 +361,9 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     let project = temp_project();
     let root = project.path();
     seed_store(root);
-    let cache = shared_cache_dir(root);
+    let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);
-    let guard = guard_path(root);
+    let guard = scratch_entry(root, CACHE_GUARD);
     std::fs::create_dir_all(guard.parent().unwrap()).unwrap();
 
     let markers = tempfile::tempdir().expect("tempdir for markers");
@@ -470,7 +477,10 @@ fn reset_build_cache_resolves_a_configured_scratch_workdir_not_the_default_path(
     // A decoy at the DEFAULT (unconfigured) location: present so that a bug which ignores
     // the configured workdir and falls back to the default would still find something to
     // reclaim, silently masking the divergence instead of surfacing a mismatched byte count.
-    write_file(&shared_cache_dir(root).join("decoy.bin"), &[0u8; 999]);
+    write_file(
+        &scratch_entry(root, SHARED_CACHE).join("decoy.bin"),
+        &[0u8; 999],
+    );
     // The real cache, at the CONFIGURED scratch root - a sibling of `scratch`, never a
     // subdirectory of the project root at all.
     let real_cache = scratch.path().join("cargo-target");
@@ -490,7 +500,7 @@ fn reset_build_cache_resolves_a_configured_scratch_workdir_not_the_default_path(
         "the cache at the configured scratch root must actually be reclaimed: {real_cache:?}"
     );
     assert!(
-        shared_cache_dir(root).join("decoy.bin").exists(),
+        scratch_entry(root, SHARED_CACHE).join("decoy.bin").exists(),
         "the default-path decoy must be left completely untouched - reset must resolve the \
          CONFIGURED workdir, never silently fall back to the project-relative default"
     );
@@ -527,7 +537,7 @@ fn a_gate_command_degraded_by_a_forced_unusable_guard_never_writes_into_the_shar
     let project = temp_project();
     let root = project.path();
     seed_store(root);
-    let cache = shared_cache_dir(root);
+    let cache = scratch_entry(root, SHARED_CACHE);
     write_file(&cache.join("debug").join("preexisting.rlib"), &[0u8; 64]);
 
     // A guard path under a directory that is never created: `build_cache_guard_is_usable`
