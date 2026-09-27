@@ -5041,7 +5041,10 @@ impl RunCtx<'_> {
             // non-ancestor moved tip (residue that rewrote history rather than just
             // adding to it) must not have its named paths inflated by merge-base
             // anchoring (sdet-u103c6-committed-diff-names-triple-dot-non-ancestor).
-            residue.extend(w.diff_names(round_start_sha, crate::worktree::DiffMode::Direct).unwrap_or_default());
+            residue.extend(
+                w.diff_names(round_start_sha, crate::worktree::DiffMode::Direct)
+                    .unwrap_or_default(),
+            );
             residue.sort();
             residue.dedup();
         }
@@ -9080,7 +9083,8 @@ impl RunCtx<'_> {
                         // the true no-op short circuit.
                         match self.landed_sha_for(&st.name, attempt) {
                             Some((landed_pass, sha, pre_merge)) => {
-                                files = wt.diff_names(&pre_merge, crate::worktree::DiffMode::MergeBase)?;
+                                files = wt
+                                    .diff_names(&pre_merge, crate::worktree::DiffMode::MergeBase)?;
                                 already_landed = Some((landed_pass, sha, pre_merge));
                             }
                             None => return Ok(Integration::default()),

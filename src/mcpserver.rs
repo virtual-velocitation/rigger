@@ -1435,7 +1435,9 @@ mod tests {
         let driver = Driver::new();
         let peers = Sidecar::start(&store, 0, Filter::default()).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while peers.peers::<crate::sidecar::PeerDecision>().len() < 2 || peers.peers::<crate::sidecar::PeerLesson>().len() < 2 {
+        while peers.peers::<crate::sidecar::PeerDecision>().len() < 2
+            || peers.peers::<crate::sidecar::PeerLesson>().len() < 2
+        {
             assert!(Instant::now() < deadline, "side-car never caught up");
             std::thread::sleep(Duration::from_millis(10));
         }

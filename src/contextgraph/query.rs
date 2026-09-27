@@ -212,7 +212,8 @@ pub(crate) struct DerivedLensTexts {
     pub(crate) underived: &'static str,
     /// The empty-CELL message for a derived-lens RE-PROJECTION whose member set folds into NO
     /// derived bucket (spec 55 c2).
-    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only read by dash.rs's reproject_derived, gated out under core-only
+    #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))]
+    // only read by dash.rs's reproject_derived, gated out under core-only
     pub(crate) no_membership: &'static str,
     /// The super-node KIND whose deterministic `label` attr names a bucket cluster.
     pub(crate) label_kind: &'static str,

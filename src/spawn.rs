@@ -1219,7 +1219,10 @@ mod tests {
         // conductor can copy it onto the spawn's unit events.
         let with = SpawnResult::ok("u/implementer#0", "done")
             .with_meta(serde_json::json!({ "resolved_model": "claude-opus-4-8-20260101" }));
-        assert_eq!(with.meta_str(META_RESOLVED_MODEL), "claude-opus-4-8-20260101");
+        assert_eq!(
+            with.meta_str(META_RESOLVED_MODEL),
+            "claude-opus-4-8-20260101"
+        );
 
         // No meta, wrong key, or a non-string value each read as empty (then omitted).
         assert_eq!(

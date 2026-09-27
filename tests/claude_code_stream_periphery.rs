@@ -120,7 +120,10 @@ fn spawn_records_the_result_in_the_run_store_with_its_full_meta() {
     assert_eq!(res.id, "u104-stream/implementer#0");
     assert_eq!(res.output, "done: the answer is 42");
     assert!(!res.is_error());
-    assert_eq!(res.meta_str(spawn::META_RESOLVED_MODEL), "claude-sonnet-4-5-20250929");
+    assert_eq!(
+        res.meta_str(spawn::META_RESOLVED_MODEL),
+        "claude-sonnet-4-5-20250929"
+    );
     assert_eq!(
         res.meta["session_id"],
         "11111111-1111-4111-8111-111111111111"
