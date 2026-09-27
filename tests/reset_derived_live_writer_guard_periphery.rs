@@ -22,6 +22,7 @@
 mod common;
 
 use common::cli::run_rigger_envs;
+use common::git::git_out;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
@@ -51,28 +52,11 @@ fn temp_project() -> tempfile::TempDir {
     dir
 }
 
-/// The git top-level for `root`, resolved exactly as the product's own `git_repo_at` resolves it
-/// (`git -C <root> rev-parse --show-toplevel`) - the SAME string the product uses as the
-/// registry's `Instance.root` / the `registry_store_identity` input, so a test-written registry
-/// entry lands under the identical key the guard's own read filters on.
-fn git_toplevel(root: &Path) -> String {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .expect("git rev-parse --show-toplevel must succeed for a git-init'd temp project")
-}
-
 /// The project identity the binary resolves for `root` (the tracked `.rigger/project.id` at the
 /// git top-level when present, else that top-level's basename) - mirrors `project_identity_at`'s
 /// precedence so a seed appended under this identity lands in the exact stream the binary reads.
 fn run_stream_identity(root: &Path) -> String {
-    let toplevel = git_toplevel(root);
+    let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
     let base = Path::new(&toplevel);
     if let Ok(raw) = std::fs::read_to_string(base.join(".rigger").join("project.id")) {
         let id = raw.trim();
@@ -477,7 +461,7 @@ fn reset_derived_fails_on_an_unreadable_step_lock_probe_and_prunes_nothing() {
 fn reset_derived_refuses_a_live_driver_registration_naming_it() {
     let dir = temp_project();
     let root = dir.path();
-    let toplevel = git_toplevel(root);
+    let toplevel = git_out(root, &["rev-parse", "--show-toplevel"]);
 
     let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
     let instances_dir = registry::instances_dir(state_home.path());

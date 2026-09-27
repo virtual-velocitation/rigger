@@ -41,35 +41,14 @@
 mod common;
 
 use std::path::Path;
-use std::process::Command;
 
 use common::env_test_lock;
 use common::fixtures::no_emit;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{AgentDriver, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::driver::cli;
 use rigger::worktree::{scratch_root, unit_cache_sibling, Worktree};
-
-/// A real `git init` + one empty commit, so `Worktree::create` has a HEAD to branch a
-/// real unit worktree off of - the shape every real `rigger step` unit worktree is
-/// created against.
-fn init_repo_with_head() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .args(args)
-            .current_dir(p)
-            .status()
-            .expect("git fixture command");
-    }
-    dir
-}
 
 /// A minimal, dependency-free binary crate written directly into `dir` - real enough for
 /// a real `cargo build` to compile in well under a second, with no network/registry
@@ -100,7 +79,7 @@ fn seed_minimal_crate(dir: &str) {
 #[test]
 fn a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktree() {
     let _guard = env_test_lock();
-    let repo = init_repo_with_head();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_string_lossy().into_owned();
     let root = scratch_root(&repo_path, "", None);
     let worktree_dir = format!("{root}/rigger-wt-cargo-build-probe");

@@ -38,23 +38,9 @@ mod common;
 mod gitsemver;
 
 use common::fixtures::tool_available;
+use common::git::git_ok;
 use std::path::Path;
 use std::process::Command;
-
-/// Run `git <args>` in `root`, panicking with stderr on failure - fixture setup must
-/// never silently half-succeed.
-fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
 
 /// Build a fixture git repository at `root`: `go-gitsemver.yml` matching the one
 /// committed at this repo's own root (`mode: Mainline`, `tag-prefix: v`), an initial
@@ -62,20 +48,20 @@ fn git(root: &Path, args: &[&str]) {
 /// this project's own `init_committed_repo` helper (`src/main.rs`) for git-fixture
 /// construction, extended with the tag + second commit criterion 1 needs.
 fn fixture_repo(root: &Path, second_commit_message: &str) {
-    git(root, &["init", "-q"]);
-    git(root, &["config", "user.email", "t@example.com"]);
-    git(root, &["config", "user.name", "t"]);
+    git_ok(root, &["init", "-q"]);
+    git_ok(root, &["config", "user.email", "t@example.com"]);
+    git_ok(root, &["config", "user.name", "t"]);
     std::fs::write(
         root.join("go-gitsemver.yml"),
         "mode: Mainline\ntag-prefix: v\n",
     )
     .expect("write fixture go-gitsemver.yml");
-    git(root, &["add", "go-gitsemver.yml"]);
-    git(root, &["commit", "-q", "-m", "chore: initial"]);
-    git(root, &["tag", "v1.0.0"]);
+    git_ok(root, &["add", "go-gitsemver.yml"]);
+    git_ok(root, &["commit", "-q", "-m", "chore: initial"]);
+    git_ok(root, &["tag", "v1.0.0"]);
     std::fs::write(root.join("file.txt"), "second\n").expect("write fixture file");
-    git(root, &["add", "file.txt"]);
-    git(root, &["commit", "-q", "-m", second_commit_message]);
+    git_ok(root, &["add", "file.txt"]);
+    git_ok(root, &["commit", "-q", "-m", second_commit_message]);
 }
 
 /// A repo tagged v1.0.0 with one further commit titled `subject` derives a version starting
@@ -212,7 +198,7 @@ fn worktree_config_extension_never_mutated_even_though_it_defeats_derivation() {
     // ANY-failure fallback contract (never fabricate, never fail the build) is exactly
     // what covers that trade-off - the same contract the tool-absent and
     // outside-a-checkout scenarios already exercise.
-    git(dir.path(), &["config", "extensions.worktreeConfig", "true"]);
+    git_ok(dir.path(), &["config", "extensions.worktreeConfig", "true"]);
 
     let config_path = dir.path().join(".git").join("config");
     let before = std::fs::read(&config_path).expect("read fixture .git/config before");

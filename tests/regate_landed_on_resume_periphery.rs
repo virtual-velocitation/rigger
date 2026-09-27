@@ -50,7 +50,9 @@ use common::fixtures::agent;
 use common::fixtures::gate_def;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
+use common::git::git_commit_all;
 use common::git::git_stdout;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config};
 use rigger::contextgraph;
@@ -63,44 +65,6 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-
-/// A throwaway git repo with one empty commit, so a run-branch anchor (`HEAD`) resolves.
-/// Mirrors `src/conductor.rs::tests::init_repo` (private to that module) and every other
-/// periphery suite's identical copy (e.g. `tests/integrate_conflict_merge_periphery.rs`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
-
-fn git_commit_all(dir: &str, msg: &str) {
-    for args in [&["add", "-A"][..], &["commit", "-q", "-m", msg]] {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?} in {dir} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-}
 
 /// `rigger::conductor::unit_branch`'s exact convention (`rigger/u/<unit-id>`, the crate's own
 /// public authority) reproduced by name rather than imported, so this file states plainly which
@@ -251,7 +215,7 @@ fn base_cfg(repo_path: &str) -> Config {
 
 #[test]
 fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_on_resume() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = base_cfg(&repo_path);
 
@@ -359,7 +323,7 @@ fn a_crash_right_after_landing_before_the_postmerge_regate_still_gates_for_real_
 
 #[test]
 fn a_pre_fix_landed_row_missing_pre_merge_keeps_the_old_true_no_op_resume_behavior() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = base_cfg(&repo_path);
     let branch = unit_branch("unit-a");

@@ -24,6 +24,7 @@ use common::cli::run_stream_identity;
 use common::cli::seed_run_events;
 use common::cli::seed_store;
 use common::fixtures::pgid_of;
+use common::git::git_answer;
 use common::rigger_bin;
 
 /// A throwaway project dir that is its own git repo, so `project_identity()` (which
@@ -60,20 +61,6 @@ fn temp_git_project_with_commit() -> tempfile::TempDir {
         assert!(ok, "git {args:?} must succeed while seeding the repo");
     }
     dir
-}
-
-/// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success
-/// (used to assert branch state after a `rigger step --base`), or None on failure.
-fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .expect("git must be runnable");
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
 }
 
 /// Extract a JSON string field's value from a one-line JSON object `line` - a tiny reader
@@ -3685,7 +3672,7 @@ fn step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
          above; it survived under {}\nstderr:\n{err}",
         dead_wt.display()
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    let list = git_answer(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
     assert!(
         !list.contains("rigger/u/leftover-orphan"),
         "the reclaimed worktree must also be DEREGISTERED from git, not just directory-\
@@ -3897,7 +3884,7 @@ fn serve_from_a_linked_worktree_refuses_naming_both_trees() {
         "a refused serve must not have gone on to open/create the store"
     );
     assert!(
-        !git_out(root, &["branch", "--list", "rigger-run"])
+        !git_answer(root, &["branch", "--list", "rigger-run"])
             .unwrap_or_default()
             .contains("rigger-run"),
         "the main tree must not gain a rigger-run branch as a side effect of a refused serve"
@@ -4799,7 +4786,7 @@ fn step_parks_a_standalone_review_spawn_and_keeps_its_review_worktree() {
     // `.git/worktrees` admin entry is gone is exactly the half-fixed state this
     // criterion rules out (the SAME failure class `worktree_registered_on` guards
     // against in the implementer's in-process tests, checked here from outside).
-    let list = git_out(root, &["worktree", "list", "--porcelain"])
+    let list = git_answer(root, &["worktree", "list", "--porcelain"])
         .expect("git worktree list must succeed in the seeded repo");
     assert!(
         list.contains("rigger/review/review-0"),
@@ -4923,7 +4910,7 @@ stages:
          exhausted into a loud halt, across a REAL process boundary: {}",
         wt_dir.display()
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"])
+    let list = git_answer(root, &["worktree", "list", "--porcelain"])
         .expect("git worktree list must succeed in the seeded repo");
     assert!(
         list.contains("rigger/review/review-0"),
@@ -5117,7 +5104,7 @@ fn step_halts_on_an_exhausted_lens_beside_a_parked_sibling_and_keeps_the_unit_wo
          exhausted into a loud halt, across a REAL process boundary: {}",
         wt_dir.display()
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"])
+    let list = git_answer(root, &["worktree", "list", "--porcelain"])
         .expect("git worktree list must succeed in the seeded repo");
     assert!(
         list.contains("rigger/u/solo"),
@@ -5261,7 +5248,7 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
         "the unit's worktree must be reclaimed after a clean integrate: {}",
         wt_dir.display()
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    let list = git_answer(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
     assert!(
         !list.contains("rigger-wt-solo"),
         "the reclaimed worktree must be fully DEREGISTERED with git, not a stale admin entry \
@@ -5273,7 +5260,7 @@ fn step_reclaims_the_units_worktree_and_deletes_its_branch_on_a_clean_integrate(
     // behavior" the implementer's own tests, calling `run()` directly in one process, never
     // observe.
     assert!(
-        git_out(
+        git_answer(
             root,
             &["rev-parse", "--verify", "-q", "refs/heads/rigger/u/solo"]
         )
@@ -5346,7 +5333,7 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
         "the unit's worktree must be reclaimed after a terminal escalation: {}",
         wt_dir.display()
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+    let list = git_answer(root, &["worktree", "list", "--porcelain"]).unwrap_or_default();
     assert!(
         !list.contains("rigger-wt-solo"),
         "the reclaimed worktree must be fully DEREGISTERED with git, not a stale admin entry \
@@ -5356,7 +5343,7 @@ fn step_reclaims_the_units_worktree_but_keeps_its_branch_on_a_terminal_escalatio
     // ...but its branch SURVIVES as the human's evidence - only a successful integrate
     // deletes it, and this unit never integrated.
     assert!(
-        git_out(
+        git_answer(
             root,
             &["rev-parse", "--verify", "-q", "refs/heads/rigger/u/solo"]
         )
@@ -5412,7 +5399,7 @@ fn resume_unit_re_parks_on_the_durable_branch_and_status_names_the_grant() {
     escalate_solo_unit(root);
 
     let branch_tip_before =
-        git_out(root, &["rev-parse", "refs/heads/rigger/u/solo"]).expect("the branch survives");
+        git_answer(root, &["rev-parse", "refs/heads/rigger/u/solo"]).expect("the branch survives");
 
     let (out, err) = {
         let (out, err, ok) = run_rigger(root, &["status"]);
@@ -5453,7 +5440,7 @@ fn resume_unit_re_parks_on_the_durable_branch_and_status_names_the_grant() {
         "resume must re-park a FRESH implementer attempt, not report a clean fixpoint; got: {out:?}"
     );
     assert_eq!(
-        git_out(root, &["rev-parse", "refs/heads/rigger/u/solo"]).as_deref(),
+        git_answer(root, &["rev-parse", "refs/heads/rigger/u/solo"]).as_deref(),
         Some(branch_tip_before.as_str()),
         "the re-parked implementer must build on the SAME durable branch tip, not a fresh one"
     );
@@ -5740,7 +5727,7 @@ stages:
         "the review tier's lens spawn must find the unit worktree restored: {}",
         wt_dir.display()
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"])
+    let list = git_answer(root, &["worktree", "list", "--porcelain"])
         .expect("git worktree list must succeed in the seeded repo");
     assert!(
         list.contains("rigger/u/solo"),
@@ -5756,9 +5743,9 @@ stages:
          tip, containing its landed file: {}",
         wt_dir.display()
     );
-    let branch_tip = git_out(root, &["rev-parse", "rigger/u/solo"])
+    let branch_tip = git_answer(root, &["rev-parse", "rigger/u/solo"])
         .expect("the unit branch must resolve a tip after the pre-gate commit");
-    let head_after = git_out(&wt_dir, &["rev-parse", "HEAD"]).expect(
+    let head_after = git_answer(&wt_dir, &["rev-parse", "HEAD"]).expect(
         "the restored worktree must resolve its own HEAD - a bare leftover dir with no \
          `.git` admin link would fail this",
     );
@@ -6162,15 +6149,15 @@ stages:
         "the adversary tier's spawn must find the unit worktree restored: {}",
         wt_dir.display()
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"])
+    let list = git_answer(root, &["worktree", "list", "--porcelain"])
         .expect("git worktree list must succeed in the seeded repo");
     assert!(
         list.contains("rigger/u/solo"),
         "the restored worktree must be REGISTERED with git again, not just a leftover dir: {list}"
     );
-    let branch_tip = git_out(root, &["rev-parse", "rigger/u/solo"])
+    let branch_tip = git_answer(root, &["rev-parse", "rigger/u/solo"])
         .expect("the unit branch must resolve a tip after the pre-gate commit");
-    let head_at_adversary = git_out(&wt_dir, &["rev-parse", "HEAD"])
+    let head_at_adversary = git_answer(&wt_dir, &["rev-parse", "HEAD"])
         .expect("the restored worktree must resolve its own HEAD");
     assert_eq!(
         head_at_adversary, branch_tip,
@@ -6206,7 +6193,7 @@ stages:
          re-assert runs before EVERY tier's spawn, not only the one right after the lens: {}",
         wt_dir.display()
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"])
+    let list = git_answer(root, &["worktree", "list", "--porcelain"])
         .expect("git worktree list must succeed in the seeded repo");
     assert!(
         list.contains("rigger/u/solo"),
@@ -6577,7 +6564,7 @@ stages:
     // The restored tree's own HEAD is the independent, outside-git ground truth for what
     // the failed_sha stamp should read, read immediately after step 3 returns (before any
     // further attempt has a chance to write to the same dir).
-    let head_after = git_out(&wt_dir, &["rev-parse", "HEAD"])
+    let head_after = git_answer(&wt_dir, &["rev-parse", "HEAD"])
         .expect("the restored worktree must resolve its own HEAD after step 3");
 
     let backend = Store::open(root.join(".rigger").join("events.db").to_str().unwrap()).unwrap();
@@ -7025,7 +7012,7 @@ esac
         "the candidate worktree must be restored after the run: {}",
         wt_dir.display()
     );
-    let list = git_out(root, &["worktree", "list", "--porcelain"])
+    let list = git_answer(root, &["worktree", "list", "--porcelain"])
         .expect("git worktree list must succeed in the seeded repo");
     assert!(
         list.contains(wt_dir.to_str().unwrap()),
@@ -7062,7 +7049,7 @@ esac
         winner_sha.chars().all(|c| c.is_ascii_hexdigit()),
         "the stamped sha must be real hex: {winner_sha:?}"
     );
-    let head_after = git_out(&wt_dir, &["rev-parse", "HEAD"])
+    let head_after = git_answer(&wt_dir, &["rev-parse", "HEAD"])
         .expect("the restored worktree must resolve its own HEAD");
     assert_eq!(
         winner_sha, head_after,
@@ -7353,7 +7340,7 @@ stages:
     // the `UnitFailed` this test drives - so the dir this test's own commit landed in will
     // itself be gone again by the time the step below returns. The branch is the durable
     // checkpoint; this sha is what a re-`ensure_present` checks the SAME branch back out to.
-    let expected_sha = git_out(&wt_dir, &["rev-parse", "HEAD"])
+    let expected_sha = git_answer(&wt_dir, &["rev-parse", "HEAD"])
         .expect("the committed worktree must resolve its own HEAD");
 
     // The prior window's own recorded verdict: the unit is `reviewed`, only the merge is
@@ -7535,7 +7522,7 @@ stages:
     // the `UnitFailed` this test drives - so the dir this test's own commit landed in will
     // itself be gone again by the time the step below returns. The branch is the durable
     // checkpoint; this sha is what a re-`ensure_present` checks the SAME branch back out to.
-    let expected_sha = git_out(&wt_dir, &["rev-parse", "HEAD"])
+    let expected_sha = git_answer(&wt_dir, &["rev-parse", "HEAD"])
         .expect("the committed worktree must resolve its own HEAD");
 
     // Advance the BASE repo's own checkout with an unrelated commit, so the unit's merge is a
@@ -11396,7 +11383,7 @@ fn step_accepts_base_and_anchors_the_run_branch() {
     let root = dir.path();
     write_two_stage_workflow(root);
     let base_sha =
-        git_out(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
+        git_answer(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
 
     let (out, err, ok) = run_rigger(root, &["step", "--base", "HEAD"]);
     assert!(ok, "step --base must succeed; stderr: {err}");
@@ -11410,12 +11397,12 @@ fn step_accepts_base_and_anchors_the_run_branch() {
 
     // The run branch was created off the base and checked out.
     assert_eq!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
         Some("rigger-run"),
         "rigger step --base must create and check out the run branch"
     );
     assert_eq!(
-        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
+        git_answer(root, &["rev-parse", "rigger-run"]).as_deref(),
         Some(base_sha.as_str()),
         "the run branch must be anchored on the --base commit"
     );
@@ -11433,8 +11420,8 @@ fn step_creates_run_branch_off_head_when_base_unresolvable() {
     let root = dir.path();
     write_two_stage_workflow(root);
     let head_sha =
-        git_out(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
-    let operator_branch = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"])
+        git_answer(root, &["rev-parse", "HEAD"]).expect("the seeded repo has a HEAD commit");
+    let operator_branch = git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"])
         .expect("the seeded repo is on a named branch");
 
     // The default-style base that does not exist here.
@@ -11457,12 +11444,12 @@ fn step_creates_run_branch_off_head_when_base_unresolvable() {
         "guard: seed is not already on the run branch"
     );
     assert_eq!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
         Some("rigger-run"),
         "an unresolvable base must still create and check out the run branch, off HEAD"
     );
     assert_eq!(
-        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
+        git_answer(root, &["rev-parse", "rigger-run"]).as_deref(),
         Some(head_sha.as_str()),
         "the fallback run branch is anchored on the HEAD it was created from"
     );
@@ -11487,7 +11474,7 @@ fn step_refuses_when_there_is_no_reachable_base() {
     let dir = temp_project();
     let root = dir.path();
     write_two_stage_workflow(root);
-    let head_branch_before = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
+    let head_branch_before = git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
 
     // An unresolvable base + the unborn HEAD => no reachable base at all.
     let (out, err, ok) = run_rigger(root, &["step", "--base", "origin/does-not-exist"]);
@@ -11503,12 +11490,12 @@ fn step_refuses_when_there_is_no_reachable_base() {
     // Side-effect-free: no run branch was minted, so HEAD is untouched (still the unborn
     // default branch, never rigger-run) and the corrected retry can anchor the run fresh.
     assert_ne!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
         Some("rigger-run"),
         "a refused run must NOT have created or checked out the run branch"
     );
     assert_eq!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
         head_branch_before,
         "the refused run leaves HEAD exactly where it was"
     );
@@ -11528,7 +11515,7 @@ fn run_refuses_when_there_is_no_reachable_base() {
     let dir = temp_project();
     let root = dir.path();
     write_two_stage_workflow(root);
-    let head_branch_before = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
+    let head_branch_before = git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
 
     // An unresolvable base + the unborn HEAD => no reachable base at all.
     let (out, err, ok) = run_rigger(root, &["run", "--base", "origin/does-not-exist"]);
@@ -11545,12 +11532,12 @@ fn run_refuses_when_there_is_no_reachable_base() {
     // Side-effect-free: no run branch was minted, so HEAD is untouched (still the unborn
     // default branch, never rigger-run) and the corrected retry can anchor the run fresh.
     assert_ne!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
         Some("rigger-run"),
         "a refused `rigger run` must NOT have created or checked out the run branch"
     );
     assert_eq!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
         head_branch_before,
         "the refused `rigger run` leaves HEAD exactly where it was"
     );
@@ -11569,7 +11556,7 @@ fn run_workflow_refuses_when_there_is_no_reachable_base() {
     let dir = temp_project();
     let root = dir.path();
     write_two_stage_workflow(root);
-    let head_branch_before = git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
+    let head_branch_before = git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]);
 
     // An unresolvable base + the unborn HEAD => no reachable base at all.
     let (out, err, ok) = run_rigger(
@@ -11598,12 +11585,12 @@ fn run_workflow_refuses_when_there_is_no_reachable_base() {
     // Side-effect-free: no run branch was minted and the workflow driver never started, so
     // HEAD is untouched (never rigger-run) and the corrected retry anchors the run fresh.
     assert_ne!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
         Some("rigger-run"),
         "a refused workflow run must NOT have created or checked out the run branch"
     );
     assert_eq!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]),
         head_branch_before,
         "the refused workflow run leaves HEAD exactly where it was"
     );
@@ -11760,7 +11747,7 @@ fn step_refuses_a_base_lacking_every_spec_path_and_proceeds_when_present() {
     // rigger-run behind - otherwise the corrected --base retry would reuse the wrong-base
     // branch and self-disarm the check (spec 18, criterion 7).
     assert!(
-        git_out(
+        git_answer(
             root,
             &["rev-parse", "--verify", "-q", "refs/heads/rigger-run"]
         )
@@ -11814,7 +11801,7 @@ fn step_missing_files_refusal_recovery_anchors_on_the_corrected_base() {
     write_two_stage_workflow(root);
 
     // Two bases off the empty init commit: `wrong` lacks src/lib.rs; `right` has it.
-    let init = git_out(root, &["rev-parse", "HEAD"]).expect("the init commit resolves");
+    let init = git_answer(root, &["rev-parse", "HEAD"]).expect("the init commit resolves");
     git_ok(root, &["branch", "wrong", &init]);
     git_ok(root, &["checkout", "-q", "-b", "right"]);
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -11837,7 +11824,7 @@ fn step_missing_files_refusal_recovery_anchors_on_the_corrected_base() {
         "the refusal must fire on the wrong base; got: {err1:?}"
     );
     assert!(
-        git_out(
+        git_answer(
             root,
             &["rev-parse", "--verify", "-q", "refs/heads/rigger-run"]
         )
@@ -11853,7 +11840,7 @@ fn step_missing_files_refusal_recovery_anchors_on_the_corrected_base() {
         "the corrected base must pass the check, not re-refuse; got: {err2:?}"
     );
     assert!(
-        git_out(
+        git_answer(
             root,
             &["rev-parse", "--verify", "-q", "refs/heads/rigger-run"]
         )
@@ -11898,7 +11885,7 @@ fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
     let (_out, err, ok) = run_rigger(root, &["step", "--base", "HEAD"]);
     assert!(ok, "the first step must succeed; stderr: {err}");
     assert_eq!(
-        git_out(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
+        git_answer(root, &["symbolic-ref", "--short", "-q", "HEAD"]).as_deref(),
         Some("rigger-run"),
     );
 
@@ -11913,7 +11900,7 @@ fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
         "seeding an integrated commit must succeed"
     );
     let integrated_tip =
-        git_out(root, &["rev-parse", "rigger-run"]).expect("the run branch has a tip");
+        git_answer(root, &["rev-parse", "rigger-run"]).expect("the run branch has a tip");
 
     // A second step with an EXPLICIT base pointing elsewhere must reuse rigger-run,
     // preserve the integrated tip, and warn that --base was not applied.
@@ -11924,7 +11911,7 @@ fn step_reuses_the_run_branch_and_warns_when_explicit_base_is_ignored() {
         "the second step still prints its {{wave,done}} JSON; got: {out:?}"
     );
     assert_eq!(
-        git_out(root, &["rev-parse", "rigger-run"]).as_deref(),
+        git_answer(root, &["rev-parse", "rigger-run"]).as_deref(),
         Some(integrated_tip.as_str()),
         "reuse must NOT reset the run branch - the integrated commit is preserved"
     );
@@ -20559,7 +20546,7 @@ fn seed_stale_tracked_docs(root: &Path) {
     // Guard against a vacuous pass in every caller: HEAD must carry the STALE bytes right after
     // the seed, so a later "the hook detected drift" assertion can only hold for real.
     let seeded_skill =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert!(
         seeded_skill.contains("STALE DOC"),
         "the --no-verify seed must commit the STALE docs unchanged so the discrimination is \
@@ -20678,14 +20665,14 @@ fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
 
     // Nothing landed: HEAD still carries the STALE seed, not a silently-substituted re-render.
     let committed =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert!(
         committed.contains("STALE DOC"),
         "a refused commit must not land - HEAD must still carry the stale seed; got:\n{committed}"
     );
     // And nothing was re-staged: the hook never ran `git add`, so the freshly re-rendered
     // working-tree copy (written by the hook's own `rigger docs`) is only an unstaged edit.
-    let staged = git_out(root, &["diff", "--cached", "--name-only"]).unwrap_or_default();
+    let staged = git_answer(root, &["diff", "--cached", "--name-only"]).unwrap_or_default();
     assert!(
         !staged.contains("SKILL.md") && !staged.contains("using-rigger.md"),
         "the hook must never stage its own re-render; staged files:\n{staged}"
@@ -20702,7 +20689,7 @@ fn setup_precommit_hook_passes_untouched_when_the_render_matches() {
     let root = proj.path();
     setup_selfhosting_repo_with_fresh_docs(root);
     let fresh_skill_before =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert!(
         fresh_skill_before.contains("name: using-rigger"),
         "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
@@ -20728,13 +20715,13 @@ fn setup_precommit_hook_passes_untouched_when_the_render_matches() {
         "a matching render must never print a refusal; stderr:\n{stderr}"
     );
 
-    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    let tree = git_answer(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
     assert!(
         tree.contains("code.txt"),
         "the unrelated change must ride the commit; tree:\n{tree}"
     );
     let committed_after =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert_eq!(
         committed_after, fresh_skill_before,
         "the already-fresh doc must land byte-identical - the hook must not touch it"
@@ -20767,7 +20754,7 @@ fn setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_it
         planning_path.exists(),
         "the fixture's `rigger docs` call must have written the second registry entry too"
     );
-    let status_before = git_out(
+    let status_before = git_answer(
         root,
         &["status", "--porcelain", "skills/planning-a-spec/SKILL.md"],
     )
@@ -20803,7 +20790,7 @@ fn setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_it
         "the hook must never refuse over a registry entry it does not scope; stderr:\n{stderr}"
     );
 
-    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    let tree = git_answer(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
     assert!(
         tree.contains("code.txt"),
         "the unrelated change must ride the commit; tree:\n{tree}"
@@ -20815,7 +20802,7 @@ fn setup_precommit_hook_never_drift_checks_or_stages_a_registry_entry_outside_it
     );
     // It stays exactly as untracked as before - the hook's internal `rigger docs` call may
     // have rewritten its BYTES, but git's view of it (untracked) is unchanged.
-    let status_after = git_out(
+    let status_after = git_answer(
         root,
         &["status", "--porcelain", "skills/planning-a-spec/SKILL.md"],
     )
@@ -20880,7 +20867,7 @@ fn setup_precommit_hook_stays_inert_in_an_operator_repo() {
 
     // The hook stayed INERT: the operator's commit carries their OWN change but NONE of
     // rigger's internal docs.
-    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    let tree = git_answer(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
     assert!(
         tree.contains("src/app.rs"),
         "the operator's own change is committed; tree:\n{tree}"
@@ -21027,7 +21014,7 @@ fn setup_precommit_hook_prefers_the_trees_own_built_binary_over_a_stale_path_rig
     let root = proj.path();
     setup_selfhosting_repo_with_fresh_docs(root);
     let fresh_skill_before =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert!(
         fresh_skill_before.contains("name: using-rigger"),
         "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
@@ -21060,13 +21047,13 @@ fn setup_precommit_hook_prefers_the_trees_own_built_binary_over_a_stale_path_rig
          stderr:\n{stderr}"
     );
 
-    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    let tree = git_answer(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
     assert!(
         tree.contains("code.txt"),
         "the worktree's own change must ride the commit; tree:\n{tree}"
     );
     let committed_after =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert_eq!(
         committed_after, fresh_skill_before,
         "the already-fresh doc must land byte-identical - the tree-built binary's render \
@@ -21087,7 +21074,7 @@ fn setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rig
     let root = proj.path();
     setup_selfhosting_repo_with_fresh_docs(root);
     let fresh_skill_before =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert!(
         fresh_skill_before.contains("name: using-rigger"),
         "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
@@ -21121,13 +21108,13 @@ fn setup_precommit_hook_refuses_the_same_commit_shape_with_only_a_stale_path_rig
     );
 
     let committed =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert_eq!(
         committed, fresh_skill_before,
         "a refused commit must not land - HEAD must still carry the fresh seed, not the stale \
          render"
     );
-    let staged = git_out(root, &["diff", "--cached", "--name-only"]).unwrap_or_default();
+    let staged = git_answer(root, &["diff", "--cached", "--name-only"]).unwrap_or_default();
     assert!(
         !staged.contains("SKILL.md") && !staged.contains("using-rigger.md"),
         "the hook must never stage its own stale re-render; staged files:\n{staged}"
@@ -21179,7 +21166,7 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
     let main_root = main.path();
     setup_selfhosting_repo_with_fresh_docs(main_root);
     let fresh_skill_before =
-        git_out(main_root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(main_root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert!(
         fresh_skill_before.contains("name: using-rigger"),
         "the seed must be a real fresh render, not a stub; got:\n{fresh_skill_before}"
@@ -21227,7 +21214,7 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
             && stderr1.contains("docs/handbook/using-rigger.md"),
         "the round-1 refusal must name both drifted docs; stderr:\n{stderr1}"
     );
-    let staged1 = git_out(&wt_path, &["diff", "--cached", "--name-only"]).unwrap_or_default();
+    let staged1 = git_answer(&wt_path, &["diff", "--cached", "--name-only"]).unwrap_or_default();
     assert!(
         staged1.contains("code.txt"),
         "the refused round-1 commit must leave code.txt staged, unreverted; staged:\n{staged1}"
@@ -21255,13 +21242,13 @@ fn setup_precommit_hook_prefers_a_unit_derived_binary_in_a_real_linked_worktree_
         "a matching unit-derived render must never refuse; stderr:\n{stderr2}"
     );
 
-    let tree = git_out(&wt_path, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    let tree = git_answer(&wt_path, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
     assert!(
         tree.contains("code.txt"),
         "the worktree's own change must ride the commit; tree:\n{tree}"
     );
     let committed_after =
-        git_out(&wt_path, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(&wt_path, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert_eq!(
         committed_after, fresh_skill_before,
         "the already-fresh doc must land byte-identical - the unit-derived binary's render \
@@ -21346,7 +21333,7 @@ fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
     // ALREADY-FRESH tracked docs so the final commit's hook finds no drift and falls through.
     setup_selfhosting_repo_with_fresh_docs(root);
     let fresh_skill_before =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
 
     // The chained hook carries BOTH the user hook's command and rigger's block.
     let hook = std::fs::read_to_string(&user_hook).unwrap();
@@ -21382,7 +21369,7 @@ fn setup_precommit_hook_chains_after_a_terminal_exit_hook_and_still_runs() {
     // cannot distinguish from "ran and found nothing to do" - the reachability is proven by the
     // block-position assertion above; this proves it did not somehow corrupt what it read.
     let committed =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert_eq!(
         committed, fresh_skill_before,
         "rigger's block must leave an already-fresh doc byte-identical; got:\n{committed}"
@@ -21428,7 +21415,7 @@ fn setup_precommit_hook_never_touches_unrelated_files() {
         .success();
     assert!(commit_ok, "a matching render must let the commit through");
 
-    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    let tree = git_answer(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
     assert!(
         tree.contains("trigger.txt"),
         "the staged change must ride the commit; tree:\n{tree}"
@@ -21437,7 +21424,7 @@ fn setup_precommit_hook_never_touches_unrelated_files() {
         !tree.contains("junk.txt"),
         "the hook must never stage an unrelated untracked file; tree:\n{tree}"
     );
-    let committed_other = git_out(root, &["show", "HEAD:other.txt"]).unwrap_or_default();
+    let committed_other = git_answer(root, &["show", "HEAD:other.txt"]).unwrap_or_default();
     assert_eq!(
         committed_other, "original",
         "the hook must never stage an unrelated tracked file's unstaged modification; got:\n{committed_other}"
@@ -21485,7 +21472,7 @@ fn setup_precommit_hook_warns_and_proceeds_when_rigger_is_unavailable() {
          AND PATH, spec 75); stderr:\n{stderr}"
     );
     let committed =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert!(
         committed.contains("STALE DOC"),
         "with rigger unavailable the hook regenerates nothing; got:\n{committed}"
@@ -21522,7 +21509,7 @@ fn setup_precommit_hook_warns_and_proceeds_when_rigger_docs_errors() {
         "the hook must WARN that `rigger docs` failed; stderr:\n{stderr}"
     );
     let committed =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
     assert!(
         committed.contains("STALE DOC"),
         "a failing `rigger docs` regenerates nothing; got:\n{committed}"
@@ -21581,7 +21568,7 @@ fn setup_precommit_hook_stays_inert_when_only_one_doc_is_tracked() {
     );
 
     // The hook stayed INERT: the tracked skill was NOT regenerated (HEAD keeps the stale seed).
-    let committed = git_out(root, &["show", &format!("HEAD:{SKILL_REL}")]).unwrap_or_default();
+    let committed = git_answer(root, &["show", &format!("HEAD:{SKILL_REL}")]).unwrap_or_default();
     assert!(
         committed.contains("STALE DOC") && !committed.contains("name: using-rigger"),
         "with only one doc tracked the hook must NOT regenerate the tracked doc; got:\n{committed}"
@@ -21593,7 +21580,7 @@ fn setup_precommit_hook_stays_inert_when_only_one_doc_is_tracked() {
         "the hook must not create the untracked handbook as a stray file in the worktree"
     );
     // Nor does the untracked handbook ride the commit.
-    let tree = git_out(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
+    let tree = git_answer(root, &["ls-tree", "-r", "--name-only", "HEAD"]).unwrap_or_default();
     assert!(
         !tree.contains(HANDBOOK_REL),
         "the untracked handbook must never ride the commit; tree:\n{tree}"
@@ -21678,7 +21665,7 @@ fn setup_precommit_hook_refusal_names_only_the_drifted_file() {
     let root = proj.path();
     setup_selfhosting_repo_with_fresh_docs(root);
     let fresh_skill =
-        git_out(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
+        git_answer(root, &["show", "HEAD:skills/using-rigger/SKILL.md"]).unwrap_or_default();
 
     // Drift ONLY the handbook back to a stale committed copy; the skill stays the true fresh
     // render committed by `setup_selfhosting_repo_with_fresh_docs`.
@@ -21695,7 +21682,7 @@ fn setup_precommit_hook_refusal_names_only_the_drifted_file() {
         ],
     );
     let seeded_handbook =
-        git_out(root, &["show", &format!("HEAD:{HANDBOOK_REL}")]).unwrap_or_default();
+        git_answer(root, &["show", &format!("HEAD:{HANDBOOK_REL}")]).unwrap_or_default();
     assert!(
         seeded_handbook.contains("STALE DOC") && !fresh_skill.contains("STALE DOC"),
         "the fixture must leave exactly one doc stale and the other genuinely fresh"
@@ -21773,7 +21760,7 @@ fn setup_precommit_hook_refusal_leaves_the_fresh_render_in_the_working_tree() {
          remedy's `git add` step has real fresh content to stage; got:\n{working_tree_skill}"
     );
     // And it is genuinely UNSTAGED - the hook never ran `git add` on its own re-render.
-    let unstaged = git_out(root, &["diff", "--name-only"]).unwrap_or_default();
+    let unstaged = git_answer(root, &["diff", "--name-only"]).unwrap_or_default();
     assert!(
         unstaged.contains("skills/using-rigger/SKILL.md"),
         "the fresh render in the working tree must be an unstaged edit, not already staged; \

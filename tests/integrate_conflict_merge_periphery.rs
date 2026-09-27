@@ -271,7 +271,9 @@ use common::fixtures::agent;
 use common::fixtures::gate_def;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
+use common::git::git_commit_all;
 use common::git::git_stdout;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config, RegenerateRule};
 use rigger::config_store;
@@ -282,39 +284,6 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Mutex;
-
-/// A throwaway git repo with one empty commit, so a run-branch anchor (`HEAD`) resolves.
-/// Mirrors `src/conductor.rs::tests::init_repo` (private to that module) and every other
-/// periphery suite's identical copy (e.g. `tests/worktree_liveness_fence_periphery.rs`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
-
-fn git_commit_all(dir: &str, msg: &str) {
-    for args in [&["add", "-A"][..], &["commit", "-q", "-m", msg]] {
-        Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-}
 
 /// `git add <only these paths>` then commit - deliberately NOT `-A`, mirroring a real
 /// implementer that stages exactly the paths it was told to resolve (its own `blast_radius`).
@@ -528,7 +497,7 @@ impl AgentDriver for MixedConflictDriver {
 
 #[test]
 fn a_mixed_source_and_regenerable_conflict_resolves_the_source_first_then_regenerates_for_real() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::create_dir_all(Path::new(&repo_path).join("docs/audit")).unwrap();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
@@ -751,7 +720,7 @@ impl AgentDriver for BranchResetDriver {
 
 #[test]
 fn a_post_merge_red_rollback_resets_the_units_own_branch_not_just_the_repo() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::write(Path::new(&repo_path).join("m.rs"), MB_BASE).unwrap();
     git_commit_all(&repo_path, "base m.rs");
@@ -986,7 +955,7 @@ impl AgentDriver for GatesPortConflictDriver {
 
 #[test]
 fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_shell_out() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE\n").unwrap();
     git_commit_all(&repo_path, "base c.rs");
@@ -1217,7 +1186,7 @@ impl AgentDriver for GatedThirdUnitDriver {
 
 #[test]
 fn regenerate_never_holds_integrate_mu_letting_an_unrelated_unit_land_meanwhile() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE\n").unwrap();
     std::fs::write(Path::new(&repo_path).join("d.rs"), "BASE_D\n").unwrap();
@@ -1466,7 +1435,7 @@ impl AgentDriver for NoConflictRespawnAfterCrashDriver {
 
 #[test]
 fn a_crash_between_the_source_commit_and_regeneration_still_regenerates_on_resume() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::create_dir_all(Path::new(&repo_path).join("docs/audit")).unwrap();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
@@ -1679,7 +1648,7 @@ impl AgentDriver for NonContentMergeFailureDriver {
 #[test]
 #[cfg(unix)]
 fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let store = Store::open(":memory:").unwrap();
@@ -1873,7 +1842,7 @@ fn count_regenerate_pending_markers(events: &[rigger::eventstore::Event]) -> usi
 
 #[test]
 fn a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate_pending_marker() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
     std::fs::write(Path::new(&repo_path).join("gen.txt"), "BASE_GEN\n").unwrap();
@@ -2091,7 +2060,7 @@ impl AgentDriver for Row1MergeCrashDriver {
 #[test]
 #[cfg(unix)]
 fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
@@ -2226,7 +2195,7 @@ impl AgentDriver for Row4LandCrashDriver {
 #[test]
 #[cfg(unix)]
 fn a_crash_right_after_the_landing_intent_record_resumes_and_completes_row_4() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
@@ -2392,7 +2361,7 @@ impl AgentDriver for ResolveSourceOnRetryDriver {
 
 #[test]
 fn a_crash_right_after_placeholder_staging_resumes_and_completes_row_2() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
@@ -2640,7 +2609,7 @@ fn regenerating_cfg(repo_path: &str) -> Config {
 fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3() {
     // --- Boundary A: before-record | mutation (the regenerate command itself fails once) ---
     {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = regenerating_cfg(&repo_path);
         let store = Store::open(":memory:").unwrap();
@@ -2723,7 +2692,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
     // --- Boundary B: mutation | after-record (the regenerate command succeeds, the SPECIFIC
     // after-record append is what a real backend failure refuses) ---
     {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = regenerating_cfg(&repo_path);
         let store = Store::open(":memory:").unwrap();
@@ -2832,7 +2801,7 @@ impl AgentDriver for SimpleWorkDriver {
 /// rather than re-attempting or losing the commit.
 #[test]
 fn a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
@@ -2942,7 +2911,7 @@ fn a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_reco
 /// mutation that already happened.
 #[test]
 fn a_crash_right_after_landing_succeeds_resumes_and_completes_row_4_after_record() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();
@@ -3104,7 +3073,7 @@ impl AgentDriver for MixedConflictThenResolveDriver {
 #[test]
 fn a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_when_row_4_is_already_closed(
 ) {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = regenerating_cfg(&repo_path);
     let store = Store::open(":memory:").unwrap();
@@ -3218,7 +3187,7 @@ fn a_regenerate_command_failure_right_after_landing_completes_row_3_on_resume_wh
 /// defect).
 #[test]
 fn a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_on_resume() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = regenerating_cfg(&repo_path);
     let store = Store::open(":memory:").unwrap();
@@ -3402,7 +3371,7 @@ impl EventStore for MoveRunTipOnFirstLandingIntent<'_> {
 /// mid-landing). See the file header's GAP 11 entry for the full picture.
 #[test]
 fn a_run_tip_moved_under_the_landing_window_is_recorded_and_retried_to_a_clean_landing() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
 
     let mut cfg = Config::default();

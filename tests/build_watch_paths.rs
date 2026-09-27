@@ -34,54 +34,21 @@
 #[allow(dead_code)]
 mod watch;
 
+mod common;
+use common::git::git_ok;
+use common::git::git_out;
+
 use std::path::Path;
-use std::process::Command;
-
-/// Run `git <args>` in `root`, panicking with stderr on failure - fixture setup must
-/// never silently half-succeed. Mirrors `tests/gitsemver_derivation.rs`'s identical helper.
-fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// Run `git <args>` in `root` and return trimmed stdout, panicking with stderr on
-/// failure. Deliberately independent of `watch::git_watch_paths`'s own git invocations:
-/// this test needs a plain, trusted `git symbolic-ref` to build its own expectation from,
-/// never a call through the code under test's own resolution logic.
-fn git_output(root: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout)
-        .unwrap_or_else(|e| panic!("git {args:?} produced non-utf8 output: {e}"))
-        .trim()
-        .to_string()
-}
 
 /// A plain fixture repo: one commit, no tag yet - just enough for `git_watch_paths` to
 /// resolve a real `.git` directory and a real current branch.
 fn fixture_repo(root: &Path) {
-    git(root, &["init", "-q"]);
-    git(root, &["config", "user.email", "t@example.com"]);
-    git(root, &["config", "user.name", "t"]);
+    git_ok(root, &["init", "-q"]);
+    git_ok(root, &["config", "user.email", "t@example.com"]);
+    git_ok(root, &["config", "user.name", "t"]);
     std::fs::write(root.join("f.txt"), "one\n").expect("write fixture file");
-    git(root, &["add", "f.txt"]);
-    git(root, &["commit", "-q", "-m", "chore: initial"]);
+    git_ok(root, &["add", "f.txt"]);
+    git_ok(root, &["commit", "-q", "-m", "chore: initial"]);
 }
 
 /// A linked worktree branched off `fixture_repo(primary)`. Mirrors
@@ -90,7 +57,7 @@ fn fixture_repo(root: &Path) {
 /// refuses to reuse an existing empty one on some git versions).
 fn fixture_worktree(primary: &Path, worktree: &Path) {
     std::fs::remove_dir(worktree).unwrap();
-    git(
+    git_ok(
         primary,
         &[
             "worktree",
@@ -108,7 +75,7 @@ fn watch_paths_cover_head_the_branch_ref_the_tags_dir_and_packed_refs() {
     let repo = tempfile::tempdir().unwrap();
     fixture_repo(repo.path());
 
-    let branch_ref = git_output(repo.path(), &["symbolic-ref", "HEAD"]);
+    let branch_ref = git_out(repo.path(), &["symbolic-ref", "HEAD"]);
     let common_git_dir = repo.path().join(".git");
 
     let paths = watch::git_watch_paths(repo.path());
@@ -150,7 +117,7 @@ fn a_tag_only_change_actually_touches_a_watched_paths_on_disk_state() {
     fixture_repo(repo.path());
 
     let head_before = std::fs::read(repo.path().join(".git/HEAD")).unwrap();
-    let branch_ref = git_output(repo.path(), &["symbolic-ref", "HEAD"]);
+    let branch_ref = git_out(repo.path(), &["symbolic-ref", "HEAD"]);
     let branch_ref_path = repo.path().join(".git").join(&branch_ref);
     let branch_ref_before = std::fs::read(&branch_ref_path).unwrap();
 
@@ -161,7 +128,7 @@ fn a_tag_only_change_actually_touches_a_watched_paths_on_disk_state() {
         .collect();
 
     // Tag-only change: no HEAD move, no branch-ref move, no other file touched.
-    git(repo.path(), &["tag", "v1.0.0"]);
+    git_ok(repo.path(), &["tag", "v1.0.0"]);
 
     assert_eq!(
         head_before,
@@ -197,13 +164,13 @@ fn watch_paths_from_a_linked_worktree_use_its_own_head_and_branch_ref_never_prim
     let primary_paths = watch::git_watch_paths(primary.path());
     let worktree_paths = watch::git_watch_paths(worktree.path());
 
-    let worktree_branch_ref = git_output(worktree.path(), &["symbolic-ref", "HEAD"]);
+    let worktree_branch_ref = git_out(worktree.path(), &["symbolic-ref", "HEAD"]);
     let primary_common_git_dir = primary.path().join(".git");
     // Resolved authoritatively through git itself (never assumed from the worktree
     // tempdir's own basename): git is free to pick a different internal worktree name on
     // a collision, so this must match whatever `--absolute-git-dir` actually reports, the
     // same source `git_watch_paths` itself resolves through.
-    let worktree_git_dir = Path::new(&git_output(
+    let worktree_git_dir = Path::new(&git_out(
         worktree.path(),
         &["rev-parse", "--absolute-git-dir"],
     ))
@@ -280,7 +247,7 @@ fn a_tag_made_from_primary_touches_a_path_the_worktrees_own_list_watches() {
         .collect();
 
     // Tag the commit from PRIMARY, not from inside the worktree.
-    git(primary.path(), &["tag", "v1.0.0"]);
+    git_ok(primary.path(), &["tag", "v1.0.0"]);
 
     let after: Vec<Option<std::time::SystemTime>> = worktree_paths
         .iter()

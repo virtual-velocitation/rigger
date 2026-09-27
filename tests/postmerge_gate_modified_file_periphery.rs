@@ -33,6 +33,7 @@
 //! scenario itself is this file's real subject.
 
 mod common;
+use common::git::git_ok;
 
 use std::path::Path;
 use std::process::Command;
@@ -61,20 +62,6 @@ const SENTINEL_COMMITTED: &str = "clean";
 /// on a tracked file while a run executes, exactly as real as the untracked-scratch-file case
 /// the implementer's own test already covers.
 const SENTINEL_DIRTY: &str = "operator-modified";
-
-fn git_ok(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
 
 /// Two batch-mates (`unit-a`, `unit-b`) with no dependency between them, each editing a
 /// disjoint region of `m.rs` - the merge-break shape that forces the second integrator's

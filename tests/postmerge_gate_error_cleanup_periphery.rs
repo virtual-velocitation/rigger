@@ -34,6 +34,7 @@
 //! calling any private helper.
 
 mod common;
+use common::git::git_ok;
 
 use std::path::Path;
 use std::process::Command;
@@ -44,20 +45,6 @@ use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Appended, Event, EventStore, ExpectedRevision};
 use rigger::gate::ExecRunner;
 use serde_json::Value;
-
-fn git_ok(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
 
 /// The re-gate worktree/branch naming spec 103 criterion 7 documents as part of its contract
 /// (`postmerge_worktree_dir`/`postmerge_branch`, src/conductor.rs) - reconstructed here rather

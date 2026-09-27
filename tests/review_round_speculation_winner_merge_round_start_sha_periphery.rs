@@ -39,6 +39,7 @@ mod common;
 use common::fixtures::agent;
 use common::fixtures::gate_def;
 use common::fixtures::gate_def_inputs;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{
     run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_WORKTREE_SHA, STREAM,
 };
@@ -49,30 +50,6 @@ use rigger::gate::ExecRunner;
 use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
-use std::process::Command;
-
-/// A throwaway git repo with one empty commit, so a run-branch anchor (`HEAD`) resolves.
-/// Mirrors `src/conductor.rs::tests::init_repo` (private to that module) and every other
-/// periphery suite's identical copy (e.g. this directory's own
-/// `review_round_no_adjudicator_residue_periphery.rs`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
 
 /// The implementer writes real work on every lane; the sole adjudicator approves every lane
 /// it sees. Uniform across lanes (no lane-index branching) - candidate 0 wins deterministically
@@ -110,7 +87,7 @@ impl AgentDriver for ApproveEveryLaneDriver {
 #[test]
 fn a_speculation_winner_reviewed_sha_stays_the_round_start_sha_across_a_post_review_regen_commit_and_merge(
 ) {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let mut cfg = Config::default();
     cfg.agents.insert("worker".into(), agent("worker"));

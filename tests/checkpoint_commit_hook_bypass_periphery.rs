@@ -37,36 +37,13 @@ use common::fixtures::agent;
 use common::fixtures::gate_def;
 use common::fixtures::mk_stage;
 use common::git::install_refusing_hook;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config};
 use rigger::eventstore::sqlite::Store;
 use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
-use std::process::Command;
-
-/// A throwaway git repo with one empty commit, so a run-branch anchor (`HEAD`) resolves.
-/// Mirrors `src/conductor.rs::tests::init_repo` (private to that module) and every other
-/// periphery suite's identical copy (e.g. `tests/integrate_conflict_merge_periphery.rs`,
-/// `tests/worktree_liveness_fence_periphery.rs`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
 
 /// An ordinary, conflict-free single-unit implementer: writes `a.rs` and nothing else. The
 /// non-implementer spawns (SDET-author, review lens, adjudicator) all approve outright - only
@@ -105,7 +82,7 @@ impl AgentDriver for SimpleWorkDriver {
 /// (white-box, calls `Worktree::commit_checkpoint` directly, never through `run`).
 #[test]
 fn a_pre_gate_attempt_commit_bypasses_an_installed_refusing_hook() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     install_refusing_hook(&repo_path);
 

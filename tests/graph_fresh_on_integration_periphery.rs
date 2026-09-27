@@ -39,6 +39,7 @@
 #![cfg(feature = "symbols")]
 
 mod common;
+use common::git::temp_git_project_with_commit;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
@@ -48,29 +49,6 @@ use rigger::eventstore::sqlite::Store;
 use rigger::gate::ExecRunner;
 use rigger::ledger::Status;
 use serde_json::Value;
-use std::process::Command;
-
-/// `git init` a throwaway repo with one empty commit - the committed HEAD a real, isolated unit
-/// worktree branches from and merges back into (mirrors the conductor's own scratch repo, and
-/// `tests/unified_traversal_grounding.rs`'s `init_seam_repo`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
 
 /// Writes ONE new Rust file carrying a distinctive `pub fn` into the implementer's own worktree,
 /// so the unit has a real, non-empty diff and carries the run cleanly through to a real,
@@ -112,7 +90,7 @@ impl AgentDriver for LandingDriver {
 /// this is `symbols`-only - the whole-file gate above (the light lane has nothing to prove here).
 #[test]
 fn a_landed_units_file_is_fresh_in_the_graph_immediately_after_integration() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let mut cfg = Config::default();
     // Spec 89 criterion 2 ruling item 2: this real, worktree-creating `conductor::run()` must
     // never reach the real ambient XDG_CACHE_HOME/HOME cache-home default.

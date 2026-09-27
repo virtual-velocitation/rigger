@@ -21,6 +21,7 @@ use common::fixtures::gate_def;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
 use common::git::git_stdout;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, STREAM};
 use rigger::config::{AgentDef, Config};
 use rigger::contextgraph;
@@ -30,25 +31,6 @@ use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
-
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
 
 fn base_cfg(repo_path: &str) -> Config {
     let mut cfg = Config::default();
@@ -94,7 +76,7 @@ impl AgentDriver for LandRefusedDriver {
 
 #[test]
 fn a_land_refused_for_local_changes_names_the_blocking_path_and_charges_no_attempt() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let store = Store::open(":memory:").unwrap();
     let driver = LandRefusedDriver {
@@ -206,7 +188,7 @@ fn a_land_refused_names_a_unit_branch_whose_tip_already_holds_identical_content(
     // A prior (unrelated, already-abandoned) unit branch already carries the exact bytes the
     // refusal is about to block on - proof the blocked local content is not lost work at all,
     // it is already durably captured elsewhere. The lesson must name that branch.
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let stray = "PREVIOUSLY CAPTURED CONTENT\n";
     Command::new("git")
@@ -331,7 +313,7 @@ impl AgentDriver for LandRefusedFifoDriver {
 #[test]
 #[cfg(unix)]
 fn a_land_refused_for_a_fifo_blocking_path_never_hangs_and_still_names_it() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let store = Store::open(":memory:").unwrap();
     let driver = LandRefusedFifoDriver {

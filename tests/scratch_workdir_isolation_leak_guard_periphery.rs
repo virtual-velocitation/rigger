@@ -28,6 +28,7 @@
 use std::path::{Path, PathBuf};
 
 mod common;
+use common::git::temp_git_project_with_commit;
 
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Gate, Stage};
@@ -52,30 +53,6 @@ impl AgentDriver for NoopDriver {
             resolved_model: String::new(),
         })
     }
-}
-
-/// `git init` plus one real commit, so a fan-out unit worktree has a HEAD to branch off of -
-/// mirrors every other periphery file's own identical copy (this codebase's established
-/// per-file idiom for this fixture, e.g. `gate_store_fence_periphery.rs`'s
-/// `init_repo_with_head`, `fanout_template_needs_and_stage_retries_periphery.rs`'s
-/// `temp_git_project_with_commit`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("create the fixture repo dir");
-    let p = dir.path();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .status()
-            .expect("git fixture command");
-    }
-    dir
 }
 
 /// A single-stage, single-unit fan-out workflow (mirrors every other periphery file's
@@ -159,7 +136,7 @@ fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_
         return; // genuinely homeless host: nothing for this guard to check
     }
 
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     let cfg = one_unit_cfg(repo.path());
     let store = Store::open(":memory:").unwrap();
@@ -208,7 +185,7 @@ fn an_isolated_in_process_fan_out_run_creates_no_new_entry_under_the_real_cache_
 /// proof for the subprocess/`XDG_CACHE_HOME` case.
 #[test]
 fn the_isolated_workdirs_real_worktree_is_gone_once_its_owning_repo_tempdir_drops() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let cfg = one_unit_cfg(repo.path());
     let scratch_root = PathBuf::from(&cfg.workflow.defaults.workdir);
     let store = Store::open(":memory:").unwrap();

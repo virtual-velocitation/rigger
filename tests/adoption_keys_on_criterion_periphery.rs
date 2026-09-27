@@ -150,6 +150,7 @@
 //! `STATUS_ADOPTION_RECORDED` mark (which the fix's own ordering only ever writes AFTER a
 //! successful `branch_tip`).
 
+use common::git::git_answer;
 use common::git::init_repo;
 use std::path::Path;
 use std::process::Command;
@@ -171,18 +172,6 @@ use rigger::ledger;
 use rigger::run_store::start_fresh;
 use rigger::worktree::{self, Worktree};
 use serde_json::{json, Value};
-
-/// Run a read-only `git <args...>` in `cwd`, returning its trimmed stdout on success.
-fn git_out(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .expect("git must be runnable");
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
 
 /// A single-role driver: the implementer writes `file_name` (with `content`) into its
 /// worktree on every spawn. Used for the PRIOR run's deterministic-baseline unit - it
@@ -442,10 +431,10 @@ fn a_fresh_runs_differently_named_planner_proposal_adopts_a_prior_runs_escalated
         "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
     let prior_branch = format!("rigger/u/{prior_slug}");
-    let prior_tip = git_out(repo.path(), &["rev-parse", &prior_branch])
+    let prior_tip = git_answer(repo.path(), &["rev-parse", &prior_branch])
         .expect("the escalated unit's durable branch must exist with a resolvable tip");
     assert_eq!(prior_tip.len(), 40, "a real git commit sha: {prior_tip}");
-    let shown = git_out(
+    let shown = git_answer(
         repo.path(),
         &["show", &format!("{prior_branch}:prior-work.txt")],
     )
@@ -719,7 +708,7 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
     // Asserted explicitly (see doc comment above): integration reclaims the branch in the
     // SAME call, so nothing survives here for run 2 to confound with.
     assert!(
-        git_out(repo.path(), &["rev-parse", &shared_branch]).is_none(),
+        git_answer(repo.path(), &["rev-parse", &shared_branch]).is_none(),
         "an integrated unit's durable branch is reclaimed by gc_integrated_branches - \
          shared_slug's run-1 branch must be gone before run 2 ever starts"
     );
@@ -751,7 +740,7 @@ fn a_units_integration_for_one_criterion_never_masks_a_later_runs_still_abandone
         ledger::Status::Escalated,
         "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
-    let shared_tip_after_run2 = git_out(repo.path(), &["rev-parse", &shared_branch])
+    let shared_tip_after_run2 = git_answer(repo.path(), &["rev-parse", &shared_branch])
         .expect("the escalated unit's (fresh) durable branch must exist with a resolvable tip");
     assert_eq!(shared_tip_after_run2.len(), 40, "a real git commit sha");
     assert!(
@@ -902,7 +891,7 @@ fn spec_scoping_blocks_adoption_across_specs_sharing_a_criterion_id_but_not_acro
         "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
     let prior_branch = format!("rigger/u/{prior_slug}");
-    let prior_tip = git_out(repo.path(), &["rev-parse", &prior_branch])
+    let prior_tip = git_answer(repo.path(), &["rev-parse", &prior_branch])
         .expect("spec A's escalated unit must carry a real, resolvable durable branch");
 
     // RUN 2 (spec B): a DIFFERENT spec, the SAME criterion text (so a second, independent
@@ -1290,7 +1279,7 @@ fn a_crash_after_the_branch_exists_but_before_unitstarted_lands_recovers_the_rec
         ledger::Status::Escalated,
         "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
-    let prior_tip = git_out(
+    let prior_tip = git_answer(
         repo.path(),
         &["rev-parse", &format!("rigger/u/{prior_slug}")],
     )
@@ -1427,7 +1416,7 @@ fn a_crash_after_the_provenance_record_but_before_the_branch_is_created_still_co
         ledger::Status::Escalated,
         "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
-    let prior_tip = git_out(
+    let prior_tip = git_answer(
         repo.path(),
         &["rev-parse", &format!("rigger/u/{prior_slug}")],
     )
@@ -1700,7 +1689,7 @@ fn a_reused_planner_slug_never_replays_an_unrelated_specs_recorded_adoption_deci
         ledger::Status::Escalated,
         "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
-    let prior_tip = git_out(
+    let prior_tip = git_answer(
         repo.path(),
         &["rev-parse", &format!("rigger/u/{prior_slug}")],
     )
@@ -1846,7 +1835,7 @@ fn a_legacy_adoption_mark_missing_criterion_id_and_spec_never_matches_a_reused_i
 
     let legacy_id = "legacy-shape-unit";
     let legacy_branch = format!("rigger/u/{legacy_id}");
-    let legacy_tip = git_out(repo.path(), &["rev-parse", "HEAD"])
+    let legacy_tip = git_answer(repo.path(), &["rev-parse", "HEAD"])
         .expect("the bare init commit must resolve a tip to point the legacy branch at");
 
     // Reproduce the EXACT pre-round-5 durable shape: `adopt_prior_criterion_branch`'s
@@ -2001,7 +1990,7 @@ fn an_escalated_units_unreclaimed_branch_is_never_reused_by_an_unrelated_specs_s
         "the escalated unit's durable branch must exist, unreclaimed, before RUN 2 - \
          gc_integrated_branches only ever reclaims an Integrated unit's branch"
     );
-    let shown = git_out(
+    let shown = git_answer(
         repo.path(),
         &["show", &format!("{shared_branch}:spec-a-secret.txt")],
     )
@@ -2138,7 +2127,7 @@ fn a_genuine_retry_of_a_quarantined_criterion_adopts_from_the_quarantine_ref() {
         ledger::Status::Escalated,
         "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
-    let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
+    let prior_tip = git_answer(repo.path(), &["rev-parse", &shared_branch])
         .expect("the escalated unit's durable branch must exist with a resolvable tip");
 
     // RUN 2 (spec B, an UNRELATED criterion Y): reuses the exact same literal slug, with
@@ -2297,7 +2286,7 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
         ledger::Status::Escalated,
         "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
-    let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
+    let prior_tip = git_answer(repo.path(), &["rev-parse", &shared_branch])
         .expect("the escalated unit's durable branch must exist with a resolvable tip");
 
     // Reproduce the CRASH STATE directly: the quarantine ref already exists at the
@@ -2440,7 +2429,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
         ledger::Status::Escalated,
         "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
-    let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
+    let prior_tip = git_answer(repo.path(), &["rev-parse", &shared_branch])
         .expect("the escalated unit's durable branch must exist with a resolvable tip");
 
     // RUN 2 (spec B, an UNRELATED criterion Y): reuses the exact same literal slug, firing
@@ -2909,7 +2898,7 @@ fn a_crash_after_the_quarantine_record_but_before_the_canonical_delete_completes
         ledger::Status::Escalated,
         "an always-failing gate must exhaust remediation and escalate, never integrate"
     );
-    let prior_tip = git_out(repo.path(), &["rev-parse", &shared_branch])
+    let prior_tip = git_answer(repo.path(), &["rev-parse", &shared_branch])
         .expect("the escalated unit's durable branch must exist with a resolvable tip");
     let events_after_run1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
     let owner_criterion_id = find_unit_started(&events_after_run1, shared_slug)["criterion_id"]

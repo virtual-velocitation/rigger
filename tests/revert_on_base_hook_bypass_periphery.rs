@@ -48,6 +48,7 @@ use common::fixtures::agent;
 use common::fixtures::gate_def;
 use common::fixtures::review_panel;
 use common::git::install_refusing_hook;
+use common::git::temp_git_project_with_commit;
 use rigger::conductor::{run, AgentDriver, AgentResult, Deps, Error, SpawnOpts};
 use rigger::config::{AgentDef, Config, Stage};
 use rigger::eventstore::sqlite::Store;
@@ -55,28 +56,6 @@ use rigger::ledger;
 use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
-
-/// A throwaway git repo with one empty commit, so a run-branch anchor (`HEAD`) resolves.
-/// Mirrors `src/conductor.rs::tests::init_repo` (private to that module) and every other
-/// periphery suite's identical copy (e.g. `tests/checkpoint_commit_hook_bypass_periphery.rs`).
-fn init_repo() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .arg("-C")
-            .arg(p)
-            .args(args)
-            .output()
-            .unwrap();
-    }
-    dir
-}
 
 fn mk_stage(name: &str, needs: Vec<String>) -> Stage {
     Stage {
@@ -137,7 +116,7 @@ impl AgentDriver for CompDriver {
 
 #[test]
 fn a_compensation_revert_bypasses_an_installed_refusing_hook() {
-    let repo = init_repo();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     install_refusing_hook(&repo_path);
 

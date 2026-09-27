@@ -56,6 +56,8 @@ mod common;
 
 use common::cli::run_rigger;
 use common::fixtures::tool_available;
+use common::git::git_ok_with_identity;
+use common::git::git_out_with_identity;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -75,57 +77,13 @@ fn temp_project() -> tempfile::TempDir {
     dir
 }
 
-/// `git <args>` in `root` with a fixed committer identity, panicking with stderr on failure -
-/// mirrors `tests/gitsemver_worktree_periphery.rs`'s identical helper.
-fn git(root: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e")
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// `git <args>` in `root`, returning trimmed stdout, panicking with stderr on failure -
-/// mirrors `tests/gitsemver_worktree_periphery.rs`'s identical helper.
-fn git_output(root: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(root)
-        // Same fixed identity as `git()` above: commands like `commit-tree` create
-        // commits too, and a CI runner has no global git identity to fall back on.
-        .env("GIT_AUTHOR_NAME", "t")
-        .env("GIT_AUTHOR_EMAIL", "t@e")
-        .env("GIT_COMMITTER_NAME", "t")
-        .env("GIT_COMMITTER_EMAIL", "t@e")
-        .output()
-        .unwrap_or_else(|e| panic!("spawning git {args:?} failed: {e}"));
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout)
-        .unwrap_or_else(|e| panic!("git {args:?} produced non-utf8 output: {e}"))
-        .trim()
-        .to_string()
-}
-
 /// The `objects` dir of the git repository THIS test binary was compiled from - the same
 /// object store `RIGGER_BUILD_PROVENANCE`'s commit lives in, whether this checkout is a
 /// plain clone or (as every one of this project's own spec units is built) a linked
 /// worktree, in which case `--git-common-dir` already resolves to the shared primary `.git`.
 fn source_objects_dir() -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let common_dir = git_output(manifest_dir, &["rev-parse", "--git-common-dir"]);
+    let common_dir = git_out_with_identity(manifest_dir, &["rev-parse", "--git-common-dir"]);
     let common_dir = PathBuf::from(common_dir);
     let common_dir = if common_dir.is_absolute() {
         common_dir
@@ -171,7 +129,7 @@ fn borrow_objects(root: &Path, objects_dir: &Path) {
 /// environment where this test binary's own build commit was pruned/gc'd since) - the
 /// caller skips rather than fabricating a scenario that cannot arise for real.
 fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
-    git(root, &["init", "-q"]);
+    git_ok_with_identity(root, &["init", "-q"]);
     borrow_objects(root, &source_objects_dir());
     let provenance = env!("RIGGER_BUILD_PROVENANCE");
     let resolved = Command::new("git")
@@ -195,9 +153,9 @@ fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
     )
     .expect("write fixture go-gitsemver.yml");
 
-    git(root, &["add", "-A"]);
-    let tree = git_output(root, &["write-tree"]);
-    let child = git_output(
+    git_ok_with_identity(root, &["add", "-A"]);
+    let tree = git_out_with_identity(root, &["write-tree"]);
+    let child = git_out_with_identity(
         root,
         &[
             "commit-tree",
@@ -208,8 +166,8 @@ fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
             "chore: import scaffold",
         ],
     );
-    git(root, &["update-ref", "HEAD", &child]);
-    git(root, &["tag", "v0.9.0", &child]);
+    git_ok_with_identity(root, &["update-ref", "HEAD", &child]);
+    git_ok_with_identity(root, &["tag", "v0.9.0", &child]);
     Some(())
 }
 

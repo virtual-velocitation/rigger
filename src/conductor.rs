@@ -14011,10 +14011,13 @@ mod tests {
     use crate::eventstore::sqlite::Store;
     use crate::eventstore::{ExpectedRevision, Filter};
     use crate::gate::ExecRunner;
+    use crate::spawn::attempt_of;
     use crate::spawn::SpawnEvent;
     use crate::test_support::agent;
     use crate::test_support::gate_def;
     use crate::test_support::gate_def_inputs;
+    use crate::test_support::git_ok;
+    use crate::test_support::temp_git_project_with_commit;
     use std::path::Path;
 
     /// Shared test doubles and case bodies for this module's same-shaped tests.
@@ -14723,7 +14726,7 @@ mod tests {
         // The new unit must start AT THE PRIOR TIP - carrying its committed work all
         // the way through integration - with `adopted_from` recorded on its own
         // UnitStarted.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let store = Store::open(":memory:").unwrap();
         let cid = "c1-deadbeefcafefeed";
@@ -14810,7 +14813,7 @@ mod tests {
         // UnitIntegrated is never adopted - its work is on the base already, so a new
         // unit for the same criterion starts genuinely fresh (no adopted_from, no
         // prior-run file in its tree at start).
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let store = Store::open(":memory:").unwrap();
         let cid = "c1-deadbeefcafefeed";
@@ -14818,7 +14821,7 @@ mod tests {
         crate::run_store::start_fresh(&store, &["old campaign".to_string()], "", "", "", "")
             .unwrap();
         let prior_branch = unit_branch("old-slug");
-        run_git_test(&repo_path, &["branch", &prior_branch]);
+        git_ok(&repo_path, &["branch", &prior_branch]);
         store
             .append(
                 STREAM,
@@ -14872,23 +14875,6 @@ mod tests {
         );
     }
 
-    /// A thin `git -C <dir> <args>` runner for a test that only needs the exit code
-    /// (setup convenience, mirroring [`crate::worktree`]'s own private `git` helper
-    /// which is not reachable from here).
-    fn run_git_test(dir: &str, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
     #[test]
     fn a_halted_spawns_uncommitted_tree_is_captured_as_a_wip_commit_and_named_in_the_next_prompt() {
         // Spec 89, criterion 1 (A HALT NEVER DISCARDS A TREE): `stage_worktree`'s call
@@ -14904,7 +14890,7 @@ mod tests {
         // implementer's prompt names the commit and says "finish and report; do not
         // start over" - so the halt never silently loses, or silently blends into a
         // later attempt's own checkpoint, the abandoned edit.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -15053,7 +15039,7 @@ mod tests {
         // own abandoned edit) is left alone by this guard; the ordinary flow still runs
         // and may sweep the file into its own, differently-named commit, but never
         // fabricates a "tree of halted spawn" recovery for a spawn that never happened.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -15133,7 +15119,7 @@ mod tests {
         // spawn of the SAME unit (a later attempt, a reviewer, ...) is still actively
         // touching its own liveness marker - the dirty tree is that spawn's live work, not
         // an abandoned edit.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -15247,7 +15233,7 @@ mod tests {
         // "the named spawn has a SpawnRequested" for a unit THIS run has never touched -
         // the same Gap 11 zombie class every other liveness reader in this file already
         // guards against by scoping to `current_run`.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -19151,7 +19137,7 @@ mod tests {
 
     #[test]
     fn learns_from_escalation() {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -20747,7 +20733,7 @@ mod tests {
     #[cfg(feature = "symbols")]
     #[test]
     fn a_second_run_over_an_unchanged_tree_appends_no_derived_index_event() {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let root = repo.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join("specs")).unwrap();
@@ -20975,7 +20961,7 @@ mod tests {
     #[cfg(feature = "symbols")]
     #[test]
     fn editing_one_file_between_runs_re_emits_only_that_files_batch_and_supersedes_its_edges() {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let root = repo.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join("specs")).unwrap();
@@ -21170,7 +21156,7 @@ mod tests {
         const GEN_A: &str = "pub fn alpha_symbol() {}\npub fn churn_caller() { alpha_symbol(); }\n";
         const GEN_B: &str = "pub fn beta_symbol() {}\npub fn churn_caller() { beta_symbol(); }\n";
 
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let root = repo.path();
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(
@@ -22419,7 +22405,7 @@ mod tests {
         // implementer on resume. It picks the lifecycle up at gates + the three-tier
         // review on the committed code and integrates - building on the prior window's
         // work rather than throwing it away under a per-run-uuid branch.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // The prior window implemented unit `s` and committed it on the deterministic
@@ -22521,7 +22507,7 @@ mod tests {
         // spec corrects). An ESCALATED unit is NOT integrated: the human needs its
         // branch as evidence, so it is RETAINED. Re-folding the same integration on a
         // second resume, with the branch already gone, is a no-op (idempotent).
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // Two prior-window units, each with a durable branch carrying committed work:
@@ -22650,7 +22636,7 @@ mod tests {
         // the sweep's `u.branch.is_empty()` arm must reclaim it by the DERIVED name.
         // Without that arm such a unit's `rigger/u/<unit>` branch accumulates forever -
         // the very debris spec 38 corrects - and the unit test never reaches it.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // The prior window committed `orphan` on its canonical branch; the seeded
@@ -22711,7 +22697,7 @@ mod tests {
         // strand every unit recorded under an older naming scheme - the back-compat
         // vector. A canonical-name decoy proves the sweep reclaims the RECORDED ref and
         // leaves the derivation untouched.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         let recorded = "rigger/u/relic-legacy-scheme";
@@ -22835,7 +22821,7 @@ mod tests {
         // criterion eliminates. The GC must mirror run_stage's ORDERED teardown: remove the
         // lingering worktree FIRST, THEN delete the branch, so a resume-by-replay
         // re-reaches {branch gone, worktree gone}.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         let (wt_dir, _parent) = seed_lingering_worktree_on_unit_branch(
@@ -22931,7 +22917,7 @@ mod tests {
         // `run()` resume seam with TWO integrated units plus one escalated, and pins that
         // BOTH integrated branches are reclaimed in a single pass while the escalated one is
         // retained as the human's evidence.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         commit_on_unit_branch(&repo_path, "alpha", "alpha.rs", "fn alpha() {}\n");
@@ -23030,7 +23016,7 @@ mod tests {
         // test (`tests/worktree_liveness_fence_periphery.rs::step_worktree_sweep_
         // discriminates_in_flight_hung_and_terminal_spawns_across_real_process_boundaries`),
         // driving the identical shape directly through the public `run()` resume seam.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         commit_on_unit_branch(&repo_path, "fenced", "fenced.rs", "fn fenced() {}\n");
@@ -23116,7 +23102,7 @@ mod tests {
         // mutant `src/conductor.rs:6984:24: delete ! in gc_integrated_branches_logged`,
         // TIMEOUT on an unrelated `cargo tree` package-cache lock contention, not a real
         // kill) passed it undetected.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         commit_on_unit_branch(&repo_path, "fenced", "fenced.rs", "fn fenced() {}\n");
 
@@ -23192,7 +23178,7 @@ mod tests {
         // conductor.rs:3459-3470), so on a later resume BOTH the branch and its worktree
         // are still fully present for `gc_integrated_branches` to find and reclaim itself,
         // as the sole authority that ever touches this unit's branch/worktree.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let seed_dir = std::env::temp_dir().join(format!(
             "rigger-seed-{}-{}",
@@ -23293,7 +23279,7 @@ mod tests {
         // silent, while the best-effort `Worktree::delete_branch` call underneath still
         // reclaims the orphaned branch exactly as before (idempotent, unconditional, per
         // the required fix's own explicit carve-out for the reclaim calls themselves).
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         commit_on_unit_branch(&repo_path, "settled", "settled.rs", "fn settled() {}\n");
         assert!(
@@ -23374,7 +23360,7 @@ mod tests {
         // genuinely finds the worktree still registered and reclaims it) logs "removing";
         // the second call, over the same never-shrinking `Integrated` set, must stay
         // silent because the branch and worktree are already gone.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let seed_dir = std::env::temp_dir().join(format!(
             "rigger-seed-{}-{}",
@@ -23496,7 +23482,7 @@ mod tests {
         // reviewed worktree HEAD sha as metadata (mirroring the commit UnitIntegrated
         // carries), so the flip-flop fold can tell a verdict reversal on the SAME code from
         // a legitimate remediation on new code.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let cfg = sha_stamp_cfg();
         let st = Store::open(":memory:").unwrap();
         let driver = Stub {
@@ -23548,7 +23534,7 @@ mod tests {
     fn a_review_reject_unitfailed_carries_the_worktree_sha() {
         // spec 11, unit 1: the review-reject `UnitFailed` also carries the reviewed sha, so
         // the fold can pair a reject with a later approve on the same sha.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let cfg = sha_stamp_cfg();
         let st = Store::open(":memory:").unwrap();
         // The adjudicator rejects every attempt, so the unit fails (and eventually
@@ -23603,7 +23589,7 @@ mod tests {
         // SKIPPED because it misses the blast radius - is a plain gate failure, never a
         // merge conflict (nothing was ever merged) and never a review reject (the
         // adjudicator approved). The UnitFailed it records must name the actual gate.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let mut cfg = sha_stamp_cfg();
         // "door" is scoped to a file the implementer never touches, so the narrowed
         // inner loop SKIPS it inline - but it is RED at the exhaustive integrate door.
@@ -24652,7 +24638,7 @@ mod tests {
         // UnitIntegrated - the merge was interrupted - must integrate on resume with NO
         // lens/adversary/adjudicator spawns. The verdict was already settled; re-review
         // would re-litigate it and re-spend the budget.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
@@ -24742,7 +24728,7 @@ mod tests {
         // rejected code persists) and continuing its remediation. Here the resumed
         // attempt is approved, so the unit finishes; the point is it RAN at all rather
         // than being seeded into `terminal` and skipped forever.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // The prior window implemented unit `s`, committed it on the deterministic
@@ -25059,7 +25045,7 @@ mod tests {
         // The no-prior-branch path is unchanged: a unit with no deterministic branch
         // (a first run) implements, gates, reviews, and integrates - the implementer
         // and the adjudicator both spawn.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         let st = Store::open(":memory:").unwrap();
@@ -26172,7 +26158,7 @@ mod tests {
         // main checkout) and NEVER the repo root itself. This is what stops the
         // implementer's edits / remediation fixes - and any reviewer's stray Bash/Edit -
         // from landing in the checkout the gates and review never inspect.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -26281,7 +26267,7 @@ mod tests {
         // deterministic parallel implementer candidates, the FIRST gate-green
         // adjudicator-approved one integrates, the rest are CANCELLED, and the
         // group / winner / losers are logged (K=2, including budget accounting).
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = spec_cfg(2);
         let store = Store::open(":memory:").unwrap();
@@ -26376,7 +26362,7 @@ mod tests {
         // spawn budget. With width 2 and budget 1 the FIRST candidate is admitted and the
         // SECOND is refused - the breaker trips with BudgetExhausted, exactly like any
         // over-budget spawn.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = spec_cfg(2);
         cfg.workflow.defaults.budget = 1;
@@ -26414,7 +26400,7 @@ mod tests {
         // Global constraint: speculation defaults OFF. A stage with no speculation_width
         // (effective width 1) runs exactly ONE implementer - the historical single-lane
         // path - and its UnitIntegrated carries no speculation metadata.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = spec_cfg(0);
         let store = Store::open(":memory:").unwrap();
@@ -26459,7 +26445,7 @@ mod tests {
         // the replay/parking driver records BOTH deterministic implementer ids in a single
         // step so a courier runs them concurrently. Uses on_pass: none so the step needs
         // no integrate - it only proves the parallel park of the candidate group.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = spec_cfg(2);
         // No review panel and no merge: this step only parks the two candidate spawns.
@@ -26504,7 +26490,7 @@ mod tests {
         // deterministically instead of mis-routing onto the single-lane canonical path. This
         // drives the full park -> replay -> evaluate -> integrate flow across separate step
         // processes, asserting the deferral holds while the review is still in flight.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = spec_cfg(2);
 
@@ -26664,7 +26650,7 @@ mod tests {
         // 0), or `break`s instead of `continue`s, or hardcodes winner=lane 0, makes lane 1
         // unreachable - lane 0 is rejected, so no candidate wins and the unit ESCALATES instead of
         // integrating: every assertion below FAILS.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = spec_cfg(2);
         let store = Store::open(":memory:").unwrap();
@@ -26743,7 +26729,7 @@ mod tests {
         // speculation path force-routes lane 1 FULL (spawning the full-only adversary on a
         // low-risk change) and folds a bogus flapped=true into the shared unit's evidence: the
         // adversary-absence and no-false-flap assertions below FAIL.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         // A small, non-high-risk grounded radius so the unit is LOW risk by size AND path:
         // one file, under threshold 3, not under the high_risk_paths prefix.
@@ -26863,7 +26849,7 @@ mod tests {
         // adjudicator-REJECTED, lane 1 wins. Before the fix the fold read approve=1/reject=0
         // /first_pass_clean=1 (a clean pass over an identical review that single-lane records
         // as reject=1/not-clean); the fold-neutral `speculation-rejected` marker closes it.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = spec_cfg(2);
         let store = Store::open(":memory:").unwrap();
@@ -26918,7 +26904,7 @@ mod tests {
         // forever on the Fresh re-entry. Deleting the `UnitEscalated` emit (or returning `Ok(false)`
         // leaving the unit Fresh) makes `rs.units["s"].status` != Escalated and the event lookup
         // panic - the mutation the design's own guard-citation left unpinned now FAILS.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = spec_cfg(2);
         let store = Store::open(":memory:").unwrap();
@@ -26991,7 +26977,7 @@ mod tests {
         // lane 0's ALREADY-CREATED worktree + branch: without that cleanup the canonical branch
         // leaks (no terminal path touches the never-pushed crashed lane), so `branch_present` holds
         // and this test FAILS.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = spec_cfg(2);
         let store = Store::open(":memory:").unwrap();
@@ -27059,7 +27045,7 @@ mod tests {
         // runs `door` RED. Neither candidate may land; the unit escalates. A mutation that dropped
         // the exhaustive re-gate (or its `!full.pass` continue) integrates lane 0 on narrowed-green +
         // approve, so `Escalated` FAILS.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = spec_cfg(2);
         cfg.workflow
@@ -27132,7 +27118,7 @@ mod tests {
         // resume RE-ENTERS `run_speculation` and (here) escalates WITH the speculation group -
         // something `run_single_stage` never emits. This crosses the post-approval / pre-integrate
         // boundary the fix targets.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = spec_cfg(2);
         // `door` is skipped in the narrowed inner loop (misses the empty blast radius) but RED at the
@@ -27324,7 +27310,7 @@ mod tests {
         // records NO winner status. A later lane (1) then wins cleanly. A mutation that emitted
         // green/verified before the block check leaves a `s/green#0`; one that dropped the UnitFailed
         // leaves no s UnitFailed - each FAILS its assertion.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         // Seed the shared file at the base so both units branch from a tree that already holds it.
         std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
@@ -27487,7 +27473,7 @@ mod tests {
         // repo configured, an empty cwd (inherits the driver's cwd = the repo) and the
         // repo root itself are both refused; only a distinct worktree dir is allowed. A
         // repo-less run has no checkout to protect, so an empty cwd is fine there.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = Config::default();
 
@@ -27987,7 +27973,7 @@ mod tests {
         // the plan-critique gate's throwaway review worktree) is created. Without this,
         // a committed amendment reaches no branch (Goal item 4: the b6a471c amendment)
         // and a later critique never sees it.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("planner".into(), agent("planner"));
@@ -28069,7 +28055,7 @@ mod tests {
         // PLAN AMENDMENTS LAND (spec 88, criterion 4): a plan-stage commit may touch
         // ONLY `specs/`. A commit touching any other path must fail the stage loudly,
         // naming the offending path, and never reach the run branch.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("planner".into(), agent("planner"));
@@ -28159,7 +28145,7 @@ mod tests {
         // proves only its OWN distinct claim - the per-commit check where the aggregate
         // one would wrongly clear the sequence.
         let touched_path = "docs/existing.md";
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         // Pre-seed the path on the run branch BEFORE the producer worktree branches
         // off, so reverting it back is a real, in-history no-op relative to base -
@@ -28234,7 +28220,7 @@ mod tests {
         // CONSTRAINTS WALK (spec 88, criterion 4): a plan amendment that conflicts with
         // a concurrent operator commit under `specs/` must escalate to a human rather
         // than silently drop the amendment - never a clean (wrong) auto-resolution.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // A PRIOR window's planner already committed a specs/ amendment onto the
@@ -28321,7 +28307,7 @@ mod tests {
         // durable `plan-landed:<unit>` record [`RunCtx::read_plan_landed`] writes -
         // never discard it as a bare no-artifact marker, which would make that
         // commit uncompensable forever.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
         let wt =
@@ -28449,7 +28435,7 @@ mod tests {
         // must land normally - the pre-existing intent record is purely an audit trail,
         // never consulted for the landing decision itself (only `plan-landed` is), so its
         // presence changes nothing observable.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
         let wt =
@@ -28514,7 +28500,7 @@ mod tests {
         // durable `plan-landed` record now closes: the first commit's landed identity is
         // read back from the record, not re-derived from this call's own (empty, since
         // already-applied) cherry-pick result.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_dir = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
         let wt =
@@ -28637,7 +28623,7 @@ mod tests {
         // here via a store double that fails specifically the `plan-intent:<unit>`
         // `DecisionMade` write `record_plan_intent` makes BEFORE any git mutation -
         // proving the wrap covers an INTERNAL call site, not just a git failure.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
         let wt =
@@ -28696,7 +28682,7 @@ mod tests {
         // already get, proving the new arm is actually reached from the real
         // producer call site (conductor.rs `run_single_stage` -> `run_wave`), not
         // just from a direct unit-level call.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("planner".into(), agent("planner"));
@@ -31234,7 +31220,7 @@ mod tests {
         // An agent declaring `isolation: none` runs in the current dir (no
         // worktree) even when a repo is configured (§3.1, §6). The Stub records the
         // SpawnOpts the conductor passed; isolation must be false.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert(
@@ -31279,7 +31265,7 @@ mod tests {
     fn spawn_opts_isolation_is_set_for_a_worktree_agent() {
         // An isolated (default) agent in a repo runs in a worktree, so SpawnOpts
         // carries isolation = true (§6).
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -31318,7 +31304,7 @@ mod tests {
         // the actual WORK and the thin driver narrates it - not just `<unit>:<stage>`. The
         // title is trimmed of surrounding whitespace so a stray newline never bleeds into
         // the one-line narration.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -31736,7 +31722,7 @@ mod tests {
     fn on_pass_none_runs_gates_but_does_not_integrate() {
         // A stage with `on_pass: none` and passing gates verifies but never
         // integrates: no commit, not Integrated (§3.2).
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -31818,7 +31804,7 @@ mod tests {
         // units each run a gate; the runner captures the target_dir handed to it, and the
         // two must be DISTINCT, both NON-EMPTY, and each the `cargo-target-<unit-slug>`
         // sibling of that unit's worktree under the run's scratch root.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -31908,7 +31894,7 @@ mod tests {
         // the same per-unit isolation: DISTINCT, both NON-EMPTY, and each the
         // `cargo-mutants-<unit-slug>` sibling of that unit's worktree under the run's scratch
         // root.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -31986,7 +31972,7 @@ mod tests {
         // unit-terminus cleanup runs afterward, which would otherwise make a post-hoc
         // filesystem check pass vacuously regardless of whether the round itself ever
         // created it.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -32072,7 +32058,7 @@ mod tests {
         // SEPARATE `target_dir` parameter of `gate::Runner::run`, not `BuildEnv`, so this
         // test's `gate_envs` assertions stay byte-identical to spec 65's own contract.
         fn run_once(build: config::BuildConfig) -> (RecordedEnvs, RecordedEnvs, String) {
-            let repo = init_repo();
+            let repo = temp_git_project_with_commit();
             let repo_path = repo.path().to_str().unwrap().to_string();
             let mut cfg = Config::default();
             cfg.agents.insert("a".into(), agent("a"));
@@ -32242,7 +32228,7 @@ mod tests {
         // lifecycle: a runner MATERIALIZES the CARGO_TARGET_DIR it is handed (as a real cargo
         // build would), the unit runs end to end, and afterward the cache dir - and the
         // worktree - must both be gone from disk.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -32317,7 +32303,7 @@ mod tests {
         // stays FALSE - and so does not spuriously preserve the worktree/branch -
         // when nothing actually parked. Non-vacuous: a materializing gate runner
         // really builds into the per-unit cache before the assertions below run.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = sha_stamp_cfg();
         let store = Store::open(":memory:").unwrap();
@@ -32383,7 +32369,7 @@ mod tests {
         // existing test drives this through the public `run()` seam with a real repo (the
         // sibling repo-less test `mid_spawn_crash_escalates_without_aborting_the_run`
         // cannot observe worktree/branch state at all).
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -32448,7 +32434,7 @@ mod tests {
         // really builds into the per-unit cache (materializing runner) BEFORE the
         // adjudicator parks, so "still present" is a real survival, not an artifact
         // that was never created.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -32557,7 +32543,7 @@ mod tests {
         // deletion (`GateSideEffect::DeleteWorktree`), so by the time the parked
         // adjudicator's spawn is inspected below, the gate has ALREADY destroyed the
         // worktree once - `review_unit` must have put it back before handing it out.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -32654,7 +32640,7 @@ mod tests {
         // park point - proving the courier's NEXT hand-off never lands an agent in a
         // directory that does not exist, even after an out-of-band deletion nothing else
         // in this process caused or witnessed.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -32758,7 +32744,7 @@ mod tests {
         // exact gate-deletes-the-worktree scenario `review_unit_restores_a_worktree_a_
         // gate_deleted_out_of_band` above proves, this additionally inspects the recorded
         // `verified` event's stamped sha - which that test never asserted on.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -32859,7 +32845,7 @@ mod tests {
         // with nothing between tiers to restore it. This drives the LENS to delete the
         // worktree as its side effect, then proves the ADVERSARY - the very next tier
         // `run_reviewer` reaches - finds it RESTORED at spawn entry, not gone.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -32939,7 +32925,7 @@ mod tests {
         // side effect while still returning an approve verdict, then proves the recorded
         // `reviewed` event's stamped sha is a real 40-hex sha of the RESTORED tree, never
         // empty.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -33052,7 +33038,7 @@ mod tests {
         // second sibling site): the same empty-sha bug survives on a reject exactly as on
         // an approve, and the fold this field feeds (spec 11 unit 1's flip-flop detection)
         // needs it real on EITHER verdict.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -33124,7 +33110,7 @@ mod tests {
         // in a lesson, the worktree is restored to the sha the round actually judged, and
         // the `reviewed` stamp carries THAT sha - never a later read that could pick up
         // the residue.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -33238,7 +33224,7 @@ mod tests {
         // adjudicator to add a real commit on top of the reviewed tip while still
         // approving, and proves the round restores the branch to the sha it judged before
         // integration ever runs - so the adjudicator's own extra commit never merges.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -33332,7 +33318,7 @@ mod tests {
         // the run loudly (spec 19c), but the branch is restored to the sha the round
         // actually started from and the residue is named in a lesson, never silently
         // inherited by whatever attempt resumes next.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -33474,7 +33460,7 @@ mod tests {
         // the residue-laden tip the first window's parked round left behind and silently
         // adopt it as the round's own new baseline - exactly the failure this criterion
         // exists to prevent.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -33674,7 +33660,7 @@ mod tests {
         // separate process resumes: "b" now finishes normally and the adjudicator
         // approves. A live re-read at that second entry would see "a"'s residue-laden tip
         // and silently adopt it as the round's own new baseline.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -33862,7 +33848,7 @@ mod tests {
         // Lane 0's lens commits residue and returns Ok; lane 0's adjudicator PARKS. A
         // second, separate process resumes: the adjudicator now approves. A live re-read
         // at that second entry would adopt the lens's residue as lane 0's new baseline.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -34040,7 +34026,7 @@ mod tests {
         // assert. A gate that deletes the worktree as its own side effect during that
         // exhaustive run must self-heal via `integrate_and_emit`'s own re-assert, not
         // collapse the wave into a hard error.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // The prior window implemented and got unit "s" APPROVED (`reviewed`), but the
@@ -34142,7 +34128,7 @@ mod tests {
         // recorded an approved `reviewed` but the merge was interrupted), except the
         // gate genuinely fails on resume. The UnitFailed this records must name the
         // failing gate - it is a plain gate failure, not a merge conflict.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
 
@@ -34232,7 +34218,7 @@ mod tests {
         // (here: seeded directly, deterministically) change that combines into a broken
         // tree. The post-merge block is a MERGE conflict, not a plain gate failure -
         // its UnitFailed must be stamped "integrate-conflict".
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // The shared base both the unit's branch and the checked-out repo diverge from.
@@ -34376,7 +34362,7 @@ mod tests {
         // "nothing left to gate": it must resolve `commit` from the durably-recorded landed
         // sha and actually run the post-merge gate before ever emitting `UnitIntegrated`,
         // never take the true-no-op short circuit a unit that genuinely landed nothing takes.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let base_sha = git_head(&repo_path);
 
@@ -34531,7 +34517,7 @@ mod tests {
         // resolves with NO spawn at all - the same "no lifecycle spawns" shape this file's own
         // sibling resumed-reviewed tests pin, proving the merge conflict was handled by its real
         // owner, not silently papered over some other way.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // The unit's OWN deterministic worktree/branch - created directly at the SAME dir/branch
@@ -34712,7 +34698,7 @@ mod tests {
     // value neither literal stub can ever produce - so a wrong return fails on the spot.
     #[test]
     fn regenerate_conflicted_paths_returns_the_real_regeneration_commit_sha() {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let dir = std::env::temp_dir().join(format!("rigger-wt-regen-{}", uuid::Uuid::new_v4()));
         let wt = Worktree::create(&repo_path, dir.to_str().unwrap(), "regen-branch", "").unwrap();
@@ -34772,7 +34758,7 @@ mod tests {
         // integrate door - exactly the unprotected window the adversary identified. It must
         // self-heal via `integrate_and_emit`'s own re-assert, not collapse the wave into a
         // hard error.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -34853,7 +34839,7 @@ mod tests {
         // `emit_speculation_winner_status`'s `winner_sha` - read after the LATER exhaustive
         // gate ALSO deletes the tree, with no re-assert of its own before this fix - is a
         // real 40-hex sha of the restored tree, never an empty sentinel.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -34966,7 +34952,7 @@ mod tests {
         // `record_speculation_reject`'s `worktree_sha` was read with no re-assert between
         // the adjudicator's own spawn (which here deletes the tree as its side effect while
         // still rejecting) and this read.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -35055,7 +35041,7 @@ mod tests {
         // `emit_speculation_winner_status` reads `dir` (after this gate AND after
         // `integrate_and_emit`), the tree's tip has moved strictly past the sha the round
         // actually reviewed.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -35235,7 +35221,7 @@ mod tests {
         //      `any_parked` AtomicBool `run_stage` now threads through `run_single_stage`
         //      into `review_unit`'s lens tier, read independently of whichever single
         //      `Result` `run_single_stage` propagates.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -35335,7 +35321,7 @@ mod tests {
         // worktree (dir ""), so there is no per-unit tree to isolate and its gate must inherit
         // the ambient/shared CARGO_TARGET_DIR - the runner must be handed the empty (inherit)
         // target, never a `cargo-target-<slug>` override. (`unit_cache_sibling("")` is None.)
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert(
@@ -35627,7 +35613,7 @@ mod tests {
         // gate touches a file and integrates, the conductor still emits a GateVerdict (metrics and
         // the run-tree read it from the log), but the fold projects NO KIND_GATE node and NO
         // GATED_BY edge - the graph carries none of the gate bookkeeping.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
         let mut cfg = Config::default();
@@ -35774,7 +35760,7 @@ mod tests {
         // `store_fence` this test asserts on is exactly what the real gate-spawned process
         // would see via `STORE_FENCE_ENV` - not a hand-typed stand-in that could silently
         // drift from the real derivation.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("lens".into(), agent("lens"));
@@ -35883,7 +35869,7 @@ mod tests {
         // `rigger-review-*` worktree too - `run_fan_out_stage` removed it (and its throwaway
         // branch) UNCONDITIONALLY on every exit before this fix, including a parked
         // reviewer, the identical defect class for the review-worktree kind.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("lens".into(), agent("lens"));
@@ -35957,7 +35943,7 @@ mod tests {
         // the propagated Result still prefers a GENUINE error over a park within the
         // chunk so (2) reaches `run_wave`'s dedicated halt arms
         // (is_degenerate_reviewer/is_verdict_channel_mismatch/catch-all) undisturbed.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -36045,7 +36031,7 @@ mod tests {
         // `is_degenerate_reviewer` arm (not swallowed by "b"'s park), AND the shared
         // review worktree survives anyway (the independent `any_parked` signal), exactly
         // like the crash-shaped sibling test above.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -36142,7 +36128,7 @@ mod tests {
         // (index 0) and "z" (index 2) PARK, "y" (index 1, neither first nor last) hits a
         // genuine terminal crash. The swap must move "y"'s error from position 1 to the
         // front, not just leave a position-0 error alone.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         for id in ["x", "y", "z"] {
@@ -36236,7 +36222,7 @@ mod tests {
         // by the shared atomic budget counter - regardless of which one wins the race, the
         // outcome (one crash, one budget-refusal) is the same, so this test needs no
         // control over thread scheduling to be deterministic.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("a".into(), agent("a"));
@@ -36318,7 +36304,7 @@ mod tests {
         // proving nothing about THIS call site's guard), so the adversary's spawn is a
         // genuinely NEW, over-budget spawn `reserve_spawn` refuses deterministically (one
         // spawn attempted at a time here - no race, unlike two concurrent lenses would be).
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.workflow.defaults.budget = 1;
@@ -37287,7 +37273,7 @@ mod tests {
         // a real repo; the base repo must gain NO commit from the lens, the lens must
         // have spawned with isolation = false (no worktree), and no per-lens
         // UnitIntegrated may be emitted.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let head_before = git_head(&repo_path);
 
@@ -37762,16 +37748,6 @@ mod tests {
         cfg
     }
 
-    /// The `#{attempt}` ordinal of a deterministic spawn id (`{unit}/{role}#{attempt}`,
-    /// possibly `~retry{n}`-suffixed), for a driver that must vary its behavior per attempt.
-    fn attempt_of(id: &str) -> u32 {
-        id.rsplit('#')
-            .next()
-            .and_then(|s| s.split('~').next())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0)
-    }
-
     /// A driver for the content-address cache tests: the IMPLEMENTER writes `work.rs` with
     /// the content for its attempt (`contents[attempt]`, falling back to the last entry), so
     /// a test controls whether attempt 1's tree is IDENTICAL to attempt 0's (a cache hit) or
@@ -37891,7 +37867,7 @@ mod tests {
         // 1's gate has a fresh (unit, attempt) key so the exact-key replay misses, but the
         // content cache holds attempt 0's green for the identical digest - so the gate is a
         // cache-hit, not a second command run.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let cfg = content_cache_cfg();
         let store = Store::open(":memory:").unwrap();
         let runner = RecordingRunner::new(&[]);
@@ -37956,7 +37932,7 @@ mod tests {
         // spec 12, unit 1 (MISS on content change): when attempt 1 CHANGES the tree, its
         // input digest differs from attempt 0's green, so the content cache MISSES and the
         // gate RUNS AGAIN - a stale green never answers changed inputs.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let cfg = content_cache_cfg();
         let store = Store::open(":memory:").unwrap();
         let runner = RecordingRunner::new(&[]);
@@ -38002,7 +37978,7 @@ mod tests {
         // so a later gate over the SAME tree must RE-RUN rather than reuse the red. The gate
         // fails on attempt 0 (red); remediation re-runs it on attempt 1 over the IDENTICAL
         // tree, and the red does NOT answer it - the gate runs a second time (and passes).
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let cfg = content_cache_cfg();
         let store = Store::open(":memory:").unwrap();
         let runner = FailFirstRunner::new("g");
@@ -38190,7 +38166,7 @@ mod tests {
     /// parallelism-retention metric from those events.
     #[test]
     fn a_structural_grounder_records_the_audit_and_routes_full_on_a_beyond_cap_high_risk_file() {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // precise (the capped seed): GROUNDED_SEED_K low-risk src files, none high-risk. safe
@@ -38270,7 +38246,7 @@ mod tests {
     /// routes to FULL (unassessable => fail-safe), never light.
     #[test]
     fn the_empty_radius_fail_safe_still_records_the_audit_and_routes_full() {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         // No entry for "s" => an empty two-view radius, but a non-empty stamp (the index exists).
         let grounder = StructuralStubGrounder {
@@ -38318,7 +38294,7 @@ mod tests {
     /// non-symbols grounders.
     #[test]
     fn a_non_structural_grounder_records_no_blast_radius_audit() {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let grounder = StubGrounder {
             by_query: HashMap::from([("s".to_string(), vec!["src/f0.rs".to_string()])]),
@@ -38789,7 +38765,7 @@ mod tests {
     /// audit, would go green without this test.
     #[test]
     fn speculation_over_a_structural_grounder_records_the_audit_and_routes_full() {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // precise (the capped seed): 8 low-risk src files, none high-risk. safe (uncapped): those
@@ -39156,7 +39132,7 @@ mod tests {
         // unit's cached verdicts STOP HITTING: `beta` re-gates its identical attempt-1 tree
         // for real instead of taking the content cache-hit its attempt-0 green would answer,
         // while the unaffected `gamma` still hits and its green STANDS.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         // `gamma` grounds onto a file present from the base (a grep grounder searches file
         // CONTENT for the coverage word); `beta` grounds onto shared.rs, which alpha creates.
@@ -39340,7 +39316,7 @@ mod tests {
         // asserted against the full suite. Unit `s` grounds onto `src/near.rs`; gate `near`
         // (`inputs: [src/near.rs]`) intersects and runs inline, while gate `far`
         // (`inputs: [docs/far.md]`) does NOT - it is skipped inline and run only at integrate.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // A canned blast radius for unit `s`, so the intersection is deterministic regardless of
@@ -39495,7 +39471,7 @@ mod tests {
         // step. Here gate `far` (`inputs: [docs/far.md]`) misses unit `s`'s blast radius
         // (`src/near.rs`), so the inner loop SKIPS it every attempt - it is red ONLY at the
         // exhaustive integrate door, which is exactly where R6 must catch it.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         let grounder = StubGrounder {
@@ -39712,7 +39688,7 @@ mod tests {
         // integrating commit on the run branch, and RE-ENTERS unit-a into remediation with the
         // contradiction as feedback - whereupon unit-a re-implements (now PROMPTED with the
         // contradiction) and re-integrates, so the run converges.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         let mut cfg = Config::default();
@@ -40206,7 +40182,7 @@ mod tests {
         regate_key: &str,
         regate_why: &str,
     ) {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         let mut cfg = Config::default();
@@ -40419,7 +40395,7 @@ mod tests {
         // but NO drained UnitFailed. On resume the conductor must re-derive the still-pending
         // compensation, REVERT unit-a's integrating commit, and re-enter unit-a - never leave a
         // converged run with a green ledger over a tree that still holds the condemned work.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // The prior window's integrating commit of unit-a, on the run branch (HEAD).
@@ -40630,7 +40606,7 @@ mod tests {
         // the integration - the merge is rolled back (nothing lands) and the unit re-enters
         // remediation fed the merge-break evidence. The broken two-MARK tree is NEVER recorded
         // with an UnitIntegrated.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         // Seed the shared file at the base so both units branch from a tree that already holds
         // it (their edits are a top prepend / bottom append of one MARK line each).
@@ -40907,7 +40883,7 @@ mod tests {
         // check-in hit (2026-09-13). It must still export the SAME unit-keyed `$MUTANTS` root
         // AND `$CARGO_TARGET_DIR` the pre-merge sweep already warmed, and its own worktree must
         // be gone once its gate suite ends.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         std::fs::write(Path::new(&repo_path).join("m.rs"), MERGE_BREAK_BASE).unwrap();
         for args in [
@@ -41117,7 +41093,7 @@ mod tests {
         // pre-merge gate - and every other store write this run makes - is unaffected,
         // proving the leak is specific to the post-merge re-gate's own error path, not
         // merely "the run failed somewhere").
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         let mut cfg = Config::default();
@@ -41205,7 +41181,7 @@ mod tests {
         // create_branch_at-succeeds-then-create-fails window the leak lived in, driving the
         // real `crate::worktree::Worktree::create_branch_at`/`create` functions through the
         // conductor's own call site, never a probe copy.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         let mut cfg = Config::default();
@@ -41396,7 +41372,7 @@ mod tests {
         regenerate: Vec<crate::config::RegenerateRule>,
         resolve_on_retry: bool,
     ) -> (tempfile::TempDir, String, Store, ConflictDriver) {
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         std::fs::write(Path::new(&repo_path).join("c.rs"), "LINE\n").unwrap();
         for args in [
@@ -41723,7 +41699,7 @@ mod tests {
         // unit's own driver callback (never a race with a second live unit): deterministic,
         // not flaky, and it still reaches the exact same code path a genuine sibling landing
         // first would have left behind.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE_C\n").unwrap();
         std::fs::write(Path::new(&repo_path).join("gen.txt"), "BASE_GEN\n").unwrap();
@@ -42890,7 +42866,7 @@ mod tests {
         // whose adjudicator APPROVES but whose (exhaustive) gates then fail is a gate
         // failure, not a review reject - `run_fan_out_review_loop`'s single UnitFailed
         // site must distinguish the two, exactly like the per-unit path.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let mut cfg = Config::default();
         cfg.agents.insert("judge".into(), agent("judge"));
         cfg.workflow.gates.insert("g".into(), gate_def("exit 1"));
@@ -42967,25 +42943,6 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    fn init_repo() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().to_str().unwrap();
-        for args in [
-            &["init", "-q"][..],
-            &["config", "user.email", "t@example.com"],
-            &["config", "user.name", "t"],
-            &["commit", "--allow-empty", "-q", "-m", "init"],
-        ] {
-            std::process::Command::new("git")
-                .arg("-C")
-                .arg(p)
-                .args(args)
-                .output()
-                .unwrap();
-        }
-        dir
-    }
-
     /// FIX 2: a gate runner that PASSES only when the worktree it is handed (`dir`)
     /// is CLEAN - `git status --porcelain` is empty. It fails on a dirty tree. So the
     /// gate passes iff the conductor committed the implementer's work BEFORE running
@@ -43038,7 +42995,7 @@ mod tests {
         // the bug a real run hit, where `cargo test` passed on uncommitted tests that
         // never reached the committed artifact - this gate would fail and the unit
         // would never integrate.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -43109,7 +43066,7 @@ mod tests {
         // regardless); being in the pre-gate commit does. Move the spawn BELOW that commit
         // and the file is added only at integrate - a LATER, different commit - so
         // assertion #5 fails.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -43237,7 +43194,7 @@ mod tests {
         // reopening the exact rejected unreserved-spawn defect. The flagship test above runs
         // at the default budget = 0 (unlimited), where `reserve_spawn` always admits, so it
         // cannot exercise this refusal - only a bounded budget can.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -43333,7 +43290,7 @@ mod tests {
         // falls through to the pre-gate commit + gates + (trivially-approved empty review) +
         // integrate, and the unit reaches `Integrated` WITHOUT the sdet ever authoring its
         // periphery tests, silently defeating spec 33's core guarantee - turning this RED.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -43431,7 +43388,7 @@ mod tests {
         // placement (integrate's own `git add -A` sweeps any dirty file in), but being ADDED in the
         // candidate's pre-gate commit - the tree PHASE B's gates then judge - does. Drop the
         // speculation wiring and both the spawn assertion and the same-commit placement go RED.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = spec_cfg(2);
         // The operator-provided sdet-author persona, resolved by the fixed id like every role.
@@ -43545,7 +43502,7 @@ mod tests {
         // group is held. The LOAD-BEARING assertion is that NO candidate integrates: swallow the
         // park (commit the candidate anyway) and a candidate integrates WITHOUT its periphery -
         // defeating the guarantee - turning this RED.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = spec_cfg(2);
         cfg.agents
@@ -43653,7 +43610,7 @@ mod tests {
         // change `Ok(_) => Ok(())` to `Ok(_) => Err(parked_spawn(&sdet_id))` (treat a normal
         // result as a park) and the seam holds the unit, so it never integrates and the
         // load-bearing `status == Integrated` assertion fails.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -43726,7 +43683,7 @@ mod tests {
         // NON-tolerant - change its `return Ok(())` to `return Err(Error("no sdet-author".into()))`
         // and the absent agent propagates an error out of the seam (`spawn_sdet_author(..)?`),
         // so the unit never integrates and `status == Integrated` fails.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         // Deliberately NO sdet-author agent - the operator has not installed the persona.
@@ -43800,7 +43757,7 @@ mod tests {
         // integrates); RED when the crash is propagated instead - change `Err(_) => Ok(())` to
         // `Err(e) => Err(e)` and a crashed sdet errors out of the seam (`spawn_sdet_author(..)?`),
         // so the unit never integrates and `status == Integrated` fails.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
@@ -43866,7 +43823,7 @@ mod tests {
         // the integration branch. A real run hit exactly this: a feat(...) commit landed
         // on the run branch even though the unit escalated, and the merged-but-rejected
         // code broke the suite.
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
 
         // The integration branch HEAD BEFORE the run - it must be byte-for-byte
@@ -45158,7 +45115,7 @@ mod tests {
         )
         .unwrap();
         let cfg = critique_cfg();
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let st = Store::open(":memory:").unwrap();
         let grep = crate::grounder::Grep {
@@ -45212,7 +45169,7 @@ mod tests {
         // there is no race to model.
         let mut cfg = critique_cfg();
         cfg.workflow.defaults.budget = 1;
-        let repo = init_repo();
+        let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();

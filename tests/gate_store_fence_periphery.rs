@@ -174,6 +174,7 @@ use rigger::registry::{self, Instance};
 use rigger::worktree::{review_fence_sibling, unit_cache_sibling, Worktree};
 
 mod common;
+use common::git::temp_git_project_with_commit;
 use common::{rigger_bin, RestoreEnvVars};
 
 fn git_init_quiet(root: &Path) {
@@ -484,28 +485,6 @@ fn a_periphery_couriers_shared_command_ignores_an_inherited_ambient_fence() {
     );
 }
 
-/// A real `git init` + one empty commit, so `Worktree::create` has a HEAD to branch a real
-/// unit worktree off of - the shape every real `rigger step` unit worktree is created
-/// against, distinct from `build_topology`'s bare `git init` (which only ever needs a store
-/// dir, never a worktree add).
-fn init_repo_with_head() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let p = dir.path().to_str().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "t@example.com"],
-        &["config", "user.name", "t"],
-        &["commit", "--allow-empty", "-q", "-m", "init"],
-    ] {
-        Command::new("git")
-            .args(args)
-            .current_dir(p)
-            .status()
-            .expect("git fixture command");
-    }
-    dir
-}
-
 #[test]
 #[serial_test::serial(cwd)]
 // Spec 89 criterion 2 boundary bug (found running this file's own full-suite verification,
@@ -524,7 +503,7 @@ fn init_repo_with_head() -> tempfile::TempDir {
 // to `STORE_FENCE_ENV`/`XDG_STATE_HOME`, extended to cover `HOME` too. Pre-existing since this
 // test was added (spec 70 c3 / u3), not introduced by this unit's round 7.
 fn a_real_fenced_couriers_scratch_store_is_reclaimed_when_the_worktree_is_removed() {
-    let repo = init_repo_with_head();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_string_lossy().into_owned();
     std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
     let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
@@ -614,7 +593,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_for_a_review_worktree_too()
     // target_dir (the new, dir-driven signal `worktree::review_fence_sibling` adds), and
     // that the real `Worktree::remove` teardown path - the SAME one `run_fan_out_stage`
     // calls on every terminal exit - reclaims it.
-    let repo = init_repo_with_head();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_string_lossy().into_owned();
     std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
     let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
@@ -715,7 +694,7 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
     // leaves behind (created by `require_store_dir`, not by the test) is the one `discard`
     // finds, nor that the real production entry point reclaims it - exactly the gap tests 4
     // and 5 above already close for the other three teardown paths.
-    let repo = init_repo_with_head();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_string_lossy().into_owned();
     std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
     let live_events = Path::new(&repo_path).join(".rigger").join("events.db");
@@ -830,7 +809,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
     // run's own terminal disposition is not this test's concern (mirroring
     // `tests/unified_traversal_grounding.rs`'s `run_and_capture_review_prompts`) - only the
     // real subprocess side effect the wiring produced.
-    let repo = init_repo_with_head();
+    let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_string_lossy().into_owned();
     std::fs::create_dir_all(Path::new(&repo_path).join(".rigger")).unwrap();
     let live_events = Path::new(&repo_path).join(".rigger").join("events.db");

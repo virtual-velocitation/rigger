@@ -43,6 +43,7 @@ use std::process::{Command, Output};
 
 use common::cli::now_nanos;
 use common::cli::seed_store;
+use common::git::git_stdout;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Event, EventStore, ExpectedRevision};
@@ -60,22 +61,6 @@ fn git(dir: &Path, args: &[&str]) {
         .map(|s| s.success())
         .unwrap_or(false);
     assert!(ok, "git {args:?} must succeed in {dir:?}");
-}
-
-/// The git top-level directory containing `dir`, resolved with `git -C <dir>` - mirrors
-/// `src/main.rs`'s own `git_repo_at`, the exact raw-cwd computation the fix replaces. Used
-/// here only to PROVE the nested worktree's own top-level genuinely diverges from the owning
-/// root, the precondition that gives this test its discriminating power.
-fn git_toplevel(dir: &Path) -> String {
-    Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default()
 }
 
 /// A throwaway MAIN repo with one commit (so `git worktree add` has a base to branch from) -
@@ -118,7 +103,7 @@ fn nested_worktree(root: &Path, name: &str) -> PathBuf {
 /// `StoreLocation::identity`'s precedence: the tracked `.rigger/project.id` at the git
 /// top-level when present, else the git top-level basename, else `root`'s own basename.
 fn run_stream_identity(root: &Path) -> String {
-    let toplevel = git_toplevel(root);
+    let toplevel = git_stdout(root, &["rev-parse", "--show-toplevel"]);
     let base = if toplevel.is_empty() {
         root
     } else {
@@ -291,8 +276,8 @@ fn status_from_a_nested_worktree_reports_the_heartbeat_written_at_the_owning_roo
     // the owning root, else this test cannot discriminate the owning-root binding from a raw
     // cwd read (mirrors `tests/store_resolution.rs`'s identical guard on its nested-worktree
     // case).
-    let root_toplevel = git_toplevel(root);
-    let nested_toplevel = git_toplevel(&nested);
+    let root_toplevel = git_stdout(root, &["rev-parse", "--show-toplevel"]);
+    let nested_toplevel = git_stdout(&nested, &["rev-parse", "--show-toplevel"]);
     assert!(
         !root_toplevel.is_empty() && root_toplevel != nested_toplevel,
         "fixture bug: the nested worktree must resolve a DISTINCT git top-level ({nested_toplevel:?}) \

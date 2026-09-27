@@ -13,10 +13,12 @@
 
 mod config;
 mod events;
+mod git;
 mod graph;
 mod host;
 pub use config::*;
 pub use events::*;
+pub use git::*;
 pub use graph::*;
 pub use host::*;
 
