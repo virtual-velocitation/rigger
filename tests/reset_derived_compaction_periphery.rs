@@ -3618,56 +3618,70 @@ fn file_bytes(db: &Path) -> Vec<u8> {
     std::fs::read(db).unwrap_or_else(|e| panic!("read {}: {e}", db.display()))
 }
 
-#[test]
-fn a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("clean.db");
+/// A store at `<dir>/<name>.db` holding ONE recording per replay key - the clean log the shipped
+/// guidance describes, so a prune sheds nothing - AND settled into a file with nothing in it to
+/// reclaim. The seeding itself leaves pages on the freelist, so that state is established here
+/// rather than assumed: a rewrite skipped over this file is skipped because of the file, never
+/// because of the zero deletes.
+fn settled_clean_store(dir: &Path, name: &str) -> (std::path::PathBuf, Store) {
+    let db = dir.join(format!("{name}.db"));
     let backend = Store::open(db.to_str().unwrap()).unwrap();
-    // ONE recording per replay key: the clean log the shipped guidance describes, differing from
-    // every duplicated fixture in this file by exactly the round count.
-    seed_namespace(&backend, "clean", 1);
-    // AND A FILE WITH NOTHING IN IT TO RECLAIM. The vacuum below is skipped because of THIS, not
-    // because of the zero deletes, so the fixture has to establish it rather than assume it.
-    backend
-        .prune_derived_index(
-            &Namespaced::prefix_for("clean"),
-            &rigger::ingest::derived_index_identity(),
-        )
-        .expect("settle the fixture into a compact file");
-    let free_before = pragma_i64(&db, "freelist_count");
+    seed_namespace(&backend, name, 1);
+    prune_all_types(&backend, &Namespaced::prefix_for(name));
     assert_eq!(
-        free_before, 0,
-        "the fixture must hold no reclaimable free page, or this pins the wrong reason for the \
-         rewrite being skipped"
+        pragma_i64(&db, "freelist_count"),
+        0,
+        "the fixture must start from a file holding no reclaimable page, or this pins the wrong \
+         reason for the rewrite being skipped"
     );
-    let bytes_before = file_bytes(&db);
+    (db, backend)
+}
 
-    let pruned = prune_all_types(&backend, &Namespaced::prefix_for("clean"));
+/// Prune the settled `db` behind `backend` under `prefix` and assert the pass shed nothing,
+/// reported NO rewrite beside a MEASURED zero and no error, and left every byte of the file as it
+/// was - the returned report is that skipped pass.
+fn assert_prune_skips_the_rewrite(backend: &Store, db: &Path, prefix: &str) -> PrunedDerived {
+    let bytes_before = file_bytes(db);
+    let skipped = prune_all_types(backend, prefix);
     assert_eq!(
-        pruned.total_removed(),
+        skipped.total_removed(),
         0,
         "the fixture holds no key twice, so nothing may be shed; got {:?}",
-        pruned.removed
+        skipped.removed
+    );
+    assert!(
+        !skipped.compaction_ran,
+        "a file holding no reclaimable page must be reported as NOT rewritten: the rewrite is the \
+         most expensive thing this command does, and declining it is a fact the operator is owed \
+         rather than one they infer from a zero. Got {skipped:?}"
     );
     assert_eq!(
-        pruned.reclaimed_bytes,
+        skipped.reclaimed_bytes,
         Some(0),
         "a prune over a file with no free space reclaimed nothing, and that is a MEASUREMENT \
          rather than a measurement it could not take: `None` means `unmeasured` and would send an \
-         operator looking for pages that land at some later checkpoint. Got {:?}",
-        pruned.reclaimed_bytes
+         operator looking for pages that land at some later checkpoint. Got {skipped:?}"
     );
     assert_eq!(
-        pruned.compaction_error, None,
-        "a compaction that never ran cannot have failed"
+        skipped.compaction_error, None,
+        "a rewrite that never ran cannot have failed; got {skipped:?}"
     );
     assert_eq!(
-        file_bytes(&db),
+        file_bytes(db),
         bytes_before,
-        "a prune with nothing to reclaim must not rewrite the file: a VACUUM here would hold the \
-         write lock for a full scan and stage a second copy of the log in the temporary directory \
-         to reclaim not one page"
+        "a prune with nothing to reclaim must not rewrite the file: a VACUUM rewrites every byte, \
+         so an unchanged byte string is what says the report of a skipped rewrite describes a \
+         skipped rewrite - and a VACUUM here would hold the write lock for a full scan and stage a \
+         second copy of the log to reclaim not one page"
     );
+    skipped
+}
+
+#[test]
+fn a_prune_with_nothing_to_reclaim_leaves_the_file_unrewritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let (db, backend) = settled_clean_store(dir.path(), "clean");
+    assert_prune_skips_the_rewrite(&backend, &db, &Namespaced::prefix_for("clean"));
 }
 
 #[test]
@@ -4069,53 +4083,13 @@ fn the_reclamation_the_command_reports_is_the_space_the_file_actually_lost() {
 #[test]
 fn the_rewrite_flag_follows_the_file_and_not_this_passs_delete_count() {
     let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("flag.db");
-    let backend = Store::open(db.to_str().unwrap()).unwrap();
+    // ONE recording per replay key over a settled file: every pass below sheds nothing, which is
+    // what makes the two reports comparable at all.
+    let (db, backend) = settled_clean_store(dir.path(), "flag");
     let prefix = Namespaced::prefix_for("flag");
-    // ONE recording per replay key: every pass below sheds nothing, which is what makes the two
-    // reports comparable at all.
-    seed_namespace(&backend, "flag", 1);
-    // AND A SETTLED FILE. The seeding itself leaves pages on the freelist, so the state this test
-    // is about - a file with nothing to reclaim - has to be established rather than assumed.
-    prune_all_types(&backend, &prefix);
-    assert_eq!(
-        pragma_i64(&db, "freelist_count"),
-        0,
-        "the fixture must start from a file holding no reclaimable page, or the two passes below \
-         differ by something other than the free space in the file"
-    );
 
     // PASS ONE: nothing deleted, and nothing in the file to reclaim.
-    let bytes_before = file_bytes(&db);
-    let skipped = prune_all_types(&backend, &prefix);
-    assert_eq!(
-        skipped.total_removed(),
-        0,
-        "the fixture holds no key twice, so nothing may be shed; got {:?}",
-        skipped.removed
-    );
-    assert!(
-        !skipped.compaction_ran,
-        "a file holding no reclaimable page must be reported as NOT rewritten: the rewrite is the \
-         most expensive thing this command does, and declining it is a fact the operator is owed \
-         rather than one they infer from a zero. Got {skipped:?}"
-    );
-    assert_eq!(
-        skipped.reclaimed_bytes,
-        Some(0),
-        "and the zero beside it is a MEASUREMENT - there was nothing to reclaim - never an \
-         unmeasured reclamation; got {skipped:?}"
-    );
-    assert_eq!(
-        skipped.compaction_error, None,
-        "a rewrite that never ran cannot have failed; got {skipped:?}"
-    );
-    assert_eq!(
-        file_bytes(&db),
-        bytes_before,
-        "and the flag must be TRUE OF THE FILE: a VACUUM rewrites every byte, so an unchanged \
-         byte string is what says the report of a skipped rewrite describes a skipped rewrite"
-    );
+    let skipped = assert_prune_skips_the_rewrite(&backend, &db, &prefix);
 
     // PASS TWO: the same log and the same zero deletes, over a file that is now holding free
     // space. This is the shape a reclamation that failed after its deletes committed leaves

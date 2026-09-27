@@ -4294,8 +4294,8 @@
       },
       {
         "file": "tests/reset_derived_compaction_periphery.rs",
-        "start_line": 4190,
-        "end_line": 4190
+        "start_line": 4164,
+        "end_line": 4164
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
