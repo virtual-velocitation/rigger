@@ -26624,17 +26624,7 @@ mod tests {
     /// Whether a local branch ref exists in `repo` - used to pin that speculation lane branches
     /// are torn down (winner cleanup, escalation cleanup, and the crash arm), never leaked.
     fn branch_present(repo: &str, branch: &str) -> bool {
-        run_git(
-            repo,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{branch}"),
-            ],
-        )
-        .status
-        .success()
+        crate::worktree::ref_resolves(repo, &format!("refs/heads/{branch}"))
     }
 
     #[test]

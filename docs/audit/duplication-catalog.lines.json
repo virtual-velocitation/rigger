@@ -94,33 +94,33 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27244,
-        "end_line": 27244
+        "start_line": 27234,
+        "end_line": 27234
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 40453,
-        "end_line": 40453
+        "start_line": 40443,
+        "end_line": 40443
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 40715,
-        "end_line": 40715
+        "start_line": 40705,
+        "end_line": 40705
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 40729,
-        "end_line": 40729
+        "start_line": 40719,
+        "end_line": 40719
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 41603,
-        "end_line": 41603
+        "start_line": 41593,
+        "end_line": 41593
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 42790,
-        "end_line": 42790
+        "start_line": 42780,
+        "end_line": 42780
       },
       {
         "file": "src/dash.rs",
@@ -244,28 +244,28 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3440,
-        "end_line": 3440
+        "start_line": 3521,
+        "end_line": 3521
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 5741,
-        "end_line": 5741
+        "start_line": 5599,
+        "end_line": 5599
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6074,
-        "end_line": 6074
+        "start_line": 5928,
+        "end_line": 5928
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6870,
-        "end_line": 6870
+        "start_line": 6660,
+        "end_line": 6660
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6876,
-        "end_line": 6876
+        "start_line": 6666,
+        "end_line": 6666
       },
       {
         "file": "tests/adaptive_labels_periphery.rs",
@@ -1809,8 +1809,8 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28589,
-        "end_line": 28647
+        "start_line": 28579,
+        "end_line": 28637
       },
       {
         "file": "src/grounder/mod.rs",
@@ -1819,13 +1819,13 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 3140,
-        "end_line": 3167
+        "start_line": 3221,
+        "end_line": 3248
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4580,
-        "end_line": 4634
+        "start_line": 4560,
+        "end_line": 4614
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -2099,38 +2099,38 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37558,
-        "end_line": 37560
+        "start_line": 37548,
+        "end_line": 37550
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37561,
-        "end_line": 37563
+        "start_line": 37551,
+        "end_line": 37553
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37564,
-        "end_line": 37566
+        "start_line": 37554,
+        "end_line": 37556
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37567,
-        "end_line": 37569
+        "start_line": 37557,
+        "end_line": 37559
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37570,
-        "end_line": 37572
+        "start_line": 37560,
+        "end_line": 37562
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37573,
-        "end_line": 37575
+        "start_line": 37563,
+        "end_line": 37565
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37731,
-        "end_line": 37733
+        "start_line": 37721,
+        "end_line": 37723
       },
       {
         "file": "src/eventstore/mod.rs",
@@ -2204,18 +2204,18 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30744,
-        "end_line": 30776
+        "start_line": 30734,
+        "end_line": 30766
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31059,
-        "end_line": 31093
+        "start_line": 31049,
+        "end_line": 31083
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31096,
-        "end_line": 31130
+        "start_line": 31086,
+        "end_line": 31120
       }
     ]
   },
@@ -2239,13 +2239,13 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37633,
-        "end_line": 37655
+        "start_line": 37623,
+        "end_line": 37645
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 43770,
-        "end_line": 43809
+        "start_line": 43760,
+        "end_line": 43799
       },
       {
         "file": "src/driver/replay.rs",
@@ -3194,53 +3194,53 @@
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4945,
-        "end_line": 4945
+        "start_line": 4930,
+        "end_line": 4930
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4946,
-        "end_line": 4946
+        "start_line": 4931,
+        "end_line": 4931
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4949,
-        "end_line": 4949
+        "start_line": 4934,
+        "end_line": 4934
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4949,
-        "end_line": 4949
+        "start_line": 4934,
+        "end_line": 4934
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4950,
-        "end_line": 4950
+        "start_line": 4935,
+        "end_line": 4935
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4969,
-        "end_line": 4969
+        "start_line": 4954,
+        "end_line": 4954
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4993,
-        "end_line": 4993
+        "start_line": 4978,
+        "end_line": 4978
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 4994,
-        "end_line": 4994
+        "start_line": 4979,
+        "end_line": 4979
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6808,
-        "end_line": 6808
+        "start_line": 6613,
+        "end_line": 6613
       },
       {
         "file": "src/worktree.rs",
-        "start_line": 6857,
-        "end_line": 6857
+        "start_line": 6647,
+        "end_line": 6647
       },
       {
         "file": "tests/architecture_current_surface.rs",
@@ -6259,8 +6259,8 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33955,
-        "end_line": 34058
+        "start_line": 33945,
+        "end_line": 34048
       }
     ]
   },
@@ -6374,8 +6374,8 @@
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31015,
-        "end_line": 31056
+        "start_line": 31005,
+        "end_line": 31046
       }
     ]
   },
@@ -6420,32 +6420,17 @@
     ]
   },
   {
-    "id": "dup-5a5bc7479aa5",
-    "sites": [
-      {
-        "file": "src/conductor.rs",
-        "start_line": 26626,
-        "end_line": 26638
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 1460,
-        "end_line": 1471
-      }
-    ]
-  },
-  {
     "id": "dup-a8bdbc63a1ba",
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 27798,
-        "end_line": 27860
+        "start_line": 27788,
+        "end_line": 27850
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 27863,
-        "end_line": 27958
+        "start_line": 27853,
+        "end_line": 27948
       }
     ]
   },
@@ -6454,28 +6439,28 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 28735,
-        "end_line": 28807
+        "start_line": 28725,
+        "end_line": 28797
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29335,
-        "end_line": 29408
+        "start_line": 29325,
+        "end_line": 29398
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29504,
-        "end_line": 29570
+        "start_line": 29494,
+        "end_line": 29560
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31698,
-        "end_line": 31745
+        "start_line": 31688,
+        "end_line": 31735
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36605,
-        "end_line": 36650
+        "start_line": 36595,
+        "end_line": 36640
       }
     ]
   },
@@ -6484,13 +6469,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 28906,
-        "end_line": 29003
+        "start_line": 28896,
+        "end_line": 28993
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 28920,
-        "end_line": 28966
+        "start_line": 28910,
+        "end_line": 28956
       }
     ]
   },
@@ -6499,13 +6484,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29573,
-        "end_line": 29607
+        "start_line": 29563,
+        "end_line": 29597
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29610,
-        "end_line": 29661
+        "start_line": 29600,
+        "end_line": 29651
       }
     ]
   },
@@ -6514,13 +6499,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29664,
-        "end_line": 29714
+        "start_line": 29654,
+        "end_line": 29704
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30477,
-        "end_line": 30515
+        "start_line": 30467,
+        "end_line": 30505
       }
     ]
   },
@@ -6529,18 +6514,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 29809,
-        "end_line": 29913
+        "start_line": 29799,
+        "end_line": 29903
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 29990,
-        "end_line": 30071
+        "start_line": 29980,
+        "end_line": 30061
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30110,
-        "end_line": 30234
+        "start_line": 30100,
+        "end_line": 30224
       }
     ]
   },
@@ -6549,18 +6534,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 30377,
-        "end_line": 30428
+        "start_line": 30367,
+        "end_line": 30418
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30431,
-        "end_line": 30474
+        "start_line": 30421,
+        "end_line": 30464
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31133,
-        "end_line": 31192
+        "start_line": 31123,
+        "end_line": 31182
       }
     ]
   },
@@ -6569,13 +6554,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 30553,
-        "end_line": 30623
+        "start_line": 30543,
+        "end_line": 30613
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 30626,
-        "end_line": 30668
+        "start_line": 30616,
+        "end_line": 30658
       }
     ]
   },
@@ -6584,13 +6569,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 30996,
-        "end_line": 31012
+        "start_line": 30986,
+        "end_line": 31002
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37428,
-        "end_line": 37474
+        "start_line": 37418,
+        "end_line": 37464
       }
     ]
   },
@@ -6599,18 +6584,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 31195,
-        "end_line": 31238
+        "start_line": 31185,
+        "end_line": 31228
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31241,
-        "end_line": 31274
+        "start_line": 31231,
+        "end_line": 31264
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31277,
-        "end_line": 31316
+        "start_line": 31267,
+        "end_line": 31306
       }
     ]
   },
@@ -6619,23 +6604,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 31323,
-        "end_line": 31371
+        "start_line": 31313,
+        "end_line": 31361
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31377,
-        "end_line": 31426
+        "start_line": 31367,
+        "end_line": 31416
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31431,
-        "end_line": 31478
+        "start_line": 31421,
+        "end_line": 31468
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31564,
-        "end_line": 31621
+        "start_line": 31554,
+        "end_line": 31611
       }
     ]
   },
@@ -6644,8 +6629,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 31756,
-        "end_line": 31771
+        "start_line": 31746,
+        "end_line": 31761
       },
       {
         "file": "tests/postmerge_gate_error_cleanup_periphery.rs",
@@ -6659,13 +6644,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 31775,
-        "end_line": 31862
+        "start_line": 31765,
+        "end_line": 31852
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 31865,
-        "end_line": 31934
+        "start_line": 31855,
+        "end_line": 31924
       }
     ]
   },
@@ -6674,18 +6659,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 32402,
-        "end_line": 32503
+        "start_line": 32392,
+        "end_line": 32493
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32506,
-        "end_line": 32593
+        "start_line": 32496,
+        "end_line": 32583
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32596,
-        "end_line": 32693
+        "start_line": 32586,
+        "end_line": 32683
       }
     ]
   },
@@ -6694,18 +6679,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 32878,
-        "end_line": 32987
+        "start_line": 32868,
+        "end_line": 32977
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 32990,
-        "end_line": 33057
+        "start_line": 32980,
+        "end_line": 33047
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 34857,
-        "end_line": 34928
+        "start_line": 34847,
+        "end_line": 34918
       }
     ]
   },
@@ -6714,13 +6699,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 33060,
-        "end_line": 33174
+        "start_line": 33050,
+        "end_line": 33164
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33177,
-        "end_line": 33258
+        "start_line": 33167,
+        "end_line": 33248
       }
     ]
   },
@@ -6729,18 +6714,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 33399,
-        "end_line": 33592
+        "start_line": 33389,
+        "end_line": 33582
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33595,
-        "end_line": 33778
+        "start_line": 33585,
+        "end_line": 33768
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 33781,
-        "end_line": 33952
+        "start_line": 33771,
+        "end_line": 33942
       }
     ]
   },
@@ -6749,8 +6734,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 34931,
-        "end_line": 35104
+        "start_line": 34921,
+        "end_line": 35094
       },
       {
         "file": "tests/review_round_speculation_winner_merge_round_start_sha_periphery.rs",
@@ -6769,13 +6754,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 35566,
-        "end_line": 35609
+        "start_line": 35556,
+        "end_line": 35599
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35612,
-        "end_line": 35653
+        "start_line": 35602,
+        "end_line": 35643
       }
     ]
   },
@@ -6784,33 +6769,33 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 35771,
-        "end_line": 35824
+        "start_line": 35761,
+        "end_line": 35814
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35827,
-        "end_line": 35923
+        "start_line": 35817,
+        "end_line": 35913
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 35926,
-        "end_line": 36019
+        "start_line": 35916,
+        "end_line": 36009
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36022,
-        "end_line": 36107
+        "start_line": 36012,
+        "end_line": 36097
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36110,
-        "end_line": 36197
+        "start_line": 36100,
+        "end_line": 36187
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36200,
-        "end_line": 36267
+        "start_line": 36190,
+        "end_line": 36257
       }
     ]
   },
@@ -6819,13 +6804,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 36717,
-        "end_line": 36800
+        "start_line": 36707,
+        "end_line": 36790
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 36803,
-        "end_line": 36873
+        "start_line": 36793,
+        "end_line": 36863
       }
     ]
   },
@@ -6834,8 +6819,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 37659,
-        "end_line": 37665
+        "start_line": 37649,
+        "end_line": 37655
       },
       {
         "file": "src/spawn.rs",
@@ -6849,13 +6834,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 37778,
-        "end_line": 37844
+        "start_line": 37768,
+        "end_line": 37834
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 37892,
-        "end_line": 37948
+        "start_line": 37882,
+        "end_line": 37938
       }
     ]
   },
@@ -6864,13 +6849,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 38084,
-        "end_line": 38157
+        "start_line": 38074,
+        "end_line": 38147
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 38683,
-        "end_line": 38747
+        "start_line": 38673,
+        "end_line": 38737
       }
     ]
   },
@@ -6879,23 +6864,23 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 38999,
-        "end_line": 39040
+        "start_line": 38989,
+        "end_line": 39030
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 39548,
-        "end_line": 39590
+        "start_line": 39538,
+        "end_line": 39580
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 40039,
-        "end_line": 40076
+        "start_line": 40029,
+        "end_line": 40066
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 40184,
-        "end_line": 40229
+        "start_line": 40174,
+        "end_line": 40219
       },
       {
         "file": "tests/revert_on_base_hook_bypass_periphery.rs",
@@ -6909,13 +6894,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 39767,
-        "end_line": 39818
+        "start_line": 39757,
+        "end_line": 39808
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 39883,
-        "end_line": 39934
+        "start_line": 39873,
+        "end_line": 39924
       }
     ]
   },
@@ -6924,8 +6909,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 40437,
-        "end_line": 40485
+        "start_line": 40427,
+        "end_line": 40475
       },
       {
         "file": "tests/postmerge_gate_modified_file_periphery.rs",
@@ -6939,13 +6924,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 40963,
-        "end_line": 41034
+        "start_line": 40953,
+        "end_line": 41024
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 41037,
-        "end_line": 41111
+        "start_line": 41027,
+        "end_line": 41101
       }
     ]
   },
@@ -6954,13 +6939,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 41266,
-        "end_line": 41352
+        "start_line": 41256,
+        "end_line": 41342
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 41355,
-        "end_line": 41435
+        "start_line": 41345,
+        "end_line": 41425
       }
     ]
   },
@@ -6969,18 +6954,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 41701,
-        "end_line": 41775
+        "start_line": 41691,
+        "end_line": 41765
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 41778,
-        "end_line": 41842
+        "start_line": 41768,
+        "end_line": 41832
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 41880,
-        "end_line": 41951
+        "start_line": 41870,
+        "end_line": 41941
       }
     ]
   },
@@ -6989,13 +6974,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 41954,
-        "end_line": 42058
+        "start_line": 41944,
+        "end_line": 42048
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 42061,
-        "end_line": 42146
+        "start_line": 42051,
+        "end_line": 42136
       }
     ]
   },
@@ -7004,8 +6989,8 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 42781,
-        "end_line": 42798
+        "start_line": 42771,
+        "end_line": 42788
       },
       {
         "file": "tests/checkpoint_commit_hook_bypass_periphery.rs",
@@ -7094,18 +7079,18 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 43439,
-        "end_line": 43514
+        "start_line": 43429,
+        "end_line": 43504
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 43517,
-        "end_line": 43581
+        "start_line": 43507,
+        "end_line": 43571
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 43584,
-        "end_line": 43659
+        "start_line": 43574,
+        "end_line": 43649
       }
     ]
   },
@@ -7114,13 +7099,13 @@
     "sites": [
       {
         "file": "src/conductor.rs",
-        "start_line": 44599,
-        "end_line": 44697
+        "start_line": 44589,
+        "end_line": 44687
       },
       {
         "file": "src/conductor.rs",
-        "start_line": 44874,
-        "end_line": 44945
+        "start_line": 44864,
+        "end_line": 44935
       }
     ]
   },
@@ -11625,217 +11610,12 @@
     ]
   },
   {
-    "id": "dup-8a40ee6f30d4",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 3056,
-        "end_line": 3100
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 3103,
-        "end_line": 3137
-      }
-    ]
-  },
-  {
-    "id": "dup-c8b104ef8278",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 3824,
-        "end_line": 3924
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 3927,
-        "end_line": 4036
-      }
-    ]
-  },
-  {
-    "id": "dup-ab80a443a0c5",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 4834,
-        "end_line": 4861
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 6833,
-        "end_line": 6845
-      }
-    ]
-  },
-  {
-    "id": "dup-952c99c5929f",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5069,
-        "end_line": 5107
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5674,
-        "end_line": 5722
-      }
-    ]
-  },
-  {
-    "id": "dup-541e6f1b21c3",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5378,
-        "end_line": 5382
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5386,
-        "end_line": 5390
-      }
-    ]
-  },
-  {
-    "id": "dup-20eb2c3a9787",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5393,
-        "end_line": 5426
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5429,
-        "end_line": 5455
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5458,
-        "end_line": 5482
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5485,
-        "end_line": 5508
-      }
-    ]
-  },
-  {
-    "id": "dup-068178008d84",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5594,
-        "end_line": 5634
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5637,
-        "end_line": 5671
-      }
-    ]
-  },
-  {
-    "id": "dup-2d7ee9df221d",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5795,
-        "end_line": 5836
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5839,
-        "end_line": 5881
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5884,
-        "end_line": 5919
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5939,
-        "end_line": 5968
-      }
-    ]
-  },
-  {
-    "id": "dup-0c5f12097509",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5922,
-        "end_line": 5936
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 6250,
-        "end_line": 6263
-      }
-    ]
-  },
-  {
-    "id": "dup-d728cb89cb95",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 5979,
-        "end_line": 6040
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 6197,
-        "end_line": 6247
-      }
-    ]
-  },
-  {
-    "id": "dup-f88bdbc9c8d0",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 6934,
-        "end_line": 7014
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 7017,
-        "end_line": 7091
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 7094,
-        "end_line": 7160
-      }
-    ]
-  },
-  {
-    "id": "dup-50e826431b47",
-    "sites": [
-      {
-        "file": "src/worktree.rs",
-        "start_line": 7163,
-        "end_line": 7199
-      },
-      {
-        "file": "src/worktree.rs",
-        "start_line": 7202,
-        "end_line": 7227
-      }
-    ]
-  },
-  {
     "id": "dup-27b900886bcf",
     "sites": [
       {
         "file": "src/worktree.rs",
-        "start_line": 7230,
-        "end_line": 7267
+        "start_line": 6954,
+        "end_line": 6991
       },
       {
         "file": "tests/worktree_create_heal_lock_boundary_periphery.rs",
