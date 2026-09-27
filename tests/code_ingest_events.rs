@@ -28,6 +28,62 @@ use rigger::contextgraph::{
 mod graph_fold;
 use graph_fold::apply_json;
 
+/// Extracts the source tree at `root`, emits it, and folds every event onto `p` at the positions
+/// following `pos`, advancing `pos` past the last one.
+#[cfg(feature = "symbols")]
+fn fold_tree(p: &Projector, root: &std::path::Path, pos: &mut u64) {
+    for mut e in common::project_events(root.to_str().unwrap()) {
+        *pos += 1;
+        e.position = *pos;
+        p.apply(&e).unwrap();
+    }
+}
+
+/// The `combat.rs` subgraph folded from a real tree where `util.rs` defines `shared` and
+/// `combat.rs` defines `apply_damage` plus a `caller` that calls it, `shared` and the undefined
+/// `undefined_thing` - one reference per confidence tier.
+#[cfg(feature = "symbols")]
+fn combat_calling_every_tier() -> rigger::contextgraph::Graph {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("util.rs"), "fn shared() {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("combat.rs"),
+        "fn apply_damage() {}\nfn caller() { apply_damage(); shared(); undefined_thing(); }\n",
+    )
+    .unwrap();
+
+    let p = Projector::open(":memory:", "test").unwrap();
+    fold_tree(&p, dir.path(), &mut 0);
+    p.subgraph(&["combat.rs".to_string()], 3).unwrap()
+}
+
+/// The `combat.rs` subgraph folded from a real file defining `apply_damage`, `heal` and a
+/// `caller` calling both, then again after the file CHANGES - `heal` and its call deleted - is
+/// re-extracted and its second batch folded onto the SAME projection at fresh positions.
+#[cfg(feature = "symbols")]
+fn combat_before_and_after_dropping_heal(
+) -> (rigger::contextgraph::Graph, rigger::contextgraph::Graph) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("combat.rs");
+    std::fs::write(
+        &path,
+        "fn apply_damage() {}\nfn heal() {}\nfn caller() { apply_damage(); heal(); }\n",
+    )
+    .unwrap();
+    let p = Projector::open(":memory:", "test").unwrap();
+    let mut pos = 0u64;
+    fold_tree(&p, dir.path(), &mut pos);
+    let before = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
+
+    std::fs::write(
+        &path,
+        "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
+    )
+    .unwrap();
+    fold_tree(&p, dir.path(), &mut pos);
+    (before, p.subgraph(&["combat.rs".to_string()], 3).unwrap())
+}
+
 #[test]
 fn a_code_event_missing_the_optional_lang_field_still_folds_backcompat() {
     // Back-compat contract: a CodeEntityExtracted / EdgeInferred as it would have been serialized
@@ -245,24 +301,7 @@ fn real_extraction_tiers_every_structural_edge_through_the_emit_fold_pipeline() 
     // definition of it, so this ALSO exercises the definition arm's convergent AMBIGUOUS -> INFERRED
     // upgrade over real, sorted-order extraction - the reverse fold order a hand-built test can only
     // simulate.
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("util.rs"), "fn shared() {}\n").unwrap();
-    std::fs::write(
-        dir.path().join("combat.rs"),
-        "fn apply_damage() {}\nfn caller() { apply_damage(); shared(); undefined_thing(); }\n",
-    )
-    .unwrap();
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in common::project_events(dir.path().to_str().unwrap())
-        .into_iter()
-        .enumerate()
-    {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
-
-    let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
+    let g = combat_calling_every_tier();
     let tier_of = |to: &str| {
         g.edges
             .iter()
@@ -314,24 +353,7 @@ fn real_extraction_folds_caller_attributed_calls_edges_at_every_tier() {
     // (defined nowhere -> AMBIGUOUS). A regression that dropped the emit caller, folded the wrong
     // caller, or forgot to promote CALLS with its twin reds here while every hand-built unit stays
     // green.
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("util.rs"), "fn shared() {}\n").unwrap();
-    std::fs::write(
-        dir.path().join("combat.rs"),
-        "fn apply_damage() {}\nfn caller() { apply_damage(); shared(); undefined_thing(); }\n",
-    )
-    .unwrap();
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in common::project_events(dir.path().to_str().unwrap())
-        .into_iter()
-        .enumerate()
-    {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
-
-    let g = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
+    let g = combat_calling_every_tier();
     let calls_tier = |callee: &str| {
         g.edges
             .iter()
@@ -383,24 +405,8 @@ fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end()
     // stale CALLS edge must leave the live subgraph - the hand-built unit test proves the prefix
     // match on a fabricated from_id; this proves it against the REAL `<file>::caller` id the extractor
     // mints, composed with the emit-side `fresh` batch stamping.
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("combat.rs");
-    std::fs::write(
-        &path,
-        "fn apply_damage() {}\nfn heal() {}\nfn caller() { apply_damage(); heal(); }\n",
-    )
-    .unwrap();
-    let first = common::project_events(dir.path().to_str().unwrap());
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-    for mut e in first {
-        pos += 1;
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
+    let (g0, g1) = combat_before_and_after_dropping_heal();
     // Precondition: caller calls heal - a live CALLS edge before the change.
-    let g0 = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert!(
         g0.edges.iter().any(|e| e.rel == REL_CALLS
             && e.from == "combat.rs::caller"
@@ -410,21 +416,6 @@ fn re_extracting_a_file_that_drops_a_call_supersedes_its_calls_edge_end_to_end()
         g0.edges
     );
 
-    // The file CHANGES: the call to `heal` is removed. Re-extract, emit, fold the second batch onto
-    // the same projection at fresh positions.
-    std::fs::write(
-        &path,
-        "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
-    )
-    .unwrap();
-    let second = common::project_events(dir.path().to_str().unwrap());
-    for mut e in second {
-        pos += 1;
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
-    let g1 = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     // The removed call's CALLS edge is superseded - gone from the live subgraph, not accreted.
     assert!(
         !g1.edges
@@ -600,13 +591,7 @@ fn ingesting_a_real_file_answers_who_calls_g_by_function_end_to_end() {
     .unwrap();
 
     let p = Projector::open(":memory:", "test").unwrap();
-    for (i, mut e) in common::project_events(dir.path().to_str().unwrap())
-        .into_iter()
-        .enumerate()
-    {
-        e.position = (i + 1) as u64;
-        p.apply(&e).unwrap();
-    }
+    fold_tree(&p, dir.path(), &mut 0);
 
     // The query the design routes to an agent: `subgraph` around the CALLEE, read incoming callers.
     let g = p
@@ -707,27 +692,8 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
     // a re-extraction REPLACES rather than accretes. This exercises extraction -> emit -> fold with
     // no hand-built events, so it pins that the emit-side `fresh` stamping and the fold's supersede
     // actually compose in production shape (unlike the in-crate fold test's hand-built batches).
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("combat.rs");
-
-    // Initial extraction: two definitions, `apply_damage` and `heal`, and a call to each.
-    std::fs::write(
-        &path,
-        "fn apply_damage() {}\nfn heal() {}\nfn caller() { apply_damage(); heal(); }\n",
-    )
-    .unwrap();
-    let first = common::project_events(dir.path().to_str().unwrap());
-
-    let p = Projector::open(":memory:", "test").unwrap();
-    let mut pos = 0u64;
-    for mut e in first {
-        pos += 1;
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
+    let (g0, g1) = combat_before_and_after_dropping_heal();
     // Precondition: both definitions are live in the projection before the change.
-    let g0 = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert!(
         g0.nodes
             .iter()
@@ -736,23 +702,7 @@ fn re_extracting_a_changed_file_supersedes_its_removed_symbols_end_to_end() {
         g0.nodes
     );
 
-    // The file CHANGES: `heal` is deleted (and its call removed). Re-extract, emit, fold the second
-    // batch onto the same projection at fresh positions.
-    std::fs::write(
-        &path,
-        "fn apply_damage() {}\nfn caller() { apply_damage(); }\n",
-    )
-    .unwrap();
-    let second = common::project_events(dir.path().to_str().unwrap());
-    for mut e in second {
-        pos += 1;
-        e.position = pos;
-        p.apply(&e).unwrap();
-    }
-
-    // The live view at the new position REPLACED the old: apply_damage survives, the deleted heal is
     // gone from the live subgraph (its CONTAINS edge was superseded, not deleted).
-    let g1 = p.subgraph(&["combat.rs".to_string()], 3).unwrap();
     assert!(
         g1.nodes
             .iter()

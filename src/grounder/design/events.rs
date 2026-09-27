@@ -18,28 +18,22 @@ use crate::grounder::design::model::{DesignConcept, DesignLink};
 /// design-intent node. The concept's kind is lowered through the single [`DesignConcept`] ->
 /// `KIND_*` mapping, so the emitted `kind` string is exactly what the fold matches.
 pub fn concept_events(concepts: &[DesignConcept]) -> Vec<Event> {
-    let mut sorted: Vec<&DesignConcept> = concepts.iter().collect();
-    sorted.sort_by(|a, b| {
-        a.kind
-            .node_kind()
-            .cmp(b.kind.node_kind())
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    sorted
-        .iter()
-        .map(|c| {
-            let payload = DocConceptExtracted {
-                kind: c.kind.node_kind().to_string(),
-                id: c.id.clone(),
-                title: c.title.clone(),
-                doc: c.doc.clone(),
-            };
-            Event::new(
-                TYPE_DOC_CONCEPT_EXTRACTED,
-                serde_json::to_vec(&payload).expect("doc-concept payload serializes"),
-            )
-        })
-        .collect()
+    sorted_events(
+        concepts,
+        |a, b| {
+            a.kind
+                .node_kind()
+                .cmp(b.kind.node_kind())
+                .then_with(|| a.id.cmp(&b.id))
+        },
+        TYPE_DOC_CONCEPT_EXTRACTED,
+        |c| DocConceptExtracted {
+            kind: c.kind.node_kind().to_string(),
+            id: c.id.clone(),
+            title: c.title.clone(),
+            doc: c.doc.clone(),
+        },
+    )
 }
 
 /// Emit design-intent links as events: one `DocLinkExtracted` per link (spec 29b criterion 2).
@@ -49,25 +43,40 @@ pub fn concept_events(concepts: &[DesignConcept]) -> Vec<Event> {
 /// [`LinkRel::rel`](crate::grounder::design::model::LinkRel::rel) mapping, so the emitted `rel`
 /// string is exactly what the fold matches.
 pub fn link_events(links: &[DesignLink]) -> Vec<Event> {
-    let mut sorted: Vec<&DesignLink> = links.iter().collect();
-    sorted.sort_by(|a, b| {
-        a.rel
-            .rel()
-            .cmp(b.rel.rel())
-            .then_with(|| a.from.cmp(&b.from))
-            .then_with(|| a.to.cmp(&b.to))
-    });
+    sorted_events(
+        links,
+        |a, b| {
+            a.rel
+                .rel()
+                .cmp(b.rel.rel())
+                .then_with(|| a.from.cmp(&b.from))
+                .then_with(|| a.to.cmp(&b.to))
+        },
+        TYPE_DOC_LINK_EXTRACTED,
+        |l| DocLinkExtracted {
+            from: l.from.clone(),
+            to: l.to.clone(),
+            rel: l.rel.rel().to_string(),
+        },
+    )
+}
+
+/// `items` in `order`, each lowered to one `type_` event carrying its `payload` - sorting first
+/// makes the emit deterministic whatever order the extractor discovered the items in.
+fn sorted_events<T, P: serde::Serialize>(
+    items: &[T],
+    order: impl Fn(&T, &T) -> std::cmp::Ordering,
+    type_: &str,
+    payload: impl Fn(&T) -> P,
+) -> Vec<Event> {
+    let mut sorted: Vec<&T> = items.iter().collect();
+    sorted.sort_by(|a, b| order(a, b));
     sorted
         .iter()
-        .map(|l| {
-            let payload = DocLinkExtracted {
-                from: l.from.clone(),
-                to: l.to.clone(),
-                rel: l.rel.rel().to_string(),
-            };
+        .map(|item| {
             Event::new(
-                TYPE_DOC_LINK_EXTRACTED,
-                serde_json::to_vec(&payload).expect("doc-link payload serializes"),
+                type_,
+                serde_json::to_vec(&payload(item)).expect("a design-intent payload serializes"),
             )
         })
         .collect()
@@ -196,20 +205,38 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_emit_is_deterministic_and_sorts_by_kind_then_id() {
-        // Determinism by construction (spec 29b): identical concepts yield byte-identical events, in
-        // a sorted order independent of the order the extractor discovered them.
-        let concepts = extract_concepts("docs/architecture.md", "# Title\n\n## Zeta\n\n## Alpha\n");
-        let a = concept_events(&concepts);
-        let mut shuffled = concepts.clone();
+    /// Emitting `items` and their reverse yields byte-identical events - the emit order is
+    /// independent of the order the extractor discovered them in.
+    fn assert_emit_ignores_input_order<T: Clone>(
+        items: Vec<T>,
+        emit: fn(&[T]) -> Vec<Event>,
+        why: &str,
+    ) {
+        let a = emit(&items);
+        let mut shuffled = items;
         shuffled.reverse();
-        let b = concept_events(&shuffled);
+        let b = emit(&shuffled);
         let bytes = |es: &[Event]| es.iter().map(|e| e.data.clone()).collect::<Vec<_>>();
-        assert_eq!(
-            bytes(&a),
-            bytes(&b),
-            "emit order is independent of input order"
+        assert_eq!(bytes(&a), bytes(&b), "{why}");
+    }
+
+    crate::test_cases! {
+        // Determinism by construction (spec 29b): identical concepts yield byte-identical events,
+        // in a sorted order independent of the order the extractor discovered them.
+        the_emit_is_deterministic_and_sorts_by_kind_then_id: assert_emit_ignores_input_order(
+            extract_concepts("docs/architecture.md", "# Title\n\n## Zeta\n\n## Alpha\n"),
+            concept_events,
+            "emit order is independent of input order",
+        );
+        // Determinism by construction (spec 29b): identical links yield byte-identical events, in
+        // a sorted order independent of the order the extractor discovered them.
+        the_link_emit_is_deterministic_and_sorts_by_rel_then_from_then_to: assert_emit_ignores_input_order(
+            extract_links(
+                "docs/architecture.md",
+                "# Title\n\nUses `src/z.rs`, `src/a.rs`; see [x](docs/x.md).\n",
+            ),
+            link_events,
+            "link emit order is independent of input order",
         );
     }
 
@@ -313,26 +340,6 @@ mod tests {
             ),
             "a design-doc references the doc it cites; got {:?}",
             g.edges
-        );
-    }
-
-    #[test]
-    fn the_link_emit_is_deterministic_and_sorts_by_rel_then_from_then_to() {
-        // Determinism by construction (spec 29b): identical links yield byte-identical events, in a
-        // sorted order independent of the order the extractor discovered them.
-        let links = extract_links(
-            "docs/architecture.md",
-            "# Title\n\nUses `src/z.rs`, `src/a.rs`; see [x](docs/x.md).\n",
-        );
-        let a = link_events(&links);
-        let mut shuffled = links.clone();
-        shuffled.reverse();
-        let b = link_events(&shuffled);
-        let bytes = |es: &[Event]| es.iter().map(|e| e.data.clone()).collect::<Vec<_>>();
-        assert_eq!(
-            bytes(&a),
-            bytes(&b),
-            "link emit order is independent of input order"
         );
     }
 }

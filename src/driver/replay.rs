@@ -379,13 +379,18 @@ mod tests {
     use crate::spawn::{lens_role, spawn_id, spawn_retry_id, ROLE_ADJUDICATOR, ROLE_IMPLEMENTER};
     use crate::test_support::no_emit;
 
-    fn worker() -> AgentDef {
+    /// An agent `id` on `sonnet` granted `tools`.
+    fn sonnet_agent(id: &str, tools: &[&str]) -> AgentDef {
         AgentDef {
-            id: "worker".into(),
+            id: id.into(),
             model: "sonnet".into(),
-            tools: vec!["Read".into(), "Edit".into()],
+            tools: tools.iter().map(|t| (*t).into()).collect(),
             ..Default::default()
         }
+    }
+
+    fn worker() -> AgentDef {
+        sonnet_agent("worker", &["Read", "Edit"])
     }
 
     fn opts_for(id: &str) -> SpawnOpts {
@@ -609,72 +614,65 @@ mod tests {
         );
     }
 
-    /// A unit id that is a literal PREFIX of another unit's id (`u1` vs `u10`) must never
-    /// cross-match: `marker_filename("u1/")` = `"u1_2f"`, which is NOT a prefix of
-    /// `marker_filename("u10/...")` = `"u10_2f..."` (position 2 is `0` vs the required `_`),
-    /// proving the encoding's own delimiter-escape - not a coincidence of the two example
-    /// ids chosen elsewhere in this file - is what keeps the prefix match collision-free.
-    #[test]
-    fn reclaim_unit_mutation_scratch_never_cross_matches_a_unit_id_that_is_a_string_prefix_of_another(
-    ) {
+    /// Registers `spawn`'s scratch dir (holding each of `debris`), reclaims unit `unit`, and
+    /// asserts the scratch and its debris survive - `why` naming the case.
+    fn assert_reclaim_spares(spawn: &str, debris: &[&str], unit: &str, why: &str) {
         let cache_home = tempfile::tempdir().unwrap();
-        let sibling = mutation_scratch_path(cache_home.path(), "u10/implementer#0").unwrap();
-        std::fs::create_dir_all(&sibling).unwrap();
-
-        reclaim_unit_mutation_scratch(cache_home.path(), "u1");
-
-        assert!(
-            sibling.exists(),
-            "u10's own scratch must survive a reap scoped to the DIFFERENT unit u1: {}",
-            sibling.display()
-        );
-    }
-
-    /// Degenerate empty `unit_id`: an empty prefix would match EVERY entry under the root
-    /// (matching nothing is wrong; matching everything is catastrophic), so this must be
-    /// refused outright rather than reaping the whole registered-scratch tree.
-    #[test]
-    fn reclaim_unit_mutation_scratch_is_a_no_op_for_an_empty_unit_id() {
-        let cache_home = tempfile::tempdir().unwrap();
-        let untouched = mutation_scratch_path(cache_home.path(), "u1/implementer#0").unwrap();
-        std::fs::create_dir_all(&untouched).unwrap();
-
-        reclaim_unit_mutation_scratch(cache_home.path(), "");
-
-        assert!(
-            untouched.exists(),
-            "an empty unit id must reap nothing - it must never be treated as a match-all prefix"
-        );
-    }
-
-    /// Round-3 fix for `sdet-u77c3-empty-unit-id-fail-safe-guard-is-illusory` (UPHELD): the
-    /// PRIOR round's guard checked `marker_filename(&format!("{unit_id}/"))`, which encodes to
-    /// `Some("_2f")` (the escaped `/` alone) even for an EMPTY `unit_id` - appending the
-    /// separator before encoding means the input handed to `marker_filename` always carries at
-    /// least one byte, so the None-on-empty-input special case was structurally unreachable
-    /// from that call site. An empty `unit_id` therefore computed a LIVE, non-empty prefix (the
-    /// encoded leading slash) and proceeded with real prefix matching, cross-deleting any OTHER
-    /// unit's own registered scratch whose spawn id happens to start with a literal `/`. The
-    /// test above never caught this because its seeded victim (`u1/implementer#0`) does not
-    /// happen to start with a slash, so it passed for the wrong reason. This test seeds the
-    /// EXACT victim shape that DOES collide with the illusory guard's own live prefix and
-    /// proves the FIXED guard (checking the raw `unit_id` itself, before the separator is
-    /// appended) leaves it untouched.
-    #[test]
-    fn reclaim_unit_mutation_scratch_spares_a_leading_slash_spawn_ids_scratch_on_an_empty_unit_id()
-    {
-        let cache_home = tempfile::tempdir().unwrap();
-        let victim = mutation_scratch_path(cache_home.path(), "/weird-unit/implementer#0").unwrap();
+        let victim = mutation_scratch_path(cache_home.path(), spawn).unwrap();
         std::fs::create_dir_all(&victim).unwrap();
-        std::fs::write(victim.join("debris.out"), [0u8; 8]).unwrap();
+        for file in debris {
+            std::fs::write(victim.join(file), [0u8; 8]).unwrap();
+        }
 
-        reclaim_unit_mutation_scratch(cache_home.path(), "");
+        reclaim_unit_mutation_scratch(cache_home.path(), unit);
 
         assert!(
-            victim.exists() && victim.join("debris.out").exists(),
-            "an empty unit id must never cross-delete a real spawn whose own id starts with a \
-             literal slash (the exact shape the illusory guard used to match): {}",
+            victim.exists() && debris.iter().all(|file| victim.join(file).exists()),
+            "{why}: {}",
             victim.display()
+        );
+    }
+
+    crate::test_cases! {
+        /// A unit id that is a literal PREFIX of another unit's id (`u1` vs `u10`) must never
+        /// cross-match: `marker_filename("u1/")` = `"u1_2f"`, which is NOT a prefix of
+        /// `marker_filename("u10/...")` = `"u10_2f..."` (position 2 is `0` vs the required `_`),
+        /// proving the encoding's own delimiter-escape - not a coincidence of the two example
+        /// ids chosen elsewhere in this file - is what keeps the prefix match collision-free.
+        reclaim_unit_mutation_scratch_never_cross_matches_a_unit_id_that_is_a_string_prefix_of_another: assert_reclaim_spares(
+            "u10/implementer#0",
+            &[],
+            "u1",
+            "u10's own scratch must survive a reap scoped to the DIFFERENT unit u1",
+        );
+        /// Degenerate empty `unit_id`: an empty prefix would match EVERY entry under the root
+        /// (matching nothing is wrong; matching everything is catastrophic), so this must be
+        /// refused outright rather than reaping the whole registered-scratch tree.
+        reclaim_unit_mutation_scratch_is_a_no_op_for_an_empty_unit_id: assert_reclaim_spares(
+            "u1/implementer#0",
+            &[],
+            "",
+            "an empty unit id must reap nothing - it must never be treated as a match-all prefix",
+        );
+        /// Round-3 fix for `sdet-u77c3-empty-unit-id-fail-safe-guard-is-illusory` (UPHELD): the
+        /// PRIOR round's guard checked `marker_filename(&format!("{unit_id}/"))`, which encodes to
+        /// `Some("_2f")` (the escaped `/` alone) even for an EMPTY `unit_id` - appending the
+        /// separator before encoding means the input handed to `marker_filename` always carries at
+        /// least one byte, so the None-on-empty-input special case was structurally unreachable
+        /// from that call site. An empty `unit_id` therefore computed a LIVE, non-empty prefix (the
+        /// encoded leading slash) and proceeded with real prefix matching, cross-deleting any OTHER
+        /// unit's own registered scratch whose spawn id happens to start with a literal `/`. The
+        /// test above never caught this because its seeded victim (`u1/implementer#0`) does not
+        /// happen to start with a slash, so it passed for the wrong reason. This test seeds the
+        /// EXACT victim shape that DOES collide with the illusory guard's own live prefix and
+        /// proves the FIXED guard (checking the raw `unit_id` itself, before the separator is
+        /// appended) leaves it untouched.
+        reclaim_unit_mutation_scratch_spares_a_leading_slash_spawn_ids_scratch_on_an_empty_unit_id: assert_reclaim_spares(
+            "/weird-unit/implementer#0",
+            &["debris.out"],
+            "",
+            "an empty unit id must never cross-delete a real spawn whose own id starts with a \
+             literal slash (the exact shape the illusory guard used to match)",
         );
     }
 
@@ -852,12 +850,7 @@ mod tests {
         // remediation), and appends no duplicate request.
         let store = Store::open(":memory:").unwrap();
         // The spawn was parked, then a liveness fault was recorded on it.
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request("u", "u", ROLE_IMPLEMENTER, 0, "task"),
-            "",
-        )
-        .unwrap();
+        park(&store, "u", ROLE_IMPLEMENTER, "task");
         spawn_store::record_result(
             &store,
             &spawn::SpawnResult::liveness_fault("u/implementer#0", "the agent hung", "infra"),
@@ -900,12 +893,7 @@ mod tests {
         // hung agent PROCESS is infrastructure regardless of the label, so the unit is never
         // charged. This pins the corrected module doc (class is a label, treatment is uniform).
         let store = Store::open(":memory:").unwrap();
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request("u", "u", ROLE_IMPLEMENTER, 0, "task"),
-            "",
-        )
-        .unwrap();
+        park(&store, "u", ROLE_IMPLEMENTER, "task");
         spawn_store::record_result(
             &store,
             &spawn::SpawnResult::liveness_fault("u/implementer#0", "the agent hung", "product"),
@@ -1608,17 +1596,6 @@ mod tests {
         );
     }
 
-    /// A reviewer agent for the review-tier budget test - a read-only lens, distinct id
-    /// from the implementer so its spawn id is genuinely NEW (not a replay).
-    fn reviewer() -> AgentDef {
-        AgentDef {
-            id: "reviewer".into(),
-            model: "sonnet".into(),
-            tools: vec!["Read".into()],
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn a_resume_at_a_spent_budget_aborts_at_the_review_tier_with_budgetexhausted() {
         // Criterion 5, the review-tier arm the cross-step fold makes load-bearing
@@ -1637,7 +1614,8 @@ mod tests {
         let cfg = {
             let mut c = Config::default();
             c.agents.insert("worker".into(), worker());
-            c.agents.insert("reviewer".into(), reviewer());
+            c.agents
+                .insert("reviewer".into(), sonnet_agent("reviewer", &["Read"]));
             c.workflow.defaults.budget = 1;
             // A one-lens panel: assembling this unit needs a NEW lens spawn, unlike the
             // review-less stage the completion test uses.
@@ -1785,6 +1763,89 @@ mod tests {
         spawn_store::record_result(store, &spawn::SpawnResult::ok(id, output)).unwrap();
     }
 
+    /// Records unit `u`'s implementer and `sdet` lens as answered substantively.
+    fn u_implemented_and_lens_answered(store: &Store) {
+        courier_records(store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
+        courier_records(
+            store,
+            &spawn_id("u", &lens_role("sdet"), 0),
+            "lens: no blocker",
+        );
+    }
+
+    /// Parks unit `unit`'s first `role` spawn in the current run, as a courier would.
+    fn park(store: &Store, unit: &str, role: &str, prompt: &str) {
+        spawn_store::park_in_run(
+            store,
+            &crate::spawn::test_request(unit, unit, role, 0, prompt),
+            "",
+        )
+        .unwrap();
+    }
+
+    /// Appends an approve-shaped verdict straight to the store, stamped with `spawn`'s id - the
+    /// native courier's `rigger emit --spawn <id>`.
+    fn emit_stamped_approve(store: &Store, spawn: &str) {
+        let approve = crate::eventstore::Event::new(
+            crate::contextgraph::TYPE_DECISION_MADE,
+            serde_json::to_vec(&serde_json::json!({"id": "verdict", "verdict": "approve"}))
+                .unwrap(),
+        )
+        .with_meta(crate::conductor::META_SPAWN, spawn);
+        store
+            .append(
+                STREAM,
+                crate::eventstore::ExpectedRevision::Any,
+                std::slice::from_ref(&approve),
+            )
+            .unwrap();
+    }
+
+    /// Replays the recorded results and asserts the unit HARD-ERRORS as a verdict-channel
+    /// mismatch (`why` naming the case) carrying the result-channel fix message with the internal
+    /// recognition sentinel stripped - and is NOT folded as a reject and remediated: the persona
+    /// fault charges the unit no attempt (no `UnitFailed`) and does not escalate it, exactly like
+    /// the degenerate halt. Returns the stream afterward.
+    fn assert_replay_halts_on_a_verdict_channel_mismatch(
+        store: &Store,
+        cfg: &Config,
+        why: &str,
+    ) -> Vec<crate::eventstore::Event> {
+        let err = replay_step(store, cfg).expect_err(why);
+        assert!(
+            err.0
+                .contains("the gate reads the result channel, not emitted events")
+                && err.0.contains("end your output with the verdict line"),
+            "the hard error carries the result-channel fix message: {err:?}"
+        );
+        assert!(
+            !err.0.contains('\u{1}'),
+            "the internal mismatch marker is stripped from the surfaced message: {err:?}"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
+            "a verdict-channel mismatch must not charge the unit a remediation attempt"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_ESCALATED),
+            "a verdict-channel mismatch must not escalate the unit"
+        );
+        events
+    }
+
+    /// Whether `events` folded a `reviewed` unit status.
+    fn folded_reviewed(events: &[crate::eventstore::Event]) -> bool {
+        events.iter().any(|e| {
+            e.type_ == crate::ledger::TYPE_UNIT_STATUS
+                && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
+        })
+    }
+
     #[test]
     fn a_degenerate_adjudicator_halts_across_replay_steps_then_recovers_when_healthy() {
         // Gap 18 / adj-u2gap18 fixes 2+3, driven on the PRODUCTION stepwise/replay driver
@@ -1894,10 +1955,7 @@ mod tests {
         replay_step(&store, &cfg).expect("a corrected retry result recovers the run - no halt");
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert!(
-            events.iter().any(|e| {
-                e.type_ == crate::ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
-            }),
+            folded_reviewed(&events),
             "the corrected adjudicator verdict folds and the unit reaches reviewed"
         );
     }
@@ -1935,10 +1993,7 @@ mod tests {
         );
         // The review folded and the unit reached `reviewed`.
         assert!(
-            events.iter().any(|e| {
-                e.type_ == crate::ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
-            }),
+            folded_reviewed(&events),
             "the review folds and the unit reaches reviewed"
         );
     }
@@ -1966,37 +2021,15 @@ mod tests {
         crate::run_store::ensure_started(&store, &[]).unwrap();
 
         // The implementer and the lens ran and were answered substantively.
-        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
-        courier_records(
-            &store,
-            &spawn_id("u", &lens_role("sdet"), 0),
-            "lens: no blocker",
-        );
+        u_implemented_and_lens_answered(&store);
 
         // The adjudicator was PARKED, then - while it ran out-of-process - it emitted an
         // approve-shaped verdict straight to the store STAMPED with its own spawn id (the
         // native courier's `rigger emit --spawn <id>`), then reported a substantive result
         // with NO verdict line. Seeded in that exact order (park < emit < result).
         let adj_id = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
-            "",
-        )
-        .unwrap();
-        let approve = crate::eventstore::Event::new(
-            crate::contextgraph::TYPE_DECISION_MADE,
-            serde_json::to_vec(&serde_json::json!({"id": "verdict", "verdict": "approve"}))
-                .unwrap(),
-        )
-        .with_meta(crate::conductor::META_SPAWN, adj_id.as_str());
-        store
-            .append(
-                STREAM,
-                crate::eventstore::ExpectedRevision::Any,
-                std::slice::from_ref(&approve),
-            )
-            .unwrap();
+        park(&store, "u", ROLE_ADJUDICATOR, "adjudicate");
+        emit_stamped_approve(&store, &adj_id);
         courier_records(
             &store,
             &adj_id,
@@ -2004,43 +2037,14 @@ mod tests {
         );
 
         // Replaying the recorded adjudicator result HARD-ERRORS with the result-channel fix.
-        let err = replay_step(&store, &cfg).expect_err(
+        let events = assert_replay_halts_on_a_verdict_channel_mismatch(
+            &store,
+            &cfg,
             "an emit-only-approve gating persona must hard-error on the replay driver, \
              not fold as a silent reject",
         );
         assert!(
-            err.0
-                .contains("the gate reads the result channel, not emitted events")
-                && err.0.contains("end your output with the verdict line"),
-            "the hard error carries the result-channel fix message: {err:?}"
-        );
-        // The internal recognition sentinel is stripped before it surfaces.
-        assert!(
-            !err.0.contains('\u{1}'),
-            "the internal mismatch marker is stripped from the surfaced message: {err:?}"
-        );
-
-        // NOT folded as a reject and remediated: the persona fault charges the unit no
-        // attempt (no UnitFailed) and does not escalate it, exactly like the degenerate
-        // halt - the fault is the operator's gating persona, not the unit under review.
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
-            "a verdict-channel mismatch must not charge the unit a remediation attempt"
-        );
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_ESCALATED),
-            "a verdict-channel mismatch must not escalate the unit"
-        );
-        assert!(
-            !events.iter().any(|e| {
-                e.type_ == crate::ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
-            }),
+            !folded_reviewed(&events),
             "nothing was approved on the result channel, so no `reviewed` status is folded"
         );
     }
@@ -2066,21 +2070,11 @@ mod tests {
         crate::run_store::ensure_started(&store, &[]).unwrap();
 
         // Unit `u`'s implementer and lens ran and were answered substantively.
-        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
-        courier_records(
-            &store,
-            &spawn_id("u", &lens_role("sdet"), 0),
-            "lens: no blocker",
-        );
+        u_implemented_and_lens_answered(&store);
 
         // `u`'s adjudicator PARKS - the LOWER bracket of its window.
         let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
-            "",
-        )
-        .unwrap();
+        park(&store, "u", ROLE_ADJUDICATOR, "adjudicate");
 
         // A CONCURRENT SIBLING unit `v`'s adjudicator (a DIFFERENT spawn id) runs INSIDE `u`'s
         // position span: it parks, emits an approve-shaped verdict straight to the store STAMPED
@@ -2088,25 +2082,8 @@ mod tests {
         // park, u_adj result]. This is exactly the interleaving the shared store produces under
         // the parallel fan-out; the stamp is what keeps it the sibling's, not the position.
         let v_adj = spawn_id("v", ROLE_ADJUDICATOR, 0);
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request("v", "v", ROLE_ADJUDICATOR, 0, "adjudicate"),
-            "",
-        )
-        .unwrap();
-        let sibling_approve = crate::eventstore::Event::new(
-            crate::contextgraph::TYPE_DECISION_MADE,
-            serde_json::to_vec(&serde_json::json!({"id": "verdict", "verdict": "approve"}))
-                .unwrap(),
-        )
-        .with_meta(crate::conductor::META_SPAWN, v_adj.as_str());
-        store
-            .append(
-                STREAM,
-                crate::eventstore::ExpectedRevision::Any,
-                std::slice::from_ref(&sibling_approve),
-            )
-            .unwrap();
+        park(&store, "v", ROLE_ADJUDICATOR, "adjudicate");
+        emit_stamped_approve(&store, &v_adj);
         spawn_store::record_result(&store, &spawn::SpawnResult::ok(&v_adj, "sibling approved"))
             .unwrap();
 
@@ -2140,10 +2117,7 @@ mod tests {
         // Nothing was approved on `u`'s result channel, so no `reviewed` status is folded - the
         // sibling's approve never leaked into `u`'s gate.
         assert!(
-            !events.iter().any(|e| {
-                e.type_ == crate::ledger::TYPE_UNIT_STATUS
-                    && String::from_utf8_lossy(&e.data).contains("\"status\":\"reviewed\"")
-            }),
+            !folded_reviewed(&events),
             "a sibling's approve must not approve this unit"
         );
     }
@@ -2165,49 +2139,22 @@ mod tests {
         crate::run_store::ensure_started(&store, &[]).unwrap();
 
         // `u`'s implementer and lens ran and were answered substantively.
-        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
-        courier_records(
-            &store,
-            &spawn_id("u", &lens_role("sdet"), 0),
-            "lens: no blocker",
-        );
+        u_implemented_and_lens_answered(&store);
 
         // `u`'s adjudicator PARKS.
         let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
-            "",
-        )
-        .unwrap();
+        park(&store, "u", ROLE_ADJUDICATOR, "adjudicate");
 
         // A CONCURRENT SIBLING unit `v`'s implementer PARKS below the approve and is never
         // answered (result=None) - it emitted NOTHING. This is the parked-unanswered sibling
         // the adversary proved suppressed the backstop under the old is_none_or bracket; under
         // stamp attribution its window is simply irrelevant.
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request("v", "v", ROLE_IMPLEMENTER, 0, "implement"),
-            "",
-        )
-        .unwrap();
+        park(&store, "v", ROLE_IMPLEMENTER, "implement");
 
         // `u`'s adjudicator emits its OWN approve-shaped verdict straight to the store STAMPED
         // with its own spawn id (the native courier's `rigger emit --spawn <id>`), ABOVE the
         // sibling's park.
-        let approve = crate::eventstore::Event::new(
-            crate::contextgraph::TYPE_DECISION_MADE,
-            serde_json::to_vec(&serde_json::json!({"id": "verdict", "verdict": "approve"}))
-                .unwrap(),
-        )
-        .with_meta(crate::conductor::META_SPAWN, u_adj.as_str());
-        store
-            .append(
-                STREAM,
-                crate::eventstore::ExpectedRevision::Any,
-                std::slice::from_ref(&approve),
-            )
-            .unwrap();
+        emit_stamped_approve(&store, &u_adj);
 
         // `u`'s adjudicator reports a substantive result with NO verdict line - the emit-only
         // persona.
@@ -2219,34 +2166,11 @@ mod tests {
 
         // Replaying `u`'s recorded result must STILL HARD-ERROR: `u`'s approve is stamped with
         // `u`'s own id, so the parked-unanswered sibling's window cannot suppress it.
-        let err = replay_step(&store, &cfg).expect_err(
+        assert_replay_halts_on_a_verdict_channel_mismatch(
+            &store,
+            &cfg,
             "a parked-unanswered sibling must not suppress this unit's own emit-only-approve \
              backstop on the replay driver",
-        );
-        assert!(
-            err.0
-                .contains("the gate reads the result channel, not emitted events")
-                && err.0.contains("end your output with the verdict line"),
-            "the hard error carries the result-channel fix message: {err:?}"
-        );
-        assert!(
-            !err.0.contains('\u{1}'),
-            "the internal mismatch marker is stripped from the surfaced message: {err:?}"
-        );
-
-        // The persona fault charges the unit no attempt and does not escalate it.
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
-            "a verdict-channel mismatch must not charge the unit a remediation attempt"
-        );
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_ESCALATED),
-            "a verdict-channel mismatch must not escalate the unit"
         );
     }
 
@@ -2267,47 +2191,20 @@ mod tests {
         crate::run_store::ensure_started(&store, &[]).unwrap();
 
         // `u`'s implementer and lens ran and were answered substantively.
-        courier_records(&store, &spawn_id("u", ROLE_IMPLEMENTER, 0), "implemented");
-        courier_records(
-            &store,
-            &spawn_id("u", &lens_role("sdet"), 0),
-            "lens: no blocker",
-        );
+        u_implemented_and_lens_answered(&store);
 
         // `u`'s adjudicator PARKS.
         let u_adj = spawn_id("u", ROLE_ADJUDICATOR, 0);
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request("u", "u", ROLE_ADJUDICATOR, 0, "adjudicate"),
-            "",
-        )
-        .unwrap();
+        park(&store, "u", ROLE_ADJUDICATOR, "adjudicate");
 
         // A CONCURRENT SIBLING unit `v`'s implementer PARKS below `u`'s coming approve (the LOWER
         // edge of a window that will OVERLAP it).
         let v_impl = spawn_id("v", ROLE_IMPLEMENTER, 0);
-        spawn_store::park_in_run(
-            &store,
-            &crate::spawn::test_request("v", "v", ROLE_IMPLEMENTER, 0, "implement"),
-            "",
-        )
-        .unwrap();
+        park(&store, "v", ROLE_IMPLEMENTER, "implement");
 
         // `u`'s adjudicator emits its OWN approve-shaped verdict STAMPED with its spawn id,
         // positioned INSIDE the sibling's (soon-to-close) window.
-        let approve = crate::eventstore::Event::new(
-            crate::contextgraph::TYPE_DECISION_MADE,
-            serde_json::to_vec(&serde_json::json!({"id": "verdict", "verdict": "approve"}))
-                .unwrap(),
-        )
-        .with_meta(crate::conductor::META_SPAWN, u_adj.as_str());
-        store
-            .append(
-                STREAM,
-                crate::eventstore::ExpectedRevision::Any,
-                std::slice::from_ref(&approve),
-            )
-            .unwrap();
+        emit_stamped_approve(&store, &u_adj);
 
         // The sibling RECORDS its result ABOVE `u`'s approve - CLOSING its window so (v_impl
         // park, v_impl result] brackets `u`'s approve position. This is the overlap the retired
@@ -2325,34 +2222,11 @@ mod tests {
 
         // Replaying `u`'s recorded result must STILL HARD-ERROR: the overlapping CLOSED sibling
         // window does not suppress `u`'s own STAMPED approve.
-        let err = replay_step(&store, &cfg).expect_err(
+        assert_replay_halts_on_a_verdict_channel_mismatch(
+            &store,
+            &cfg,
             "a closed sibling window overlapping this unit's own approve must not suppress the \
              emit-only-approve backstop on the replay driver",
-        );
-        assert!(
-            err.0
-                .contains("the gate reads the result channel, not emitted events")
-                && err.0.contains("end your output with the verdict line"),
-            "the hard error carries the result-channel fix message: {err:?}"
-        );
-        assert!(
-            !err.0.contains('\u{1}'),
-            "the internal mismatch marker is stripped from the surfaced message: {err:?}"
-        );
-
-        // The persona fault charges the unit no attempt and does not escalate it.
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_FAILED),
-            "a verdict-channel mismatch must not charge the unit a remediation attempt"
-        );
-        assert!(
-            !events
-                .iter()
-                .any(|e| e.type_ == crate::ledger::TYPE_UNIT_ESCALATED),
-            "a verdict-channel mismatch must not escalate the unit"
         );
     }
 }

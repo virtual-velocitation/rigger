@@ -128,35 +128,94 @@ fn hold_step_lock(root: &Path) -> std::fs::File {
     lock_file
 }
 
-// ---------------------------------------------------------------------------------------
-// Baseline: quiet machinery prunes exactly as today
-// ---------------------------------------------------------------------------------------
-
-/// With no run ever started (the quietest possible machinery), `reset --derived` succeeds
-/// exactly as it did before this guard existed - the guard adds a refusal path, never a new
-/// precondition on the happy path.
-#[test]
-fn reset_derived_prunes_when_no_run_has_ever_started() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
-    assert!(ok, "a quiet store must still compact; stderr: {err}");
+/// Runs `rigger <args>` in `root` with `envs` and asserts the derived compaction ran, `why`
+/// naming the case.
+fn assert_prunes(root: &Path, args: &[&str], envs: &[(&str, &str)], why: &str) {
+    let (out, err, ok) = run_rigger_envs(root, args, envs);
+    assert!(ok, "{why}; stderr: {err}");
     assert!(
         out.contains("reset --derived: pruned"),
         "must print the usual prune report; got {out:?}"
     );
 }
 
-/// A recorded spawn that already carries a result is ANSWERED, not in flight, and a unit that
-/// has INTEGRATED is terminal, not live - neither must ever block compaction (the guard would
-/// otherwise refuse forever on ordinary run history).
-#[test]
-fn reset_derived_prunes_when_every_unit_is_terminal_and_every_spawn_is_answered() {
+/// Seeds `events` (none leaves the store empty) into a fresh project and asserts
+/// `rigger <args>` compacts it.
+fn assert_seeded_reset_prunes(events: &[(&str, &str)], args: &[&str], why: &str) {
     let dir = temp_project();
     let root = dir.path();
-    seed_run_events(
-        root,
+    if !events.is_empty() {
+        seed_run_events(root, events);
+    }
+    assert_prunes(root, args, &[], why);
+}
+
+/// Seeds `events` into a fresh project and asserts `reset --derived` refuses with a message
+/// naming every one of `names`, pruning NOTHING - the guard may only refuse, never partially act.
+fn assert_seeded_derived_refused(events: &[(&str, &str)], names: &[&str], why: &str) {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_run_events(root, events);
+    let before = row_count(root);
+
+    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
+    assert!(!ok, "{why}; stdout: {out:?}");
+    assert!(
+        !err.is_empty(),
+        "the CLI failure must carry a message an operator can act on"
+    );
+    for name in names {
+        assert!(
+            err.contains(name),
+            "the refusal must name {name:?}; stderr: {err:?}"
+        );
+    }
+    assert_eq!(
+        row_count(root),
+        before,
+        "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
+    );
+}
+
+/// A machine-global registry under a fresh `XDG_STATE_HOME` holding one entry for `project` at
+/// `root` (its local store under `root/.rigger/events.db`) last heard from at `heartbeat_ms`;
+/// returns the state home and the entry's file.
+fn seed_registry(
+    project: &str,
+    root: &str,
+    heartbeat_ms: u64,
+) -> (tempfile::TempDir, std::path::PathBuf) {
+    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
+    let instances_dir = registry::instances_dir(state_home.path());
+    let inst = Instance {
+        project: project.to_string(),
+        root: root.to_string(),
+        store: StoreIdentity::Local {
+            path: format!("{root}/.rigger/events.db"),
+        },
+        heartbeat_ms,
+    };
+    let entry = registry::write(&instances_dir, &inst).expect("seed a registry entry");
+    (state_home, entry)
+}
+
+// ---------------------------------------------------------------------------------------
+// Baseline: quiet machinery prunes exactly as today
+// ---------------------------------------------------------------------------------------
+
+rigger::test_cases! {
+    /// With no run ever started (the quietest possible machinery), `reset --derived` succeeds
+    /// exactly as it did before this guard existed - the guard adds a refusal path, never a new
+    /// precondition on the happy path.
+    reset_derived_prunes_when_no_run_has_ever_started: assert_seeded_reset_prunes(
+        &[],
+        &["reset", "--derived"],
+        "a quiet store must still compact",
+    );
+    /// A recorded spawn that already carries a result is ANSWERED, not in flight, and a unit that
+    /// has INTEGRATED is terminal, not live - neither must ever block compaction (the guard would
+    /// otherwise refuse forever on ordinary run history).
+    reset_derived_prunes_when_every_unit_is_terminal_and_every_spawn_is_answered: assert_seeded_reset_prunes(
         &[
             ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
             ("UnitStarted", r#"{"id":"a","branch":"rigger/u/a"}"#),
@@ -167,25 +226,13 @@ fn reset_derived_prunes_when_every_unit_is_terminal_and_every_spawn_is_answered(
             ("SpawnResult", r#"{"id":"a/implementer#0","output":"done"}"#),
             ("UnitIntegrated", r#"{"id":"a","commit":"deadbeef"}"#),
         ],
+        &["reset", "--derived"],
+        "a terminal unit with only answered spawns must not block compaction",
     );
-
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
-    assert!(
-        ok,
-        "a terminal unit with only answered spawns must not block compaction; stderr: {err}"
-    );
-    assert!(out.contains("reset --derived: pruned"), "got {out:?}");
-}
-
-/// A prior, DIFFERENT run's unanswered spawn and non-terminal unit are residue, not live work in
-/// the CURRENT run's slice - the design names "in-flight spawns in the current run's slice"
-/// precisely so a zombie from an abandoned campaign can never wedge compaction forever.
-#[test]
-fn reset_derived_ignores_a_prior_runs_unanswered_spawn_and_non_terminal_unit() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_run_events(
-        root,
+    /// A prior, DIFFERENT run's unanswered spawn and non-terminal unit are residue, not live work in
+    /// the CURRENT run's slice - the design names "in-flight spawns in the current run's slice"
+    /// precisely so a zombie from an abandoned campaign can never wedge compaction forever.
+    reset_derived_ignores_a_prior_runs_unanswered_spawn_and_non_terminal_unit: assert_seeded_reset_prunes(
         &[
             ("RunStarted", r#"{"run":"r0","criteria":["an older spec"]}"#),
             (
@@ -198,15 +245,21 @@ fn reset_derived_ignores_a_prior_runs_unanswered_spawn_and_non_terminal_unit() {
             ),
             ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
         ],
+        &["reset", "--derived"],
+        "a PRIOR run's unanswered spawn/non-terminal unit must not block THIS run's compaction",
     );
-
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
-    assert!(
-        ok,
-        "a PRIOR run's unanswered spawn/non-terminal unit must not block THIS run's compaction; \
-         stderr: {err}"
+    /// `--force-live` also skips the guard while a spawn is in flight, pruning as normal.
+    reset_derived_force_live_compacts_despite_an_in_flight_spawn: assert_seeded_reset_prunes(
+        &[
+            ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
+            (
+                "SpawnRequested",
+                r#"{"id":"a/implementer#0","unit":"a","stage":"implement","prompt":"go"}"#,
+            ),
+        ],
+        &["reset", "--derived", "--force-live"],
+        "--force-live must skip the guard even with an in-flight spawn",
     );
-    assert!(out.contains("reset --derived: pruned"), "got {out:?}");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -240,12 +293,12 @@ fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
     FileExt::unlock(&lock_file).unwrap();
     drop(lock_file);
 
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
-    assert!(
-        ok,
-        "once released, reset --derived must succeed; stderr: {err}"
+    assert_prunes(
+        root,
+        &["reset", "--derived"],
+        &[],
+        "once released, reset --derived must succeed",
     );
-    assert!(out.contains("reset --derived: pruned"), "got {out:?}");
 }
 
 /// The step-lock probe is resolved at the STORE's own directory, never the process cwd - so a
@@ -306,16 +359,12 @@ fn reset_derived_from_a_nested_worktree_still_refuses_the_resolved_stores_held_l
 // Signal 2: a non-terminal unit in the current run - live BETWEEN spawn rounds
 // ---------------------------------------------------------------------------------------
 
-/// A unit that has STARTED and had its only spawn ANSWERED, but has neither integrated nor
-/// escalated, is live BETWEEN rounds (its next spawn - e.g. a reviewer - has not been parked
-/// yet). An in-flight-spawn check alone would miss this; `reset --derived` must still refuse,
-/// naming the unit, and prune nothing.
-#[test]
-fn reset_derived_refuses_a_non_terminal_unit_between_spawn_rounds_and_prunes_nothing() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_run_events(
-        root,
+rigger::test_cases! {
+    /// A unit that has STARTED and had its only spawn ANSWERED, but has neither integrated nor
+    /// escalated, is live BETWEEN rounds (its next spawn - e.g. a reviewer - has not been parked
+    /// yet). An in-flight-spawn check alone would miss this; `reset --derived` must still refuse,
+    /// naming the unit, and prune nothing.
+    reset_derived_refuses_a_non_terminal_unit_between_spawn_rounds_and_prunes_nothing: assert_seeded_derived_refused(
         &[
             ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
             ("UnitStarted", r#"{"id":"a","branch":"rigger/u/a"}"#),
@@ -325,37 +374,12 @@ fn reset_derived_refuses_a_non_terminal_unit_between_spawn_rounds_and_prunes_not
             ),
             ("SpawnResult", r#"{"id":"a/implementer#0","output":"done"}"#),
         ],
+        &["a", "not yet terminal"],
+        "reset --derived must refuse a non-terminal unit between spawn rounds",
     );
-    let before = row_count(root);
-
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
-    assert!(
-        !ok,
-        "reset --derived must refuse a non-terminal unit between spawn rounds; stdout: {out:?}"
-    );
-    assert!(
-        err.contains('a') && err.contains("not yet terminal"),
-        "the refusal must name the non-terminal unit; stderr: {err:?}"
-    );
-    assert_eq!(
-        row_count(root),
-        before,
-        "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
-    );
-}
-
-// ---------------------------------------------------------------------------------------
-// Signal 3: in-flight spawns in the current run's slice
-// ---------------------------------------------------------------------------------------
-
-/// A recorded spawn request with no result yet, in the CURRENT run, refuses compaction naming
-/// the spawn id - and PRUNES NOTHING (the refusal is total, never partial).
-#[test]
-fn reset_derived_refuses_an_in_flight_spawn_naming_its_id_and_prunes_nothing() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_run_events(
-        root,
+    /// A recorded spawn request with no result yet, in the CURRENT run, refuses compaction naming
+    /// the spawn id - and PRUNES NOTHING (the refusal is total, never partial).
+    reset_derived_refuses_an_in_flight_spawn_naming_its_id_and_prunes_nothing: assert_seeded_derived_refused(
         &[
             ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
             (
@@ -363,62 +387,33 @@ fn reset_derived_refuses_an_in_flight_spawn_naming_its_id_and_prunes_nothing() {
                 r#"{"id":"a/implementer#0","unit":"a","stage":"implement","prompt":"go"}"#,
             ),
         ],
+        &["a/implementer#0"],
+        "reset --derived must refuse while a spawn is in flight",
     );
-    let before = row_count(root);
-
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
-    assert!(
-        !ok,
-        "reset --derived must refuse while a spawn is in flight; stdout: {out:?}"
-    );
-    assert!(
-        err.contains("a/implementer#0"),
-        "the refusal must name the in-flight spawn id; stderr: {err:?}"
-    );
-    assert_eq!(
-        row_count(root),
-        before,
-        "a refused compaction must prune NOTHING - the guard may only refuse, never partially act"
+    /// A malformed `SpawnRequested` body in the current run's slice makes the in-flight-spawn read
+    /// fail to decode. The pure-composition unit test already proves the internal function returns
+    /// `Err`; this periphery test proves the FULL wire end to end - that `cmd_reset`'s own error
+    /// propagation actually surfaces that as a failed compiled-binary invocation (a non-zero exit and
+    /// a non-empty message on stderr), not a swallowed error read as "nothing in flight" by some
+    /// layer between the guard and the process exit code. The refusal must be TOTAL: the malformed
+    /// event, and everything else in the log, survives untouched.
+    // A `SpawnRequested` body missing every field `spawn::recorded` needs to decode it - valid
+    // JSON, but not a valid request, so the current-run in-flight-spawn read fails outright
+    // rather than seeing "no spawns in flight".
+    reset_derived_fails_the_cli_on_a_malformed_current_run_spawn_event_and_prunes_nothing: assert_seeded_derived_refused(
+        &[("SpawnRequested", "{}")],
+        &[],
+        "a malformed current-run spawn event must fail the CLI, never read as quiet",
     );
 }
+
+// ---------------------------------------------------------------------------------------
+// Signal 3: in-flight spawns in the current run's slice
+// ---------------------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------------------
 // Fail-safe: an unreadable signal must refuse, never read as quiet
 // ---------------------------------------------------------------------------------------
-
-/// A malformed `SpawnRequested` body in the current run's slice makes the in-flight-spawn read
-/// fail to decode. The pure-composition unit test already proves the internal function returns
-/// `Err`; this periphery test proves the FULL wire end to end - that `cmd_reset`'s own error
-/// propagation actually surfaces that as a failed compiled-binary invocation (a non-zero exit and
-/// a non-empty message on stderr), not a swallowed error read as "nothing in flight" by some
-/// layer between the guard and the process exit code. The refusal must be TOTAL: the malformed
-/// event, and everything else in the log, survives untouched.
-#[test]
-fn reset_derived_fails_the_cli_on_a_malformed_current_run_spawn_event_and_prunes_nothing() {
-    let dir = temp_project();
-    let root = dir.path();
-    // A `SpawnRequested` body missing every field `spawn::recorded` needs to decode it - valid
-    // JSON, but not a valid request, so the current-run in-flight-spawn read fails outright
-    // rather than seeing "no spawns in flight".
-    seed_run_events(root, &[("SpawnRequested", "{}")]);
-    let before = row_count(root);
-
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived"], &[]);
-    assert!(
-        !ok,
-        "a malformed current-run spawn event must fail the CLI, never read as quiet; \
-         stdout: {out:?}"
-    );
-    assert!(
-        !err.is_empty(),
-        "the CLI failure must carry a message an operator can act on"
-    );
-    assert_eq!(
-        row_count(root),
-        before,
-        "a refusal on an unreadable signal must prune NOTHING"
-    );
-}
 
 // ---------------------------------------------------------------------------------------
 // Fail-safe: a step-lock probe fault (not a genuinely held lock) must refuse, never proceed
@@ -479,17 +474,7 @@ fn reset_derived_refuses_a_live_driver_registration_naming_it() {
     let root = dir.path();
     let toplevel = git_toplevel(root);
 
-    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
-    let instances_dir = registry::instances_dir(state_home.path());
-    let inst = Instance {
-        project: "proj".to_string(),
-        root: toplevel.clone(),
-        store: StoreIdentity::Local {
-            path: format!("{toplevel}/.rigger/events.db"),
-        },
-        heartbeat_ms: registry::now_ms(),
-    };
-    registry::write(&instances_dir, &inst).expect("seed a live registry entry");
+    let (state_home, _entry) = seed_registry("proj", &toplevel, registry::now_ms());
 
     let (out, err, ok) = run_rigger_envs(
         root,
@@ -513,28 +498,15 @@ fn reset_derived_ignores_a_registration_for_a_different_store() {
     let dir = temp_project();
     let root = dir.path();
 
-    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
-    let instances_dir = registry::instances_dir(state_home.path());
-    let inst = Instance {
-        project: "other-proj".to_string(),
-        root: "/tmp/some-other-project".to_string(),
-        store: StoreIdentity::Local {
-            path: "/tmp/some-other-project/.rigger/events.db".to_string(),
-        },
-        heartbeat_ms: registry::now_ms(),
-    };
-    registry::write(&instances_dir, &inst).expect("seed an unrelated registry entry");
+    let (state_home, _entry) =
+        seed_registry("other-proj", "/tmp/some-other-project", registry::now_ms());
 
-    let (out, err, ok) = run_rigger_envs(
+    assert_prunes(
         root,
         &["reset", "--derived"],
         &[("XDG_STATE_HOME", state_home.path().to_str().unwrap())],
+        "an unrelated project's registration must never block this store's compaction",
     );
-    assert!(
-        ok,
-        "an unrelated project's registration must never block this store's compaction; stderr: {err}"
-    );
-    assert!(out.contains("reset --derived: pruned"), "got {out:?}");
 }
 
 /// Spec 62, criterion 5 round 4 (`adv-u62c5r4-known-roots-prune-race-with-instances-provider`):
@@ -558,36 +530,20 @@ fn reset_derived_never_deletes_a_stale_foreign_registry_entrys_file() {
     let dir = temp_project();
     let root = dir.path();
 
-    let state_home = tempfile::tempdir().expect("create XDG_STATE_HOME");
-    let instances_dir = registry::instances_dir(state_home.path());
-    let stale_inst = Instance {
-        project: "other-proj".to_string(),
-        root: "/tmp/some-other-project".to_string(),
-        store: StoreIdentity::Local {
-            path: "/tmp/some-other-project/.rigger/events.db".to_string(),
-        },
-        // Well past `DEFAULT_IDLE_MS`: the pre-fix `read_live` would have pruned this outright as
-        // a side effect of the guard's own liveness probe.
-        heartbeat_ms: 0,
-    };
-    let entry_path = registry::write(&instances_dir, &stale_inst)
-        .expect("seed a stale, unrelated registry entry");
+    // Well past `DEFAULT_IDLE_MS`: the pre-fix `read_live` would have pruned this outright as
+    // a side effect of the guard's own liveness probe.
+    let (state_home, entry_path) = seed_registry("other-proj", "/tmp/some-other-project", 0);
     assert!(
         entry_path.exists(),
         "the entry must exist before the command runs"
     );
 
-    let (out, err, ok) = run_rigger_envs(
+    assert_prunes(
         root,
         &["reset", "--derived"],
         &[("XDG_STATE_HOME", state_home.path().to_str().unwrap())],
+        "a stale, unrelated project's registration must never block this store's compaction",
     );
-    assert!(
-        ok,
-        "a stale, unrelated project's registration must never block this store's compaction; \
-         stderr: {err}"
-    );
-    assert!(out.contains("reset --derived: pruned"), "got {out:?}");
     assert!(
         entry_path.exists(),
         "reset --derived's own live-writer probe must never delete a foreign project's stale \
@@ -610,39 +566,15 @@ fn reset_derived_force_live_compacts_despite_a_held_step_lock() {
 
     let lock_file = hold_step_lock(root);
 
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived", "--force-live"], &[]);
-    assert!(
-        ok,
-        "--force-live must skip the guard even while a step lock is held; stderr: {err}"
+    assert_prunes(
+        root,
+        &["reset", "--derived", "--force-live"],
+        &[],
+        "--force-live must skip the guard even while a step lock is held",
     );
-    assert!(out.contains("reset --derived: pruned"), "got {out:?}");
 
     FileExt::unlock(&lock_file).unwrap();
     drop(lock_file);
-}
-
-/// `--force-live` also skips the guard while a spawn is in flight, pruning as normal.
-#[test]
-fn reset_derived_force_live_compacts_despite_an_in_flight_spawn() {
-    let dir = temp_project();
-    let root = dir.path();
-    seed_run_events(
-        root,
-        &[
-            ("RunStarted", r#"{"run":"r1","criteria":["crit"]}"#),
-            (
-                "SpawnRequested",
-                r#"{"id":"a/implementer#0","unit":"a","stage":"implement","prompt":"go"}"#,
-            ),
-        ],
-    );
-
-    let (out, err, ok) = run_rigger_envs(root, &["reset", "--derived", "--force-live"], &[]);
-    assert!(
-        ok,
-        "--force-live must skip the guard even with an in-flight spawn; stderr: {err}"
-    );
-    assert!(out.contains("reset --derived: pruned"), "got {out:?}");
 }
 
 /// `--force-live` composed with `--runs` alone (no `--derived`) is inert - there is nothing for

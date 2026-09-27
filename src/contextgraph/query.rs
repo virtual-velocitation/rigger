@@ -2015,44 +2015,41 @@ mod path_tests {
         }
     }
 
-    /// `path`'s own documented contract: an EMPTY path when "either endpoint is absent" - `to`
-    /// need not be UNREACHABLE, it must not even be a real NODE. The gate is
-    /// `!is_node(from) || !is_node(to)`, not `&&` (both absent): either one missing is already
-    /// disqualifying, so a dangling edge (an endpoint string naming no real node - a malformed
-    /// projection the function must still refuse defensively) must never let the walk "find" a
-    /// `to` that never passed the is-a-node gate.
-    #[test]
-    fn an_absent_to_endpoint_yields_no_path_even_via_a_dangling_edge() {
-        let g = Graph {
-            nodes: vec![plain("src/a.rs", KIND_FILE)],
-            // "ghost" is never a node, only an edge endpoint.
-            edges: vec![edge("src/a.rs", "ghost")],
-        };
-        assert_eq!(
-            path(&g, "src/a.rs", "ghost"),
-            Vec::<String>::new(),
-            "to is not a real node, so no path may be returned even though a dangling edge \
-             names it"
-        );
+    /// `path` over the graph of `nodes` and `edges` finds no path from `from` to `to`.
+    fn assert_no_path(nodes: Vec<Node>, edges: Vec<Edge>, from: &str, to: &str, why: &str) {
+        let g = Graph { nodes, edges };
+        assert_eq!(path(&g, from, to), Vec::<String>::new(), "{why}");
     }
 
-    /// `is_node`'s contract is IDENTITY (`n.id == id`), not "some OTHER node's id differs from
-    /// this string" - with 2+ real nodes in the graph, that inverted check is true for almost
-    /// any string, including one naming no real node at all. The `from == to` same-endpoint
-    /// short-circuit runs AFTER the is-a-node guard, so a fabricated id equal to itself must
-    /// still be caught there, never fall through to report a one-node path to a node that does
-    /// not exist.
-    #[test]
-    fn neither_endpoint_a_real_node_yields_no_path_even_when_they_are_equal() {
-        let g = Graph {
-            nodes: vec![plain("src/a.rs", KIND_FILE), plain("src/b.rs", KIND_FILE)],
-            edges: vec![edge("src/a.rs", "src/b.rs")],
-        };
-        assert_eq!(
-            path(&g, "ghost", "ghost"),
-            Vec::<String>::new(),
+    crate::test_cases! {
+        /// `path`'s own documented contract: an EMPTY path when "either endpoint is absent" - `to`
+        /// need not be UNREACHABLE, it must not even be a real NODE. The gate is
+        /// `!is_node(from) || !is_node(to)`, not `&&` (both absent): either one missing is already
+        /// disqualifying, so a dangling edge (an endpoint string naming no real node - a malformed
+        /// projection the function must still refuse defensively) must never let the walk "find" a
+        /// `to` that never passed the is-a-node gate.
+        an_absent_to_endpoint_yields_no_path_even_via_a_dangling_edge: assert_no_path(
+            vec![plain("src/a.rs", KIND_FILE)],
+            // "ghost" is never a node, only an edge endpoint.
+            vec![edge("src/a.rs", "ghost")],
+            "src/a.rs",
+            "ghost",
+            "to is not a real node, so no path may be returned even though a dangling edge \
+             names it",
+        );
+        /// `is_node`'s contract is IDENTITY (`n.id == id`), not "some OTHER node's id differs from
+        /// this string" - with 2+ real nodes in the graph, that inverted check is true for almost
+        /// any string, including one naming no real node at all. The `from == to` same-endpoint
+        /// short-circuit runs AFTER the is-a-node guard, so a fabricated id equal to itself must
+        /// still be caught there, never fall through to report a one-node path to a node that does
+        /// not exist.
+        neither_endpoint_a_real_node_yields_no_path_even_when_they_are_equal: assert_no_path(
+            vec![plain("src/a.rs", KIND_FILE), plain("src/b.rs", KIND_FILE)],
+            vec![edge("src/a.rs", "src/b.rs")],
+            "ghost",
+            "ghost",
             "neither endpoint is a real node, so no path - not even the trivial one-node path \
-             a same-endpoint shortcut would otherwise report"
+             a same-endpoint shortcut would otherwise report",
         );
     }
 }
@@ -2074,73 +2071,61 @@ mod member_set_tests {
         }
     }
 
-    /// `member_set` of a COMMUNITY counts ONLY a currently-valid `IN_COMMUNITY` edge whose
-    /// target is EXACTLY this community - all three conjuncts load-bearing, each proven by an
-    /// edge that satisfies every OTHER one: a superseded membership, a live `IN_COMMUNITY`
-    /// edge to a DIFFERENT community, and a live edge of a DIFFERENT rel to THIS community must
-    /// every one be excluded, while the one edge satisfying all three is the only member.
-    #[test]
-    fn member_set_of_a_community_counts_only_its_own_live_in_community_edges() {
-        let com1 = "community/1/0";
-        let com2 = "community/1/1";
-        let g = Graph {
-            nodes: vec![
-                plain(com1, KIND_COMMUNITY),
-                plain(com2, KIND_COMMUNITY),
-                plain("src/w.rs::w", KIND_CODE_ENTITY), // the one genuine live member
-                plain("src/x.rs::x", KIND_CODE_ENTITY), // live IN_COMMUNITY, wrong community
-                plain("src/y.rs::y", KIND_CODE_ENTITY), // right rel+target, but superseded
-                plain("src/z.rs::z", KIND_CODE_ENTITY), // right target, wrong rel
-            ],
-            edges: vec![
-                edge("src/w.rs::w", com1, REL_IN_COMMUNITY, None),
-                edge("src/x.rs::x", com2, REL_IN_COMMUNITY, None),
-                edge("src/y.rs::y", com1, REL_IN_COMMUNITY, Some(9)),
-                edge("src/z.rs::z", com1, REL_ABOUT, None),
-            ],
-        };
-        let ids: Vec<&str> = member_set(&g, com1).iter().map(|n| n.id.as_str()).collect();
-        assert_eq!(
-            ids,
-            vec!["src/w.rs::w"],
-            "only the live, right-rel, right-target edge should count as membership: {ids:?}"
-        );
+    /// `member_set` of `of` over the graph of `nodes` and `edges` is exactly `src/w.rs::w`.
+    fn assert_sole_member_is_w(nodes: Vec<Node>, edges: Vec<Edge>, of: &str, why: &str) {
+        let g = Graph { nodes, edges };
+        let ids: Vec<&str> = member_set(&g, of).iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["src/w.rs::w"], "{why}: {ids:?}");
     }
 
-    /// `member_set` of a FILE counts ONLY a currently-valid `CONTAINS` edge whose SOURCE is
-    /// EXACTLY this file - the KIND_FILE arm's mirror of
-    /// `member_set_of_a_community_counts_only_its_own_live_in_community_edges` above, same
-    /// three-conjunct proof: a superseded containment, a live `CONTAINS` edge FROM a
-    /// DIFFERENT file, and a live edge of a DIFFERENT rel FROM this file must every one be
-    /// excluded, while the one edge satisfying all three is the only member.
-    #[test]
-    fn member_set_of_a_file_counts_only_its_own_live_contains_edges() {
-        let file1 = "src/w.rs";
-        let file2 = "src/x.rs";
-        let g = Graph {
-            nodes: vec![
-                plain(file1, KIND_FILE),
-                plain(file2, KIND_FILE),
+    crate::test_cases! {
+        /// `member_set` of a COMMUNITY counts ONLY a currently-valid `IN_COMMUNITY` edge whose
+        /// target is EXACTLY this community - all three conjuncts load-bearing, each proven by an
+        /// edge that satisfies every OTHER one: a superseded membership, a live `IN_COMMUNITY`
+        /// edge to a DIFFERENT community, and a live edge of a DIFFERENT rel to THIS community must
+        /// every one be excluded, while the one edge satisfying all three is the only member.
+        member_set_of_a_community_counts_only_its_own_live_in_community_edges:
+            assert_sole_member_is_w(
+                vec![
+                    plain("community/1/0", KIND_COMMUNITY),
+                    plain("community/1/1", KIND_COMMUNITY),
+                    plain("src/w.rs::w", KIND_CODE_ENTITY), // the one genuine live member
+                    plain("src/x.rs::x", KIND_CODE_ENTITY), // live IN_COMMUNITY, wrong community
+                    plain("src/y.rs::y", KIND_CODE_ENTITY), // right rel+target, but superseded
+                    plain("src/z.rs::z", KIND_CODE_ENTITY), // right target, wrong rel
+                ],
+                vec![
+                    edge("src/w.rs::w", "community/1/0", REL_IN_COMMUNITY, None),
+                    edge("src/x.rs::x", "community/1/1", REL_IN_COMMUNITY, None),
+                    edge("src/y.rs::y", "community/1/0", REL_IN_COMMUNITY, Some(9)),
+                    edge("src/z.rs::z", "community/1/0", REL_ABOUT, None),
+                ],
+                "community/1/0",
+                "only the live, right-rel, right-target edge should count as membership",
+            );
+        /// `member_set` of a FILE counts ONLY a currently-valid `CONTAINS` edge whose SOURCE is
+        /// EXACTLY this file - the KIND_FILE arm's mirror of
+        /// `member_set_of_a_community_counts_only_its_own_live_in_community_edges` above, same
+        /// three-conjunct proof: a superseded containment, a live `CONTAINS` edge FROM a
+        /// DIFFERENT file, and a live edge of a DIFFERENT rel FROM this file must every one be
+        /// excluded, while the one edge satisfying all three is the only member.
+        member_set_of_a_file_counts_only_its_own_live_contains_edges: assert_sole_member_is_w(
+            vec![
+                plain("src/w.rs", KIND_FILE),
+                plain("src/x.rs", KIND_FILE),
                 plain("src/w.rs::w", KIND_CODE_ENTITY), // the one genuine live member
                 plain("src/x.rs::x", KIND_CODE_ENTITY), // live CONTAINS, wrong file
                 plain("src/w.rs::y", KIND_CODE_ENTITY), // right rel+source, but superseded
                 plain("src/w.rs::z", KIND_CODE_ENTITY), // right source, wrong rel
             ],
-            edges: vec![
-                edge(file1, "src/w.rs::w", REL_CONTAINS, None),
-                edge(file2, "src/x.rs::x", REL_CONTAINS, None),
-                edge(file1, "src/w.rs::y", REL_CONTAINS, Some(9)),
-                edge(file1, "src/w.rs::z", REL_ABOUT, None),
+            vec![
+                edge("src/w.rs", "src/w.rs::w", REL_CONTAINS, None),
+                edge("src/x.rs", "src/x.rs::x", REL_CONTAINS, None),
+                edge("src/w.rs", "src/w.rs::y", REL_CONTAINS, Some(9)),
+                edge("src/w.rs", "src/w.rs::z", REL_ABOUT, None),
             ],
-        };
-        let ids: Vec<&str> = member_set(&g, file1)
-            .iter()
-            .map(|n| n.id.as_str())
-            .collect();
-        assert_eq!(
-            ids,
-            vec!["src/w.rs::w"],
-            "only the live, right-rel, right-source edge should count as membership: {ids:?}"
+            "src/w.rs",
+            "only the live, right-rel, right-source edge should count as membership",
         );
     }
 }

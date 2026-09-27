@@ -1624,13 +1624,13 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 267,
-        "end_line": 267
+        "start_line": 320,
+        "end_line": 320
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 276,
-        "end_line": 276
+        "start_line": 329,
+        "end_line": 329
       },
       {
         "file": "tests/reset_menu.rs",
@@ -2859,8 +2859,8 @@
       },
       {
         "file": "src/driver/replay.rs",
-        "start_line": 1273,
-        "end_line": 1282
+        "start_line": 1261,
+        "end_line": 1270
       }
     ]
   },
@@ -2919,8 +2919,8 @@
       },
       {
         "file": "src/driver/replay.rs",
-        "start_line": 1744,
-        "end_line": 1764
+        "start_line": 1722,
+        "end_line": 1742
       },
       {
         "file": "tests/adoption_keys_on_criterion_periphery.rs",
@@ -2934,13 +2934,13 @@
       },
       {
         "file": "tests/replan_episode_identity.rs",
-        "start_line": 238,
-        "end_line": 300
+        "start_line": 270,
+        "end_line": 332
       },
       {
         "file": "tests/replan_episode_identity.rs",
-        "start_line": 969,
-        "end_line": 1006
+        "start_line": 807,
+        "end_line": 844
       },
       {
         "file": "tests/scratch_workdir_isolation_leak_guard_periphery.rs",
@@ -3045,7 +3045,7 @@
     ]
   },
   {
-    "id": "dup-24bdfbc6c1c3",
+    "id": "dup-5d0f39bf7ac4",
     "sites": [
       {
         "file": "src/conductor.rs",
@@ -6154,28 +6154,18 @@
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 284,
-        "end_line": 284
+        "start_line": 194,
+        "end_line": 194
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 443,
-        "end_line": 443
+        "start_line": 337,
+        "end_line": 337
       },
       {
         "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 488,
-        "end_line": 488
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 522,
-        "end_line": 522
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 567,
-        "end_line": 567
+        "start_line": 438,
+        "end_line": 438
       },
       {
         "file": "tests/reset_menu.rs",
@@ -6594,18 +6584,18 @@
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 190,
-        "end_line": 190
+        "start_line": 227,
+        "end_line": 227
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 228,
-        "end_line": 228
+        "start_line": 265,
+        "end_line": 265
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 431,
-        "end_line": 431
+        "start_line": 456,
+        "end_line": 456
       },
       {
         "file": "tests/workflow_definition_and_js_constants_periphery.rs",
@@ -8085,32 +8075,17 @@
     ]
   },
   {
-    "id": "dup-4a620ec09b71",
-    "sites": [
-      {
-        "file": "src/contextgraph/query.rs",
-        "start_line": 2025,
-        "end_line": 2037
-      },
-      {
-        "file": "src/contextgraph/query.rs",
-        "start_line": 2046,
-        "end_line": 2057
-      }
-    ]
-  },
-  {
     "id": "dup-2e0e5aa448b1",
     "sites": [
       {
         "file": "src/contextgraph/query.rs",
-        "start_line": 2065,
-        "end_line": 2075
+        "start_line": 2062,
+        "end_line": 2072
       },
       {
         "file": "src/contextgraph/query.rs",
-        "start_line": 2196,
-        "end_line": 2206
+        "start_line": 2181,
+        "end_line": 2191
       },
       {
         "file": "src/dash.rs",
@@ -8121,21 +8096,6 @@
         "file": "tests/dash_graph_exploration_overview.rs",
         "start_line": 61,
         "end_line": 71
-      }
-    ]
-  },
-  {
-    "id": "dup-18be64354f04",
-    "sites": [
-      {
-        "file": "src/contextgraph/query.rs",
-        "start_line": 2083,
-        "end_line": 2108
-      },
-      {
-        "file": "src/contextgraph/query.rs",
-        "start_line": 2117,
-        "end_line": 2145
       }
     ]
   },
@@ -8329,13 +8289,13 @@
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 201,
-        "end_line": 201
+        "start_line": 238,
+        "end_line": 238
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 237,
-        "end_line": 237
+        "start_line": 274,
+        "end_line": 274
       }
     ]
   },
@@ -8599,8 +8559,8 @@
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1000,
-        "end_line": 1032
+        "start_line": 950,
+        "end_line": 982
       }
     ]
   },
@@ -9359,8 +9319,8 @@
       },
       {
         "file": "src/driver/replay.rs",
-        "start_line": 391,
-        "end_line": 398
+        "start_line": 396,
+        "end_line": 403
       },
       {
         "file": "tests/agent_fallback_model_config_periphery.rs",
@@ -9410,17 +9370,17 @@
     ]
   },
   {
-    "id": "dup-3631d3538de9",
+    "id": "dup-fa6d2818cb22",
     "sites": [
       {
         "file": "src/driver/replay.rs",
-        "start_line": 382,
-        "end_line": 389
+        "start_line": 383,
+        "end_line": 390
       },
       {
-        "file": "src/driver/replay.rs",
-        "start_line": 1613,
-        "end_line": 1620
+        "file": "tests/model_pinning_periphery.rs",
+        "start_line": 61,
+        "end_line": 68
       }
     ]
   },
@@ -9429,8 +9389,8 @@
     "sites": [
       {
         "file": "src/driver/replay.rs",
-        "start_line": 534,
-        "end_line": 542
+        "start_line": 539,
+        "end_line": 547
       },
       {
         "file": "src/liveness.rs",
@@ -9440,42 +9400,17 @@
     ]
   },
   {
-    "id": "dup-8bac3a592ea8",
+    "id": "dup-f31e5f12e527",
     "sites": [
       {
         "file": "src/driver/replay.rs",
-        "start_line": 618,
-        "end_line": 631
+        "start_line": 2002,
+        "end_line": 2050
       },
       {
         "file": "src/driver/replay.rs",
-        "start_line": 637,
-        "end_line": 648
-      }
-    ]
-  },
-  {
-    "id": "dup-d7ac19769555",
-    "sites": [
-      {
-        "file": "src/driver/replay.rs",
-        "start_line": 1947,
-        "end_line": 2046
-      },
-      {
-        "file": "src/driver/replay.rs",
-        "start_line": 2049,
-        "end_line": 2149
-      },
-      {
-        "file": "src/driver/replay.rs",
-        "start_line": 2152,
-        "end_line": 2251
-      },
-      {
-        "file": "src/driver/replay.rs",
-        "start_line": 2254,
-        "end_line": 2357
+        "start_line": 2126,
+        "end_line": 2175
       }
     ]
   },
@@ -9800,17 +9735,17 @@
     ]
   },
   {
-    "id": "dup-7526d45d4438",
+    "id": "dup-852917647aea",
     "sites": [
       {
         "file": "src/grounder/design/events.rs",
         "start_line": 20,
-        "end_line": 43
+        "end_line": 37
       },
       {
         "file": "src/grounder/design/events.rs",
-        "start_line": 51,
-        "end_line": 74
+        "start_line": 45,
+        "end_line": 62
       }
     ]
   },
@@ -9819,8 +9754,8 @@
     "sites": [
       {
         "file": "src/grounder/design/events.rs",
-        "start_line": 90,
-        "end_line": 114
+        "start_line": 99,
+        "end_line": 123
       },
       {
         "file": "src/grounder/symbols/events.rs",
@@ -9831,21 +9766,6 @@
         "file": "src/grounder/workflowdef.rs",
         "start_line": 245,
         "end_line": 252
-      }
-    ]
-  },
-  {
-    "id": "dup-7664240a3c1c",
-    "sites": [
-      {
-        "file": "src/grounder/design/events.rs",
-        "start_line": 200,
-        "end_line": 214
-      },
-      {
-        "file": "src/grounder/design/events.rs",
-        "start_line": 320,
-        "end_line": 337
       }
     ]
   },
@@ -13349,8 +13269,8 @@
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 321,
-        "end_line": 335
+        "start_line": 358,
+        "end_line": 372
       }
     ]
   },
@@ -13859,8 +13779,8 @@
       },
       {
         "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 189,
-        "end_line": 211
+        "start_line": 226,
+        "end_line": 248
       }
     ]
   },
@@ -14685,47 +14605,17 @@
     ]
   },
   {
-    "id": "dup-1786bc93ea6a",
-    "sites": [
-      {
-        "file": "tests/code_ingest_events.rs",
-        "start_line": 236,
-        "end_line": 299
-      },
-      {
-        "file": "tests/code_ingest_events.rs",
-        "start_line": 303,
-        "end_line": 373
-      }
-    ]
-  },
-  {
-    "id": "dup-e7fabdabc486",
-    "sites": [
-      {
-        "file": "tests/code_ingest_events.rs",
-        "start_line": 377,
-        "end_line": 444
-      },
-      {
-        "file": "tests/code_ingest_events.rs",
-        "start_line": 701,
-        "end_line": 780
-      }
-    ]
-  },
-  {
     "id": "dup-00d97505e566",
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 883,
-        "end_line": 890
+        "start_line": 833,
+        "end_line": 840
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1053,
-        "end_line": 1060
+        "start_line": 1003,
+        "end_line": 1010
       },
       {
         "file": "tests/common/graph_fold.rs",
@@ -14759,13 +14649,13 @@
     "sites": [
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1116,
-        "end_line": 1157
+        "start_line": 1066,
+        "end_line": 1107
       },
       {
         "file": "tests/code_ingest_events.rs",
-        "start_line": 1160,
-        "end_line": 1214
+        "start_line": 1110,
+        "end_line": 1164
       }
     ]
   },
@@ -15600,42 +15490,17 @@
     ]
   },
   {
-    "id": "dup-fb72166b4d9e",
+    "id": "dup-18409566d0bb",
     "sites": [
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "start_line": 528,
-        "end_line": 568
+        "start_line": 590,
+        "end_line": 632
       },
       {
         "file": "tests/dash_run_tree_spine.rs",
-        "start_line": 578,
-        "end_line": 618
-      },
-      {
-        "file": "tests/dash_run_tree_spine.rs",
-        "start_line": 697,
-        "end_line": 748
-      },
-      {
-        "file": "tests/dash_run_tree_spine.rs",
-        "start_line": 762,
-        "end_line": 799
-      }
-    ]
-  },
-  {
-    "id": "dup-ef040039558b",
-    "sites": [
-      {
-        "file": "tests/dash_run_tree_spine.rs",
-        "start_line": 807,
-        "end_line": 837
-      },
-      {
-        "file": "tests/dash_run_tree_spine.rs",
-        "start_line": 848,
-        "end_line": 885
+        "start_line": 710,
+        "end_line": 761
       }
     ]
   },
@@ -16775,41 +16640,6 @@
     ]
   },
   {
-    "id": "dup-e79f508e24b9",
-    "sites": [
-      {
-        "file": "tests/replan_episode_identity.rs",
-        "start_line": 309,
-        "end_line": 388
-      },
-      {
-        "file": "tests/replan_episode_identity.rs",
-        "start_line": 401,
-        "end_line": 479
-      }
-    ]
-  },
-  {
-    "id": "dup-51d311a880da",
-    "sites": [
-      {
-        "file": "tests/replan_episode_identity.rs",
-        "start_line": 672,
-        "end_line": 757
-      },
-      {
-        "file": "tests/replan_episode_identity.rs",
-        "start_line": 773,
-        "end_line": 858
-      },
-      {
-        "file": "tests/replan_episode_identity.rs",
-        "start_line": 873,
-        "end_line": 963
-      }
-    ]
-  },
-  {
     "id": "dup-cb850da85ff9",
     "sites": [
       {
@@ -16836,81 +16666,6 @@
         "file": "tests/reset_menu_previews_periphery.rs",
         "start_line": 74,
         "end_line": 77
-      }
-    ]
-  },
-  {
-    "id": "dup-bd6fce254096",
-    "sites": [
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 139,
-        "end_line": 149
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 712,
-        "end_line": 722
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 728,
-        "end_line": 743
-      }
-    ]
-  },
-  {
-    "id": "dup-3fde39b380e2",
-    "sites": [
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 155,
-        "end_line": 178
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 184,
-        "end_line": 210
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 626,
-        "end_line": 646
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 674,
-        "end_line": 703
-      }
-    ]
-  },
-  {
-    "id": "dup-bc312aeb64ee",
-    "sites": [
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 314,
-        "end_line": 345
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 354,
-        "end_line": 383
-      }
-    ]
-  },
-  {
-    "id": "dup-12d8867a4234",
-    "sites": [
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 512,
-        "end_line": 538
-      },
-      {
-        "file": "tests/reset_derived_live_writer_guard_periphery.rs",
-        "start_line": 557,
-        "end_line": 597
       }
     ]
   },
@@ -17636,46 +17391,6 @@
         "file": "tests/validate_advisories.rs",
         "start_line": 463,
         "end_line": 478
-      }
-    ]
-  },
-  {
-    "id": "dup-3e5b7806c96a",
-    "sites": [
-      {
-        "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 110,
-        "end_line": 160
-      },
-      {
-        "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 264,
-        "end_line": 291
-      },
-      {
-        "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 538,
-        "end_line": 619
-      }
-    ]
-  },
-  {
-    "id": "dup-66ad4537aac9",
-    "sites": [
-      {
-        "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 347,
-        "end_line": 414
-      },
-      {
-        "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 427,
-        "end_line": 510
-      },
-      {
-        "file": "tests/watchdog_cli_periphery.rs",
-        "start_line": 634,
-        "end_line": 736
       }
     ]
   },

@@ -248,5 +248,30 @@
     "id": "dup-5f516fce9f0b",
     "disposition": "not-a-duplicate",
     "reason": "One test proves that a compensation revert reopens adoption of the second-life tip; the other is the control proving that a plain remediation failure never does - opposite outcomes of different ledger events."
+  },
+  {
+    "id": "dup-fa6d2818cb22",
+    "disposition": "not-a-duplicate",
+    "reason": "The replay fixture grants an agent tools, while the model-pinning fixture sets its model and model ladder; each builds a different facet of AgentDef for a different suite."
+  },
+  {
+    "id": "dup-f31e5f12e527",
+    "disposition": "not-a-duplicate",
+    "reason": "The two backstop tests seed different interleavings that guard different defects (the emit-only-approve backstop itself, and a parked-unanswered sibling suppressing it); their seeding and assertions already go through the shared helpers."
+  },
+  {
+    "id": "dup-4fbc57c56116",
+    "disposition": "not-a-duplicate",
+    "reason": "One test drives the reference fold arm's own supersede on a refs-only file; the other pins that re-extracting file A leaves file B's reference edge live - a different arm and a different scope boundary."
+  },
+  {
+    "id": "dup-852917647aea",
+    "disposition": "not-a-duplicate",
+    "reason": "concept_events and link_events are the two typed callers of the shared sorted_events emitter; each supplies its own sort order, event type and payload."
+  },
+  {
+    "id": "dup-18409566d0bb",
+    "disposition": "not-a-duplicate",
+    "reason": "One test pins that a failing gate within one attempt is not masked by a trailing pass, the other that a later all-green attempt supersedes an earlier red; these are opposite outcomes of different battery histories, and both already build their batteries through implement_battery."
   }
 ]
