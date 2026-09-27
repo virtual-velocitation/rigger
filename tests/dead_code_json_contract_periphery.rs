@@ -877,7 +877,7 @@ fn the_committed_dead_code_json_disposition_split_is_21_delete_10_keep_pending_1
         .count();
     assert_eq!(
         (candidates.len(), delete, keep_public, keep_pending),
-        (48, 21, 17, 10),
+        (29, 21, 0, 8),
         "the committed disposition split has changed since this criterion's research"
     );
 }

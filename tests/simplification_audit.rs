@@ -2473,8 +2473,55 @@ struct FileScan {
 /// Scan every `.rs` file under [`SCAN_ROOTS`], deterministically ordered ([`collect_rs_files`]
 /// sorts within each root; `src` is scanned before `tests`).
 fn scan_tree(root: &Path) -> Vec<FileScan> {
+    scan_dirs(root, &SCAN_ROOTS.map(String::from))
+}
+
+/// The workspace's member crates: every directory under `crates/` that holds a `src/`, as a
+/// repo-relative path (`crates/console-core`), sorted. The root package is the implicit first
+/// member and is not listed.
+fn workspace_member_dirs(root: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(root.join("crates")) else {
+        return Vec::new();
+    };
+    let mut members: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().join("src").is_dir())
+        .map(|e| format!("crates/{}", e.file_name().to_string_lossy()))
+        .collect();
+    members.sort();
+    members
+}
+
+/// Every source directory of the whole workspace: the root package's `src`/`tests`, then each
+/// member crate's own `src`/`tests` - the scope the dead-code sweep reads callers from.
+fn workspace_scan_dirs(root: &Path) -> Vec<String> {
+    let mut dirs: Vec<String> = SCAN_ROOTS.map(String::from).to_vec();
+    for member in workspace_member_dirs(root) {
+        dirs.push(format!("{member}/src"));
+        dirs.push(format!("{member}/tests"));
+    }
+    dirs
+}
+
+/// `true` when `rel` is production source of some workspace crate: under the root package's
+/// `src/` or a member crate's `crates/<name>/src/`.
+fn is_production_source(rel: &str) -> bool {
+    if rel.starts_with("src/") {
+        return true;
+    }
+    let mut parts = rel.split('/');
+    parts.next() == Some("crates") && parts.next().is_some() && parts.next() == Some("src")
+}
+
+/// [`scan_tree`] widened to [`workspace_scan_dirs`].
+fn scan_workspace(root: &Path) -> Vec<FileScan> {
+    scan_dirs(root, &workspace_scan_dirs(root))
+}
+
+/// Scan every `.rs` file under each of `dirs` (repo-relative), in the given order.
+fn scan_dirs(root: &Path, dirs: &[String]) -> Vec<FileScan> {
     let mut paths = Vec::new();
-    for top in SCAN_ROOTS {
+    for top in dirs {
         collect_rs_files(&root.join(top), &mut paths);
     }
     paths
@@ -5409,6 +5456,9 @@ struct RefSite {
     /// deleting live code" - means it must never be silently dropped just because the name it
     /// names happens to collide with an unrelated fn elsewhere.
     via_attribute: bool,
+    /// Index of this occurrence's own token in its file's token stream - what
+    /// [`receiver_type`] reads backwards from to name the type a method call targets.
+    tok_idx: usize,
 }
 
 fn ref_punct(tok: Option<&RawTok>, text: &str) -> bool {
@@ -5641,8 +5691,26 @@ fn normalize_rel_path(dir: &Path, rel: &str) -> String {
 /// Every `.rs` file under `root/src`, read once, as repo-relative `(path, content)` pairs -
 /// deterministically ordered ([`collect_rs_files`] sorts within each directory).
 fn collect_src_files_with_content(root: &Path) -> Vec<(String, String)> {
+    collect_files_with_content(root, &["src".to_string()])
+}
+
+/// Every production source file of the whole workspace (the root `src/` and each member
+/// crate's `src/`), as [`collect_src_files_with_content`] reads them.
+fn collect_workspace_src_files_with_content(root: &Path) -> Vec<(String, String)> {
+    let mut dirs = vec!["src".to_string()];
+    dirs.extend(
+        workspace_member_dirs(root)
+            .into_iter()
+            .map(|m| format!("{m}/src")),
+    );
+    collect_files_with_content(root, &dirs)
+}
+
+fn collect_files_with_content(root: &Path, dirs: &[String]) -> Vec<(String, String)> {
     let mut paths = Vec::new();
-    collect_rs_files(&root.join("src"), &mut paths);
+    for dir in dirs {
+        collect_rs_files(&root.join(dir), &mut paths);
+    }
     paths
         .into_iter()
         .map(|p| {
@@ -5669,7 +5737,7 @@ fn all_ident_ref_sites(
 ) -> HashMap<String, Vec<RefSite>> {
     let mut idx: HashMap<String, Vec<RefSite>> = HashMap::new();
     for f in files {
-        let is_src = f.rel.starts_with("src/");
+        let is_src = is_production_source(&f.rel);
         let file_wholly_test = whole_file_test.contains(&f.rel);
         // Round 1 (`op-u87c2-round-1-closes-the-reference-classes-not-the-instances` class 1):
         // test regions are FN spans (`is_test`) AND MOD spans (`ModSpan::is_test`) - never fn
@@ -5710,6 +5778,7 @@ fn all_ident_ref_sites(
                             production,
                             qualifier: None,
                             via_attribute: true,
+                            tok_idx: i,
                         });
                     }
                     RawKind::Lit => {
@@ -5721,6 +5790,7 @@ fn all_ident_ref_sites(
                                     production,
                                     qualifier: None,
                                     via_attribute: true,
+                                    tok_idx: i,
                                 });
                             }
                         }
@@ -5752,6 +5822,7 @@ fn all_ident_ref_sites(
                 production,
                 qualifier,
                 via_attribute: false,
+                tok_idx: i,
             });
         }
     }
@@ -5832,10 +5903,28 @@ enum Disposition {
     KeepPending,
 }
 
-/// `true` for the one real, concrete entry point this tree has (Constraints Walk) - a
-/// top-level `fn main`, not nested in any `mod`/`impl`.
-fn is_exempt_entry_point(f: &ScannedFn) -> bool {
-    f.name == "main" && f.enclosing_mods.is_empty() && f.enclosing_impl.is_none()
+/// `true` for an entry point the language or a foreign caller invokes, never Rust code: a
+/// top-level `fn main`, not nested in any `mod`/`impl`, or an `extern "C"` export (a member
+/// crate's WebAssembly ABI is called from JavaScript).
+fn is_exempt_entry_point(f: &ScannedFn, file_tokens: &HashMap<&str, &[RawTok]>) -> bool {
+    if f.name == "main" && f.enclosing_mods.is_empty() && f.enclosing_impl.is_none() {
+        return true;
+    }
+    file_tokens
+        .get(f.file.as_str())
+        .map(|toks| {
+            fn_signature_tokens(toks, f)
+                .iter()
+                .take_while(|t| !(t.kind == RawKind::Keyword && t.text == "fn"))
+                .any(|t| t.kind == RawKind::Keyword && t.text == "extern")
+        })
+        .unwrap_or(false)
+}
+
+/// `f`'s own signature tokens: from the first token on its `fn` line through its body's
+/// opening line (visibility, qualifiers, name, generics, parameters, return type).
+fn fn_signature_tokens<'a>(file_tokens: &'a [RawTok], f: &ScannedFn) -> &'a [RawTok] {
+    body_tokens(file_tokens, f.start_line, f.body_start_line)
 }
 
 /// `true` for a TRAIT impl (`impl Trait for Type`, `enclosing_impl` contains `" for "`) as
@@ -5869,13 +5958,37 @@ fn is_trait_impl(f: &ScannedFn) -> bool {
 /// `.name(` only, which made `Type::new()` invisible - fixed before this criterion's own JSON
 /// was ever committed).
 fn signature_declares_self(sig_toks: &[RawTok]) -> bool {
-    let Some(paren_idx) = sig_toks
+    // The parameter list is the first `(` after the `fn` name and its own generics - never an
+    // earlier one (`pub(crate)`, a `#[cfg_attr(..)]` sharing the line).
+    let Some(fn_idx) = sig_toks
         .iter()
-        .position(|t| t.kind == RawKind::Punct && t.text == "(")
+        .position(|t| t.kind == RawKind::Keyword && t.text == "fn")
     else {
         return false;
     };
-    let mut i = paren_idx + 1;
+    let mut i = fn_idx + 2;
+    if ref_punct(sig_toks.get(i), "<") {
+        let mut depth = 0i32;
+        while let Some(t) = sig_toks.get(i) {
+            if t.kind == RawKind::Punct && t.text == "<" {
+                depth += 1;
+            } else if t.kind == RawKind::Punct
+                && t.text == ">"
+                && !ref_punct(sig_toks.get(i - 1), "-")
+            {
+                depth -= 1;
+                if depth == 0 {
+                    i += 1;
+                    break;
+                }
+            }
+            i += 1;
+        }
+    }
+    if !ref_punct(sig_toks.get(i), "(") {
+        return false;
+    }
+    i += 1;
     while let Some(t) = sig_toks.get(i) {
         match (&t.kind, t.text.as_str()) {
             (RawKind::Punct, "&") => i += 1,
@@ -5911,7 +6024,7 @@ fn dispatch_category(f: &ScannedFn, file_tokens: &HashMap<&str, &[RawTok]>) -> D
     }
     let has_self = file_tokens
         .get(f.file.as_str())
-        .map(|toks| signature_declares_self(body_tokens(toks, f.start_line, f.body_start_line)))
+        .map(|toks| signature_declares_self(fn_signature_tokens(toks, f)))
         .unwrap_or(false);
     if has_self {
         DispatchCategory::Method
@@ -6014,6 +6127,133 @@ fn use_import_qualifiers(tokens: &[RawTok]) -> HashMap<String, String> {
     out
 }
 
+/// The innermost function whose span contains `line` in `file`, if any.
+fn innermost_fn_at(file: &FileScan, line: usize) -> Option<&ScannedFn> {
+    file.fns
+        .iter()
+        .filter(|f| f.start_line <= line && line <= f.end_line)
+        .max_by_key(|f| f.start_line)
+}
+
+/// The type a type expression starting at `toks[k]` names: references, lifetimes and `mut`
+/// skipped, `Self` read as `self_type`, a path reduced to its last segment (`crate::a::B` ->
+/// `B`). `None` for a trait object or `impl Trait`, whose concrete type is unknown.
+fn type_named_at(toks: &[RawTok], mut k: usize, self_type: Option<&str>) -> Option<String> {
+    while let Some(t) = toks.get(k) {
+        match (&t.kind, t.text.as_str()) {
+            (RawKind::Punct, "&") | (RawKind::Lifetime, _) | (RawKind::Keyword, "mut") => k += 1,
+            _ => break,
+        }
+    }
+    let first = toks.get(k)?;
+    match (&first.kind, first.text.as_str()) {
+        (RawKind::Keyword, "Self") => return self_type.map(str::to_string),
+        (RawKind::Ident, _) => {}
+        _ => return None,
+    }
+    let mut last = first.text.clone();
+    while ref_punct(toks.get(k + 1), ":") && ref_punct(toks.get(k + 2), ":") {
+        match toks.get(k + 3) {
+            Some(t) if t.kind == RawKind::Ident => {
+                last = t.text.clone();
+                k += 3;
+            }
+            _ => break,
+        }
+    }
+    Some(last)
+}
+
+/// The type of the local binding `name` visible at token `use_idx` inside `f`, read from its
+/// most recent binding: a typed parameter (`name: T`), a typed `let` (`let name: T`), or a
+/// struct-literal `let` (`let name = T { .. }`). Any other most-recent binding (a `for` or
+/// closure binding, an untyped `let` from a call) leaves the type unknown.
+fn local_binding_type(
+    toks: &[RawTok],
+    f: &ScannedFn,
+    use_idx: usize,
+    name: &str,
+    self_type: Option<&str>,
+) -> Option<String> {
+    let lo = toks.partition_point(|t| t.line < f.start_line);
+    let is_kw = |j: usize, kw: &str| {
+        toks.get(j)
+            .map(|t| t.kind == RawKind::Keyword && t.text == kw)
+            .unwrap_or(false)
+    };
+    let mut found: Option<Option<String>> = None;
+    for j in lo..use_idx {
+        let t = &toks[j];
+        if t.kind != RawKind::Ident || t.text != name || j == 0 {
+            continue;
+        }
+        let before = if is_kw(j - 1, "mut") && j >= 2 {
+            j - 2
+        } else {
+            j - 1
+        };
+        let typed = ref_punct(toks.get(j + 1), ":") && !ref_punct(toks.get(j + 2), ":");
+        if is_kw(before, "let") {
+            found = Some(if typed {
+                type_named_at(toks, j + 2, self_type)
+            } else if ref_punct(toks.get(j + 1), "=") {
+                let ty = type_named_at(toks, j + 2, self_type);
+                let mut k = j + 2;
+                while toks
+                    .get(k)
+                    .map(|t| t.kind == RawKind::Ident || t.text == ":")
+                    == Some(true)
+                {
+                    k += 1;
+                }
+                ty.filter(|_| ref_punct(toks.get(k), "{"))
+            } else {
+                None
+            });
+        } else if t.line <= f.body_start_line
+            && typed
+            && (ref_punct(toks.get(before), "(") || ref_punct(toks.get(before), ","))
+        {
+            found = Some(type_named_at(toks, j + 2, self_type));
+        } else if is_kw(before, "for") || ref_punct(toks.get(before), "|") {
+            found = Some(None);
+        }
+    }
+    found.flatten()
+}
+
+/// The type a reference at `file.tokens[i]` is called on, when the scanner can read it: the
+/// `T` of a `T::name` path, the enclosing impl's own type for `Self::name` or `self.name`, or
+/// the declared type of a plain local receiver (`x.name` - see [`local_binding_type`]).
+/// `None` whenever the receiver is anything else (a field, a call result, a chained expression).
+fn receiver_type(file: &FileScan, i: usize) -> Option<String> {
+    let toks = &file.tokens;
+    let enclosing = innermost_fn_at(file, toks[i].line);
+    let self_type = enclosing
+        .and_then(|f| f.enclosing_impl.as_deref())
+        .map(impl_self_type);
+    if let Some(q) = qualifier_before(toks, i) {
+        return match q.as_str() {
+            "Self" => self_type,
+            q if q.starts_with(char::is_uppercase) => Some(q.to_string()),
+            _ => None,
+        };
+    }
+    if i < 2 || !ref_punct(toks.get(i - 1), ".") {
+        return None;
+    }
+    let recv = &toks[i - 2];
+    if recv.kind == RawKind::Keyword && recv.text == "self" {
+        return self_type;
+    }
+    if recv.kind != RawKind::Ident
+        || (i >= 3 && (ref_punct(toks.get(i - 3), ".") || ref_punct(toks.get(i - 3), ":")))
+    {
+        return None;
+    }
+    local_binding_type(toks, enclosing?, i - 2, &recv.text, self_type.as_deref())
+}
+
 /// SPEC 87 CRITERION 2's whole computation: every production fn under `src/` (file-aware
 /// `is_test`) with zero references from production code. `files` is [`scan_tree`]'s whole
 /// `src`+`tests` output; `whole_file_test` is [`resolve_out_of_line_test_files`]'s `src/`-only
@@ -6029,15 +6269,29 @@ fn build_dead_code_candidates(
 
     let mut candidates: Vec<&ScannedFn> = files
         .iter()
-        .filter(|fsc| fsc.rel.starts_with("src/"))
+        .filter(|fsc| is_production_source(&fsc.rel))
         .flat_map(|fsc| fsc.fns.iter())
         .filter(|f| !(f.is_test || whole_file_test.contains(&f.file)))
-        .filter(|f| !is_exempt_entry_point(f))
+        .filter(|f| !is_exempt_entry_point(f, &file_tokens))
         .filter(|f| !is_trait_impl(f))
         .collect();
     candidates.sort_by(|a, b| (&a.file, a.start_line).cmp(&(&b.file, b.start_line)));
 
     let idx = all_ident_ref_sites(files, whole_file_test);
+    let file_scans: HashMap<&str, &FileScan> =
+        files.iter().map(|fsc| (fsc.rel.as_str(), fsc)).collect();
+    // Every type that defines a method or associated fn of a given name, in any impl block
+    // (inherent or trait, production or test) - a call resolved to one of these types is that
+    // type's own call, never another type's same-named method.
+    let mut definers: HashMap<&str, BTreeSet<String>> = HashMap::new();
+    for sf in files.iter().flat_map(|fsc| fsc.fns.iter()) {
+        if let Some(header) = sf.enclosing_impl.as_deref() {
+            definers
+                .entry(sf.name.as_str())
+                .or_default()
+                .insert(impl_self_type(header));
+        }
+    }
     let use_imports: HashMap<&str, HashMap<String, String>> = files
         .iter()
         .map(|fsc| (fsc.rel.as_str(), use_import_qualifiers(&fsc.tokens)))
@@ -6119,10 +6373,26 @@ fn build_dead_code_candidates(
             DispatchCategory::Method => None,
         };
 
+        let my_type = f.enclosing_impl.as_deref().map(impl_self_type);
         let mut production_hit = false;
         let mut test_only: Vec<TestOnlyRef> = Vec::new();
         for s in relevant {
-            let counts_for_me = if !needs_attribution || s.via_attribute {
+            let counts_for_me = if s.via_attribute {
+                true
+            } else if cat == DispatchCategory::Method {
+                // A method is credited with a call whose receiver resolves to its own type, or
+                // whose receiver the scanner cannot read (the conservative direction); a call
+                // resolved to ANOTHER type that defines the same name is that type's alone.
+                match receiver_type(file_scans[s.file.as_str()], s.tok_idx) {
+                    None => true,
+                    Some(t) => {
+                        Some(&t) == my_type.as_ref()
+                            || !definers
+                                .get(f.name.as_str())
+                                .is_some_and(|types| types.contains(&t))
+                    }
+                }
+            } else if !needs_attribution {
                 true
             } else if s.qualifier.as_deref() == Some("Self") && s.file == f.file {
                 // Spec 87 criterion 3 fix: `Self::name(` inside the SAME FILE as this
@@ -6884,8 +7154,14 @@ fn dead_code_lines_to_json(candidates: &[DeadCodeCandidate]) -> String {
 fn real_whole_file_test_set() -> &'static BTreeSet<String> {
     static CACHE: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| {
-        resolve_out_of_line_test_files(&collect_src_files_with_content(&repo_root()))
+        resolve_out_of_line_test_files(&collect_workspace_src_files_with_content(&repo_root()))
     })
+}
+
+/// The real checked-out workspace's [`scan_workspace`], memoized like [`real_files`].
+fn real_workspace_files() -> &'static [FileScan] {
+    static CACHE: std::sync::OnceLock<Vec<FileScan>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| scan_workspace(&repo_root()))
 }
 
 /// Criterion 3's own finalization step, applied ONLY to the real tree's candidates: fills in
@@ -6909,7 +7185,7 @@ fn real_dead_code_candidates() -> &'static [DeadCodeCandidate] {
     static CACHE: std::sync::OnceLock<Vec<DeadCodeCandidate>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| {
         apply_real_tree_dispositions(build_dead_code_candidates(
-            real_files(),
+            real_workspace_files(),
             real_whole_file_test_set(),
         ))
     })
@@ -10300,8 +10576,9 @@ mod tests {
     // -------------------------------------------------------------------------------------
 
     fn candidates_for(root: &Path) -> Vec<DeadCodeCandidate> {
-        let files = scan_tree(root);
-        let whole_file_test = resolve_out_of_line_test_files(&collect_src_files_with_content(root));
+        let files = scan_workspace(root);
+        let whole_file_test =
+            resolve_out_of_line_test_files(&collect_workspace_src_files_with_content(root));
         build_dead_code_candidates(&files, &whole_file_test)
     }
 
@@ -11363,9 +11640,13 @@ mod tests {
             .count();
         assert_eq!(
             (candidates.len(), delete, keep_public, keep_pending),
-            (48, 21, 17, 10),
+            (29, 21, 0, 8),
             "the real-tree candidate count or disposition split has changed since this \
              criterion's research - {candidates:#?}\n\n\
+             Was (48, 21, 17, 10) before the sweep read callers from the whole workspace and \
+             attributed each method by its receiver type: the eleven console items and \
+             graph_load/graph_query are called from crates/console-core, and the six \
+             to_event methods each have their own typed caller.\n\n\
              Was (44, 21, 16, 7) before spec 104 criterion 5's own A FAILURE HAS A CLASS, \
              landed concurrently against the same criterion-4 base criterion 6's STOP entry \
              below also builds on. FOUR fresh candidates land: THREE fresh keep-pending - \
