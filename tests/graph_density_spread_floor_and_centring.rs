@@ -178,23 +178,32 @@ const DRIVER_SPREAD_FLOOR: &str = r##";(function(){
 })();
 "##;
 
-/// Proof of the floor + degenerate branches (see `DRIVER_SPREAD_FLOOR`): `kgSpread` is exactly 1 off
-/// the dense-with-accessors path, so a sparse or accessor-less caller keeps the panel unchanged.
-#[test]
-fn the_spread_factor_floors_at_one_off_the_dense_path() {
+/// `driver` runs against the live dash page and prints `marker`; `claim` is what a failure
+/// reports. Skipped (named `test` in the skip line) when there is no `node` runtime.
+fn assert_live_page_driver_passes(test: &str, driver: &str, marker: &str, claim: &str) {
     if !node_available() {
         eprintln!(
-            "SKIP the_spread_factor_floors_at_one_off_the_dense_path: no `node` runtime on PATH. This \
-             runtime guard needs node (present on dev machines and on ubuntu-latest CI); install node \
-             to run it."
+            "SKIP {test}: no `node` runtime on PATH. This runtime guard needs node (present on \
+             dev machines and on ubuntu-latest CI); install node to run it."
         );
         return;
     }
     let page = dash::live_page();
-    let (ok, stdout, stderr) = run_driver(&page, DRIVER_SPREAD_FLOOR);
+    let (ok, stdout, stderr) = run_driver(&page, driver);
     assert!(
-        ok && stdout.contains("OK spread-floor"),
-        "kgSpread must floor at 1 off the dense path:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        ok && stdout.contains(marker),
+        "{claim}:\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
+rigger::test_cases! { assert_live_page_driver_passes;
+    /// Proof of the floor + degenerate branches (see `DRIVER_SPREAD_FLOOR`): `kgSpread` is exactly 1 off
+    /// the dense-with-accessors path, so a sparse or accessor-less caller keeps the panel unchanged.
+    the_spread_factor_floors_at_one_off_the_dense_path: (
+        "the_spread_factor_floors_at_one_off_the_dense_path",
+        DRIVER_SPREAD_FLOOR,
+        "OK spread-floor",
+        "kgSpread must floor at 1 off the dense path",
     );
 }
 
@@ -253,24 +262,14 @@ const DRIVER_BACKCOMPAT_PANEL: &str = r##";(function(){
 })();
 "##;
 
-/// Proof that the bare 4-arg `forceLayout` preserves the pre-c2 panel-sized layout while the 6-arg
-/// accessor path scales past it (see `DRIVER_BACKCOMPAT_PANEL`).
-#[test]
-fn the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it() {
-    if !node_available() {
-        eprintln!(
-            "SKIP the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it: no \
-             `node` runtime on PATH. This runtime guard needs node (present on dev machines and on \
-             ubuntu-latest CI); install node to run it."
-        );
-        return;
-    }
-    let page = dash::live_page();
-    let (ok, stdout, stderr) = run_driver(&page, DRIVER_BACKCOMPAT_PANEL);
-    assert!(
-        ok && stdout.contains("OK backcompat-panel"),
-        "the bare 4-arg layout must stay panel-sized while the accessor path grows past it:\n--- \
-         stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+rigger::test_cases! { assert_live_page_driver_passes;
+    /// Proof that the bare 4-arg `forceLayout` preserves the pre-c2 panel-sized layout while the 6-arg
+    /// accessor path scales past it (see `DRIVER_BACKCOMPAT_PANEL`).
+    the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it: (
+        "the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it",
+        DRIVER_BACKCOMPAT_PANEL,
+        "OK backcompat-panel",
+        "the bare 4-arg layout must stay panel-sized while the accessor path grows past it",
     );
 }
 
@@ -317,23 +316,13 @@ const DRIVER_CENTRED_CANVAS: &str = r##";(function(){
 })();
 "##;
 
-/// Proof that the enlarged canvas is centred on the panel middle (see `DRIVER_CENTRED_CANVAS`) - the
-/// reset view opens on the drawing's centre, a claim the extent-only done-when proof is blind to.
-#[test]
-fn the_enlarged_canvas_is_centred_on_the_panel_middle() {
-    if !node_available() {
-        eprintln!(
-            "SKIP the_enlarged_canvas_is_centred_on_the_panel_middle: no `node` runtime on PATH. This \
-             runtime guard needs node (present on dev machines and on ubuntu-latest CI); install node \
-             to run it."
-        );
-        return;
-    }
-    let page = dash::live_page();
-    let (ok, stdout, stderr) = run_driver(&page, DRIVER_CENTRED_CANVAS);
-    assert!(
-        ok && stdout.contains("OK centred-canvas"),
-        "the enlarged canvas must be centred on the panel middle:\n--- stdout ---\n{stdout}\n--- \
-         stderr ---\n{stderr}"
+rigger::test_cases! { assert_live_page_driver_passes;
+    /// Proof that the enlarged canvas is centred on the panel middle (see `DRIVER_CENTRED_CANVAS`) - the
+    /// reset view opens on the drawing's centre, a claim the extent-only done-when proof is blind to.
+    the_enlarged_canvas_is_centred_on_the_panel_middle: (
+        "the_enlarged_canvas_is_centred_on_the_panel_middle",
+        DRIVER_CENTRED_CANVAS,
+        "OK centred-canvas",
+        "the enlarged canvas must be centred on the panel middle",
     );
 }
