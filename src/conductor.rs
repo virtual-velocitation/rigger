@@ -15786,7 +15786,7 @@ mod tests {
                 }
             }
             // A REVIEWER's own side effect destroying the worktree mid-review (spec 64
-            // criterion 3, round 4), mirroring `RecordingRunner::deleting_worktree`'s
+            // criterion 3, round 4), mirroring `GateSideEffect::DeleteWorktree`'s
             // gate-side deletion but at this review-tier spawn boundary: the SAME
             // machinery `run_reviewer`'s ensure-on-park re-assert must self-heal before
             // the NEXT tier's spawn, or before a stamp that reads the tree right after
@@ -32407,7 +32407,7 @@ mod tests {
             write_file: Some("work.rs".into()),
             ..Stub::new()
         };
-        let runner = RecordingRunner::materializing();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -32471,7 +32471,7 @@ mod tests {
             ]),
             ..Stub::new()
         };
-        let runner = RecordingRunner::materializing();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -32548,7 +32548,7 @@ mod tests {
         let deps = Deps {
             store: &store,
             driver: &driver,
-            gates: &RecordingRunner::materializing(),
+            gates: &RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache),
             repo: repo_path.clone(),
             grounder: None,
             graph: None,
@@ -32621,7 +32621,7 @@ mod tests {
                 .collect(),
             ..Stub::new()
         };
-        let runner = RecordingRunner::materializing();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::MaterializeCache);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -32696,7 +32696,7 @@ mod tests {
         // historical fault this whole spec closes: an agent finding its assigned worktree
         // gone at spawn) must self-heal in the binary, not in the reviewer's opening
         // minutes. This proves it with a gate whose OWN side effect is exactly that
-        // deletion (`RecordingRunner::deleting_worktree`), so by the time the parked
+        // deletion (`GateSideEffect::DeleteWorktree`), so by the time the parked
         // adjudicator's spawn is inspected below, the gate has ALREADY destroyed the
         // worktree once - `review_unit` must have put it back before handing it out.
         let repo = init_repo();
@@ -32728,7 +32728,7 @@ mod tests {
                 .collect(),
             ..Stub::new()
         };
-        let runner = RecordingRunner::deleting_worktree();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -32929,7 +32929,7 @@ mod tests {
                 .collect(),
             ..Stub::new()
         };
-        let runner = RecordingRunner::deleting_worktree();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -32997,7 +32997,7 @@ mod tests {
         // adjudicator) is its own real, wall-clock-blocking spawn, all funneled through
         // the SAME shared authority `run_reviewer` - so a tier's OWN side effect deleting
         // the worktree (the identical shape a gate's own side effect already proves via
-        // `RecordingRunner::deleting_worktree`) left the NEXT tier's spawn a gone dir,
+        // `GateSideEffect::DeleteWorktree`) left the NEXT tier's spawn a gone dir,
         // with nothing between tiers to restore it. This drives the LENS to delete the
         // worktree as its side effect, then proves the ADVERSARY - the very next tier
         // `run_reviewer` reaches - finds it RESTORED at spawn entry, not gone.
@@ -34238,7 +34238,7 @@ mod tests {
         );
 
         let driver = Stub::new();
-        let runner = RecordingRunner::deleting_worktree();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             store: &st,
             driver: &driver,
@@ -34946,7 +34946,7 @@ mod tests {
             )]),
             ..Stub::new()
         };
-        let runner = RecordingRunner::deleting_worktree();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -35028,7 +35028,7 @@ mod tests {
             output: r#"{"verdict":"approve"}"#.into(),
             ..Stub::new()
         };
-        let runner = RecordingRunner::deleting_worktree();
+        let runner = RecordingRunner::with_side_effect(GateSideEffect::DeleteWorktree);
         let deps = Deps {
             store: &store,
             driver: &driver,
@@ -37771,6 +37771,17 @@ mod tests {
         /// returns.
         delete_worktree_dir: bool,
     }
+    /// What a [`RecordingRunner`]'s gate does beyond recording its call.
+    enum GateSideEffect {
+        /// Create each non-empty `target_dir` on disk - a stand-in for a real cargo build
+        /// populating the per-unit cache (Gap 19).
+        MaterializeCache,
+        /// Delete the worktree dir the gate ran in, simulating an out-of-band deletion that
+        /// lands between this gate's return and the review tier's next spawn (spec 64
+        /// criterion 3).
+        DeleteWorktree,
+    }
+
     impl RecordingRunner {
         fn new(fail: &[&str]) -> Self {
             RecordingRunner {
@@ -37786,20 +37797,11 @@ mod tests {
                 delete_worktree_dir: false,
             }
         }
-        /// Like [`Self::new`] but the runner also creates each non-empty `target_dir` on disk -
-        /// a stand-in for a real cargo build populating the per-unit cache (Gap 19).
-        fn materializing() -> Self {
+        /// Like [`Self::new`], but every gate run also carries out `effect`.
+        fn with_side_effect(effect: GateSideEffect) -> Self {
             RecordingRunner {
-                materialize_cache: true,
-                ..RecordingRunner::new(&[])
-            }
-        }
-        /// A runner whose gate DELETES the worktree dir it ran in, simulating an out-of-band
-        /// deletion that lands between this gate's return and the review tier's next spawn
-        /// (spec 64 criterion 3).
-        fn deleting_worktree() -> Self {
-            RecordingRunner {
-                delete_worktree_dir: true,
+                materialize_cache: matches!(effect, GateSideEffect::MaterializeCache),
+                delete_worktree_dir: matches!(effect, GateSideEffect::DeleteWorktree),
                 ..RecordingRunner::new(&[])
             }
         }
