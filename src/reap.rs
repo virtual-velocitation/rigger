@@ -693,6 +693,7 @@ fn strip_deleted_suffix(cwd: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::cleanup;
     use std::process::{Child, Command as StdCommand};
 
     /// A throwaway git repo with an empty `.rigger/tmp` created inside it, so
@@ -767,13 +768,6 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         false
-    }
-
-    /// Kill-and-wait a fixture child unconditionally, ignoring errors - test cleanup only,
-    /// via the `Child` handle it was spawned with (never a computed pid).
-    fn cleanup(child: &mut Child) {
-        let _ = child.kill();
-        let _ = child.wait();
     }
 
     // ---- end_child (spec 104 criterion 6, STOP): the handle-bound production reap ----

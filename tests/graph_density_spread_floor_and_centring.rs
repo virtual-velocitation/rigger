@@ -29,8 +29,11 @@
 //! PATH. `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the served page in both lanes.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
 use rigger::dash;
 
 /// Extract the single inline `<script>` body from the served page.
@@ -43,16 +46,6 @@ fn page_script(page: &str) -> &str {
         .find("</script>")
         .expect("the served page closes its <script>");
     &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on the `ubuntu-latest` CI
-/// image, absent on the shim-only lane); the runtime guards SKIP rather than fail when it is missing.
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// The head of the node-vm harness: a minimal DOM shim so the page's top-level wiring
@@ -182,7 +175,7 @@ const DRIVER_SPREAD_FLOOR: &str = r##";(function(){
 /// the dense-with-accessors path, so a sparse or accessor-less caller keeps the panel unchanged.
 #[test]
 fn the_spread_factor_floors_at_one_off_the_dense_path() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_spread_factor_floors_at_one_off_the_dense_path: no `node` runtime on PATH. This \
              runtime guard needs node (present on dev machines and on ubuntu-latest CI); install node \
@@ -257,7 +250,7 @@ const DRIVER_BACKCOMPAT_PANEL: &str = r##";(function(){
 /// accessor path scales past it (see `DRIVER_BACKCOMPAT_PANEL`).
 #[test]
 fn the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_bare_four_arg_layout_stays_panel_sized_and_the_accessor_path_grows_past_it: no \
              `node` runtime on PATH. This runtime guard needs node (present on dev machines and on \
@@ -321,7 +314,7 @@ const DRIVER_CENTRED_CANVAS: &str = r##";(function(){
 /// reset view opens on the drawing's centre, a claim the extent-only done-when proof is blind to.
 #[test]
 fn the_enlarged_canvas_is_centred_on_the_panel_middle() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_enlarged_canvas_is_centred_on_the_panel_middle: no `node` runtime on PATH. This \
              runtime guard needs node (present on dev machines and on ubuntu-latest CI); install node \

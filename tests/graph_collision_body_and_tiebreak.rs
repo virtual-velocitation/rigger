@@ -23,8 +23,11 @@
 //! PATH. `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the served page in both lanes.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
 use rigger::dash;
 
 /// Extract the single inline `<script>` body from the served page.
@@ -37,16 +40,6 @@ fn page_script(page: &str) -> &str {
         .find("</script>")
         .expect("the served page closes its <script>");
     &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on the `ubuntu-latest` CI
-/// image, absent on the shim-only lane); the runtime guards SKIP rather than fail when it is missing.
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// The head of the node-vm harness: a minimal DOM shim so the page's top-level wiring
@@ -213,7 +206,7 @@ const DRIVER_TIEBREAK: &str = r##";(function(){
 /// only indirectly).
 #[test]
 fn the_collision_body_encloses_the_circle_and_its_label() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_collision_body_encloses_the_circle_and_its_label: no `node` runtime on PATH. \
              This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
@@ -240,7 +233,7 @@ fn the_collision_body_encloses_the_circle_and_its_label() {
 /// Guards the degenerate branches the clustered-density proof never places.
 #[test]
 fn the_separation_pass_resolves_coincident_nodes_deterministically() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_separation_pass_resolves_coincident_nodes_deterministically: no `node` runtime \
              on PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest \

@@ -11,8 +11,11 @@
 //! integration test compiles as its own independent crate, so the harness plumbing cannot be shared
 //! via a plain `use`).
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
 use rigger::dash;
 
 /// Extract the single inline `<script>` body from the served page (the slice the runtime harness
@@ -26,16 +29,6 @@ fn page_script(page: &str) -> &str {
         .find("</script>")
         .expect("the served page closes its <script>");
     &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
@@ -179,7 +172,7 @@ const PROOF_DRIVER: &str = r#"
 /// entity" state (amber, not silent).
 #[test]
 fn proof_row_renders_count_evidence_and_the_explicit_empty_state() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP proof_row_renders_count_evidence_and_the_explicit_empty_state: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \

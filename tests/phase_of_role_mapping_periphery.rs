@@ -29,6 +29,9 @@
 //! lane, criterion 3) and the persona-led work label (criterion 2), separate functions in the
 //! same file this unit does not touch.
 
+mod common;
+
+use common::fixtures::js_declaration;
 use std::path::Path;
 use std::process::Command;
 
@@ -40,35 +43,6 @@ fn rigger_js_source() -> String {
         .join("workflows")
         .join("rigger.js");
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// Extract a top-level `function <name>(...) { ... }` declaration VERBATIM from
-/// `start_marker` through its brace-matched close, inclusive. The same brace-counting
-/// `tests/step_attention_periphery.rs::js_declaration` uses (this file's own copy, per that
-/// file's documented per-file duplication convention) - kept here rather than shared so
-/// neither file's fixture depends on the other's existence or internal layout.
-fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
-    let start = src
-        .find(start_marker)
-        .unwrap_or_else(|| panic!("workflow must contain `{start_marker}`"));
-    let open = start
-        + src[start..]
-            .find('{')
-            .expect("declaration must open a brace");
-    let mut depth = 0usize;
-    for (i, c) in src[open..].char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &src[start..=open + i];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{start_marker}` is not brace-balanced");
 }
 
 /// Run the REAL `phaseOf` - extracted verbatim from the shipped `workflows/rigger.js` together

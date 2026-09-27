@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use common::fixtures::chain_graph;
 use common::fixtures::star_graph;
+use common::fixtures::tool_available;
 use rigger::contextgraph::{
     Edge, Graph, Node, KIND_CODE_ENTITY, KIND_DECISION, KIND_UNIT, REL_DECIDED, REL_IN_COMMUNITY,
     REL_REFERENCES, TIER_EXTRACTED, TIER_INFERRED,
@@ -298,16 +299,6 @@ fn the_served_root_page_ships_the_kg_panel_and_select_to_seed_wiring() {
     );
 }
 
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// Extract the single inline `<script>` body from the served page.
 fn page_script(page: &str) -> &str {
     let open = page
@@ -419,7 +410,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// dropping the delegated listener, or letting `render()` clobber the panel, makes it go red.
 #[test]
 fn selecting_a_node_seeds_the_kg_panel_and_it_survives_the_live_poll() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP selecting_a_node_seeds_the_kg_panel_and_it_survives_the_live_poll: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \
@@ -830,7 +821,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// the grep test cannot make.
 #[test]
 fn a_god_node_renders_a_badge_and_a_shift_click_traces_the_query_path() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP a_god_node_renders_a_badge_and_a_shift_click_traces_the_query_path: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \
@@ -1254,7 +1245,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// test cannot make.
 #[test]
 fn toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP toggling_a_tier_hides_that_tiers_edges_and_the_explain_provenance_renders: no \
              `node` runtime on PATH. This runtime guard needs node (present on dev machines and on \

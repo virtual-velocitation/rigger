@@ -67,6 +67,8 @@
 //! an accidental drop of `pub` (or of `pub mod liveness` in `lib.rs`) fails HERE, at the
 //! crate boundary, rather than only inside the module that would silently stop exporting it.
 
+use common::fixtures::js_declaration;
+
 /// Spec 69, criterion 5 (review u69c5 round 4, cause genuine-defect): `liveness::
 /// hung_cursor_path`, `read_hung_cursor`, and `write_hung_cursor` are the three new PUBLIC
 /// functions the round-4 fix added - called EXACTLY as an external crate consumer would
@@ -645,36 +647,6 @@ fn hung_liveness_halt_lands_ahead_of_real_worker_death_and_stalled_frontier_sign
 // for real under `node`, closing the cross-module seam probe #5 (this unit's mechanical
 // enumeration) turned up: a new call from the Rust-emitted wire (criterion 5, proven end to end
 // above) into this JS consumer (criterion 6).
-
-/// Extract a top-level declaration - `function <name>(...) { ... }` or `const <NAME> = { ... }` -
-/// VERBATIM from `start_marker` through its brace-matched close, inclusive. The same brace-
-/// counting `src/main.rs::mod tests::js_function_body` uses (this file's own copy, per the
-/// established per-file duplication convention documented at the top of this file), but keeps
-/// the marker text itself too, so the result is a directly-executable standalone JS statement
-/// rather than a bare function body.
-fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
-    let start = src
-        .find(start_marker)
-        .unwrap_or_else(|| panic!("workflow must contain `{start_marker}`"));
-    let open = start
-        + src[start..]
-            .find('{')
-            .expect("declaration must open a brace");
-    let mut depth = 0usize;
-    for (i, c) in src[open..].char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &src[start..=open + i];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{start_marker}` is not brace-balanced");
-}
 
 /// Run the REAL `relayAttention` - extracted verbatim from the shipped `workflows/rigger.js`,
 /// never hand-copied - against `step_json` (a `{"attention": [...]}` object, or `{}`/`{"attention":

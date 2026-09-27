@@ -41,10 +41,13 @@
 //! regression that resolves the wrong commit changes what `derive_version` reports
 //! without changing what this test expects, and the assertion catches the divergence.
 
+mod common;
+
 #[path = "../build/gitsemver.rs"]
 #[allow(dead_code)]
 mod gitsemver;
 
+use common::fixtures::tool_available;
 use std::path::Path;
 use std::process::Command;
 
@@ -111,20 +114,9 @@ fn fixture_repo(root: &Path) {
     git(root, &["commit", "-q", "-m", "docs: update the readme"]);
 }
 
-/// Same availability gate as `tests/gitsemver_derivation.rs`, for the same reason:
-/// provisioning the environment with `go-gitsemver` on PATH is criterion 3's, not this
-/// test's.
-fn gitsemver_available() -> bool {
-    Command::new("go-gitsemver")
-        .arg("version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 #[test]
 fn a_linked_worktree_derives_its_own_diverged_head_not_primarys() {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }

@@ -7,37 +7,11 @@
 //! real under `node`. `workerLabel` (and the `ROSTER_VERB` table it now reads alongside
 //! `PERSONA_VERB`) depends on no injected global, so nothing needs stubbing.
 
+mod common;
+
+use common::fixtures::js_declaration;
 use std::path::Path;
 use std::process::Command;
-
-/// Extract a top-level declaration - `function <name>(...) { ... }` or `const <NAME> = { ... }` -
-/// VERBATIM from `start_marker` through its brace-matched close, inclusive. This file's own copy
-/// of the same brace-counting helper `tests/worker_persona_label_periphery.rs::js_declaration`
-/// and `tests/step_attention_periphery.rs::js_declaration` carry, per the established per-file
-/// duplication convention.
-fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
-    let start = src
-        .find(start_marker)
-        .unwrap_or_else(|| panic!("workflow must contain `{start_marker}`"));
-    let open = start
-        + src[start..]
-            .find('{')
-            .expect("declaration must open a brace");
-    let mut depth = 0usize;
-    for (i, c) in src[open..].char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &src[start..=open + i];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{start_marker}` is not brace-balanced");
-}
 
 /// Read `workflows/rigger.js` at test time from the crate manifest dir - mirrors this crate's
 /// other `rigger_js_source` helpers.

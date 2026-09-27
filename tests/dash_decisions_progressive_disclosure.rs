@@ -21,12 +21,15 @@
 //! `dash`, `spawn`, `contextgraph` are compiled on BOTH the default and the `--no-default-features`
 //! lane (none feature-gated), so this guards the served boundary in both lanes.
 
+mod common;
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use common::fixtures::tool_available;
 use rigger::contextgraph::Graph;
 use rigger::dash::{self, DashInputs};
 
@@ -322,16 +325,6 @@ fn page_script(page: &str) -> &str {
     &page[open..close]
 }
 
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// RUNTIME guard for spec 30 c4's charter: a decision the operator expands must stay open across the
 /// 1.5s live poll so a multi-KB reasoning body can actually be READ in the primary `rigger dash`
 /// mode. The live poll re-runs `render()`, which wholesale-replaces the decisions region's
@@ -344,7 +337,7 @@ fn node_available() -> bool {
 /// the render-side `open` re-application re-collapses `d-alpha` and this test goes red.
 #[test]
 fn an_operator_expanded_decision_survives_the_live_poll_re_render() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP an_operator_expanded_decision_survives_the_live_poll_re_render: no `node` runtime \
              on PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest \
@@ -454,7 +447,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// helper under node's `vm` and asserts its OUTPUT; reverting either behavior makes it go red.
 #[test]
 fn the_summary_preview_collapses_a_multiline_summary_to_one_truncated_line() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_summary_preview_collapses_a_multiline_summary_to_one_truncated_line: no \
              `node` runtime on PATH. This runtime guard needs node (present on dev machines and on \

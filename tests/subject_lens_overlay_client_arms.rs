@@ -22,8 +22,11 @@
 //! compiles on BOTH the default and the `--no-default-features` lane (the seam is not feature-gated),
 //! so this guards the client seam in both lanes.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
 use rigger::dash;
 
 /// Extract the single inline `<script>` body from the served page (the slice the runtime harness drives).
@@ -36,16 +39,6 @@ fn page_script(page: &str) -> &str {
         .find("</script>")
         .expect("the served page closes its <script>");
     &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// The DOM shim every driver in this file runs under (node `vm`, no npm): the handful of element
@@ -288,7 +281,7 @@ const REPROJECT_FAILURE_DRIVER: &str = r#"
 /// drives. Dropping the `else loadKgOverview()` branch reddens it.
 #[test]
 fn a_lens_flip_with_no_subject_reloads_the_whole_graph_overview() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP a_lens_flip_with_no_subject_reloads_the_whole_graph_overview: no `node` runtime on \
              PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
@@ -308,7 +301,7 @@ fn a_lens_flip_with_no_subject_reloads_the_whole_graph_overview() {
 /// (`!LIVE` static-export degrade) reaches. Dropping reprojectSubject's try/catch reddens it.
 #[test]
 fn a_failed_live_reprojection_fetch_degrades_to_a_message() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP a_failed_live_reprojection_fetch_degrades_to_a_message: no `node` runtime on PATH. \
              This runtime guard needs node (present on dev machines and on ubuntu-latest CI); install \

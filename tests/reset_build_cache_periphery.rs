@@ -30,6 +30,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use common::fixtures::write_file;
 use rigger::budget::BuildBudget;
 use rigger::gate::{Autonomy, BuildEnv, ExecRunner, Gate, Kind, Runner};
 
@@ -66,11 +67,6 @@ fn shared_cache_dir(root: &Path) -> PathBuf {
 
 fn guard_path(root: &Path) -> PathBuf {
     common::default_scratch_root(root).join("cargo-target.lock")
-}
-
-fn write_file(path: &Path, bytes: &[u8]) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, bytes).unwrap();
 }
 
 fn run_rigger(cwd: &Path, args: &[&str]) -> (String, String, bool) {

@@ -21,8 +21,11 @@
 //! and the `--no-default-features` lane (the seam is not feature-gated), so this guards the client
 //! seam in both lanes.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
 use rigger::dash;
 
 /// Extract the single inline `<script>` body from the served page (the slice the runtime harness drives).
@@ -35,16 +38,6 @@ fn page_script(page: &str) -> &str {
         .find("</script>")
         .expect("the served page closes its <script>");
     &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// The DOM shim (node `vm`, no npm): the element surfaces the client seam touches (innerHTML /
@@ -295,7 +288,7 @@ const CARD_DRIVER: &str = r#"
 /// concept), per the spec's own "criterion 2 owns... every card taxonomy" scope.
 #[test]
 fn metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP metadata_card_renders_every_taxonomy_and_chips_hand_off_to_their_own_lens: no \
              `node` runtime on PATH. This runtime guard needs node (present on dev machines and \
@@ -381,7 +374,7 @@ const WIRING_DRIVER: &str = r#"
 /// `tests/subject_lens_overlay_served_page.rs` only had to TOLERATE, never had to PROVE.
 #[test]
 fn metadata_card_wiring_fires_at_every_render_and_drill_call_site() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP metadata_card_wiring_fires_at_every_render_and_drill_call_site: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \

@@ -38,8 +38,11 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the viz is not
 //! feature-gated), so this guards the served page in both lanes.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
 use rigger::dash;
 
 /// Extract the single inline `<script>` body from the served page.
@@ -52,16 +55,6 @@ fn page_script(page: &str) -> &str {
         .find("</script>")
         .expect("the served page closes its <script>");
     &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on the `ubuntu-latest` CI
-/// image, absent on the shim-only lane); the runtime guard SKIPs rather than fails when it is missing.
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// STRUCTURAL: the served page SHIPS the declutter authority AND wires it live. Bound to the c3
@@ -255,7 +248,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// rendered force view carries a hover `<title>` for every node's label.
 #[test]
 fn adaptive_labels_declutter_by_importance_and_reveal_on_zoom() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP adaptive_labels_declutter_by_importance_and_reveal_on_zoom: no `node` runtime on \
              PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \

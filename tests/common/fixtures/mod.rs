@@ -14,9 +14,11 @@
 mod config;
 mod events;
 mod graph;
+mod host;
 pub use config::*;
 pub use events::*;
 pub use graph::*;
+pub use host::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod canary;

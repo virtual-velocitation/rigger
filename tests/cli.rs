@@ -5,6 +5,8 @@
 //! same composition path (`Store::open(.rigger/events.db)` namespaced, the
 //! `graph.db` projector, `conductor::STREAM`) the `serve` path uses.
 
+use common::fixtures::pgid_of;
+use rigger::conductor::normalize_ws;
 use std::path::Path;
 use std::process::Command;
 
@@ -25056,26 +25058,6 @@ fn read_all_public_contract_holds_at_the_crate_boundary() {
 // DIRECTLY; only driving the real `rigger step` binary proves the production wiring end-to-end:
 // that the dash the actual step binary spawns lands OUTSIDE the step command's process group.
 
-/// Read the process-group id (`pgrp`) of `pid` from `/proc/<pid>/stat` - pure std, no signal
-/// delivery, so it is reliable and race-free (a not-yet-reaped process, even a zombie, still has
-/// a readable `stat`). `/proc/<pid>/stat` is `pid (comm) state ppid pgrp ...`; `comm` may itself
-/// contain spaces and parens, so split AFTER the last `)` and take the third whitespace token.
-#[cfg(target_os = "linux")]
-fn proc_pgid_of(pid: u32) -> u32 {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .unwrap_or_else(|e| panic!("read /proc/{pid}/stat: {e}"));
-    let after_comm = stat
-        .rsplit_once(')')
-        .expect("/proc stat has a parenthesised comm field")
-        .1;
-    after_comm
-        .split_whitespace()
-        .nth(2)
-        .expect("/proc stat has a pgrp field after comm")
-        .parse()
-        .expect("pgrp is a base-10 integer")
-}
-
 /// Spec 44, criterion 3 end-to-end, through the BUILT binary: a `rigger step` run as its OWN
 /// process-group leader (mirroring the courier running `rigger step` as a foreground command in
 /// its own group) spawns the always-on dash into a DIFFERENT process group - the dash's own
@@ -25140,7 +25122,7 @@ fn a_real_rigger_step_session_detaches_the_dash_from_the_step_command_process_gr
     }
 
     // Observe the dash's process group directly from `/proc` - no signal sent.
-    let dash_pgid = proc_pgid_of(dash_pid);
+    let dash_pgid = pgid_of(dash_pid);
 
     // Reap the detached dash BEFORE asserting, so a failed assertion never leaves it orphaned.
     common::terminate_pid(dash_pid);
@@ -26368,12 +26350,6 @@ fn dash_serving_on_recognizes_a_real_dash_and_rejects_a_non_dash_holder() {
         "dash_serving_on must NOT recognize a non-dash holder that never sends the recognition \
          header - only a genuine dash earns the singleton defer"
     );
-}
-
-/// Collapse all whitespace runs (including newlines) to a single space, so a phrase that
-/// wraps across physical lines in the committed Markdown still matches a one-line needle.
-fn normalize_ws(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The committed `.rigger/workflow.yml` text, read fresh each call (mirrors

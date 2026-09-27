@@ -27,8 +27,11 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the render is not
 //! feature-gated), so this guards the served page in both lanes.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
 use rigger::dash;
 
 /// Extract the single inline `<script>` body from the served page.
@@ -41,16 +44,6 @@ fn page_script(page: &str) -> &str {
         .find("</script>")
         .expect("the served page closes its <script>");
     &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// The SERVED root page SHIPS the directed-call layered render (spec 52 c5): the server-`layer`-keyed
@@ -427,7 +420,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// dispatch makes it go red.
 #[test]
 fn the_directed_call_render_lays_out_and_dispatches_the_layered_dag() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_directed_call_render_lays_out_and_dispatches_the_layered_dag: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \

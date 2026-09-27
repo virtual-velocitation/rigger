@@ -11793,7 +11793,7 @@ fn union_gates(base: &[String], additional: &[String]) -> Vec<String> {
 /// reflowing/indentation differences without loosening into fuzzy matching (a planner
 /// that PARAPHRASES a criterion deliberately will not match, and is correctly treated
 /// as a genuinely new sub-unit added on top of the surviving baseline).
-fn normalize_ws(s: &str) -> String {
+pub fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 

@@ -27,8 +27,11 @@
 //! `dash` compiles on BOTH the default and the `--no-default-features` lane (the seam is not
 //! feature-gated), so this guards the served page in both lanes.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
 use rigger::dash;
 
 /// Extract the single inline `<script>` body from the served page (the same slice the viz test drives).
@@ -41,16 +44,6 @@ fn page_script(page: &str) -> &str {
         .find("</script>")
         .expect("the served page closes its <script>");
     &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// Spawn `node` on a self-contained vm harness (a complete node program that reads the served page
@@ -454,7 +447,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// subject-sticky branch, or ungating the badge, makes it go red.
 #[test]
 fn the_client_seam_dispatches_subject_sticky_lens_and_additive_overlay() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_client_seam_dispatches_subject_sticky_lens_and_additive_overlay: no `node` \
              runtime on PATH. This runtime guard needs node (present on dev machines and on \
@@ -775,7 +768,7 @@ const DRILL_OVERLAY_OFF_DRIVER: &str = r##"
 /// `data-explain` early guard reddens it (the summary click re-seeds).
 #[test]
 fn a_neighborhood_rationale_badge_click_expands_and_does_not_reseed() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP a_neighborhood_rationale_badge_click_expands_and_does_not_reseed: no `node` runtime \
              on PATH. This runtime guard needs node (present on dev machines and on ubuntu-latest CI); \
@@ -795,7 +788,7 @@ fn a_neighborhood_rationale_badge_click_expands_and_does_not_reseed() {
 /// ungated `overlayNotes()` (emitting its wrapper with the overlay off) reddens it.
 #[test]
 fn the_drill_view_is_byte_identical_with_the_overlay_off() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_drill_view_is_byte_identical_with_the_overlay_off: no `node` runtime on PATH. \
              This runtime guard needs node (present on dev machines and on ubuntu-latest CI); install \

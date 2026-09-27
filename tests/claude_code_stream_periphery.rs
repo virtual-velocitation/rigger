@@ -26,9 +26,10 @@
 
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
+use common::fixtures::CwdGuard;
 use rigger::conductor::{AgentDriver, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::eventstore::sqlite::Store;
@@ -452,25 +453,6 @@ fn spawn_propagates_a_launch_failure_never_reading_a_stream_that_never_started()
         .read_stream(rigger::conductor::STREAM, 0, Direction::Forward)
         .unwrap();
     assert!(!events.iter().any(|e| e.type_ == TYPE_SPAWN_RESULT));
-}
-
-/// Restores the process's current directory on drop, however the guarded scope exits -
-/// used only by [`spawn_with_an_empty_scratch_root_never_writes_relative_to_cwd`], the
-/// one test in this file that mutates this process-global resource.
-struct CwdGuard(PathBuf);
-
-impl CwdGuard {
-    fn enter(dir: &Path) -> Self {
-        let original = std::env::current_dir().expect("read the current directory");
-        std::env::set_current_dir(dir).expect("enter the throwaway directory");
-        CwdGuard(original)
-    }
-}
-
-impl Drop for CwdGuard {
-    fn drop(&mut self) {
-        let _ = std::env::set_current_dir(&self.0);
-    }
 }
 
 #[test]

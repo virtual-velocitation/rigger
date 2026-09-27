@@ -54,6 +54,7 @@
 
 mod common;
 
+use common::fixtures::tool_available;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -131,17 +132,6 @@ fn git_output(root: &Path, args: &[&str]) -> String {
         .unwrap_or_else(|e| panic!("git {args:?} produced non-utf8 output: {e}"))
         .trim()
         .to_string()
-}
-
-/// Same availability gate as `tests/gitsemver_derivation.rs` and `tests/gitsemver_worktree_
-/// periphery.rs`: provisioning the environment with `go-gitsemver` on PATH is criterion 3's,
-/// not this test's.
-fn gitsemver_available() -> bool {
-    Command::new("go-gitsemver")
-        .arg("version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// The `objects` dir of the git repository THIS test binary was compiled from - the same
@@ -244,7 +234,7 @@ fn scaffold_ahead_checkout(root: &Path) -> Option<()> {
 
 #[test]
 fn validate_names_the_behind_the_tree_advisory_through_the_real_binary() {
-    if !gitsemver_available() {
+    if !tool_available("go-gitsemver", "version") {
         eprintln!("skipping: go-gitsemver not on PATH");
         return;
     }

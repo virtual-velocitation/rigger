@@ -14665,6 +14665,11 @@ blocks integration no matter what the static gates say.\n",
 mod tests {
     use super::*;
     use crate::test_support::ev;
+    use crate::test_support::js_declaration;
+    use crate::test_support::pgid_of;
+    use crate::test_support::tool_available;
+    use crate::test_support::write_file;
+    use crate::test_support::CwdGuard;
 
     /// A minimal spawn request: the deterministic id derived from `unit` + `role` + `attempt`
     /// (so it cannot drift from the labels), every optional field empty.
@@ -17441,19 +17446,6 @@ mod tests {
         );
     }
 
-    /// Skip (rather than fail) when `go-gitsemver` is not on PATH in this environment -
-    /// mirrors `tests/gitsemver_derivation.rs`'s own `gitsemver_available` guard: these
-    /// tests prove `behind_the_tree_advisory`'s WIRING to the real derivation seam given
-    /// the tool, which the pure `behind_the_tree_message` tests above already prove
-    /// independently of it.
-    fn gitsemver_available() -> bool {
-        Command::new("go-gitsemver")
-            .arg("version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    }
-
     /// `git <args>` in `root` with a fixed committer identity, panicking with stderr on
     /// failure - mirrors `tests/gitsemver_derivation.rs`'s own `git` fixture helper.
     fn behind_the_tree_git(root: &Path, args: &[&str]) {
@@ -17489,7 +17481,7 @@ mod tests {
 
     #[test]
     fn behind_the_tree_advisory_names_the_real_derived_version_ahead_of_the_installed_commit() {
-        if !gitsemver_available() {
+        if !tool_available("go-gitsemver", "version") {
             eprintln!("skipping: go-gitsemver not on PATH");
             return;
         }
@@ -17530,7 +17522,7 @@ mod tests {
 
     #[test]
     fn behind_the_tree_advisory_is_silent_when_the_checkout_has_not_moved() {
-        if !gitsemver_available() {
+        if !tool_available("go-gitsemver", "version") {
             eprintln!("skipping: go-gitsemver not on PATH");
             return;
         }
@@ -17593,11 +17585,6 @@ mod tests {
 
     fn slugs<const N: usize>(xs: [&str; N]) -> HashSet<String> {
         xs.iter().map(|s| s.to_string()).collect()
-    }
-
-    fn write_file(path: &Path, bytes: &[u8]) {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, bytes).unwrap();
     }
 
     /// `git init` a repo at `root` and commit a single file `rel` with `contents`, so a
@@ -19868,14 +19855,8 @@ mod tests {
         // Additive, defaulted off (spec 70 Notes): with STORE_FENCE_ENV unset, an
         // unfenced courier's resolution is byte-identical to before the fence existed -
         // a plain store at the cwd resolves normally.
-        struct Restore(std::path::PathBuf);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.0);
-            }
-        }
         let prev = std::env::current_dir().unwrap();
-        let _restore = Restore(prev);
+        let _restore = CwdGuard(prev);
         std::env::remove_var(STORE_FENCE_ENV);
 
         let dir = tempfile::tempdir().unwrap();
@@ -23267,34 +23248,6 @@ mod tests {
         );
     }
 
-    /// Extract a top-level `function <name>(...) { ... }` body (from the opening brace after
-    /// `signature` to its matching closing brace) from JS source. The same brace-counting as
-    /// [`meta_object_body`], generalized to a named function so a test can pin what that
-    /// function's body does (or does not) contain, rather than the whole embedded file.
-    fn js_function_body<'a>(src: &'a str, signature: &str) -> &'a str {
-        let start = src
-            .find(signature)
-            .unwrap_or_else(|| panic!("workflow must define `{signature}`"));
-        let open = start
-            + src[start..]
-                .find('{')
-                .expect("function signature must open a brace");
-        let mut depth = 0usize;
-        for (i, c) in src[open..].char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return &src[open..=open + i];
-                    }
-                }
-                _ => {}
-            }
-        }
-        panic!("`{signature}` body is not brace-balanced");
-    }
-
     /// Spec 67, criterion 1 (THIS unit OWNS phase derivation; courier placement - the Drive
     /// lane call sites - is criterion 3's, a separate function, not this one's). `phaseOf`
     /// must map every wave item to one of the fixed `meta.phases` groups by role, with the
@@ -23315,7 +23268,8 @@ mod tests {
             code.contains("function phaseOf(req)"),
             "the driver must define a phaseOf(req) function"
         );
-        let body = js_function_body(&code, "function phaseOf(req) {");
+        let decl = js_declaration(&code, "function phaseOf(req) {");
+        let body = &decl[decl.find('{').unwrap()..];
 
         // The two run-wide meta-stages are special-cased on the UNIT, ahead of any role
         // read, and resolve straight to Plan.
@@ -23451,7 +23405,8 @@ mod tests {
              one call site that actually invokes it"
         );
 
-        let body = js_function_body(&code, "function relayAttention(step) {");
+        let decl = js_declaration(&code, "function relayAttention(step) {");
+        let body = &decl[decl.find('{').unwrap()..];
 
         // Renders ONLY what the wire says: iterates the wire's own `attention` array (omitted
         // entirely on a clean step - criterion 5's `skip_serializing_if`), never a second,
@@ -23931,7 +23886,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let shim = write_shim_files(dir.path()).unwrap();
 
-        if npm_available() {
+        if tool_available("npm", "--version") {
             // npm is on PATH: provisioning must run it for real and leave node_modules.
             provision_shim(dir.path()).expect("provision_shim must succeed when npm is available");
             assert!(
@@ -23982,14 +23937,6 @@ mod tests {
         if let Some(v) = prior {
             std::env::set_var("RIGGER_SHIM", v);
         }
-    }
-
-    fn npm_available() -> bool {
-        Command::new("npm")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
     }
 
     use rigger::metrics::{GateCounts, SpawnTiming};
@@ -25328,13 +25275,7 @@ mod tests {
         let prev = std::env::current_dir().unwrap();
         // current_dir is process-global; serialize against the other cwd-sensitive
         // path via a guard that always restores it even on a failed assertion.
-        struct Restore(std::path::PathBuf);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.0);
-            }
-        }
-        let _restore = Restore(prev);
+        let _restore = CwdGuard(prev);
         std::env::set_current_dir(dir.path()).unwrap();
 
         cmd_stats(&[]).expect("stats on a never-run project must succeed");
@@ -25355,13 +25296,7 @@ mod tests {
     fn a_second_concurrent_rigger_step_refuses_and_the_lock_frees_on_release() {
         let dir = tempfile::tempdir().unwrap();
         let prev = std::env::current_dir().unwrap();
-        struct Restore(std::path::PathBuf);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                let _ = std::env::set_current_dir(&self.0);
-            }
-        }
-        let _restore = Restore(prev);
+        let _restore = CwdGuard(prev);
         std::env::set_current_dir(dir.path()).unwrap();
         std::fs::create_dir_all(RIGGER_DIR).unwrap();
 
@@ -25764,28 +25699,6 @@ mod tests {
     }
 
     // --- Spec 44, criterion 3: the always-on dash is SESSION-DETACHED from `rigger step` ---
-
-    /// Read the process-group id (PGID / `pgrp`) of `pid` from `/proc/<pid>/stat`. Pure std, so
-    /// it holds on BOTH feature lanes. `/proc/<pid>/stat` is `pid (comm) state ppid pgrp ...`;
-    /// `comm` may itself contain spaces and parens, so we split AFTER the last `)` - the tokens
-    /// that follow are then `state ppid pgrp ...`, making `pgrp` the third whitespace token. A
-    /// zombie (an exited-but-unreaped child) still has a readable `stat`, so this is race-free
-    /// against the child having already exited; only a fully reaped pid is gone.
-    #[cfg(target_os = "linux")]
-    fn pgid_of(pid: u32) -> u32 {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-            .unwrap_or_else(|e| panic!("read /proc/{pid}/stat: {e}"));
-        let after_comm = stat
-            .rsplit_once(')')
-            .expect("/proc stat has a parenthesised comm field")
-            .1;
-        after_comm
-            .split_whitespace()
-            .nth(2)
-            .expect("/proc stat has a pgrp field after comm")
-            .parse()
-            .expect("pgrp is a base-10 integer")
-    }
 
     /// The load-bearing detachment proof: `detach_process_group` puts a spawned child in its OWN
     /// process group - a group whose PGID equals the child's own PID (it is the group leader) and

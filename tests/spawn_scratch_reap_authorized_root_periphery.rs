@@ -31,6 +31,7 @@
 //! reaps - the per-spawn `agent-scratch` dir (spec 34 criterion 1) and the registered
 //! mutation-scratch dir (spec 77 criterion 2, the exact root round 1's reject was about).
 
+use common::fixtures::cleanup;
 use std::path::Path;
 use std::process::{Child, Command};
 
@@ -154,13 +155,6 @@ fn wait_until(mut pred: impl FnMut() -> bool) -> bool {
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     false
-}
-
-/// Kill-and-wait a fixture child unconditionally, ignoring errors - test cleanup only, via the
-/// `Child` handle it was spawned with (never a computed pid).
-fn cleanup(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 #[test]

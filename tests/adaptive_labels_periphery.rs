@@ -44,8 +44,11 @@
 //! coincidence or importance reddens the contract harness; and a layered render that leaks `data-nid`
 //! or an auto `<title>` reddens the regression harness.
 
+mod common;
+
 use std::process::Command;
 
+use common::fixtures::tool_available;
 use rigger::dash;
 
 /// Extract the single inline `<script>` body from the served page.
@@ -58,16 +61,6 @@ fn page_script(page: &str) -> &str {
         .find("</script>")
         .expect("the served page closes its <script>");
     &page[open..close]
-}
-
-/// True when a `node` runtime can be spawned (present on dev machines and on the `ubuntu-latest` CI
-/// image, absent on the shim-only lane); the runtime guards SKIP rather than fail when it is missing.
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 /// Wrap a DOM shim + a driver into a hermetic node program: it reads the served page script from
@@ -465,7 +458,7 @@ fn assert_ok(driver_program: &str, marker: &str) {
 /// the visible-label set exactly, reveals strictly more on a deeper zoom, and skips an empty data-nid.
 #[test]
 fn the_live_zoom_handler_toggles_labels_to_match_the_visible_set() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_live_zoom_handler_toggles_labels_to_match_the_visible_set: no `node` runtime on \
              PATH (present on dev machines and ubuntu-latest CI); install node to run it."
@@ -482,7 +475,7 @@ fn the_live_zoom_handler_toggles_labels_to_match_the_visible_set() {
 /// threshold-0, and the pairwise-disjoint + monotone invariants swept across an ascending scale range.
 #[test]
 fn the_declutter_holds_its_contract_at_the_edges_and_across_scales() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_declutter_holds_its_contract_at_the_edges_and_across_scales: no `node` runtime on \
              PATH (present on dev machines and ubuntu-latest CI); install node to run it."
@@ -500,7 +493,7 @@ fn the_declutter_holds_its_contract_at_the_edges_and_across_scales() {
 /// never suppressed by the explicit tooltip, with the [shared] display tag a single occurrence.
 #[test]
 fn a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_hover() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_hover: no \
              `node` runtime on PATH (present on dev machines and ubuntu-latest CI); install node to run it."
@@ -520,7 +513,7 @@ fn a_layered_view_stays_byte_identical_and_a_titled_node_still_names_itself_on_h
 /// open (a name-containing or titleless fixture passes vacuously against the pre-fix name-dropping hover).
 #[test]
 fn the_real_concepts_drill_names_its_decluttered_shared_member_on_hover() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_real_concepts_drill_names_its_decluttered_shared_member_on_hover: no `node` runtime \
              on PATH (present on dev machines and ubuntu-latest CI); install node to run it."

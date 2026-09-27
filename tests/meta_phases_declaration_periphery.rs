@@ -44,6 +44,9 @@
 //! courier spawn sites still pass `phase: 'Plan'` and the global `phase('Plan')` marker
 //! still exists, both untouched by this criterion and out of scope here).
 
+mod common;
+
+use common::fixtures::js_declaration;
 use std::path::Path;
 use std::process::Command;
 
@@ -56,34 +59,6 @@ fn rigger_js_source() -> String {
         .join("workflows")
         .join("rigger.js");
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
-}
-
-/// Extract a top-level brace-delimited declaration VERBATIM from `start_marker` (which must
-/// end at the declaration's opening brace) through its brace-matched close, inclusive. This
-/// file's own copy of the same brace-counting `tests/phase_of_role_mapping_periphery.rs` and
-/// `tests/step_attention_periphery.rs` each keep, per that convention.
-fn js_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
-    let start = src
-        .find(start_marker)
-        .unwrap_or_else(|| panic!("workflow must contain `{start_marker}`"));
-    let open = start
-        + src[start..]
-            .find('{')
-            .expect("declaration must open a brace");
-    let mut depth = 0usize;
-    for (i, c) in src[open..].char_indices() {
-        match c {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return &src[start..=open + i];
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{start_marker}` is not brace-balanced");
 }
 
 /// One declared phase, as `meta.phases` ACTUALLY parses under node - never re-derived from

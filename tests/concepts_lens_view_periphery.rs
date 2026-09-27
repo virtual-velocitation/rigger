@@ -52,6 +52,7 @@ use std::process::Command;
 
 use common::fixtures::edge;
 use common::fixtures::plain;
+use common::fixtures::tool_available;
 use rigger::contextgraph::{
     Graph, Node, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, REL_CALLS,
     REL_REALIZES, REL_REFERENCES, TIER_INFERRED,
@@ -658,16 +659,6 @@ fn page_script(page: &str) -> &str {
     &page[open..close]
 }
 
-/// True when a `node` runtime can be spawned (present on dev machines and on GitHub `ubuntu-latest`,
-/// which ships Node.js on PATH, so this runtime guard runs in CI).
-fn node_available() -> bool {
-    Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 /// A DOM shim + driver (JavaScript) that RUNS the served page's OWN `renderKgDrill` under node's
 /// built-in `vm`. It drills a hand-built CONCEPTS neighborhood in which exactly one member realizes
 /// multiple concepts (`shared: true`) and folds here under its primary bucket, then reads the rendered
@@ -768,7 +759,7 @@ vm.runInContext(SHIM + "\n" + pageScript + "\n" + DRIVER, sandbox, { filename: "
 /// flag is SERIALIZED, never that the drill RENDERS it): dropping renderKgDrill's shared branch reddens it.
 #[test]
 fn the_concepts_drill_renders_the_shared_marker_to_the_human() {
-    if !node_available() {
+    if !tool_available("node", "--version") {
         eprintln!(
             "SKIP the_concepts_drill_renders_the_shared_marker_to_the_human: no `node` runtime on \
              PATH (present on dev machines and on ubuntu-latest CI); install node to run it."
