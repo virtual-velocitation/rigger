@@ -133,5 +133,10 @@
     "id": "dup-9c8fbf2fd88a",
     "disposition": "not-a-duplicate",
     "reason": "`code_default` and `concepts_default` build two different `Lens` variants at their own default-grain constants, the expected values the selector tests compare against."
+  },
+  {
+    "id": "dup-23cb89af01e7",
+    "disposition": "not-a-duplicate",
+    "reason": "Four converters projecting two different ledger types (a duplication cluster, a dead-code candidate) onto their two different wire shapes (guarded line-free JSON, unguarded line sidecar); each maps a distinct field set, so only the struct-literal shape is shared."
   }
 ]
