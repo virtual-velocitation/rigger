@@ -1,5 +1,10 @@
 [
   {
+    "id": "dup-d95a94647dcd",
+    "disposition": "not-a-duplicate",
+    "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id, adversarial-sample identity); the shared token shape is a one-line `format!`."
+  },
+  {
     "id": "dup-088ec120e4ac",
     "disposition": "not-a-duplicate",
     "reason": "`sleeper_in` spawns a plain `sleep` that honours SIGTERM while `sigterm_ignorer_in` spawns a shell loop that traps and ignores it; the reaper tests need both behaviours."
@@ -488,11 +493,6 @@
     "id": "dup-a17e83ea2e51",
     "disposition": "not-a-duplicate",
     "reason": "Four predicates that each test membership in a different fixed vocabulary (intent-doc kinds, label-doc kinds, derived-index event types, Rust keywords); only the `matches!`/slice-contains shape is shared."
-  },
-  {
-    "id": "dup-0481ed780703",
-    "disposition": "not-a-duplicate",
-    "reason": "Each function formats a different durable key or message from different fields (review-round start, compensation queue, conflict regeneration, stop message, spawn id); the shared token shape is a one-line `format!`."
   },
   {
     "id": "dup-e6404599f437",

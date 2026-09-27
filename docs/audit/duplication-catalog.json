@@ -603,7 +603,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-0481ed780703",
+    "id": "dup-d95a94647dcd",
     "classification": "near",
     "sites": [
       {
@@ -645,9 +645,14 @@
         "file": "tests/postmerge_gate_error_cleanup_periphery.rs",
         "name": "expected_postmerge_branch",
         "content_hash": "7f40f97a5c856b17"
+      },
+      {
+        "file": "tests/simplification_audit.rs",
+        "name": "sample_key",
+        "content_hash": "1314e6adae890d88"
       }
     ],
-    "proposed_home": "a new shared module (sites span 5 files: src/conductor.rs, src/driver/claude_code.rs, src/spawn.rs, tests/common/fixtures/graph.rs, tests/postmerge_gate_error_cleanup_periphery.rs)",
+    "proposed_home": "a new shared module (sites span 6 files: src/conductor.rs, src/driver/claude_code.rs, src/spawn.rs, tests/common/fixtures/graph.rs, tests/postmerge_gate_error_cleanup_periphery.rs, tests/simplification_audit.rs)",
     "note": "mechanical: normalized-token Jaccard similarity (8-token shingles, threshold 0.72)",
     "disposition": "not-a-duplicate"
   },
@@ -6234,7 +6239,7 @@
     "disposition": "not-a-duplicate"
   },
   {
-    "id": "dup-34547f1c1293",
+    "id": "dup-d818ca2d4c56",
     "classification": "semantic",
     "sites": [
       {
@@ -6265,7 +6270,7 @@
       {
         "file": "tests/simplification_audit.rs",
         "name": "render_adversarial_sample",
-        "content_hash": "a7892d92961fca85"
+        "content_hash": "4bacd30be7f09bc4"
       },
       {
         "file": "tests/simplification_audit.rs",

@@ -2128,6 +2128,88 @@ const ADVERSARIAL_SAMPLE_SIZE: usize = 30;
 /// rewrite by this criterion can now never perturb another criterion's owned artifact again.
 const ADVERSARIAL_SAMPLE_EXCLUDED_FILE: &str = "tests/prioritized_plan_citation_periphery.rs";
 
+/// The date of the latest hand reading pass over the adversarial draw. The draw is seeded on
+/// population size, so any change to the scanned function count reshuffles it; the rows the
+/// pass read carry their verdicts in [`ADVERSARIAL_SAMPLE_VERDICTS`], and a row drawn since then
+/// renders as NOT READ until the next pass records it.
+const ADVERSARIAL_SAMPLE_READ_ON: &str = "2026-09-27";
+
+/// One hand verdict on a drawn function, recorded once by the reading pass and rendered on its
+/// row: reading is the one thing no generator can do (spec 85 THOROUGHNESS), so the verdict is
+/// data the pass writes, never a label the renderer assumes.
+#[allow(dead_code)] // variants are constructed only by the ledger rows below
+enum SampleVerdict {
+    /// Read by hand with its host file and siblings: no duplicate beyond what the catalog caught.
+    NoDuplicate,
+    /// Read by hand: a duplicate was found and closed; the text names it and its one home.
+    Closed(&'static str),
+}
+
+/// The latest reading pass's verdict per drawn function, keyed `(file, name)`.
+const ADVERSARIAL_SAMPLE_VERDICTS: &[(&str, &str, SampleVerdict)] = &[];
+
+/// Duplicates the 2026-09-27 reading passes found and closed on functions an earlier draw picked:
+/// the draw was then by population index, so each closure reshuffled it until the draw became
+/// rank-stable ([`sample_indices`]). Each names the drawn function and its closure, so the finding
+/// count stays whole.
+const ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW: &[&str] = &[
+    "`tests/kurrentdb_always_available.rs` \
+     `architecture_blueprint_has_no_retired_kurrentdb_feature_reference` re-rolled the \
+     manifest-relative read `common::repo::repo_text` owns, as did thirteen sibling reads across \
+     eleven suites; every one now calls `repo_text`",
+    "`tests/replan_episode_identity.rs` `serving` had two inline copies of its scan in its own \
+     file; both now call it",
+    "`src/conductor.rs` `integrate_and_emit` repeated `catch_up_owed_regeneration`'s \
+     regenerate/record/clear sequence twice; all three now call `regenerate_and_record`",
+    "`tests/dash_run_tree_spine.rs` \
+     `an_off_linear_unit_with_no_gate_verdict_renders_no_phantom_gates_passed` repeated \
+     `a_crashed_implementer_renders_no_gates_node`'s crash-and-no-Gates assertions; both now call \
+     `assert_crash_at_implement_and_no_gates`",
+    "`src/main.rs` `dash_read_liveness` repeated `liveness_ages_for_wave`'s marker-age loop, as \
+     did `rigger_activity` in `src/mcpserver.rs`; all three now call `liveness::marker_ages`",
+    "`src/main.rs` `merge_hung_attention_defers_to_an_existing_budget_halt` was a value-only \
+     copy of `merge_hung_attention_does_nothing_when_not_newly_hung`; both are now cases of \
+     `assert_merge_hung_attention_leaves_untouched`",
+    "`tests/code_entity_test_exclusion_periphery.rs` \
+     `a_pre_round9_persisted_index_with_no_enclosing_inline_module_path_key_loads_defaulting_to_none` \
+     repeated its round-6 and round-7 siblings' legacy fixture; all three now call \
+     `legacy_module_def`",
+    "`tests/product_binary_location.rs` \
+     `no_suite_bakes_the_product_path_at_compile_time_except_the_one_authority` re-rolled the \
+     tree walk `common::repo::for_each_rs_file` owns; it now calls it",
+    "`tests/simplification_audit.rs` `two_renamed_identical_functions_form_one_exact_cluster` and \
+     `build_sweep_clusters_always_returns_exactly_five_named_clusters` re-rolled `on_fixture`, as \
+     did eleven sibling tests; all thirteen now call it",
+    "`tests/stop_failure_hook_periphery.rs` `hook_refuses_naming` was repeated inline by \
+     `hook_stop_failure_rejects_an_unrecognized_class`; it now calls it",
+    "`src/conductor.rs` `proposal_event` was re-rolled inline by \
+     `a_same_episode_re_seen_on_a_later_fold_still_never_self_supersedes`; it now calls it and \
+     `harvest_seeded`",
+    "`src/contextgraph/mod.rs` `is_false` re-implemented `std::ops::Not::not`, which the symbol \
+     model already uses; every flag now skips through `Not::not`",
+    "`src/eventstore/mod.rs` `one` was bypassed by the concurrent contract append's \
+     `.last().expect(..)`; it now calls `Appended::one`",
+    "`src/eventstore/sqlite.rs` `a_rerun_reclaims_the_space_a_failed_reclamation_left_behind` \
+     carried its own copies of the periphery suite's `plant_free_pages` and `pragma_i64`; both \
+     now live once in the shared store fixtures",
+    "`src/grounder/workflowdef.rs` `full_reviewers_of` repeated the head of \
+     `ReviewPanel::agent_ids`; both now call `ReviewPanel::full_roster`, and every \
+     adversary/adjudicator pair goes through `config::push_reviewers`",
+    "`tests/common/fixtures/graph.rs` `summarized_node` was re-rolled as an inline closure by \
+     `tests/rationale_overlay_data.rs`; it now calls it",
+    "`src/contextgraph/sqlite.rs` `tier_default_matches_the_extracted_const` was repeated inline \
+     by `tests/code_ingest_events.rs`; the one test now pins all three tier consts",
+    "`src/worktree.rs` `remove_reaps_a_process_rooted_inside_the_worktree_and_spares_one_outside` \
+     and `tests/reap_before_removal_periphery.rs` `reaps_before_removing` each re-rolled the \
+     spawn/wait/teardown/assert reap proof, as did five siblings in `src/main.rs`, \
+     `src/reap.rs`, `src/worktree.rs` and the relocated-scratch periphery suite; all now call \
+     `assert_teardown_reaps_what_is_rooted_inside`",
+    "`tests/heartbeat_write_read_agree_periphery.rs` \
+     `watch_once_suppresses_a_false_dead_driver_when_the_configured_workdir_resolves_from_the_owning_root_with_no_agents_fleet` \
+     repeated its two siblings' configured-workdir fixture; all three now call \
+     `marker_under_a_configured_workdir`",
+];
+
 // -----------------------------------------------------------------------------------------
 // THE TOKENIZER
 // -----------------------------------------------------------------------------------------
@@ -3624,24 +3706,29 @@ fn render_section_2(
 /// Renders the "### Adversarial sample" subsection required by spec 85 THOROUGHNESS ("the
 /// adversary draws 30 functions by seeded random index... The report states the sample seed so
 /// the check is reproducible"). The draw itself and each row's catalog membership are computed
-/// live from `files`/`clusters`, so the listing can never drift from the tree; the closing
-/// paragraph is a hand-verified reading-pass finding (spec 85: the recall check is proven by
-/// reading, which no generator can do) and is refreshed by hand whenever the draw shifts enough
-/// to change what it covers.
+/// live from `files`/`clusters`, so the listing can never drift from the tree; each uncaught
+/// row's label and the reading-pass line are the hand verdicts [`ADVERSARIAL_SAMPLE_VERDICTS`]
+/// records (spec 85: the recall check is proven by reading, which no generator can do), so a
+/// row drawn after the last pass reads NOT READ rather than claiming a reading nobody did.
 fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> String {
     let mut out = String::new();
     let refs = adversarial_sample_population(files);
-    let picked = sample_indices(refs.len(), ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
+    let picked = sample_indices(
+        &sample_keys(files, &refs),
+        ADVERSARIAL_SAMPLE_SIZE,
+        ADVERSARIAL_SEED,
+    );
     let _ = writeln!(out, "### Adversarial sample");
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Recall check (spec 85 THOROUGHNESS): {} functions drawn by seeded random index (seed \
+        "Recall check (spec 85 THOROUGHNESS): {} functions drawn by seeded rank (seed \
          `{ADVERSARIAL_SEED}`, `sample_indices` over all {} functions scanned in `src/` and \
-         `tests/`, excluding `{ADVERSARIAL_SAMPLE_EXCLUDED_FILE}` - criterion 4's own citation-\
+         `tests/`, each ranked by the seeded hash of its own file, name and ordinal so a change \
+         elsewhere never reshuffles a drawn row, excluding `{ADVERSARIAL_SAMPLE_EXCLUDED_FILE}` - criterion 4's own citation-\
          guard periphery test, whose function count grows as its citation-drift-guard mechanism \
-         hardens round over round; excluding it keeps that unrelated growth from ever reshuffling \
-         this already-verified draw), each read by hand - together with its host file's \
+         hardens round over round; excluding it keeps that unrelated growth out of \
+         the draw), each read by hand - together with its host file's \
          surrounding context, since a duplicate can live anywhere in the file or a sibling file - \
          to judge whether a duplicate exists that the mechanical pass and the five sweeps above \
          did not already catch.",
@@ -3649,6 +3736,7 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
         refs.len(),
     );
     let _ = writeln!(out);
+    let (mut read, mut closed) = (0, ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW.len());
     for &i in &picked {
         let sf = refs[i].scanned(files);
         // Keyed on the site's position, not its name: a file can define several functions of
@@ -3658,22 +3746,39 @@ fn render_adversarial_sample(files: &[FileScan], clusters: &[DupCluster]) -> Str
                 .iter()
                 .any(|s| s.file == sf.file && s.start_line == sf.start_line)
         });
-        match hit {
-            Some(c) => {
-                let _ = writeln!(
-                    out,
-                    "- `{}:{}-{}` `{}` - caught: `{}`",
-                    sf.file, sf.start_line, sf.end_line, sf.name, c.id
-                );
+        let verdict = ADVERSARIAL_SAMPLE_VERDICTS
+            .iter()
+            .find(|(file, name, _)| *file == sf.file && *name == sf.name)
+            .map(|(_, _, v)| v);
+        read += usize::from(verdict.is_some());
+        let label = match (hit, verdict) {
+            (Some(c), _) => format!("caught: `{}`", c.id),
+            (None, Some(SampleVerdict::NoDuplicate)) => "no duplicate found by reading".into(),
+            (None, Some(SampleVerdict::Closed(what))) => {
+                closed += 1;
+                format!("duplicate found by reading and closed: {what}")
             }
-            None => {
-                let _ = writeln!(
-                    out,
-                    "- `{}:{}-{}` `{}` - no duplicate found by reading",
-                    sf.file, sf.start_line, sf.end_line, sf.name
-                );
-            }
-        }
+            (None, None) => format!(
+                "NOT READ - drawn after the {ADVERSARIAL_SAMPLE_READ_ON} reading pass; read it \
+                 and record its verdict in `ADVERSARIAL_SAMPLE_VERDICTS`"
+            ),
+        };
+        let _ = writeln!(
+            out,
+            "- `{}:{}-{}` `{}` - {label}",
+            sf.file, sf.start_line, sf.end_line, sf.name
+        );
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Reading pass {ADVERSARIAL_SAMPLE_READ_ON}: {read} of the {} drawn functions read by hand \
+         (a caught row too, to judge whether its duplicate reaches past the cluster); {closed} \
+         duplicate(s) found by reading, each closed.",
+        picked.len(),
+    );
+    for what in ADVERSARIAL_SAMPLE_CLOSED_BEFORE_REDRAW {
+        let _ = writeln!(out, "- closed before the redraw: {what}");
     }
     let _ = writeln!(out);
     let _ = writeln!(
@@ -5643,34 +5748,46 @@ fn render_section_6() -> String {
 // THE ADVERSARIAL SAMPLE (spec 85 THOROUGHNESS)
 // -----------------------------------------------------------------------------------------
 
-/// One step of a 64-bit linear congruential generator (the Knuth/Numerical-Recipes constants) -
-/// deterministic, zero new dependency (no `rand`).
-fn lcg_next(state: &mut u64) -> u64 {
-    *state = state
-        .wrapping_mul(6_364_136_223_846_793_005)
-        .wrapping_add(1_442_695_040_888_963_407);
-    *state
-}
-
-/// Deterministically draw `k` distinct indices in `[0, n)` from `seed` (spec 85 THOROUGHNESS:
+/// Deterministically draw `k` of the functions named by `keys` from `seed` (spec 85 THOROUGHNESS:
 /// "the adversary draws 30 functions by seeded random index... The report states the sample
-/// seed so the check is reproducible"), sorted ascending for a stable, readable listing.
-fn sample_indices(n: usize, k: usize, seed: u64) -> Vec<usize> {
-    if n == 0 {
-        return Vec::new();
-    }
-    let mut state = seed;
-    let mut seen = HashSet::new();
-    let mut picked = Vec::new();
-    let want = k.min(n);
-    while picked.len() < want {
-        let r = ((lcg_next(&mut state) >> 33) as usize) % n;
-        if seen.insert(r) {
-            picked.push(r);
-        }
-    }
+/// seed so the check is reproducible"), returned as indices into `keys`, sorted ascending for a
+/// stable, readable listing. Each function is ranked by the seeded hash of its OWN identity (see
+/// [`sample_key`]) and the `k` lowest ranks are drawn, so the draw is stable under change: a
+/// function added or removed elsewhere never moves any other function's rank, and a cleanup
+/// that closes a duplicate replaces only the drawn rows it deleted rather than reshuffling the
+/// whole already-read sample (a draw by index into the population reshuffled on every change to
+/// the function count, discarding each reading pass).
+fn sample_indices(keys: &[String], k: usize, seed: u64) -> Vec<usize> {
+    let mut ranked: Vec<(String, usize)> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, key)| (content_hash(&format!("{seed}\u{0}{key}")), i))
+        .collect();
+    ranked.sort();
+    let mut picked: Vec<usize> = ranked.into_iter().take(k).map(|(_, i)| i).collect();
     picked.sort_unstable();
     picked
+}
+
+/// The identity [`sample_indices`] ranks a drawn function by: its file, its name, and its
+/// ordinal among the same-named functions of that file (in source order) - never its line or
+/// its position in the population, both of which move whenever anything above it changes.
+fn sample_keys(files: &[FileScan], refs: &[FnRef]) -> Vec<String> {
+    let mut seen: HashMap<(String, String), usize> = HashMap::new();
+    refs.iter()
+        .map(|r| {
+            let sf = r.scanned(files);
+            let ordinal = seen.entry((sf.file.clone(), sf.name.clone())).or_insert(0);
+            let key = sample_key(&sf.file, &sf.name, *ordinal);
+            *ordinal += 1;
+            key
+        })
+        .collect()
+}
+
+/// One function's draw identity - see [`sample_keys`].
+fn sample_key(file: &str, name: &str, ordinal: usize) -> String {
+    format!("{file}\u{0}{name}\u{0}{ordinal}")
 }
 
 // =========================================================================================
@@ -9180,10 +9297,17 @@ mod tests {
     // The adversarial sample
     // -------------------------------------------------------------------------------------
 
-    /// Two 30-of-1000 draws are identical exactly when their seeds are.
+    /// `n` synthetic draw identities, one function each in its own file.
+    fn keys(n: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| sample_key(&format!("src/f{i}.rs"), "f", 0))
+            .collect()
+    }
+
+    /// Draws of the same population under `seed_a` and `seed_b` agree exactly when the seeds do.
     fn assert_draws_match_iff_seeds_do(seed_a: u64, seed_b: u64) {
-        let a = sample_indices(1000, 30, seed_a);
-        let b = sample_indices(1000, 30, seed_b);
+        let a = sample_indices(&keys(1000), 30, seed_a);
+        let b = sample_indices(&keys(1000), 30, seed_b);
         if seed_a == seed_b {
             assert_eq!(a, b);
         } else {
@@ -9193,11 +9317,12 @@ mod tests {
 
     rigger::test_cases! {
         sample_indices_is_deterministic_for_a_fixed_seed: assert_draws_match_iff_seeds_do(42, 42);
+        different_seeds_produce_different_draws: assert_draws_match_iff_seeds_do(1, 2);
     }
 
     #[test]
     fn sample_indices_returns_k_distinct_sorted_in_bounds_indices() {
-        let picked = sample_indices(500, 30, ADVERSARIAL_SEED);
+        let picked = sample_indices(&keys(500), 30, ADVERSARIAL_SEED);
         assert_eq!(picked.len(), 30);
         let distinct: HashSet<usize> = picked.iter().copied().collect();
         assert_eq!(distinct.len(), 30);
@@ -9209,17 +9334,41 @@ mod tests {
 
     #[test]
     fn sample_indices_caps_at_n_when_k_exceeds_it() {
-        let picked = sample_indices(5, 30, 7);
-        assert_eq!(picked, vec![0, 1, 2, 3, 4]);
+        assert_eq!(sample_indices(&keys(5), 30, 7), vec![0, 1, 2, 3, 4]);
     }
 
     #[test]
     fn sample_indices_of_an_empty_population_is_empty() {
-        assert!(sample_indices(0, 30, 7).is_empty());
+        assert!(sample_indices(&[], 30, 7).is_empty());
     }
 
-    rigger::test_cases! {
-        different_seeds_produce_different_draws: assert_draws_match_iff_seeds_do(1, 2);
+    /// The draw is stable under change: removing a function the draw did NOT pick leaves every
+    /// drawn function drawn, and removing a drawn one replaces only that one - the property that
+    /// keeps a hand reading pass valid across a cleanup, which a draw by population index lacked.
+    #[test]
+    fn removing_a_function_replaces_at_most_that_function_in_the_draw() {
+        let population = keys(500);
+        let drawn = |pop: &[String]| -> BTreeSet<String> {
+            sample_indices(pop, 30, ADVERSARIAL_SEED)
+                .into_iter()
+                .map(|i| pop[i].clone())
+                .collect()
+        };
+        let before = drawn(&population);
+        let undrawn = population.iter().position(|k| !before.contains(k)).unwrap();
+        let mut without_undrawn = population.clone();
+        without_undrawn.remove(undrawn);
+        assert_eq!(drawn(&without_undrawn), before);
+
+        let first_drawn = population.iter().position(|k| before.contains(k)).unwrap();
+        let mut without_drawn = population.clone();
+        let removed = without_drawn.remove(first_drawn);
+        let after = drawn(&without_drawn);
+        assert_eq!(after.len(), 30);
+        assert_eq!(
+            before.difference(&after).collect::<Vec<_>>(),
+            vec![&removed]
+        );
     }
 
     // -------------------------------------------------------------------------------------
@@ -9285,8 +9434,9 @@ mod tests {
             refs.len() > ADVERSARIAL_SAMPLE_SIZE,
             "expected far more than {ADVERSARIAL_SAMPLE_SIZE} functions in the real tree"
         );
-        let a = sample_indices(refs.len(), ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
-        let b = sample_indices(refs.len(), ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
+        let keys = sample_keys(real_files(), &refs);
+        let a = sample_indices(&keys, ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
+        let b = sample_indices(&keys, ADVERSARIAL_SAMPLE_SIZE, ADVERSARIAL_SEED);
         assert_eq!(a, b);
         assert_eq!(a.len(), ADVERSARIAL_SAMPLE_SIZE);
         assert!(a.iter().all(|&i| i < refs.len()));
